@@ -1,0 +1,8 @@
+[Unit]
+Description=Silicon Notebook weekly public benchmark evaluation
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/silicon-notebook/benchmark-deepeval
+ExecStart=%h/silicon-notebook/benchmark-deepeval/.venv/bin/python scripts/automate_public_benchmark.py --scope regression
+TimeoutStartSec=infinity

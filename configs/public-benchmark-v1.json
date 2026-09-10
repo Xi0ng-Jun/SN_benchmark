@@ -1,0 +1,34 @@
+{
+  "bundle_version": "public-benchmark-v1",
+  "seed": 20260909,
+  "questions_per_dataset": 100,
+  "distractors_per_dataset": 100,
+  "debug_questions_per_dataset": 20,
+  "calibration_questions_per_dataset": 10,
+  "smoke_questions_per_dataset": 10,
+  "verified_tooling": {
+    "deepeval": "4.2.2",
+    "datasets": "4.8.5",
+    "python": "3.13.15"
+  },
+  "sources": {
+    "squad": {
+      "dataset_version": "1.1",
+      "split": "dev (Hugging Face validation)",
+      "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json",
+      "sha256": "95aa6a52d5d6a735563366753ca50492a658031da74f301ac5238b03966972c9",
+      "license": "CC BY-SA 4.0",
+      "huggingface_repo": "rajpurkar/squad",
+      "huggingface_revision": "7b6d24c440a36b6815f21b70d25016731768db1f"
+    },
+    "drop": {
+      "dataset_version": "1.0 archive published 2019-05-28",
+      "split": "dev (Hugging Face validation)",
+      "url": "https://s3-us-west-2.amazonaws.com/allennlp/datasets/drop/drop_dataset.zip",
+      "sha256": "39d2278a29fd729de301b111a45f434c24834f40df8f4ff116d864589e3249d6",
+      "license": "CC BY-SA 4.0",
+      "huggingface_repo": "ucinlp/drop",
+      "huggingface_revision": "95cda593fae71b60b5b19f82de3fcf3298c1239c"
+    }
+  }
+}

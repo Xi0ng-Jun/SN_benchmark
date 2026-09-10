@@ -1,0 +1,140 @@
+{
+  "artifacts": [
+    {
+      "bytes": 65040,
+      "path": "squad/questions.jsonl",
+      "sha256": "e637ca436001385abeb75c818c3e497da34ea370eeec997e46d4fcda79b698b9"
+    },
+    {
+      "bytes": 198238,
+      "path": "squad/documents.jsonl",
+      "sha256": "9d38967afd23a01a5aca44cec37dea7daf2dc6b1980faba2487d16947ec13395"
+    },
+    {
+      "bytes": 46144,
+      "path": "drop/questions.jsonl",
+      "sha256": "f445f895a67e8303879b7971ea6a2557529a268d6191639977cc31200f6f7694"
+    },
+    {
+      "bytes": 272774,
+      "path": "drop/documents.jsonl",
+      "sha256": "4f4b74b446c76886fcec3928324f9e59e29e4bbe14960792621e0a17463bca6a"
+    }
+  ],
+  "audit_sample_ids": {
+    "drop": [
+      "drop-53d1c44c-363f-49a6-9acb-cef3a39d9e9f",
+      "drop-fd9f4aa9-62e0-4896-a03a-ac452679fac7",
+      "drop-be9d53b8-4874-4d86-a9d4-98667b5e1ec0",
+      "drop-9e2f3284-09ee-4815-bd18-66c4ab368a15",
+      "drop-d3ee10fd-8202-41a1-bd57-8634c981c240",
+      "drop-014ac993-dd7b-4365-935d-12125d788396",
+      "drop-29648c25-d6fb-4ab3-a8ed-c38e3e493968",
+      "drop-ab2f142d-1f25-4ae9-ab79-26b7dc0fe5d4",
+      "drop-645d2431-0e5d-4fc6-8873-e8e72de386df",
+      "drop-1494a433-1ef8-4c5e-8963-dd57fcf56b57"
+    ],
+    "squad": [
+      "squad-572908c13f37b31900477fbe",
+      "squad-57273799f1498d1400e8f4c0",
+      "squad-57286ec63acd2414000df9d2",
+      "squad-57274f67708984140094dbf5",
+      "squad-57273c01f1498d1400e8f4e5",
+      "squad-57277de9dd62a815002e9ea7",
+      "squad-57297103af94a219006aa425",
+      "squad-5727f05b4b864d190016406c",
+      "squad-57296977af94a219006aa3bf",
+      "squad-5725c01389a1e219009abdd7"
+    ]
+  },
+  "datasets": {
+    "drop": {
+      "answer_type_counts": {
+        "date": 2,
+        "mixed": 21,
+        "number": 30,
+        "span": 26,
+        "spans": 21
+      },
+      "calibration_count": 10,
+      "debug_count": 20,
+      "document_count": 200,
+      "document_ids_sha256": "a934f17dea2340d8f0c53c60a4583cf44d684a0a8828d022118a8ae5d9c5a491",
+      "group_ids_sha256": "d605f033266704d16957672f38fdb55fe4d45e16f6dd6731e5774dbd9af440ce",
+      "question_count": 100,
+      "question_ids_sha256": "b6914255b73ada8229566b3fa3728ecd38d659d55f3dcff42fdd31fcad1cdbbb",
+      "regression_count": 80,
+      "smoke_count": 10
+    },
+    "squad": {
+      "answer_type_counts": {
+        "span": 100
+      },
+      "calibration_count": 10,
+      "debug_count": 20,
+      "document_count": 200,
+      "document_ids_sha256": "4d85a1075d68776b07afdc34de998108493e8658e865a8e081f9988b6c8182d4",
+      "group_ids_sha256": "4ae6e83a0a1b429bc202b6f8a3a49da50d4963aeccfa218526cf14324d0dabbe",
+      "question_count": 100,
+      "question_ids_sha256": "dbe0a8def5b8e032e2b245e94ab4788398cb7a18ff788d07fd4fa48f43f99610",
+      "regression_count": 80,
+      "smoke_count": 10
+    }
+  },
+  "metric_applicability": {
+    "drop": {
+      "answer_correctness": true,
+      "answer_offsets": false,
+      "complete_reasoning_evidence_recall": false,
+      "paragraph_hit": true
+    },
+    "squad": {
+      "answer_correctness": true,
+      "answer_offsets": true,
+      "complete_reasoning_evidence_recall": false,
+      "paragraph_hit": true
+    }
+  },
+  "protocol_version": "public-benchmark-v1",
+  "sampling": {
+    "debug": 20,
+    "distractor_passages_per_dataset": 100,
+    "drop_answer_type_sampling": "round-robin strata over primary official annotation type",
+    "group_split_isolation": true,
+    "question_choice": "seeded random, one per passage",
+    "questions_per_dataset": 100,
+    "regression": 80,
+    "unique_question_passages": true
+  },
+  "seed": 20260909,
+  "semantic_notes": [
+    "DROP references are complete annotation answers: primary answer plus validated_answers.",
+    "Multiple spans inside one DROP annotation are joined with '; ' and are not alternatives.",
+    "DROP supplies no complete reasoning-evidence offsets; its evidence list is empty by design."
+  ],
+  "sources": {
+    "drop": {
+      "dataset_version": "1.0 archive published 2019-05-28",
+      "huggingface_repo": "ucinlp/drop",
+      "huggingface_revision": "95cda593fae71b60b5b19f82de3fcf3298c1239c",
+      "license": "CC BY-SA 4.0",
+      "sha256": "39d2278a29fd729de301b111a45f434c24834f40df8f4ff116d864589e3249d6",
+      "split": "dev (Hugging Face validation)",
+      "url": "https://s3-us-west-2.amazonaws.com/allennlp/datasets/drop/drop_dataset.zip"
+    },
+    "squad": {
+      "dataset_version": "1.1",
+      "huggingface_repo": "rajpurkar/squad",
+      "huggingface_revision": "7b6d24c440a36b6815f21b70d25016731768db1f",
+      "license": "CC BY-SA 4.0",
+      "sha256": "95aa6a52d5d6a735563366753ca50492a658031da74f301ac5238b03966972c9",
+      "split": "dev (Hugging Face validation)",
+      "url": "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json"
+    }
+  },
+  "verified_tooling": {
+    "datasets": "4.8.5",
+    "deepeval": "4.2.2",
+    "python": "3.13.15"
+  }
+}

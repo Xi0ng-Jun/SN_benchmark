@@ -1,0 +1,38 @@
+{
+  "limit": 50,
+  "datasets": {
+    "crud-rag": {
+      "questions_seen": 50,
+      "questions_with_gold": 0,
+      "metrics_at_10": {
+        "hit": null,
+        "recall": null,
+        "mrr": null,
+        "ndcg": null,
+        "complete_evidence": null
+      }
+    },
+    "multihop-rag": {
+      "questions_seen": 50,
+      "questions_with_gold": 41,
+      "metrics_at_10": {
+        "hit": 0.9512195121951219,
+        "recall": 0.7642276422764227,
+        "mrr": 0.8443089430894309,
+        "ndcg": 0.702051001094889,
+        "complete_evidence": 0.5365853658536586
+      }
+    },
+    "scifact": {
+      "questions_seen": 50,
+      "questions_with_gold": 50,
+      "metrics_at_10": {
+        "hit": 0.8,
+        "recall": 0.773,
+        "mrr": 0.6401666666666667,
+        "ndcg": 0.6699321557071112,
+        "complete_evidence": 0.76
+      }
+    }
+  }
+}

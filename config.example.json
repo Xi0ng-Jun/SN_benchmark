@@ -1,0 +1,17 @@
+{
+  "datasets_root": "/home/wabiwabi/rag_benchmark/.ragbench/datasets",
+  "results_root": "./results",
+  "judge_model": "set-in-your-environment",
+  "datasets": {
+    "crud-rag": "crud-rag/full",
+    "multihop-rag": "multihop-rag/full",
+    "scifact": "scifact/full"
+  },
+  "deepeval_thresholds": {
+    "contextual_recall": 0.7,
+    "contextual_precision": 0.7,
+    "contextual_relevancy": 0.7,
+    "faithfulness": 0.8,
+    "answer_relevancy": 0.75
+  }
+}

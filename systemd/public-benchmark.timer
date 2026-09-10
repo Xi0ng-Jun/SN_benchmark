@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Silicon Notebook public benchmark weekly
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=30m
+Unit=public-benchmark.service
+
+[Install]
+WantedBy=timers.target

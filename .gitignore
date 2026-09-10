@@ -1,0 +1,35 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.deepeval/
+.env
+.env.*
+*.egg-info/
+edtrace/
+node_modules/
+data/crud-rag
+data/multihop-rag
+data/scifact
+data/public-benchmark-v1/raw/
+results/domain-*
+results/experiment-report.md
+
+# Runtime databases, model logs, embeddings and generated per-question captures
+var/**/runtime/
+var/**/cells/**/runtime/
+var/**/logs/
+var/**/cache/
+var/**/index/
+var/**/storage/
+
+# Local run locks and transient process files
+var/**/*.lock
+var/**/.lock
+*.sqlite
+*.db
+
+# Generated experiment runs are retained locally; publish curated reports only.
+var/**
+!var/
+!var/README.md
