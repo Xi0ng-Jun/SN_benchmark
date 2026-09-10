@@ -1,0 +1,26 @@
+{
+  "tested": {
+    "model_id": "replace-with-tested-model-id",
+    "base_url_env": "STARTER_TESTED_BASE_URL",
+    "api_key_env": "STARTER_TESTED_API_KEY",
+    "parameters": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "max_tokens": 8192,
+      "max_retries": 2,
+      "timeout": 60
+    }
+  },
+  "judge": {
+    "model_id": "replace-with-judge-model-id",
+    "base_url_env": "STARTER_JUDGE_BASE_URL",
+    "api_key_env": "STARTER_JUDGE_API_KEY",
+    "parameters": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "max_tokens": 8192,
+      "max_retries": 2,
+      "timeout": 60
+    }
+  }
+}

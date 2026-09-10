@@ -2,7 +2,23 @@
 
 更新时间：2026-09-10
 
-此前已完成 DeepEval 调研与环境链路验证。目前已获用户授权执行 SQuAD / DROP 的两模式持续评测方案；这些新任务从产品能力和框架能力出发，既有实验不充当质量基线。
+此前已完成 DeepEval 调研与环境链路验证。SQuAD / DROP 两模式持续评测曾获授权执行，现已暂停；当前授权工作已推进到公开起步方案的代码与逻辑实现，用户要求本轮不运行和测试。既有实验不充当质量基线。
+
+## 公开起步方案首批代码（未验证）
+
+已新增 `starter_protocol/native/model/product/results.py` 与本地准备入口 `scripts/prepare_public_starter.py`，覆盖五个 suite 选题和数据身份、SDK 模板/scorer 接口、显式被测模型/judge、BoolQ 产品解析、候选库准备、结果分母和失败记录。[代码交接](deepeval-public-starter-implementation.md)列明输入和限制。
+
+随后已按用户“做吧”的指示编写执行编排和报告接入：新增 `starter_runtime/runner/report.py`、`run_public_starter.py`、`report_public_starter.py` 和模型配置示例，见[执行与报告说明](deepeval-public-starter-orchestration.md)。代码串起单套件 N/R、先保存回答后评分、阶段/错误记录、缺失分母与 chunk/reasoning 配对；报告入口只读本地产物。
+
+本轮未执行新代码、未测试、未下载/冻结新数据、未创建模型/runtime；因此不是 P0/P1 或 P2/P3 验收完成。IFEval 规则正反例、人审适用性、模型协议一致性、产品隔离和新入口全部待验证，历史 baseline/timer 保持暂停。旧测试通过数不适用于新代码。
+
+## 本次能力评测设计交付
+
+最新选择是先用 DeepEval 提供的公开评测构成起步方案，见[公开评测起步方案](deepeval-public-starter-plan.md)：五类模型参照、三类首批产品适配，均未运行。后续再构造产品业务场景。
+
+此前用户选择广度优先；已新增[广度扩展计划](product-capability-breadth-plan.md)与[Memory/Agent 上下文说明](memory-and-agent-context.md)。拟覆盖八类用户任务，排除交互可靠性、资料更新一致性。所有新套件均处于设计阶段，不能标为产品已验证；现有 400 次 Ask 不覆盖本次规划的多轮、Memory 或偏好套件。
+
+已整理[详细方案](product-capability-evaluation-plan.md)、[能力矩阵](product-capability-matrix.md)、[数据协议](evaluation-data-contract.md)、[真实样例说明](evaluation-case-walkthrough.md)及[后续实施计划](superpowers/plans/2026-09-10-product-capability-evaluation.md)。公开 smoke 单题快照随 Git 保存；字段、引用数量和历史分数可脱离本地 var 阅读。新协议、行为分类与报告适配仍是待实施设计，没有新增模型调用或填写人工标签。
 
 ## 当前执行
 
@@ -56,7 +72,7 @@
 
 ## 当前开发重点
 
-具体公开集评分任务暂缓，后续工作回到 Silicon Notebook 产品本身：先梳理文档导入、切块、检索、引用、chunk/reasoning 及澄清策略的可测契约，再设计与真实使用场景对应的人工核验集。公开 benchmark 保留为通用能力和回归流程的补充，不作为产品领域质量的唯一依据。
+具体在线评分任务继续暂停。当前先冻结 DeepEval 公开 benchmark 的题目与评分协议，设计最小离线适配，再在用户恢复在线任务后建立模型参照及产品评测。SQuAD/DROP 复用既有基础，BoolQ 为首个新增产品题型；LogiQA/IFEval 先作模型参照。之后再设计真实业务人工核验集。公开成绩不作为产品领域质量的唯一依据。
 
 ## 历史候选试运行与限时更正
 

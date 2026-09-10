@@ -14,6 +14,16 @@
 
 Git 保存源码、测试、配置、冻结的公开样本、学习材料及结果摘要。`var/` 原始运行记录、产品源码快照、数据库、模型日志、私有领域候选和本地环境保留在原机器；GitHub 上无法直接打开指向这些本地产物的历史链接。文件分布见 [结果索引](results/README.md)。
 
+## 产品能力评测设计
+
+**当前先用 DeepEval 公开评测起步**：见[公开评测起步方案](docs/deepeval-public-starter-plan.md)。建议以 SQuAD、DROP、BoolQ、LogiQA、IFEval 建立模型参照，产品侧先适配前三类，分开报告模型与产品成绩。随后按[能力广度扩展计划](docs/product-capability-breadth-plan.md)设计业务场景；[Memory 与 Agent 上下文说明](docs/memory-and-agent-context.md)保留为背景。交互可靠性与资料更新一致性明确排除；在线调用继续暂停。
+
+2026-09-10 已按用户要求编写 P0/P1 准备代码，并串起 N/R 执行与离线报告入口：五套公开题的本地冻结、SDK 模板/scorer、显式模型适配、产品原生导入/Ask、BoolQ 解析和结果覆盖率。数据格式见[首批代码交接](docs/deepeval-public-starter-implementation.md)，命令、配置、产物和边界见[执行与报告说明](docs/deepeval-public-starter-orchestration.md)。**本轮没有运行或测试，新代码未验证，新数据尚未冻结，在线调用仍暂停。**
+
+第一阶段已形成[详细方案](docs/product-capability-evaluation-plan.md)、[能力矩阵](docs/product-capability-matrix.md)、[统一数据协议草案与隔离规则](docs/evaluation-data-contract.md)、[真实 DROP 样本全链路说明](docs/evaluation-case-walkthrough.md)及[后续离线实施计划](docs/superpowers/plans/2026-09-10-product-capability-evaluation.md)。[公开样例快照](docs/examples/drop-smoke-case.json)随 Git 保存，包含真实输入、完整合成上下文、引用与历史评分，独立克隆也可查看。
+
+这些材料区分最终文档命中与检索排名、引用对象存在与正文引用支持、产品错误与澄清行为。新协议尚未接入 runner，人工校准未完成；当前工作没有恢复在线评分或定时任务。
+
 ## SQuAD / DROP 持续评测
 
 冻结输入位于 `data/public-benchmark-v1/`，每集 100 题及 200 个候选段落。原文走产品原生导入，Ask 只接收问题；两种模式各自使用独立数据库、索引和日志。
