@@ -73,12 +73,10 @@ git clone git@github.com:Xi0ng-Jun/SN_benchmark.git benchmark-deepeval
 cd /home/wabiwabi/silicon-notebook/benchmark-deepeval
 python -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
-# 需要运行 DeepEval 时再安装：
-pip install -e '.[deepeval]'
+pip install -e '.[dev,deepeval]'
 ```
 
-基础离线测试只需 `dev` 依赖。产品在线运行还需可访问的 Silicon Notebook 后端及其 Python 依赖、本地 `.env` 和 `.local/model-services.toml`；它们不随本仓库分发。默认产品位置为同级 `../project`，也可通过 `--project-root /absolute/path/to/project` 指定。历史在线运行使用 Python 3.13.15、DeepEval 4.2.2；新安装的依赖范围不等同于历史锁定环境，续跑前须通过身份校验。`config.example.json` 的数值是早期示例，不是正式阈值。
+完整离线测试需要 `dev,deepeval` 依赖，但不调用模型。原生 judge JSON 适配测试另外需要同级 `../project/backend`；缺少时明确跳过，单独克隆可运行其余检查。产品在线运行还需 Silicon Notebook 后端及其 Python 依赖、本地 `.env` 和 `.local/model-services.toml`；它们不随本仓库分发。默认产品位置为同级 `../project`，在线命令也可通过 `--project-root /absolute/path/to/project` 指定。历史在线运行使用 Python 3.13.15、DeepEval 4.2.2；新安装的依赖范围不等同于历史锁定环境，续跑前须通过身份校验。`config.example.json` 的数值是早期示例，不是正式阈值。
 
 ## 测试
 
