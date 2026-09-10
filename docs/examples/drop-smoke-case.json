@@ -1,0 +1,913 @@
+{
+  "artifact_kind": "historical_public_case_excerpt",
+  "exported_on": "2026-09-10",
+  "human_review_status": "pending",
+  "provenance": {
+    "run_id": "20260909T122132Z-smoke-7f0fd2da",
+    "dataset_member": "drop_dataset/drop_dataset_dev.json",
+    "section_id": "history_1125",
+    "source_files_sha256": {
+      "outputs.jsonl": "af465ab9b3c940ef84714d714aa0a3c6cc06dc7af7e55e8e9ed7fc591a88df7e",
+      "scores.jsonl": "2cab2349c66a8e139dc301a6d318eb60900d14b0eb7c374f8813afb560aa92d2",
+      "audit.json": "098f5f0f5a607cf42a8f45ce9f5244e719b6c96242d7a9d3793644dd2a97e317",
+      "manifest.json": "fee68751e3004e683871c05eeff0ae7906b77ba99f60b0d1e1a25dc9162d6b13"
+    },
+    "project_revision": "8ffd147e899f87529085b0ef7fe6f31d4a5904f6",
+    "historical_audit_status": "passed",
+    "capture_verification": "exact against saved synthesis interceptor records; no raw-provider equivalence claim"
+  },
+  "raw_qa": {
+    "question": "What year was Edward III of England grandson, Richard II, born?",
+    "answer": {
+      "number": "",
+      "date": {
+        "day": "",
+        "month": "",
+        "year": "1367"
+      },
+      "spans": []
+    },
+    "query_id": "b13d08ae-53b0-47ce-ab02-954db5fd58b0",
+    "validated_answers": [
+      {
+        "number": "1367",
+        "date": {
+          "day": "",
+          "month": "",
+          "year": ""
+        },
+        "spans": []
+      },
+      {
+        "number": "",
+        "date": {
+          "day": "",
+          "month": "",
+          "year": "1367"
+        },
+        "spans": []
+      },
+      {
+        "number": "",
+        "date": {
+          "day": "",
+          "month": "",
+          "year": "1367"
+        },
+        "spans": []
+      },
+      {
+        "number": "",
+        "date": {
+          "day": "",
+          "month": "",
+          "year": "1367"
+        },
+        "spans": []
+      },
+      {
+        "number": "",
+        "date": {
+          "day": "",
+          "month": "",
+          "year": "1367"
+        },
+        "spans": []
+      }
+    ]
+  },
+  "document": {
+    "document_sha256": "342d0f7fec904afe4e56d4aeba9055f25dbbe97a9abd59e299570074baa9fb39",
+    "id": "drop-history_1125",
+    "text": "Another factor in the revolt of 1381 was the conduct of the war with France. In 1337 Edward III of England had pressed his claims to the French throne, beginning a long-running conflict that became known as the Hundred Years' War. Edward had initial successes, but his campaigns were not decisive. Charles V of France became more active in the conflict after 1369, taking advantage of his country's greater economic strength to commence cross-Channel raids on England. By the 1370s, England's armies on the continent were under huge military and financial pressure; the garrisons in Calais and Brest alone, for example, were costing £36,000 a year to maintain, while military expeditions could consume £50,000 in only six months. Edward died in 1377, leaving the throne to his grandson, Richard II, then only ten years old.",
+    "text_sha256": "ffe74d1b198440e9b8278d4e3c71620926bf039e054f158213c44977673da418",
+    "title": "history_1125"
+  },
+  "question_record": {
+    "answer_type": "mixed",
+    "calibration": false,
+    "dataset": "drop",
+    "diagnostic": false,
+    "evidence": [],
+    "expected_answer": "1367",
+    "gold_document_ids": [
+      "drop-history_1125"
+    ],
+    "group": "drop-section-87db23f143885cf2",
+    "id": "drop-b13d08ae-53b0-47ce-ab02-954db5fd58b0",
+    "question": "What year was Edward III of England grandson, Richard II, born?",
+    "references": [
+      "1367"
+    ],
+    "smoke": true,
+    "split": "regression"
+  },
+  "document_map_entry": {
+    "source_id": "src-7386bb7886794fa88a7ebd94d20c876f",
+    "text_sha256": "ffe74d1b198440e9b8278d4e3c71620926bf039e054f158213c44977673da418",
+    "filename": "63bd3ca0ba0ea17f26b785e1.md",
+    "ingest_seconds": 1.3944540930096991,
+    "chunk_ids": [
+      "ck-01546dd81fbc4a369c0d6497c8881588"
+    ]
+  },
+  "output": {
+    "answer_type": "mixed",
+    "calibration": false,
+    "dataset": "drop",
+    "diagnostic": false,
+    "evidence": [],
+    "expected_answer": "1367",
+    "gold_document_ids": [
+      "drop-history_1125"
+    ],
+    "group": "drop-section-87db23f143885cf2",
+    "id": "drop-b13d08ae-53b0-47ce-ab02-954db5fd58b0",
+    "question": "What year was Edward III of England grandson, Richard II, born?",
+    "references": [
+      "1367"
+    ],
+    "smoke": true,
+    "split": "regression",
+    "mode": "chunk",
+    "attempt_id": "256cea541d8941e487e1ffe5008341cb",
+    "repeat": 0,
+    "answer": "Richard II was born in 1367 [k1].",
+    "response": {
+      "answer_id": "ans-0b0541a8bf7c4f5aa767592d5f45036e",
+      "answered_at": "2026-09-09T20:46:33.436144+08:00",
+      "conclusion": "Richard II was born in 1367 .",
+      "answer": "Richard II was born in 1367 [k1].",
+      "grounded": true,
+      "evidence_level": "grounded",
+      "anchors": [
+        {
+          "key": "k1",
+          "object_id": "ck-01546dd81fbc4a369c0d6497c8881588",
+          "object_type": "chunk",
+          "label": "history_1125",
+          "name": "history_1125",
+          "definition": null,
+          "snippet": "Another factor in the revolt of 1381 was the conduct of the war with France. In 1337 Edward III of England had pressed his claims to the French throne, beginning a long-running conflict that became known as the Hundred Years' War. Edward had initial successes, but his campaigns were not decisive. Ch",
+          "source_title": "history_1125",
+          "source_file_name": "63bd3ca0ba0ea17f26b785e1.md",
+          "location_label": "",
+          "source_id": "src-7386bb7886794fa88a7ebd94d20c876f",
+          "element_id": "el-src-7386bb7886794fa88a7ebd94d20c876f-0001",
+          "tier": "personal"
+        }
+      ],
+      "related_knowledge": [],
+      "citations": [
+        {
+          "label": "history_1125",
+          "source_id": "src-7386bb7886794fa88a7ebd94d20c876f",
+          "element_id": "el-src-7386bb7886794fa88a7ebd94d20c876f-0001",
+          "location_label": "",
+          "quoted_span": "Another factor in the revolt of 1381 was the conduct of the war with France. In 1337 Edward III of England had pressed his claims to the French throne, beginning a long-running conflict that became kn",
+          "source_file_name": "63bd3ca0ba0ea17f26b785e1.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_4049",
+          "source_id": "src-de332a079e1a4bf08908aa89145f0ae5",
+          "element_id": "el-src-de332a079e1a4bf08908aa89145f0ae5-0001",
+          "location_label": "",
+          "quoted_span": "Sitcoms offered a romanticized view of middle class American life with The Adventures of Ozzie and Harriet (1952–1966), Father Knows Best (1954–1960), and American Broadcasting Companys The Donna Reed",
+          "source_file_name": "8a58bbb3e31d976b286b14da.md",
+          "tier": "personal"
+        },
+        {
+          "label": "nfl_227",
+          "source_id": "src-17a86e08082c4055a490169c068616ab",
+          "element_id": "el-src-17a86e08082c4055a490169c068616ab-0001",
+          "location_label": "",
+          "quoted_span": "In their Week 2 home-opener, the Vikings faced the Carolina Panthers in a low-scoring fight. The Vikings would draw first blood with a 26-yard field goal by kicker Ryan Longwell. In the second quarter",
+          "source_file_name": "b31b89e357b6632b8734bcda.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_1306",
+          "source_id": "src-1a90b6f66cf44c3c81d088d8a20ae6a8",
+          "element_id": "el-src-1a90b6f66cf44c3c81d088d8a20ae6a8-0001",
+          "location_label": "",
+          "quoted_span": "Russia accused Georgia of committing \"genocide\" in South Ossetia. Russian officials initially claimed that up to 2,000 ethnic Ossetian civilians of Tskhinvali were killed by Georgian forces; according",
+          "source_file_name": "a9472508cc3c58bffe4a3c0a.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_794",
+          "source_id": "src-a4d8abd1f4ae40f884b37961054340ea",
+          "element_id": "el-src-a4d8abd1f4ae40f884b37961054340ea-0001",
+          "location_label": "",
+          "quoted_span": "Succession is now regulated by laws passed by the National Diet. The current law excludes women from the succession. A change to this law had been considered until Princess Kiko gave birth to a son. U",
+          "source_file_name": "7f58ad62ca0b096c9669448b.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_787",
+          "source_id": "src-8366e8760b8e4fe6a2d013b38823f851",
+          "element_id": "el-src-8366e8760b8e4fe6a2d013b38823f851-0001",
+          "location_label": "",
+          "quoted_span": "In literature, apart from Scott's Waverley novels, the best-known books with the Rebellion as a backdrop include Robert Louis Stevenson's novels Kidnapped and Catriona, the Jacobite trilogy by D.K. Br",
+          "source_file_name": "0b4e6d9f7a00c45b0c38d70c.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_1814",
+          "source_id": "src-6172e6b6fa7d4679affd0415c1dc2c32",
+          "element_id": "el-src-6172e6b6fa7d4679affd0415c1dc2c32-0001",
+          "location_label": "",
+          "quoted_span": "The first two Buick automobiles were made in 1899 and 1900 at the \"Buick Auto-Vim and Power Company\" by chief-engineer Walter Lorenzo Marr, but company owner David Dunbar Buick was reluctant to begin ",
+          "source_file_name": "596ab4fbd92bae29ed9062f0.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_2153",
+          "source_id": "src-e93304fe25184b57a291fc494d17d3d8",
+          "element_id": "el-src-e93304fe25184b57a291fc494d17d3d8-0001",
+          "location_label": "",
+          "quoted_span": "1% of those at school in the South-East gained no GCSE passes in 2010; Portsmouth was most with 2.5%, and Windsor and Maidenhead had the lowest with 0.2%. For school free school meals, the region has ",
+          "source_file_name": "e8376853a9bd67f1fc9436d9.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_3588",
+          "source_id": "src-8c2c4a377117441c880a68184743954c",
+          "element_id": "el-src-8c2c4a377117441c880a68184743954c-0001",
+          "location_label": "",
+          "quoted_span": "From 1989 to 1993, the Pacers would play at or near .500 and qualify for the playoffs, in 1989-90 NBA season, the Pacers parlayed a fast start into the teams third playoff appearance. But the Pacers w",
+          "source_file_name": "fa0b148d2d051c1f2add1fe7.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_2234",
+          "source_id": "src-f5c8dbf5d925447e870baab292e12e3d",
+          "element_id": "el-src-f5c8dbf5d925447e870baab292e12e3d-0001",
+          "location_label": "",
+          "quoted_span": "In 1918, party membership was approximately 200,000. In the late 1920s under Stalin, the party engaged in an intensive recruitment campaign, the \"Lenin Levy\", resulting in new members referred to as t",
+          "source_file_name": "ddf7b79595aada7e0365dab2.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_2970",
+          "source_id": "src-8581acb257d845d9a65d54697064ef05",
+          "element_id": "el-src-8581acb257d845d9a65d54697064ef05-0001",
+          "location_label": "",
+          "quoted_span": "The Bishop of Rome, called the Pope, was important since the early days of Christianity because of the martyrdom of both the apostles Simon Peter and Paul of Tarsus there. The Bishops of Rome were als",
+          "source_file_name": "00867fb72d9e23af3585d7fe.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_733",
+          "source_id": "src-48e45735b32a42959abb1da8d934a0e7",
+          "element_id": "el-src-48e45735b32a42959abb1da8d934a0e7-0001",
+          "location_label": "",
+          "quoted_span": "As with most civil wars, the internecine conflict left a bitter legacy, which continues to influence Irish politics to this day. The two largest political parties in the republic through most of its h",
+          "source_file_name": "7bb4314515704f81eeb7f85b.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_175",
+          "source_id": "src-0ee769275b614c9b82616fbe007efe4a",
+          "element_id": "el-src-0ee769275b614c9b82616fbe007efe4a-0001",
+          "location_label": "",
+          "quoted_span": "When Matthias Corvinus died from a stroke on 6 April 1490, Frederick was able to regain the Austrian lands. However, he could not enforce the Habsburg succession to the Hungarian throne and in 1491 hi",
+          "source_file_name": "de57895e0fcb82c0b1713277.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_3992",
+          "source_id": "src-2f89bfa5b8ff4412b25aa7af7f7ab045",
+          "element_id": "el-src-2f89bfa5b8ff4412b25aa7af7f7ab045-0001",
+          "location_label": "",
+          "quoted_span": "Kit sponsors BSR Housewares became the clubs first shirt English football sponsorship during the 1981–82 season. The clubs shirts have been sponsored for the majority of the time since then, although ",
+          "source_file_name": "477dca664affec27ed964ffa.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_809",
+          "source_id": "src-1a696e30acb4473aa57cc76b055292ec",
+          "element_id": "el-src-1a696e30acb4473aa57cc76b055292ec-0001",
+          "location_label": "",
+          "quoted_span": "During the early reign of the Yongle Emperor, the territorial princes were restored of their positions. However, they were relocated away from the frontiers, and gradually stripped of their military p",
+          "source_file_name": "df4435de81d914c17992f1de.md",
+          "tier": "personal"
+        },
+        {
+          "label": "history_3897",
+          "source_id": "src-af5423bc9e184737a4878c161f747417",
+          "element_id": "el-src-af5423bc9e184737a4878c161f747417-0001",
+          "location_label": "",
+          "quoted_span": "On 15 December 1773, he was commissioned as Ensign in the 14th Regiment of Foot. On 28 March 1774, he joined his first regiment, moving to quarters in Dover on 13 May 1774. In March 1775, he left for ",
+          "source_file_name": "406e189d98bf38f6b586a26c.md",
+          "tier": "personal"
+        }
+      ],
+      "llm_mode": "grounded",
+      "mode": "chunk",
+      "conversation_id": "conv-f1708b0cee3b4c06afe211e6bcac729a",
+      "retrieval_query": "What year was Edward III of England grandson, Richard II, born?",
+      "top_relevance": 0.6837202668190003,
+      "reasoning_trace": null,
+      "intent": null,
+      "retrieval_effort": "standard",
+      "kg_required": false,
+      "index_required": false,
+      "model_errors": []
+    },
+    "status": "success",
+    "persistence_verified": true,
+    "captures": [
+      {
+        "method": "_answer_chunks",
+        "succeeded": true,
+        "sectioned": false,
+        "section_index": 0,
+        "section_title": "",
+        "answer": "Richard II was born in 1367 [k1].",
+        "context_block": "k1: Another factor in the revolt of 1381 was the conduct of the war with France. In 1337 Edward III of England had pressed his claims to the French throne, beginning a long-running conflict that became known as the Hundred Years' War. Edward had initial successes, but his campaigns were not decisive. Charles V of France became more active in the conflict after 1369, taking advantage of his country's greater economic strength to commence cross-Channel raids on England. By the 1370s, England's armies on the continent were under huge military and financial pressure; the garrisons in Calais and Brest alone, for example, were costing £36,000 a year to maintain, while military expeditions could consume £50,000 in only six months. Edward died in 1377, leaving the throne to his grandson, Richard II, then only ten years old.\nk2: Sitcoms offered a romanticized view of middle class American life with The Adventures of Ozzie and Harriet (1952–1966), Father Knows Best (1954–1960), and American Broadcasting Companys The Donna Reed Show (1958–1966) exemplifying the genre. Emmy Award-winning comedy I Love Lucy (1951–1960) starred husband and wife Desi Arnaz and Lucille Ball and enjoyed such popularity that some businesses closed early on Monday nights in order to allow employees to hurry home for the show. In The Life of Riley (1953–1958), blue collar Chester A. Riley (William Bendix) became the prototype for a long line of bumbling television patriarchs that included Fred Flintstone and Archie Bunker. The shows first incarnation for the DuMont Television Network lasted a season (1949–1950) and won an Emmy during the first Emmy Awards in 1949. The Honeymooners (1955–1956) followed bus driver Ralph Kramden (Jackie Gleason) and his sewer-working sidekick Ed Norton (Art Carney) while archetypal suburban life was limned in Leave It to Beaver (1957–1963), purportedly the first sitcom to be told from a childs point of view and the first to strike a blow for television realism by displaying a toilet in an early episode. Genre series were popular with Dragnet (series) (1952) starring Jack Webb representing police procedural drama, British television syndication series The Adventures of Robin Hood (TV series) (1955) starring Richard Greene representing historical drama, and Gunsmoke (1955) with James Arness and Amanda Blake representing the western. Mid-decade, Warner Bros. produced a group of five westerns with Maverick (TV series) starring James Garner and Cheyenne (1955 TV series) starring Clint Walker leading the group in popularity.\nk3: In their Week 2 home-opener, the Vikings faced the Carolina Panthers in a low-scoring fight. The Vikings would draw first blood with a 26-yard field goal by kicker Ryan Longwell. In the second quarter, Carolina got a field goal with opposing kicker John Kasay. The Vikings would respond with another Longwell field goal (a 22-yard FG), but they fell before halftime with opposing RB DeAngelo Williams getting a 3-yard run for the Panthers. The Vikings trailed a bit further in the third quarter, as Karney kicked a 26-yard field goal. The Vikings started their own comeback. In the fourth quarter, Longwell faked a field goal try and threw a 16-yard TD pass to FB Richard Owens to tie the game up going into overtime. In OT, Longwell booted the game-winning 19-yard field goal to give Minnesota the win. It was the first time in Vikings history that a coach started 2-0 in his first year.\nk4: Russia accused Georgia of committing \"genocide\" in South Ossetia. Russian officials initially claimed that up to 2,000 ethnic Ossetian civilians of Tskhinvali were killed by Georgian forces; according to Russia, the reason for the military intervention in Georgia was this large number of casualties. Public opinion among Ossetians was impacted by claims of high casualties; according to HRW, some Ossetian civilians said in interviews that they approved of burning and looting of Georgian villages because of the \"thousands of civilian casualties in South Ossetia\" reported by Russian television. In December 2008, the figures were revised down to a total of 162 South Ossetian casualties by the Investigative Committee of the Prosecutor's Office of the Russian Federation. Georgia and South Ossetia have filed complaints about alleged war crimes committed by the other side with international courts, including the International Criminal Court, the International Court of Justice, and the European Court of Human Rights. The war displaced a 192,000 people including both Ossetians and Georgians. Many were able to return to their homes after the war, but a year later around 30,000 ethnic Georgians remained displaced. As of May 2014, 20,272 persons remained displaced, with their return being blocked by de facto authorities.\nk5: Succession is now regulated by laws passed by the National Diet. The current law excludes women from the succession. A change to this law had been considered until Princess Kiko gave birth to a son. Until the birth of Prince Hisahito, son of Prince Akishino, on September 6, 2006, there was a potential succession problem, since Prince Akishino was the only male child to be born into the imperial family since 1965. Following the birth of Princess Aiko, there was public debate about amending the current Imperial Household Law to allow women to succeed to the throne. In January 2005, Prime Minister Junichiro Koizumi appointed a special panel composed of judges, university professors, and civil servants to study changes to the Imperial Household Law and to make recommendations to the government. The panel dealing with the succession issue recommended on October 25, 2005, amending the law to allow females of the male line of imperial descent to ascend the Japanese throne. On January 20, 2006, Prime Minister Junichiro Koizumi devoted part of his annual keynote speech to the controversy, pledging to submit a bill allowing women to ascend the throne to ensure that the succession continues in the future in a stable manner. Shortly after the announcement that Princess Kiko was pregnant with her third child, Koizumi suspended such plans. Her son, Prince Hisahito, is the third in line to the throne under the current law of succession. On January 3, 2007, Prime Minister Shinzō Abe announced that he would drop the proposal to alter the Imperial Household Law.\nk6: In literature, apart from Scott's Waverley novels, the best-known books with the Rebellion as a backdrop include Robert Louis Stevenson's novels Kidnapped and Catriona, the Jacobite trilogy by D.K. Broster and in modern times, Diana Gabaldon's Outlander novels. While not strictly related to the '45, the British author Joan Aiken wrote a series of children's books set in an alternative 18th-century Britain where James II was never deposed and his son James III battles constant pro-Hanoverian conspiracies. Significant screen versions include 1948's Bonnie Prince Charlie starring David Niven who summarised it as 'one of those huge, florid extravaganzas that reek of disaster from the start' and Culloden, Peter Watkins' 1964 docu-drama. In addition to the current Outlander TV series, the aftermath of the Rebellion is the theme of the now lost 1966 Dr Who series The Highlanders. Musical references to the '45 are numerous, both in bagpipe music and in song; the most famous is the Skye Boat Song but there are many others, one collection being the 1960 album Songs of Two Rebellions: The Jacobite Wars of 1715 and 1745 in Scotland by Ewan MacColl and Peggy Seeger.\nk7: The first two Buick automobiles were made in 1899 and 1900 at the \"Buick Auto-Vim and Power Company\" by chief-engineer Walter Lorenzo Marr, but company owner David Dunbar Buick was reluctant to begin making automobiles, being satisfied with stationary and marine engine production, so Marr left Buick in 1901 to found Marr (automobile) under his own name. His replacement was Eugene Richard, who applied for a patent in 1902 for Marrs valve-in-head (Overhead valve engine) engine, which patent, number 771,095, was awarded to Richard in the name of Buick in 1904. In 1903, the third Buick automobile was made, this time by Richard, but in 1904 Buick, whose company was now called \"Buick Motor Company,\" moved to Flint, Michigan, and Richard stayed behind. Marr was rehired in Flint as chief engineer, to begin making automobiles in production. That year, 37 Buick automobiles were made, production increasing to 750 in 1905, 1,400 in 1906, 4,641 in 1907, and 8,800 in 1908, taking the number one spot away from close competitors Oldsmobile, Ford Motor Company, and Maxwell automobile.\nk8: 1% of those at school in the South-East gained no GCSE passes in 2010; Portsmouth was most with 2.5%, and Windsor and Maidenhead had the lowest with 0.2%. For school free school meals, the region has the lowest percentage in England with 7.2%; the highest percentage is Southampton with 17%, and the lowest is Wokingham with 3.5% (the second lowest in England after Rutland); Buckinghamshire is 4.3%, then Bracknell Forest and Surrey are 4.9%. For truancy, the highest is South Bucks at 7.0, then Canterbury 7.0, Portsmouth 6.9, Thanet 6.9, Southampton 6.4, and Rushmoor 6.1. The lowest truancy percentages are for Tandridge 2.5, Windsor & Maidenhead 2.5, and Slough 2.5.\nk9: From 1989 to 1993, the Pacers would play at or near .500 and qualify for the playoffs, in 1989-90 NBA season, the Pacers parlayed a fast start into the teams third playoff appearance. But the Pacers were swept by the 1989-90 Detroit Pistons season, who would go on to win their second consecutive 1990 NBA Finals. Reggie Miller became the first Pacer to play in the 1990 NBA All-Star Game since 1976 on the strength of his 24.6 points-per-game average. Despite four straight first round exits, this period was highlighted by a first round series with the Boston Celtics in 1990-91 NBA season that went to Game 5. The next season, the Pacers returned to the playoffs in 1992 NBA Playoffs and met the 1991-92 Boston Celtics season for the second year in a row. But this time, the Celtics left no doubt who was the better team, as they swept the Pacers in three straight games. Chuck Person and point guard Micheal Williams were traded to the Minnesota Timberwolves in the off-season, and the Pacers got Pooh Richardson and Sam Mitchell (basketball) in return. For the 1992-93 NBA season, Detlef Schrempf moved from sixth man to the starter at small forward and was elected to his first All-Star game. Miller, meanwhile, became the Pacers all-time NBA era leading scorer during this season (4th overall). The Pacers returned to the 1993 NBA Playoffs with a 41-41 record, but lost to the 1992-93 New York Knicks season in the first round, three games to one.\nk10: In 1918, party membership was approximately 200,000. In the late 1920s under Stalin, the party engaged in an intensive recruitment campaign, the \"Lenin Levy\", resulting in new members referred to as the Lenin Enrolment, from both the working class and rural areas. This represented an attempt to \"proletarianize\" the party and an attempt by Stalin to strengthen his base by outnumbering the Old Bolsheviks and reducing their influence in the Party. In 1925, the party had 1,025,000 members in a Soviet population of 147 million. In 1927, membership had risen to 1,200,000. During the collectivization campaign and industrialization campaigns of the first five-year plan from 1929 to 1933, party membership grew rapidly to approximately 3.5 million members. However, party leaders suspected that the mass intake of new members had allowed \"social-alien elements\" to penetrate the partys ranks and document verifications of membership ensued in 1933 and 1935, removing supposedly unreliable members. Meanwhile, the party closed its ranks to new members from 1933 to November 1936. Even after the reopening of party recruiting, membership fell to 1.9 million by 1939. Nicholas DeWitt gives 2.307 million members in 1939, including candidate members, compared with 1.535 million in 1929 and 6.3 million in 1947. In 1986, the CPSU had over 19 million membersapproximately 10% of the Soviet Unions adult population. Over 44% of party members were classified as industrial workers and 12% as collective farmers. The CPSU had party organizations in 14 of the Soviet Unions 15 republics. The Russian Soviet Federative Socialist Republic itself had no separate Communist Party until 1990 because the CPSU controlled affairs there directly.\nk11: The Bishop of Rome, called the Pope, was important since the early days of Christianity because of the martyrdom of both the apostles Simon Peter and Paul of Tarsus there. The Bishops of Rome were also seen (and still are seen by Catholics) as the successors of Peter, who is considered the first Bishop of Rome. The city thus became of increasing importance as the centre of the Catholic Church. After the Decline of the Roman Empire in 476 AD, Rome was first under the control of Odoacer and then became part of the Ostrogothic Kingdom before returning to Byzantine Empire control after the Gothic War (535-554), which devastated the city. Its population declined from more than a million in 210 AD to 500,000 in 273 to 35,000 after the Gothic War (535-554), reducing the sprawling city to groups of inhabited buildings interspersed among large areas of ruins, vegetation, vineyards and market gardens. It is generally thought the population of the city until 300 A.D. was 1 million (estimates range from 2 million to 750,000) declining to 750-800,000 in 400 A.D., 450-500,000 in 450 A.D. and down to 80-100,000 in 500 A.D. (though it may have been twice this), Rome in Late Antiquity, Bernard Lancon, 2001, pp. 14, 115-119; Rome Profile of a City, Richard Krautheimer, 2000, pp. 4, 65.\nk12: As with most civil wars, the internecine conflict left a bitter legacy, which continues to influence Irish politics to this day. The two largest political parties in the republic through most of its history were Fianna Fáil and Fine Gael, the descendants respectively of the anti-treaty and pro-treaty forces of 1922. Until the 1970s, almost all of Ireland's prominent politicians were veterans of the Civil War, a fact which poisoned the relationship between Ireland's two biggest parties. Examples of Civil War veterans include: Republicans Éamon de Valera, Frank Aiken, Todd Andrews, and Seán Lemass; and Free State supporters W. T. Cosgrave, Richard Mulcahy and Kevin O'Higgins. Moreover, many of these men's sons and daughters also became politicians, meaning that the personal wounds of the civil war were felt over three generations. In the 1930s, after Fianna Fáil took power for the first time, it looked possible for a while that the Civil War might break out again between the IRA and the pro-Free State Blueshirts. Fortunately, this crisis was averted, and by the 1950s violence was no longer prominent in politics in the Republic of Ireland. However, the breakaway IRA continued to exist. It was not until 1948 that the IRA renounced military attacks on the forces of the southern Irish state when it became the Republic of Ireland. After this point, the organisation dedicated itself primarily to the end of British rule in Northern Ireland. The IRA Army Council still makes claim to be the legitimate Provisional Government of the Irish Republic declared in 1918 and annulled by the Anglo-Irish Treaty of 1921.\nk13: When Matthias Corvinus died from a stroke on 6 April 1490, Frederick was able to regain the Austrian lands. However, he could not enforce the Habsburg succession to the Hungarian throne and in 1491 his son King Maximilian I signed the Peace of Pressburg with Vladislaus Jagiellon, who was elected Matthias' successor in Hungary. The treaty arranged for the return of Matthias' conquests, and the agreement that Maximilian would succeed Vladislaus should he produce no heir. This did not happen as Vladislaus' son Louis II was born in 1506, but the Habsburgs did exert significant pressure on the Jagiellonians with the 1515 First Congress of Vienna in which they arranged two royal weddings of Vladislaus' daughter Anne with Maximilian's grandson Ferdinand and of Maximilian's granddaughter Mary with Louis II. The double wedding celebrated at St. Stephen's Cathedral decisively advanced the Habsburg succession agenda. During his reign in Hungary, the new Polish king would go on to undo many of Matthias' efforts, unmaking the reformed system of taxation, the standing army, and the centralized authority of the monarch. Hungary's nobles would act in complicity with this, contributing to the weakening of the country until 1526, when Hungary was defeated by the Ottoman Empire in the Battle of Mohács, whereby King Louis II was killed. The Habsburg archduke Ferdinand of Austria by his marriage with Anne of Bohemia and Hungary claimed the succession, he was enfoffed with the Bohemian kingdom by his elder brother Emperor Charles V and also reached the consent of the Hungarian magnates. He was crowned king in Pressburg on 24 February 1527, laying the grounds for the transnational Habsburg Monarchy.\nk14: Kit sponsors BSR Housewares became the clubs first shirt English football sponsorship during the 1981–82 season. The clubs shirts have been sponsored for the majority of the time since then, although there was no shirt sponsor at the end of the 1993–94 season, after local solicitors Coucher & Shaw were closed down by the Law Society of England and Wales. Unusually for a Premier League club, Albion were again without a shirt sponsor for the start of the 2008–09 campaign, as negotiations with a new sponsor were still ongoing when the season began. The longest-running shirt sponsorship deal agreed by the club ran for seven seasons between 1997 and 2004 with the West Bromwich Building Society. Today the clubs principal sponsor is Ideal Boilers. Other sponsors have included T-Mobile (2004–08), Homeserve (2010–11), Bodog (2011–12), Zoopla (2012–14), QuickBooks (2014–15), Tlcbet (2015–16), K8 group (2016–2017), and Palm Eco-Town Development (2017–18).\nk15: During the early reign of the Yongle Emperor, the territorial princes were restored of their positions. However, they were relocated away from the frontiers, and gradually stripped of their military power. With the subsequent policies enforced by the Yongle Emperor, the emperor was successful in consolidating the power of the central government. In 1426, the Xuande Emperor managed to force all of the territorial princes to renounce their remaining personal army after suppressing the rebellion of Zhu Gaoxu. The Yongle Emperor began the preparation for relocating the imperial capital to Beiping in 1403, a process that lasted throughout his entire reign. The construction of the future Forbidden City along with the restructuring of the Grand Canal were constantly ongoing. In 1420, the reconstruction of Beiping City was completed, and the Ming Dynasty officially relocated the imperial capital to Beiping and renamed the city to Beijing. With the exception of Republic of China between 1928 and 1949, Beijing remains to be the fixed capital of China ever since.\nk16: On 15 December 1773, he was commissioned as Ensign in the 14th Regiment of Foot. On 28 March 1774, he joined his first regiment, moving to quarters in Dover on 13 May 1774. In March 1775, he left for America, where, on 25 August 1775, he was appointed Lieutenant in the 14th Regiment of Foot. By 28 November 1778, he had returned to St Georges, Hanover Square, London, where he married Anne Breynton ( 1756 - 15 August 1829), the daughter of the famous minister in Nova Scotia, Rev Dr John Breynton ( 1719-1799). In 1790, he bought Elmhurst Hall and various other properties in Staffordshire, while still maintaining a house in London. In 1794 he raised the Staffordshire Yeomanry (Queens Own Royal Regiment) and became its Major and subsequently Colonel. In 1797, he tried to sell off his Staffordshire estates. The following year 1798 he raised the Staffordshire Yeomanry Infantry. By 1800 he had moved to Lichfield and in 1803 raised the 2nd Staffordshire Militia, eventually becoming its Lieutenant-Colonel.",
+        "id_map": {
+          "k1": {
+            "object_id": "ck-01546dd81fbc4a369c0d6497c8881588",
+            "object_type": "chunk",
+            "name": "history_1125",
+            "definition": null,
+            "snippet": "Another factor in the revolt of 1381 was the conduct of the war with France. In 1337 Edward III of England had pressed his claims to the French throne, beginning a long-running conflict that became known as the Hundred Years' War. Edward had initial successes, but his campaigns were not decisive. Ch",
+            "source_title": "history_1125",
+            "source_file_name": "63bd3ca0ba0ea17f26b785e1.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-7386bb7886794fa88a7ebd94d20c876f",
+            "element_id": "el-src-7386bb7886794fa88a7ebd94d20c876f-0001",
+            "relevance": 0.6837202668190003,
+            "knowhow": null
+          },
+          "k2": {
+            "object_id": "ck-e121b2ecfaaa43f99c9abf185f1cf32d",
+            "object_type": "chunk",
+            "name": "history_4049",
+            "definition": null,
+            "snippet": "Sitcoms offered a romanticized view of middle class American life with The Adventures of Ozzie and Harriet (1952–1966), Father Knows Best (1954–1960), and American Broadcasting Companys The Donna Reed Show (1958–1966) exemplifying the genre. Emmy Award-winning comedy I Love Lucy (1951–1960) starred ",
+            "source_title": "history_4049",
+            "source_file_name": "8a58bbb3e31d976b286b14da.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-de332a079e1a4bf08908aa89145f0ae5",
+            "element_id": "el-src-de332a079e1a4bf08908aa89145f0ae5-0001",
+            "relevance": 0.16666666666666666,
+            "knowhow": null
+          },
+          "k3": {
+            "object_id": "ck-02a66440b0c149f8b873c7ea0f479257",
+            "object_type": "chunk",
+            "name": "nfl_227",
+            "definition": null,
+            "snippet": "In their Week 2 home-opener, the Vikings faced the Carolina Panthers in a low-scoring fight. The Vikings would draw first blood with a 26-yard field goal by kicker Ryan Longwell. In the second quarter, Carolina got a field goal with opposing kicker John Kasay. The Vikings would respond with another ",
+            "source_title": "nfl_227",
+            "source_file_name": "b31b89e357b6632b8734bcda.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-17a86e08082c4055a490169c068616ab",
+            "element_id": "el-src-17a86e08082c4055a490169c068616ab-0001",
+            "relevance": 0.14758625030517578,
+            "knowhow": null
+          },
+          "k4": {
+            "object_id": "ck-e63236d29ab943019d045979f5b995e8",
+            "object_type": "chunk",
+            "name": "history_1306",
+            "definition": null,
+            "snippet": "Russia accused Georgia of committing \"genocide\" in South Ossetia. Russian officials initially claimed that up to 2,000 ethnic Ossetian civilians of Tskhinvali were killed by Georgian forces; according to Russia, the reason for the military intervention in Georgia was this large number of casualties.",
+            "source_title": "history_1306",
+            "source_file_name": "a9472508cc3c58bffe4a3c0a.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-1a90b6f66cf44c3c81d088d8a20ae6a8",
+            "element_id": "el-src-1a90b6f66cf44c3c81d088d8a20ae6a8-0001",
+            "relevance": 0.16666666666666666,
+            "knowhow": null
+          },
+          "k5": {
+            "object_id": "ck-451fbb0f570b4a3e8a95e5f8cbb8ca0c",
+            "object_type": "chunk",
+            "name": "history_794",
+            "definition": null,
+            "snippet": "Succession is now regulated by laws passed by the National Diet. The current law excludes women from the succession. A change to this law had been considered until Princess Kiko gave birth to a son. Until the birth of Prince Hisahito, son of Prince Akishino, on September 6, 2006, there was a potenti",
+            "source_title": "history_794",
+            "source_file_name": "7f58ad62ca0b096c9669448b.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-a4d8abd1f4ae40f884b37961054340ea",
+            "element_id": "el-src-a4d8abd1f4ae40f884b37961054340ea-0001",
+            "relevance": 0.14402090311050414,
+            "knowhow": null
+          },
+          "k6": {
+            "object_id": "ck-a969a2ad64ea4aa89753875f2548052f",
+            "object_type": "chunk",
+            "name": "history_787",
+            "definition": null,
+            "snippet": "In literature, apart from Scott's Waverley novels, the best-known books with the Rebellion as a backdrop include Robert Louis Stevenson's novels Kidnapped and Catriona, the Jacobite trilogy by D.K. Broster and in modern times, Diana Gabaldon's Outlander novels. While not strictly related to the '45,",
+            "source_title": "history_787",
+            "source_file_name": "0b4e6d9f7a00c45b0c38d70c.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-8366e8760b8e4fe6a2d013b38823f851",
+            "element_id": "el-src-8366e8760b8e4fe6a2d013b38823f851-0001",
+            "relevance": 0.21667115688323973,
+            "knowhow": null
+          },
+          "k7": {
+            "object_id": "ck-4778025aef914c7d933450e071792220",
+            "object_type": "chunk",
+            "name": "history_1814",
+            "definition": null,
+            "snippet": "The first two Buick automobiles were made in 1899 and 1900 at the \"Buick Auto-Vim and Power Company\" by chief-engineer Walter Lorenzo Marr, but company owner David Dunbar Buick was reluctant to begin making automobiles, being satisfied with stationary and marine engine production, so Marr left Buick",
+            "source_title": "history_1814",
+            "source_file_name": "596ab4fbd92bae29ed9062f0.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-6172e6b6fa7d4679affd0415c1dc2c32",
+            "element_id": "el-src-6172e6b6fa7d4679affd0415c1dc2c32-0001",
+            "relevance": 0.1920475482940674,
+            "knowhow": null
+          },
+          "k8": {
+            "object_id": "ck-b6db1b00d9314b5f978101ee3f4082c4",
+            "object_type": "chunk",
+            "name": "history_2153",
+            "definition": null,
+            "snippet": "1% of those at school in the South-East gained no GCSE passes in 2010; Portsmouth was most with 2.5%, and Windsor and Maidenhead had the lowest with 0.2%. For school free school meals, the region has the lowest percentage in England with 7.2%; the highest percentage is Southampton with 17%, and the ",
+            "source_title": "history_2153",
+            "source_file_name": "e8376853a9bd67f1fc9436d9.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-e93304fe25184b57a291fc494d17d3d8",
+            "element_id": "el-src-e93304fe25184b57a291fc494d17d3d8-0001",
+            "relevance": 0.14132678508758545,
+            "knowhow": null
+          },
+          "k9": {
+            "object_id": "ck-6e760fc31ab846e5a78ae493ac31754e",
+            "object_type": "chunk",
+            "name": "history_3588",
+            "definition": null,
+            "snippet": "From 1989 to 1993, the Pacers would play at or near .500 and qualify for the playoffs, in 1989-90 NBA season, the Pacers parlayed a fast start into the teams third playoff appearance. But the Pacers were swept by the 1989-90 Detroit Pistons season, who would go on to win their second consecutive 199",
+            "source_title": "history_3588",
+            "source_file_name": "fa0b148d2d051c1f2add1fe7.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-8c2c4a377117441c880a68184743954c",
+            "element_id": "el-src-8c2c4a377117441c880a68184743954c-0001",
+            "relevance": 0.13276910781860352,
+            "knowhow": null
+          },
+          "k10": {
+            "object_id": "ck-c09f4d7634d2448f8b42509bebab8f5f",
+            "object_type": "chunk",
+            "name": "history_2234",
+            "definition": null,
+            "snippet": "In 1918, party membership was approximately 200,000. In the late 1920s under Stalin, the party engaged in an intensive recruitment campaign, the \"Lenin Levy\", resulting in new members referred to as the Lenin Enrolment, from both the working class and rural areas. This represented an attempt to \"pro",
+            "source_title": "history_2234",
+            "source_file_name": "ddf7b79595aada7e0365dab2.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-f5c8dbf5d925447e870baab292e12e3d",
+            "element_id": "el-src-f5c8dbf5d925447e870baab292e12e3d-0001",
+            "relevance": 0.13400975465774537,
+            "knowhow": null
+          },
+          "k11": {
+            "object_id": "ck-e9ebc1b883444ac2a2886165aa0124f9",
+            "object_type": "chunk",
+            "name": "history_2970",
+            "definition": null,
+            "snippet": "The Bishop of Rome, called the Pope, was important since the early days of Christianity because of the martyrdom of both the apostles Simon Peter and Paul of Tarsus there. The Bishops of Rome were also seen (and still are seen by Catholics) as the successors of Peter, who is considered the first Bis",
+            "source_title": "history_2970",
+            "source_file_name": "00867fb72d9e23af3585d7fe.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-8581acb257d845d9a65d54697064ef05",
+            "element_id": "el-src-8581acb257d845d9a65d54697064ef05-0001",
+            "relevance": 0.1447063684463501,
+            "knowhow": null
+          },
+          "k12": {
+            "object_id": "ck-2af9174a80db4105a18512314d471e85",
+            "object_type": "chunk",
+            "name": "history_733",
+            "definition": null,
+            "snippet": "As with most civil wars, the internecine conflict left a bitter legacy, which continues to influence Irish politics to this day. The two largest political parties in the republic through most of its history were Fianna Fáil and Fine Gael, the descendants respectively of the anti-treaty and pro-treat",
+            "source_title": "history_733",
+            "source_file_name": "7bb4314515704f81eeb7f85b.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-48e45735b32a42959abb1da8d934a0e7",
+            "element_id": "el-src-48e45735b32a42959abb1da8d934a0e7-0001",
+            "relevance": 0.1796622037887573,
+            "knowhow": null
+          },
+          "k13": {
+            "object_id": "ck-696d0cad554242059586779403d4bd16",
+            "object_type": "chunk",
+            "name": "history_175",
+            "definition": null,
+            "snippet": "When Matthias Corvinus died from a stroke on 6 April 1490, Frederick was able to regain the Austrian lands. However, he could not enforce the Habsburg succession to the Hungarian throne and in 1491 his son King Maximilian I signed the Peace of Pressburg with Vladislaus Jagiellon, who was elected Mat",
+            "source_title": "history_175",
+            "source_file_name": "de57895e0fcb82c0b1713277.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-0ee769275b614c9b82616fbe007efe4a",
+            "element_id": "el-src-0ee769275b614c9b82616fbe007efe4a-0001",
+            "relevance": 0.27659106254577637,
+            "knowhow": null
+          },
+          "k14": {
+            "object_id": "ck-7190679712de4a1b91a4d8d73e2ffd71",
+            "object_type": "chunk",
+            "name": "history_3992",
+            "definition": null,
+            "snippet": "Kit sponsors BSR Housewares became the clubs first shirt English football sponsorship during the 1981–82 season. The clubs shirts have been sponsored for the majority of the time since then, although there was no shirt sponsor at the end of the 1993–94 season, after local solicitors Coucher & Shaw w",
+            "source_title": "history_3992",
+            "source_file_name": "477dca664affec27ed964ffa.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-2f89bfa5b8ff4412b25aa7af7f7ab045",
+            "element_id": "el-src-2f89bfa5b8ff4412b25aa7af7f7ab045-0001",
+            "relevance": 0.12280881404876709,
+            "knowhow": null
+          },
+          "k15": {
+            "object_id": "ck-391986d74e2846b29ba571b930724eff",
+            "object_type": "chunk",
+            "name": "history_809",
+            "definition": null,
+            "snippet": "During the early reign of the Yongle Emperor, the territorial princes were restored of their positions. However, they were relocated away from the frontiers, and gradually stripped of their military power. With the subsequent policies enforced by the Yongle Emperor, the emperor was successful in con",
+            "source_title": "history_809",
+            "source_file_name": "df4435de81d914c17992f1de.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-1a696e30acb4473aa57cc76b055292ec",
+            "element_id": "el-src-1a696e30acb4473aa57cc76b055292ec-0001",
+            "relevance": 0.16749576330184937,
+            "knowhow": null
+          },
+          "k16": {
+            "object_id": "ck-414a369cf1ce48f29e17a256235555ea",
+            "object_type": "chunk",
+            "name": "history_3897",
+            "definition": null,
+            "snippet": "On 15 December 1773, he was commissioned as Ensign in the 14th Regiment of Foot. On 28 March 1774, he joined his first regiment, moving to quarters in Dover on 13 May 1774. In March 1775, he left for America, where, on 25 August 1775, he was appointed Lieutenant in the 14th Regiment of Foot. By 28 N",
+            "source_title": "history_3897",
+            "source_file_name": "406e189d98bf38f6b586a26c.md",
+            "location_label": "",
+            "tier": "personal",
+            "notebook_id": "",
+            "source_id": "src-af5423bc9e184737a4878c161f747417",
+            "element_id": "el-src-af5423bc9e184737a4878c161f747417-0001",
+            "relevance": 0.18915936946868894,
+            "knowhow": null
+          }
+        },
+        "ordered_handles": [
+          "k1",
+          "k2",
+          "k3",
+          "k4",
+          "k5",
+          "k6",
+          "k7",
+          "k8",
+          "k9",
+          "k10",
+          "k11",
+          "k12",
+          "k13",
+          "k14",
+          "k15",
+          "k16"
+        ],
+        "budget_chars": 30000
+      }
+    ],
+    "usage": {
+      "calls": [
+        {
+          "kind": "chat",
+          "model": "qwen-turbo",
+          "status": "ok",
+          "latency_ms": 764,
+          "usage": {
+            "prompt_tokens": 648,
+            "completion_tokens": 76,
+            "total_tokens": 724
+          }
+        },
+        {
+          "kind": "chat",
+          "model": "qwen-turbo",
+          "status": "ok",
+          "latency_ms": 710,
+          "usage": {
+            "prompt_tokens": 6415,
+            "completion_tokens": 23,
+            "total_tokens": 6438
+          }
+        }
+      ],
+      "coverage": "provider_logged_events",
+      "cost": null,
+      "call_count": 2,
+      "calls_with_usage": 2,
+      "prompt_tokens": 7063,
+      "completion_tokens": 99,
+      "total_tokens": 7162
+    },
+    "latency_seconds": 2.2934690679976484,
+    "context_block": "k1: Another factor in the revolt of 1381 was the conduct of the war with France. In 1337 Edward III of England had pressed his claims to the French throne, beginning a long-running conflict that became known as the Hundred Years' War. Edward had initial successes, but his campaigns were not decisive. Charles V of France became more active in the conflict after 1369, taking advantage of his country's greater economic strength to commence cross-Channel raids on England. By the 1370s, England's armies on the continent were under huge military and financial pressure; the garrisons in Calais and Brest alone, for example, were costing £36,000 a year to maintain, while military expeditions could consume £50,000 in only six months. Edward died in 1377, leaving the throne to his grandson, Richard II, then only ten years old.\nk2: Sitcoms offered a romanticized view of middle class American life with The Adventures of Ozzie and Harriet (1952–1966), Father Knows Best (1954–1960), and American Broadcasting Companys The Donna Reed Show (1958–1966) exemplifying the genre. Emmy Award-winning comedy I Love Lucy (1951–1960) starred husband and wife Desi Arnaz and Lucille Ball and enjoyed such popularity that some businesses closed early on Monday nights in order to allow employees to hurry home for the show. In The Life of Riley (1953–1958), blue collar Chester A. Riley (William Bendix) became the prototype for a long line of bumbling television patriarchs that included Fred Flintstone and Archie Bunker. The shows first incarnation for the DuMont Television Network lasted a season (1949–1950) and won an Emmy during the first Emmy Awards in 1949. The Honeymooners (1955–1956) followed bus driver Ralph Kramden (Jackie Gleason) and his sewer-working sidekick Ed Norton (Art Carney) while archetypal suburban life was limned in Leave It to Beaver (1957–1963), purportedly the first sitcom to be told from a childs point of view and the first to strike a blow for television realism by displaying a toilet in an early episode. Genre series were popular with Dragnet (series) (1952) starring Jack Webb representing police procedural drama, British television syndication series The Adventures of Robin Hood (TV series) (1955) starring Richard Greene representing historical drama, and Gunsmoke (1955) with James Arness and Amanda Blake representing the western. Mid-decade, Warner Bros. produced a group of five westerns with Maverick (TV series) starring James Garner and Cheyenne (1955 TV series) starring Clint Walker leading the group in popularity.\nk3: In their Week 2 home-opener, the Vikings faced the Carolina Panthers in a low-scoring fight. The Vikings would draw first blood with a 26-yard field goal by kicker Ryan Longwell. In the second quarter, Carolina got a field goal with opposing kicker John Kasay. The Vikings would respond with another Longwell field goal (a 22-yard FG), but they fell before halftime with opposing RB DeAngelo Williams getting a 3-yard run for the Panthers. The Vikings trailed a bit further in the third quarter, as Karney kicked a 26-yard field goal. The Vikings started their own comeback. In the fourth quarter, Longwell faked a field goal try and threw a 16-yard TD pass to FB Richard Owens to tie the game up going into overtime. In OT, Longwell booted the game-winning 19-yard field goal to give Minnesota the win. It was the first time in Vikings history that a coach started 2-0 in his first year.\nk4: Russia accused Georgia of committing \"genocide\" in South Ossetia. Russian officials initially claimed that up to 2,000 ethnic Ossetian civilians of Tskhinvali were killed by Georgian forces; according to Russia, the reason for the military intervention in Georgia was this large number of casualties. Public opinion among Ossetians was impacted by claims of high casualties; according to HRW, some Ossetian civilians said in interviews that they approved of burning and looting of Georgian villages because of the \"thousands of civilian casualties in South Ossetia\" reported by Russian television. In December 2008, the figures were revised down to a total of 162 South Ossetian casualties by the Investigative Committee of the Prosecutor's Office of the Russian Federation. Georgia and South Ossetia have filed complaints about alleged war crimes committed by the other side with international courts, including the International Criminal Court, the International Court of Justice, and the European Court of Human Rights. The war displaced a 192,000 people including both Ossetians and Georgians. Many were able to return to their homes after the war, but a year later around 30,000 ethnic Georgians remained displaced. As of May 2014, 20,272 persons remained displaced, with their return being blocked by de facto authorities.\nk5: Succession is now regulated by laws passed by the National Diet. The current law excludes women from the succession. A change to this law had been considered until Princess Kiko gave birth to a son. Until the birth of Prince Hisahito, son of Prince Akishino, on September 6, 2006, there was a potential succession problem, since Prince Akishino was the only male child to be born into the imperial family since 1965. Following the birth of Princess Aiko, there was public debate about amending the current Imperial Household Law to allow women to succeed to the throne. In January 2005, Prime Minister Junichiro Koizumi appointed a special panel composed of judges, university professors, and civil servants to study changes to the Imperial Household Law and to make recommendations to the government. The panel dealing with the succession issue recommended on October 25, 2005, amending the law to allow females of the male line of imperial descent to ascend the Japanese throne. On January 20, 2006, Prime Minister Junichiro Koizumi devoted part of his annual keynote speech to the controversy, pledging to submit a bill allowing women to ascend the throne to ensure that the succession continues in the future in a stable manner. Shortly after the announcement that Princess Kiko was pregnant with her third child, Koizumi suspended such plans. Her son, Prince Hisahito, is the third in line to the throne under the current law of succession. On January 3, 2007, Prime Minister Shinzō Abe announced that he would drop the proposal to alter the Imperial Household Law.\nk6: In literature, apart from Scott's Waverley novels, the best-known books with the Rebellion as a backdrop include Robert Louis Stevenson's novels Kidnapped and Catriona, the Jacobite trilogy by D.K. Broster and in modern times, Diana Gabaldon's Outlander novels. While not strictly related to the '45, the British author Joan Aiken wrote a series of children's books set in an alternative 18th-century Britain where James II was never deposed and his son James III battles constant pro-Hanoverian conspiracies. Significant screen versions include 1948's Bonnie Prince Charlie starring David Niven who summarised it as 'one of those huge, florid extravaganzas that reek of disaster from the start' and Culloden, Peter Watkins' 1964 docu-drama. In addition to the current Outlander TV series, the aftermath of the Rebellion is the theme of the now lost 1966 Dr Who series The Highlanders. Musical references to the '45 are numerous, both in bagpipe music and in song; the most famous is the Skye Boat Song but there are many others, one collection being the 1960 album Songs of Two Rebellions: The Jacobite Wars of 1715 and 1745 in Scotland by Ewan MacColl and Peggy Seeger.\nk7: The first two Buick automobiles were made in 1899 and 1900 at the \"Buick Auto-Vim and Power Company\" by chief-engineer Walter Lorenzo Marr, but company owner David Dunbar Buick was reluctant to begin making automobiles, being satisfied with stationary and marine engine production, so Marr left Buick in 1901 to found Marr (automobile) under his own name. His replacement was Eugene Richard, who applied for a patent in 1902 for Marrs valve-in-head (Overhead valve engine) engine, which patent, number 771,095, was awarded to Richard in the name of Buick in 1904. In 1903, the third Buick automobile was made, this time by Richard, but in 1904 Buick, whose company was now called \"Buick Motor Company,\" moved to Flint, Michigan, and Richard stayed behind. Marr was rehired in Flint as chief engineer, to begin making automobiles in production. That year, 37 Buick automobiles were made, production increasing to 750 in 1905, 1,400 in 1906, 4,641 in 1907, and 8,800 in 1908, taking the number one spot away from close competitors Oldsmobile, Ford Motor Company, and Maxwell automobile.\nk8: 1% of those at school in the South-East gained no GCSE passes in 2010; Portsmouth was most with 2.5%, and Windsor and Maidenhead had the lowest with 0.2%. For school free school meals, the region has the lowest percentage in England with 7.2%; the highest percentage is Southampton with 17%, and the lowest is Wokingham with 3.5% (the second lowest in England after Rutland); Buckinghamshire is 4.3%, then Bracknell Forest and Surrey are 4.9%. For truancy, the highest is South Bucks at 7.0, then Canterbury 7.0, Portsmouth 6.9, Thanet 6.9, Southampton 6.4, and Rushmoor 6.1. The lowest truancy percentages are for Tandridge 2.5, Windsor & Maidenhead 2.5, and Slough 2.5.\nk9: From 1989 to 1993, the Pacers would play at or near .500 and qualify for the playoffs, in 1989-90 NBA season, the Pacers parlayed a fast start into the teams third playoff appearance. But the Pacers were swept by the 1989-90 Detroit Pistons season, who would go on to win their second consecutive 1990 NBA Finals. Reggie Miller became the first Pacer to play in the 1990 NBA All-Star Game since 1976 on the strength of his 24.6 points-per-game average. Despite four straight first round exits, this period was highlighted by a first round series with the Boston Celtics in 1990-91 NBA season that went to Game 5. The next season, the Pacers returned to the playoffs in 1992 NBA Playoffs and met the 1991-92 Boston Celtics season for the second year in a row. But this time, the Celtics left no doubt who was the better team, as they swept the Pacers in three straight games. Chuck Person and point guard Micheal Williams were traded to the Minnesota Timberwolves in the off-season, and the Pacers got Pooh Richardson and Sam Mitchell (basketball) in return. For the 1992-93 NBA season, Detlef Schrempf moved from sixth man to the starter at small forward and was elected to his first All-Star game. Miller, meanwhile, became the Pacers all-time NBA era leading scorer during this season (4th overall). The Pacers returned to the 1993 NBA Playoffs with a 41-41 record, but lost to the 1992-93 New York Knicks season in the first round, three games to one.\nk10: In 1918, party membership was approximately 200,000. In the late 1920s under Stalin, the party engaged in an intensive recruitment campaign, the \"Lenin Levy\", resulting in new members referred to as the Lenin Enrolment, from both the working class and rural areas. This represented an attempt to \"proletarianize\" the party and an attempt by Stalin to strengthen his base by outnumbering the Old Bolsheviks and reducing their influence in the Party. In 1925, the party had 1,025,000 members in a Soviet population of 147 million. In 1927, membership had risen to 1,200,000. During the collectivization campaign and industrialization campaigns of the first five-year plan from 1929 to 1933, party membership grew rapidly to approximately 3.5 million members. However, party leaders suspected that the mass intake of new members had allowed \"social-alien elements\" to penetrate the partys ranks and document verifications of membership ensued in 1933 and 1935, removing supposedly unreliable members. Meanwhile, the party closed its ranks to new members from 1933 to November 1936. Even after the reopening of party recruiting, membership fell to 1.9 million by 1939. Nicholas DeWitt gives 2.307 million members in 1939, including candidate members, compared with 1.535 million in 1929 and 6.3 million in 1947. In 1986, the CPSU had over 19 million membersapproximately 10% of the Soviet Unions adult population. Over 44% of party members were classified as industrial workers and 12% as collective farmers. The CPSU had party organizations in 14 of the Soviet Unions 15 republics. The Russian Soviet Federative Socialist Republic itself had no separate Communist Party until 1990 because the CPSU controlled affairs there directly.\nk11: The Bishop of Rome, called the Pope, was important since the early days of Christianity because of the martyrdom of both the apostles Simon Peter and Paul of Tarsus there. The Bishops of Rome were also seen (and still are seen by Catholics) as the successors of Peter, who is considered the first Bishop of Rome. The city thus became of increasing importance as the centre of the Catholic Church. After the Decline of the Roman Empire in 476 AD, Rome was first under the control of Odoacer and then became part of the Ostrogothic Kingdom before returning to Byzantine Empire control after the Gothic War (535-554), which devastated the city. Its population declined from more than a million in 210 AD to 500,000 in 273 to 35,000 after the Gothic War (535-554), reducing the sprawling city to groups of inhabited buildings interspersed among large areas of ruins, vegetation, vineyards and market gardens. It is generally thought the population of the city until 300 A.D. was 1 million (estimates range from 2 million to 750,000) declining to 750-800,000 in 400 A.D., 450-500,000 in 450 A.D. and down to 80-100,000 in 500 A.D. (though it may have been twice this), Rome in Late Antiquity, Bernard Lancon, 2001, pp. 14, 115-119; Rome Profile of a City, Richard Krautheimer, 2000, pp. 4, 65.\nk12: As with most civil wars, the internecine conflict left a bitter legacy, which continues to influence Irish politics to this day. The two largest political parties in the republic through most of its history were Fianna Fáil and Fine Gael, the descendants respectively of the anti-treaty and pro-treaty forces of 1922. Until the 1970s, almost all of Ireland's prominent politicians were veterans of the Civil War, a fact which poisoned the relationship between Ireland's two biggest parties. Examples of Civil War veterans include: Republicans Éamon de Valera, Frank Aiken, Todd Andrews, and Seán Lemass; and Free State supporters W. T. Cosgrave, Richard Mulcahy and Kevin O'Higgins. Moreover, many of these men's sons and daughters also became politicians, meaning that the personal wounds of the civil war were felt over three generations. In the 1930s, after Fianna Fáil took power for the first time, it looked possible for a while that the Civil War might break out again between the IRA and the pro-Free State Blueshirts. Fortunately, this crisis was averted, and by the 1950s violence was no longer prominent in politics in the Republic of Ireland. However, the breakaway IRA continued to exist. It was not until 1948 that the IRA renounced military attacks on the forces of the southern Irish state when it became the Republic of Ireland. After this point, the organisation dedicated itself primarily to the end of British rule in Northern Ireland. The IRA Army Council still makes claim to be the legitimate Provisional Government of the Irish Republic declared in 1918 and annulled by the Anglo-Irish Treaty of 1921.\nk13: When Matthias Corvinus died from a stroke on 6 April 1490, Frederick was able to regain the Austrian lands. However, he could not enforce the Habsburg succession to the Hungarian throne and in 1491 his son King Maximilian I signed the Peace of Pressburg with Vladislaus Jagiellon, who was elected Matthias' successor in Hungary. The treaty arranged for the return of Matthias' conquests, and the agreement that Maximilian would succeed Vladislaus should he produce no heir. This did not happen as Vladislaus' son Louis II was born in 1506, but the Habsburgs did exert significant pressure on the Jagiellonians with the 1515 First Congress of Vienna in which they arranged two royal weddings of Vladislaus' daughter Anne with Maximilian's grandson Ferdinand and of Maximilian's granddaughter Mary with Louis II. The double wedding celebrated at St. Stephen's Cathedral decisively advanced the Habsburg succession agenda. During his reign in Hungary, the new Polish king would go on to undo many of Matthias' efforts, unmaking the reformed system of taxation, the standing army, and the centralized authority of the monarch. Hungary's nobles would act in complicity with this, contributing to the weakening of the country until 1526, when Hungary was defeated by the Ottoman Empire in the Battle of Mohács, whereby King Louis II was killed. The Habsburg archduke Ferdinand of Austria by his marriage with Anne of Bohemia and Hungary claimed the succession, he was enfoffed with the Bohemian kingdom by his elder brother Emperor Charles V and also reached the consent of the Hungarian magnates. He was crowned king in Pressburg on 24 February 1527, laying the grounds for the transnational Habsburg Monarchy.\nk14: Kit sponsors BSR Housewares became the clubs first shirt English football sponsorship during the 1981–82 season. The clubs shirts have been sponsored for the majority of the time since then, although there was no shirt sponsor at the end of the 1993–94 season, after local solicitors Coucher & Shaw were closed down by the Law Society of England and Wales. Unusually for a Premier League club, Albion were again without a shirt sponsor for the start of the 2008–09 campaign, as negotiations with a new sponsor were still ongoing when the season began. The longest-running shirt sponsorship deal agreed by the club ran for seven seasons between 1997 and 2004 with the West Bromwich Building Society. Today the clubs principal sponsor is Ideal Boilers. Other sponsors have included T-Mobile (2004–08), Homeserve (2010–11), Bodog (2011–12), Zoopla (2012–14), QuickBooks (2014–15), Tlcbet (2015–16), K8 group (2016–2017), and Palm Eco-Town Development (2017–18).\nk15: During the early reign of the Yongle Emperor, the territorial princes were restored of their positions. However, they were relocated away from the frontiers, and gradually stripped of their military power. With the subsequent policies enforced by the Yongle Emperor, the emperor was successful in consolidating the power of the central government. In 1426, the Xuande Emperor managed to force all of the territorial princes to renounce their remaining personal army after suppressing the rebellion of Zhu Gaoxu. The Yongle Emperor began the preparation for relocating the imperial capital to Beiping in 1403, a process that lasted throughout his entire reign. The construction of the future Forbidden City along with the restructuring of the Grand Canal were constantly ongoing. In 1420, the reconstruction of Beiping City was completed, and the Ming Dynasty officially relocated the imperial capital to Beiping and renamed the city to Beijing. With the exception of Republic of China between 1928 and 1949, Beijing remains to be the fixed capital of China ever since.\nk16: On 15 December 1773, he was commissioned as Ensign in the 14th Regiment of Foot. On 28 March 1774, he joined his first regiment, moving to quarters in Dover on 13 May 1774. In March 1775, he left for America, where, on 25 August 1775, he was appointed Lieutenant in the 14th Regiment of Foot. By 28 November 1778, he had returned to St Georges, Hanover Square, London, where he married Anne Breynton ( 1756 - 15 August 1829), the daughter of the famous minister in Nova Scotia, Rev Dr John Breynton ( 1719-1799). In 1790, he bought Elmhurst Hall and various other properties in Staffordshire, while still maintaining a house in London. In 1794 he raised the Staffordshire Yeomanry (Queens Own Royal Regiment) and became its Major and subsequently Colonel. In 1797, he tried to sell off his Staffordshire estates. The following year 1798 he raised the Staffordshire Yeomanry Infantry. By 1800 he had moved to Lichfield and in 1803 raised the 2nd Staffordshire Militia, eventually becoming its Lieutenant-Colonel.",
+    "retrieval_context": [
+      "k1: Another factor in the revolt of 1381 was the conduct of the war with France. In 1337 Edward III of England had pressed his claims to the French throne, beginning a long-running conflict that became known as the Hundred Years' War. Edward had initial successes, but his campaigns were not decisive. Charles V of France became more active in the conflict after 1369, taking advantage of his country's greater economic strength to commence cross-Channel raids on England. By the 1370s, England's armies on the continent were under huge military and financial pressure; the garrisons in Calais and Brest alone, for example, were costing £36,000 a year to maintain, while military expeditions could consume £50,000 in only six months. Edward died in 1377, leaving the throne to his grandson, Richard II, then only ten years old.",
+      "k2: Sitcoms offered a romanticized view of middle class American life with The Adventures of Ozzie and Harriet (1952–1966), Father Knows Best (1954–1960), and American Broadcasting Companys The Donna Reed Show (1958–1966) exemplifying the genre. Emmy Award-winning comedy I Love Lucy (1951–1960) starred husband and wife Desi Arnaz and Lucille Ball and enjoyed such popularity that some businesses closed early on Monday nights in order to allow employees to hurry home for the show. In The Life of Riley (1953–1958), blue collar Chester A. Riley (William Bendix) became the prototype for a long line of bumbling television patriarchs that included Fred Flintstone and Archie Bunker. The shows first incarnation for the DuMont Television Network lasted a season (1949–1950) and won an Emmy during the first Emmy Awards in 1949. The Honeymooners (1955–1956) followed bus driver Ralph Kramden (Jackie Gleason) and his sewer-working sidekick Ed Norton (Art Carney) while archetypal suburban life was limned in Leave It to Beaver (1957–1963), purportedly the first sitcom to be told from a childs point of view and the first to strike a blow for television realism by displaying a toilet in an early episode. Genre series were popular with Dragnet (series) (1952) starring Jack Webb representing police procedural drama, British television syndication series The Adventures of Robin Hood (TV series) (1955) starring Richard Greene representing historical drama, and Gunsmoke (1955) with James Arness and Amanda Blake representing the western. Mid-decade, Warner Bros. produced a group of five westerns with Maverick (TV series) starring James Garner and Cheyenne (1955 TV series) starring Clint Walker leading the group in popularity.",
+      "k3: In their Week 2 home-opener, the Vikings faced the Carolina Panthers in a low-scoring fight. The Vikings would draw first blood with a 26-yard field goal by kicker Ryan Longwell. In the second quarter, Carolina got a field goal with opposing kicker John Kasay. The Vikings would respond with another Longwell field goal (a 22-yard FG), but they fell before halftime with opposing RB DeAngelo Williams getting a 3-yard run for the Panthers. The Vikings trailed a bit further in the third quarter, as Karney kicked a 26-yard field goal. The Vikings started their own comeback. In the fourth quarter, Longwell faked a field goal try and threw a 16-yard TD pass to FB Richard Owens to tie the game up going into overtime. In OT, Longwell booted the game-winning 19-yard field goal to give Minnesota the win. It was the first time in Vikings history that a coach started 2-0 in his first year.",
+      "k4: Russia accused Georgia of committing \"genocide\" in South Ossetia. Russian officials initially claimed that up to 2,000 ethnic Ossetian civilians of Tskhinvali were killed by Georgian forces; according to Russia, the reason for the military intervention in Georgia was this large number of casualties. Public opinion among Ossetians was impacted by claims of high casualties; according to HRW, some Ossetian civilians said in interviews that they approved of burning and looting of Georgian villages because of the \"thousands of civilian casualties in South Ossetia\" reported by Russian television. In December 2008, the figures were revised down to a total of 162 South Ossetian casualties by the Investigative Committee of the Prosecutor's Office of the Russian Federation. Georgia and South Ossetia have filed complaints about alleged war crimes committed by the other side with international courts, including the International Criminal Court, the International Court of Justice, and the European Court of Human Rights. The war displaced a 192,000 people including both Ossetians and Georgians. Many were able to return to their homes after the war, but a year later around 30,000 ethnic Georgians remained displaced. As of May 2014, 20,272 persons remained displaced, with their return being blocked by de facto authorities.",
+      "k5: Succession is now regulated by laws passed by the National Diet. The current law excludes women from the succession. A change to this law had been considered until Princess Kiko gave birth to a son. Until the birth of Prince Hisahito, son of Prince Akishino, on September 6, 2006, there was a potential succession problem, since Prince Akishino was the only male child to be born into the imperial family since 1965. Following the birth of Princess Aiko, there was public debate about amending the current Imperial Household Law to allow women to succeed to the throne. In January 2005, Prime Minister Junichiro Koizumi appointed a special panel composed of judges, university professors, and civil servants to study changes to the Imperial Household Law and to make recommendations to the government. The panel dealing with the succession issue recommended on October 25, 2005, amending the law to allow females of the male line of imperial descent to ascend the Japanese throne. On January 20, 2006, Prime Minister Junichiro Koizumi devoted part of his annual keynote speech to the controversy, pledging to submit a bill allowing women to ascend the throne to ensure that the succession continues in the future in a stable manner. Shortly after the announcement that Princess Kiko was pregnant with her third child, Koizumi suspended such plans. Her son, Prince Hisahito, is the third in line to the throne under the current law of succession. On January 3, 2007, Prime Minister Shinzō Abe announced that he would drop the proposal to alter the Imperial Household Law.",
+      "k6: In literature, apart from Scott's Waverley novels, the best-known books with the Rebellion as a backdrop include Robert Louis Stevenson's novels Kidnapped and Catriona, the Jacobite trilogy by D.K. Broster and in modern times, Diana Gabaldon's Outlander novels. While not strictly related to the '45, the British author Joan Aiken wrote a series of children's books set in an alternative 18th-century Britain where James II was never deposed and his son James III battles constant pro-Hanoverian conspiracies. Significant screen versions include 1948's Bonnie Prince Charlie starring David Niven who summarised it as 'one of those huge, florid extravaganzas that reek of disaster from the start' and Culloden, Peter Watkins' 1964 docu-drama. In addition to the current Outlander TV series, the aftermath of the Rebellion is the theme of the now lost 1966 Dr Who series The Highlanders. Musical references to the '45 are numerous, both in bagpipe music and in song; the most famous is the Skye Boat Song but there are many others, one collection being the 1960 album Songs of Two Rebellions: The Jacobite Wars of 1715 and 1745 in Scotland by Ewan MacColl and Peggy Seeger.",
+      "k7: The first two Buick automobiles were made in 1899 and 1900 at the \"Buick Auto-Vim and Power Company\" by chief-engineer Walter Lorenzo Marr, but company owner David Dunbar Buick was reluctant to begin making automobiles, being satisfied with stationary and marine engine production, so Marr left Buick in 1901 to found Marr (automobile) under his own name. His replacement was Eugene Richard, who applied for a patent in 1902 for Marrs valve-in-head (Overhead valve engine) engine, which patent, number 771,095, was awarded to Richard in the name of Buick in 1904. In 1903, the third Buick automobile was made, this time by Richard, but in 1904 Buick, whose company was now called \"Buick Motor Company,\" moved to Flint, Michigan, and Richard stayed behind. Marr was rehired in Flint as chief engineer, to begin making automobiles in production. That year, 37 Buick automobiles were made, production increasing to 750 in 1905, 1,400 in 1906, 4,641 in 1907, and 8,800 in 1908, taking the number one spot away from close competitors Oldsmobile, Ford Motor Company, and Maxwell automobile.",
+      "k8: 1% of those at school in the South-East gained no GCSE passes in 2010; Portsmouth was most with 2.5%, and Windsor and Maidenhead had the lowest with 0.2%. For school free school meals, the region has the lowest percentage in England with 7.2%; the highest percentage is Southampton with 17%, and the lowest is Wokingham with 3.5% (the second lowest in England after Rutland); Buckinghamshire is 4.3%, then Bracknell Forest and Surrey are 4.9%. For truancy, the highest is South Bucks at 7.0, then Canterbury 7.0, Portsmouth 6.9, Thanet 6.9, Southampton 6.4, and Rushmoor 6.1. The lowest truancy percentages are for Tandridge 2.5, Windsor & Maidenhead 2.5, and Slough 2.5.",
+      "k9: From 1989 to 1993, the Pacers would play at or near .500 and qualify for the playoffs, in 1989-90 NBA season, the Pacers parlayed a fast start into the teams third playoff appearance. But the Pacers were swept by the 1989-90 Detroit Pistons season, who would go on to win their second consecutive 1990 NBA Finals. Reggie Miller became the first Pacer to play in the 1990 NBA All-Star Game since 1976 on the strength of his 24.6 points-per-game average. Despite four straight first round exits, this period was highlighted by a first round series with the Boston Celtics in 1990-91 NBA season that went to Game 5. The next season, the Pacers returned to the playoffs in 1992 NBA Playoffs and met the 1991-92 Boston Celtics season for the second year in a row. But this time, the Celtics left no doubt who was the better team, as they swept the Pacers in three straight games. Chuck Person and point guard Micheal Williams were traded to the Minnesota Timberwolves in the off-season, and the Pacers got Pooh Richardson and Sam Mitchell (basketball) in return. For the 1992-93 NBA season, Detlef Schrempf moved from sixth man to the starter at small forward and was elected to his first All-Star game. Miller, meanwhile, became the Pacers all-time NBA era leading scorer during this season (4th overall). The Pacers returned to the 1993 NBA Playoffs with a 41-41 record, but lost to the 1992-93 New York Knicks season in the first round, three games to one.",
+      "k10: In 1918, party membership was approximately 200,000. In the late 1920s under Stalin, the party engaged in an intensive recruitment campaign, the \"Lenin Levy\", resulting in new members referred to as the Lenin Enrolment, from both the working class and rural areas. This represented an attempt to \"proletarianize\" the party and an attempt by Stalin to strengthen his base by outnumbering the Old Bolsheviks and reducing their influence in the Party. In 1925, the party had 1,025,000 members in a Soviet population of 147 million. In 1927, membership had risen to 1,200,000. During the collectivization campaign and industrialization campaigns of the first five-year plan from 1929 to 1933, party membership grew rapidly to approximately 3.5 million members. However, party leaders suspected that the mass intake of new members had allowed \"social-alien elements\" to penetrate the partys ranks and document verifications of membership ensued in 1933 and 1935, removing supposedly unreliable members. Meanwhile, the party closed its ranks to new members from 1933 to November 1936. Even after the reopening of party recruiting, membership fell to 1.9 million by 1939. Nicholas DeWitt gives 2.307 million members in 1939, including candidate members, compared with 1.535 million in 1929 and 6.3 million in 1947. In 1986, the CPSU had over 19 million membersapproximately 10% of the Soviet Unions adult population. Over 44% of party members were classified as industrial workers and 12% as collective farmers. The CPSU had party organizations in 14 of the Soviet Unions 15 republics. The Russian Soviet Federative Socialist Republic itself had no separate Communist Party until 1990 because the CPSU controlled affairs there directly.",
+      "k11: The Bishop of Rome, called the Pope, was important since the early days of Christianity because of the martyrdom of both the apostles Simon Peter and Paul of Tarsus there. The Bishops of Rome were also seen (and still are seen by Catholics) as the successors of Peter, who is considered the first Bishop of Rome. The city thus became of increasing importance as the centre of the Catholic Church. After the Decline of the Roman Empire in 476 AD, Rome was first under the control of Odoacer and then became part of the Ostrogothic Kingdom before returning to Byzantine Empire control after the Gothic War (535-554), which devastated the city. Its population declined from more than a million in 210 AD to 500,000 in 273 to 35,000 after the Gothic War (535-554), reducing the sprawling city to groups of inhabited buildings interspersed among large areas of ruins, vegetation, vineyards and market gardens. It is generally thought the population of the city until 300 A.D. was 1 million (estimates range from 2 million to 750,000) declining to 750-800,000 in 400 A.D., 450-500,000 in 450 A.D. and down to 80-100,000 in 500 A.D. (though it may have been twice this), Rome in Late Antiquity, Bernard Lancon, 2001, pp. 14, 115-119; Rome Profile of a City, Richard Krautheimer, 2000, pp. 4, 65.",
+      "k12: As with most civil wars, the internecine conflict left a bitter legacy, which continues to influence Irish politics to this day. The two largest political parties in the republic through most of its history were Fianna Fáil and Fine Gael, the descendants respectively of the anti-treaty and pro-treaty forces of 1922. Until the 1970s, almost all of Ireland's prominent politicians were veterans of the Civil War, a fact which poisoned the relationship between Ireland's two biggest parties. Examples of Civil War veterans include: Republicans Éamon de Valera, Frank Aiken, Todd Andrews, and Seán Lemass; and Free State supporters W. T. Cosgrave, Richard Mulcahy and Kevin O'Higgins. Moreover, many of these men's sons and daughters also became politicians, meaning that the personal wounds of the civil war were felt over three generations. In the 1930s, after Fianna Fáil took power for the first time, it looked possible for a while that the Civil War might break out again between the IRA and the pro-Free State Blueshirts. Fortunately, this crisis was averted, and by the 1950s violence was no longer prominent in politics in the Republic of Ireland. However, the breakaway IRA continued to exist. It was not until 1948 that the IRA renounced military attacks on the forces of the southern Irish state when it became the Republic of Ireland. After this point, the organisation dedicated itself primarily to the end of British rule in Northern Ireland. The IRA Army Council still makes claim to be the legitimate Provisional Government of the Irish Republic declared in 1918 and annulled by the Anglo-Irish Treaty of 1921.",
+      "k13: When Matthias Corvinus died from a stroke on 6 April 1490, Frederick was able to regain the Austrian lands. However, he could not enforce the Habsburg succession to the Hungarian throne and in 1491 his son King Maximilian I signed the Peace of Pressburg with Vladislaus Jagiellon, who was elected Matthias' successor in Hungary. The treaty arranged for the return of Matthias' conquests, and the agreement that Maximilian would succeed Vladislaus should he produce no heir. This did not happen as Vladislaus' son Louis II was born in 1506, but the Habsburgs did exert significant pressure on the Jagiellonians with the 1515 First Congress of Vienna in which they arranged two royal weddings of Vladislaus' daughter Anne with Maximilian's grandson Ferdinand and of Maximilian's granddaughter Mary with Louis II. The double wedding celebrated at St. Stephen's Cathedral decisively advanced the Habsburg succession agenda. During his reign in Hungary, the new Polish king would go on to undo many of Matthias' efforts, unmaking the reformed system of taxation, the standing army, and the centralized authority of the monarch. Hungary's nobles would act in complicity with this, contributing to the weakening of the country until 1526, when Hungary was defeated by the Ottoman Empire in the Battle of Mohács, whereby King Louis II was killed. The Habsburg archduke Ferdinand of Austria by his marriage with Anne of Bohemia and Hungary claimed the succession, he was enfoffed with the Bohemian kingdom by his elder brother Emperor Charles V and also reached the consent of the Hungarian magnates. He was crowned king in Pressburg on 24 February 1527, laying the grounds for the transnational Habsburg Monarchy.",
+      "k14: Kit sponsors BSR Housewares became the clubs first shirt English football sponsorship during the 1981–82 season. The clubs shirts have been sponsored for the majority of the time since then, although there was no shirt sponsor at the end of the 1993–94 season, after local solicitors Coucher & Shaw were closed down by the Law Society of England and Wales. Unusually for a Premier League club, Albion were again without a shirt sponsor for the start of the 2008–09 campaign, as negotiations with a new sponsor were still ongoing when the season began. The longest-running shirt sponsorship deal agreed by the club ran for seven seasons between 1997 and 2004 with the West Bromwich Building Society. Today the clubs principal sponsor is Ideal Boilers. Other sponsors have included T-Mobile (2004–08), Homeserve (2010–11), Bodog (2011–12), Zoopla (2012–14), QuickBooks (2014–15), Tlcbet (2015–16), K8 group (2016–2017), and Palm Eco-Town Development (2017–18).",
+      "k15: During the early reign of the Yongle Emperor, the territorial princes were restored of their positions. However, they were relocated away from the frontiers, and gradually stripped of their military power. With the subsequent policies enforced by the Yongle Emperor, the emperor was successful in consolidating the power of the central government. In 1426, the Xuande Emperor managed to force all of the territorial princes to renounce their remaining personal army after suppressing the rebellion of Zhu Gaoxu. The Yongle Emperor began the preparation for relocating the imperial capital to Beiping in 1403, a process that lasted throughout his entire reign. The construction of the future Forbidden City along with the restructuring of the Grand Canal were constantly ongoing. In 1420, the reconstruction of Beiping City was completed, and the Ming Dynasty officially relocated the imperial capital to Beiping and renamed the city to Beijing. With the exception of Republic of China between 1928 and 1949, Beijing remains to be the fixed capital of China ever since.",
+      "k16: On 15 December 1773, he was commissioned as Ensign in the 14th Regiment of Foot. On 28 March 1774, he joined his first regiment, moving to quarters in Dover on 13 May 1774. In March 1775, he left for America, where, on 25 August 1775, he was appointed Lieutenant in the 14th Regiment of Foot. By 28 November 1778, he had returned to St Georges, Hanover Square, London, where he married Anne Breynton ( 1756 - 15 August 1829), the daughter of the famous minister in Nova Scotia, Rev Dr John Breynton ( 1719-1799). In 1790, he bought Elmhurst Hall and various other properties in Staffordshire, while still maintaining a house in London. In 1794 he raised the Staffordshire Yeomanry (Queens Own Royal Regiment) and became its Major and subsequently Colonel. In 1797, he tried to sell off his Staffordshire estates. The following year 1798 he raised the Staffordshire Yeomanry Infantry. By 1800 he had moved to Lichfield and in 1803 raised the 2nd Staffordshire Militia, eventually becoming its Lieutenant-Colonel."
+    ],
+    "retrieved_ids": [
+      "ck-01546dd81fbc4a369c0d6497c8881588",
+      "ck-e121b2ecfaaa43f99c9abf185f1cf32d",
+      "ck-02a66440b0c149f8b873c7ea0f479257",
+      "ck-e63236d29ab943019d045979f5b995e8",
+      "ck-451fbb0f570b4a3e8a95e5f8cbb8ca0c",
+      "ck-a969a2ad64ea4aa89753875f2548052f",
+      "ck-4778025aef914c7d933450e071792220",
+      "ck-b6db1b00d9314b5f978101ee3f4082c4",
+      "ck-6e760fc31ab846e5a78ae493ac31754e",
+      "ck-c09f4d7634d2448f8b42509bebab8f5f",
+      "ck-e9ebc1b883444ac2a2886165aa0124f9",
+      "ck-2af9174a80db4105a18512314d471e85",
+      "ck-696d0cad554242059586779403d4bd16",
+      "ck-7190679712de4a1b91a4d8d73e2ffd71",
+      "ck-391986d74e2846b29ba571b930724eff",
+      "ck-414a369cf1ce48f29e17a256235555ea"
+    ],
+    "source_ids": [
+      "src-7386bb7886794fa88a7ebd94d20c876f",
+      "src-de332a079e1a4bf08908aa89145f0ae5",
+      "src-17a86e08082c4055a490169c068616ab",
+      "src-1a90b6f66cf44c3c81d088d8a20ae6a8",
+      "src-a4d8abd1f4ae40f884b37961054340ea",
+      "src-8366e8760b8e4fe6a2d013b38823f851",
+      "src-6172e6b6fa7d4679affd0415c1dc2c32",
+      "src-e93304fe25184b57a291fc494d17d3d8",
+      "src-8c2c4a377117441c880a68184743954c",
+      "src-f5c8dbf5d925447e870baab292e12e3d",
+      "src-8581acb257d845d9a65d54697064ef05",
+      "src-48e45735b32a42959abb1da8d934a0e7",
+      "src-0ee769275b614c9b82616fbe007efe4a",
+      "src-2f89bfa5b8ff4412b25aa7af7f7ab045",
+      "src-1a696e30acb4473aa57cc76b055292ec",
+      "src-af5423bc9e184737a4878c161f747417"
+    ],
+    "handles": [
+      "k1",
+      "k2",
+      "k3",
+      "k4",
+      "k5",
+      "k6",
+      "k7",
+      "k8",
+      "k9",
+      "k10",
+      "k11",
+      "k12",
+      "k13",
+      "k14",
+      "k15",
+      "k16"
+    ],
+    "context_supported": true,
+    "context_unavailable_reason": null,
+    "retrieved_document_ids": [
+      "drop-history_1125",
+      "drop-history_4049",
+      "drop-nfl_227",
+      "drop-history_1306",
+      "drop-history_794",
+      "drop-history_787",
+      "drop-history_1814",
+      "drop-history_2153",
+      "drop-history_3588",
+      "drop-history_2234",
+      "drop-history_2970",
+      "drop-history_733",
+      "drop-history_175",
+      "drop-history_3992",
+      "drop-history_809",
+      "drop-history_3897"
+    ],
+    "deterministic": {
+      "evidence_hit": 1.0,
+      "evidence_coverage": 1.0,
+      "citation_count": 16,
+      "citation_valid_count": 16,
+      "citation_invalid_count": 0,
+      "ranking_available": false
+    },
+    "squad_span_evidence": {
+      "status": "unknown",
+      "span_supported": null,
+      "support_evidence": [],
+      "reason": "not_squad"
+    }
+  },
+  "scores": [
+    {
+      "id": "drop-b13d08ae-53b0-47ce-ab02-954db5fd58b0",
+      "dataset": "drop",
+      "mode": "chunk",
+      "split": "regression",
+      "group": "drop-section-87db23f143885cf2",
+      "metric": "Answer Correctness",
+      "repeat": 0,
+      "score": 1.0,
+      "reason": "The actual output correctly states the birth year of Richard II as 1367, which matches the expected output. The answer is accurate and complete.",
+      "status": "valid",
+      "seconds": 0.8561304850009037,
+      "usage": {
+        "calls": [
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 849,
+            "usage": {
+              "prompt_tokens": 446,
+              "completion_tokens": 46,
+              "total_tokens": 492
+            }
+          }
+        ],
+        "coverage": "provider_logged_events",
+        "cost": null,
+        "call_count": 1,
+        "calls_with_usage": 1,
+        "prompt_tokens": 446,
+        "completion_tokens": 46,
+        "total_tokens": 492
+      }
+    },
+    {
+      "id": "drop-b13d08ae-53b0-47ce-ab02-954db5fd58b0",
+      "dataset": "drop",
+      "mode": "chunk",
+      "split": "regression",
+      "group": "drop-section-87db23f143885cf2",
+      "metric": "Faithfulness",
+      "repeat": 0,
+      "score": 1.0,
+      "reason": "The score is 1.00 because there are no contradictions, indicating the actual output fully aligns with the retrieval context.",
+      "status": "valid",
+      "seconds": 27.952667368997936,
+      "usage": {
+        "calls": [
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 26590,
+            "usage": {
+              "prompt_tokens": 5391,
+              "completion_tokens": 3514,
+              "total_tokens": 8905
+            }
+          },
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 359,
+            "usage": {
+              "prompt_tokens": 361,
+              "completion_tokens": 22,
+              "total_tokens": 383
+            }
+          },
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 592,
+            "usage": {
+              "prompt_tokens": 3574,
+              "completion_tokens": 24,
+              "total_tokens": 3598
+            }
+          },
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 402,
+            "usage": {
+              "prompt_tokens": 277,
+              "completion_tokens": 33,
+              "total_tokens": 310
+            }
+          }
+        ],
+        "coverage": "provider_logged_events",
+        "cost": null,
+        "call_count": 4,
+        "calls_with_usage": 4,
+        "prompt_tokens": 9603,
+        "completion_tokens": 3593,
+        "total_tokens": 13196
+      }
+    },
+    {
+      "id": "drop-b13d08ae-53b0-47ce-ab02-954db5fd58b0",
+      "dataset": "drop",
+      "mode": "chunk",
+      "split": "regression",
+      "group": "drop-section-87db23f143885cf2",
+      "metric": "Answer Relevancy",
+      "repeat": 0,
+      "score": 1.0,
+      "reason": "The score is 1.00 because the answer directly and accurately addresses the question without any irrelevant statements.",
+      "status": "valid",
+      "seconds": 1.3694809680018807,
+      "usage": {
+        "calls": [
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 445,
+            "usage": {
+              "prompt_tokens": 314,
+              "completion_tokens": 22,
+              "total_tokens": 336
+            }
+          },
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 421,
+            "usage": {
+              "prompt_tokens": 410,
+              "completion_tokens": 23,
+              "total_tokens": 433
+            }
+          },
+          {
+            "kind": "chat",
+            "model": "qwen-turbo",
+            "status": "ok",
+            "latency_ms": 497,
+            "usage": {
+              "prompt_tokens": 275,
+              "completion_tokens": 29,
+              "total_tokens": 304
+            }
+          }
+        ],
+        "coverage": "provider_logged_events",
+        "cost": null,
+        "call_count": 3,
+        "calls_with_usage": 3,
+        "prompt_tokens": 999,
+        "completion_tokens": 74,
+        "total_tokens": 1073
+      }
+    }
+  ]
+}
