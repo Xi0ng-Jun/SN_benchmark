@@ -16,10 +16,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from rag_eval.artifacts import digest, save_json, save_jsonl
 from rag_eval.starter_protocol import SDK_VERSION, SUITES, VERSION, select_cases
+from rag_eval.public_expansion_protocol import EXPANSION_SUITES
+from rag_eval.public_expansion_sources import read_source
+
+ALL_SUITES = {**SUITES, **EXPANSION_SUITES}
 
 
 def validate_source(source, suite, raw_path):
-    info = SUITES[suite]
+    info = ALL_SUITES[suite]
     for field in ("dataset", "split", "revision", "source_url", "license", "license_url", "conversion"):
         if not isinstance(source.get(field), str) or not source[field].strip():
             raise ValueError(f"source.{field} is required")
@@ -75,10 +79,33 @@ def prepare(suite, raw_path, source_path, output):
     source = json.loads(source_path.read_text(encoding="utf-8"))
     validate_source(source, suite, raw_path)
     # Blank lines are rejected so source_row_index always identifies a physical line.
-    rows = [json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines()]
-    cases, selection = select_cases(suite, rows)
-    sdk_root, files = sdk_files()
-    inventory = instruction_inventory(cases, sdk_root / "benchmarks/ifeval/ifeval.py") if suite == "ifeval" else []
+    if suite in EXPANSION_SUITES:
+        records = read_source(suite, raw_path, revision=source["revision"])
+        rows = [record["raw_record"] for record in records]
+        cases = [{
+            "protocol_version": VERSION, "suite": suite,
+            "dataset": source["dataset"], "split": source["split"],
+            "sample_id": f"{suite}-{record['source_row_index']}",
+            "case_id": f"{suite}-{record['source_row_index']}",
+            "task": record["task"], "source_row_index": record["source_row_index"],
+            "raw_row_sha256": record["raw_record_sha256"], "raw_row": record["raw_record"],
+            "question": record["question"], "passage": None,
+            "references": [record["expected_answer"]], "expected_answer": record["expected_answer"],
+            "answer_type": EXPANSION_SUITES[suite]["task_kind"], "n_shots": 0,
+            "scorer": EXPANSION_SUITES[suite]["scorer"], "limitations": [],
+            "source_revision": record["source_revision"],
+            "source_file_sha256": record["source_file_sha256"],
+            "product_review": {"status": "pending" if EXPANSION_SUITES[suite]["product"] else "not_applicable", "reason": EXPANSION_SUITES[suite].get("product_reason")},
+        } for record in records]
+        selection = {"method": "original source order", "requested_memberships": len(cases),
+                     "selected_memberships": len(cases), "distinct_questions": len(cases),
+                     "shortages": [], "answer_type_counts": {EXPANSION_SUITES[suite]["task_kind"]: len(cases)}}
+        sdk_root, files, inventory = None, [], []
+    else:
+        rows = [json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines()]
+        cases, selection = select_cases(suite, rows)
+        sdk_root, files = sdk_files()
+        inventory = instruction_inventory(cases, sdk_root / "benchmarks/ifeval/ifeval.py") if suite == "ifeval" else []
     # A failed preparation remains visibly incomplete; never overwrite or reuse it.
     output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(raw_path, output / "raw.jsonl")
@@ -105,7 +132,7 @@ def prepare(suite, raw_path, source_path, output):
         "protocol_version": VERSION, "status": "prepared_not_validated", "suite": suite,
         "source": source, "source_provenance_status": "operator_declared; export hash checked",
         "selection": selection, "n_shots": None if suite == "ifeval" else 0,
-        "scorer": SUITES[suite]["scorer"], "deepeval_version": SDK_VERSION,
+        "scorer": ALL_SUITES[suite]["scorer"], "deepeval_version": SDK_VERSION if suite not in EXPANSION_SUITES else None,
         "sdk_source_hashes": source_hashes,
         "artifacts": {name: digest(output / name) for name in ("raw.jsonl", "cases.jsonl", "instruction-audit.jsonl", "cards.md")},
         "model_predictions": 0, "human_review": "pending", "verifier_audit": "pending" if suite == "ifeval" else "not_applicable",
@@ -115,7 +142,7 @@ def prepare(suite, raw_path, source_path, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=SUITES, required=True)
+    parser.add_argument("--suite", choices=ALL_SUITES, required=True)
     parser.add_argument("--raw-jsonl", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True, help="Operator-provided source provenance JSON")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing directories rejected")

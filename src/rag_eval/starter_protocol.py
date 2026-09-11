@@ -152,6 +152,9 @@ def load_bundle(directory):
     """Read a complete local bundle and check recorded bytes; never acquire data."""
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_sources import load_expansion_bundle
+        return load_expansion_bundle(directory)
     if manifest.get("protocol_version") != VERSION or manifest.get("suite") not in SUITES:
         raise ValueError("Unsupported starter manifest")
     artifacts = manifest.get("artifacts", {})
