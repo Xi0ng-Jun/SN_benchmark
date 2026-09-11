@@ -136,4 +136,6 @@ def score_expansion(suite: str, prediction: Any, expected: Any, **kwargs: Any) -
         return {"status": "not_applicable", "score": None,
                 "reason": f"no expansion scorer for suite: {suite}",
                 "raw_answer": prediction}
+    if suite != "truthfulqa":
+        kwargs = {}
     return scorer(prediction, expected, **kwargs)
