@@ -107,7 +107,15 @@ def score_truthfulqa(prediction: Any, expected: Any, *, behavior_label: str | No
     intentionally not folded into the deterministic answer score.
     """
     answer = _text(prediction)
-    references = expected if isinstance(expected, list) else [expected]
+    if isinstance(expected, dict):
+        # Accept common local adapter shapes without coupling this scorer to a
+        # particular TruthfulQA export format.
+        references = (expected.get("answers") or expected.get("reference_answers")
+                      or expected.get("mc1_targets") or expected.get("reference_answer") or [])
+        if isinstance(references, dict):
+            references = references.get("choices") or references.get("refs") or []
+    else:
+        references = expected if isinstance(expected, list) else [expected]
     refs = {_text(item).casefold() for item in references if _text(item)}
     if not answer:
         return _status(None, normalized=None, raw=prediction, reason="empty answer",
