@@ -11,6 +11,10 @@ from .artifacts import digest
 
 VERSION = "public-starter-v1"
 SDK_VERSION = "4.2.2"
+# Expansion contracts remain separate so frozen starter bundles keep their
+# existing suite definitions and protocol version.
+from .public_expansion_protocol import EXPANSION_SUITES, TraceEnvelope
+
 SUITES = {
     "squad": {"dataset": "rajpurkar/squad", "split": "validation",
               "scorer": "deepeval.squad_score.binary_judge", "product": True},
