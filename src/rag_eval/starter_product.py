@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 from .public_benchmarks import normalize_drop, normalize_squad, sha256_text
+from .public_expansion_scoring import PRODUCT_UNSUPPORTED, product_applicability
 from .starter_protocol import VERSION, fingerprint, make_case, require_text
 
 BOOLQ_REQUIREMENT = (
@@ -35,6 +36,22 @@ def product_bundle(cases, reviews, distractor_passages, *, max_documents=40):
     promoted to product completeness gold. Exclusions remain in the returned log.
     """
     suites = {c["suite"] for c in cases}
+    if len(suites) == 1 and next(iter(suites)) in PRODUCT_UNSUPPORTED:
+        suite = next(iter(suites))
+        # Keep an explicit record for every requested case.  Unsupported
+        # Product cells must never become zero-valued score observations.
+        applicability = product_applicability(suite)
+        decisions = [{"sample_id": c.get("sample_id", c.get("case_id", "unknown")),
+                      "status": applicability["status"], "reason": applicability["reason"]}
+                     for c in cases]
+        return {"questions": [], "documents": [], "decisions": decisions,
+                "manifest": {"protocol_version": VERSION, "suite": suite, "track": "R",
+                             "question_count": 0, "document_count": 0,
+                             "gold_document_count": 0, "distractor_document_count": 0,
+                             "requested_document_cap": max_documents,
+                             "unfilled_document_slots": max_documents,
+                             "status": "not_applicable",
+                             "applicability": applicability}}
     if len(suites) != 1 or not suites <= {"squad", "drop", "boolq"}:
         raise ValueError("Exactly one supported product suite required")
     if type(max_documents) is not int or not 1 <= max_documents <= 40:
