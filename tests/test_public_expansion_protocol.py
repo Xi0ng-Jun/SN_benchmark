@@ -32,6 +32,11 @@ def test_normalize_gsm8k_prefers_final_numeric_marker():
     assert result["raw_output"].startswith("First I get")
 
 
+def test_normalize_gsm8k_preserves_trailing_integer_zeroes():
+    result = normalize_answer("gsm8k", "#### 1000")
+    assert result["normalized_answer"] == "1000"
+
+
 def test_normalize_truthfulqa_keeps_behavior_text_separate():
     result = normalize_answer("truthfulqa", "I cannot verify that claim.  ")
     assert result["normalized_answer"] == "I cannot verify that claim."

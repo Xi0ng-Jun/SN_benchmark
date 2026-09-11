@@ -18,3 +18,9 @@ Verification:
 - `pytest -q tests/test_public_expansion_protocol.py` could not run because pytest is not installed in the environment. `uv run` began creating a new environment but stalled during dependency setup and was stopped.
 
 Constraints respected: no data download, model call, SN Ask call, production project change, or online execution.
+
+Review follow-up:
+
+- Fixed numeric canonicalization so integer trailing zeroes are preserved (`1000` remains `1000`) while decimal fraction zeroes are trimmed.
+- Added a regression test and retained the supplied `task` in normalized results; blank task values are rejected.
+- Re-ran `py_compile`, direct protocol smoke checks, and `git diff --check`. Pytest remains unavailable in the environment.

@@ -123,7 +123,10 @@ def _normalize_numeric(raw_output: Any) -> dict[str, Any]:
         number = Decimal(value.replace("$", "").replace(",", ""))
     except InvalidOperation:
         return _parsed(raw_output, None, "numeric answer is invalid")
-    normalized = format(number, "f").rstrip("0").rstrip(".") or "0"
+    normalized = format(number, "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    normalized = normalized or "0"
     return _parsed(raw_output, normalized)
 
 
@@ -140,11 +143,17 @@ def normalize_answer(suite: str, raw_output: Any, *, task: str | None = None) ->
     if suite not in EXPANSION_SUITES:
         raise ValueError(f"Unknown expansion suite: {suite}")
     kind = EXPANSION_SUITES[suite]["task_kind"]
+    if task is not None and (not isinstance(task, str) or not task.strip()):
+        raise ValueError("task must be nonempty text or None")
     if kind == "mcq":
-        return _normalize_mcq(raw_output)
-    if kind == "numeric":
-        return _normalize_numeric(raw_output)
-    return _normalize_truthfulqa(raw_output)
+        result = _normalize_mcq(raw_output)
+    elif kind == "numeric":
+        result = _normalize_numeric(raw_output)
+    else:
+        result = _normalize_truthfulqa(raw_output)
+    if task is not None:
+        result["task"] = task
+    return result
 
 
 # Descriptive alias for callers that use the protocol terminology.
