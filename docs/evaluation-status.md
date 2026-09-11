@@ -1,6 +1,10 @@
 # 评测状态
 
-更新时间：2026-09-10
+更新时间：2026-09-11
+
+## 公开 Benchmark 与 Agent 扩展设计
+
+已形成[阶段设计](public-benchmark-agent-expansion-design.md)：拟增加 MMLU、GSM8K、TruthfulQA，并先以 Native 形式覆盖 HellaSwag、BIG-Bench Hard；结果协议预留 `trace`，未来用于 DeepEval trajectory/component metrics。当前仅完成设计，新增数据、代码、在线 Ask 和 Agent 轨迹均未运行或验证。
 
 此前已完成 DeepEval 调研与环境链路验证。SQuAD / DROP 两模式持续评测曾获授权执行，现已暂停；当前授权工作已推进到公开起步方案的代码与逻辑实现，用户要求本轮不运行和测试。既有实验不充当质量基线。
 

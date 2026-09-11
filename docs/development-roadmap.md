@@ -4,6 +4,10 @@
 
 当前入口为[公开评测起步方案](deepeval-public-starter-plan.md)。顺序调整为：公开数据与 scorer 冻结 → 最小离线适配 → 恢复在线授权后的五类模型参照、三类产品适配 → 根据结果选择业务场景。模型参照和产品成绩独立报告。P0/P1 基础及 N/R 执行、离线报告代码已写入，见[代码交接](deepeval-public-starter-implementation.md)和[执行与报告说明](deepeval-public-starter-orchestration.md)；按用户要求，本轮不运行和测试。接下来先验证新接口和冻结数据，再安排在线评测，旧 baseline 不续跑。
 
+## 当前阶段：公开 Benchmark 与 Agent 评测扩展
+
+阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](public-benchmark-agent-expansion-design.md)。第一批增加 MMLU、GSM8K、TruthfulQA，并先以 Native 形式纳入 HellaSwag 与 BIG-Bench Hard；同时在统一结果协议中预留 SN trace。当前仍不修改生产代码、不恢复在线评测或 timer。DAG 作为后续产品专属条件指标，待人工规则校准后再实现。
+
 ## 后续方向：扩大业务覆盖
 
 用户已选择广度优先，当前方案见[能力广度扩展计划](product-capability-breadth-plan.md)。A 批推荐综合比较、摘要导读、来源范围、澄清/拒答/冲突、清单完整性；B 批推荐多轮会话、用户知识 Memory、回答偏好。中文和半导体语境作为横向覆盖维度。交互可靠性、资料更新后的知识一致性明确不做。

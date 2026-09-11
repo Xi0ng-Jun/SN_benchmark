@@ -24,6 +24,10 @@ Git 保存源码、测试、配置、冻结的公开样本、学习材料及结�
 
 这些材料区分最终文档命中与检索排名、引用对象存在与正文引用支持、产品错误与澄清行为。新协议尚未接入 runner，人工校准未完成；当前工作没有恢复在线评分或定时任务。
 
+## 当前扩展阶段
+
+阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](docs/public-benchmark-agent-expansion-design.md)：第一批候选为 MMLU、GSM8K、TruthfulQA、HellaSwag 和 BIG-Bench Hard，并为未来 Agent trace 预留协议。该阶段尚未实施或运行。
+
 ## SQuAD / DROP 持续评测
 
 冻结输入位于 `data/public-benchmark-v1/`，每集 100 题及 200 个候选段落。原文走产品原生导入，Ask 只接收问题；两种模式各自使用独立数据库、索引和日志。
