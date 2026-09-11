@@ -33,3 +33,5 @@ var/**/.lock
 var/**
 !var/
 !var/README.md
+
+.worktrees/
