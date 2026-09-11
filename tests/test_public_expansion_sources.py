@@ -51,7 +51,7 @@ def test_gsm8k_rejects_missing_or_non_numeric_final_answer(tmp_path):
 def test_other_expansion_shapes_are_supported(tmp_path):
     truthful = write_jsonl(tmp_path, {"question": "Q", "best_answer": "A", "category": "cat"})
     assert read_source("truthfulqa", truthful, revision="v1")[0]["expected_answer"] == "A"
-    hellaswag = write_jsonl(tmp_path, {"ctx": "C", "endings": ["a", "b", "c", "d"], "label": "2"})
+    hellaswag = write_jsonl(tmp_path, {"ctx": "C", "endings": ["a", "b", "c", "d"], "label": " 2 "})
     assert read_source("hellaswag", hellaswag, revision="v1")[0]["expected_answer"] == "C"
     bbh = write_jsonl(tmp_path, {"input": "I", "target": "yes", "task_name": "boolean_expressions"})
     assert read_source("bbh", bbh, revision="v1")[0]["task"] == "boolean_expressions"
@@ -62,3 +62,9 @@ def test_hellaswag_rejects_bool_and_out_of_range_labels(tmp_path):
         path = write_jsonl(tmp_path, {"ctx": "C", "endings": ["a", "b", "c", "d"], "label": label})
         with pytest.raises(ValueError):
             read_source("hellaswag", path, revision="v1")
+
+
+def test_hellaswag_rejects_unicode_digit_with_normalized_error(tmp_path):
+    path = write_jsonl(tmp_path, {"ctx": "C", "endings": ["a", "b", "c", "d"], "label": "²"})
+    with pytest.raises(ValueError, match="HellaSwag label must be an index 0\.\.3"):
+        read_source("hellaswag", path, revision="v1")

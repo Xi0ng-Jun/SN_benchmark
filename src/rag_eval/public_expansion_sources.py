@@ -71,7 +71,9 @@ def _hellaswag(row: dict[str, Any]) -> tuple[str, str, Any]:
     if (not isinstance(context, str) or not context.strip() or not isinstance(endings, list)
             or len(endings) != 4 or any(not isinstance(ending, str) or not ending.strip() for ending in endings)):
         raise ValueError("HellaSwag requires context and four endings")
-    if isinstance(label, bool) or not (type(label) is int or (isinstance(label, str) and label.strip().isdigit())):
+    if isinstance(label, bool) or not (
+            type(label) is int
+            or (isinstance(label, str) and label.strip().isascii() and label.strip().isdigit())):
         raise ValueError("HellaSwag label must be an index 0..3") from None
     index = int(label)
     if index not in range(4):
