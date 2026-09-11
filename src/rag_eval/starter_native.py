@@ -5,6 +5,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 
 from .artifacts import digest
+from .public_expansion_scoring import score_expansion
 from .starter_protocol import SDK_VERSION, fingerprint, make_case
 
 
@@ -105,6 +106,15 @@ def score_prediction(case, request, prediction, manifest, *, judge=None, instruc
     root = check_sdk(manifest)
     if not isinstance(prediction, str):
         raise ValueError("Prediction must be the schema-parsed answer as text")
+    # Expansion requests are prepared by the expansion source adapter.  Keep
+    # their deterministic answer checks independent from the legacy starter
+    # request reconstruction until those suites receive frozen SDK templates.
+    if case.get("suite") in {"mmlu", "gsm8k", "truthfulqa"}:
+        if not isinstance(request, dict) or request.get("suite") != case["suite"] or request.get("case_id") != case.get("case_id"):
+            raise ValueError("Prediction request does not match the expansion case")
+        return score_expansion(case["suite"], prediction, request.get("expected_output"),
+                               behavior_label=request.get("behavior_label"),
+                               evidence=request.get("evidence"))
     rebuilt, _ = build_request(case, manifest)
     if request != rebuilt:
         raise ValueError("Prediction request does not match the frozen protocol")
