@@ -1,12 +1,13 @@
 # Task 3 Report: Scoring and applicability
 
-Implemented in commit `97cc7f5`.
+Implemented in commits `97cc7f5` and `fe2e757`.
 
 ## Changes
 
 - Added `rag_eval.public_expansion_scoring` with offline deterministic MMLU label matching and GSM8K numeric extraction/scoring.
 - Added TruthfulQA answer scoring that preserves `behavior_label` and `evidence` as independent fields for later human review.
 - Added Product applicability metadata and made unsupported HellaSwag/BBH Product bundles return `status: not_applicable` with `score` absent rather than treating them as zero.
+- Added Native scorer dispatch for saved MMLU/GSM8K/TruthfulQA requests while leaving legacy request reconstruction unchanged.
 
 ## Verification
 
