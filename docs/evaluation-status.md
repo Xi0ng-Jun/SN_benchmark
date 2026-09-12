@@ -4,7 +4,11 @@
 
 ## 公开 Benchmark 与 Agent 扩展设计
 
+Task 1–5 的离线协议、source adapter、scorer、报告字段和审计入口已实现；新增数据尚未下载冻结，在线 Native/Product/Agent 运行仍未执行。离线审计脚本为 `scripts/check_public_expansion_offline.py`。
+
 已形成[阶段设计](public-benchmark-agent-expansion-design.md)：拟增加 MMLU、GSM8K、TruthfulQA，并先以 Native 形式覆盖 HellaSwag、BIG-Bench Hard；结果协议预留 `trace`，未来用于 DeepEval trajectory/component metrics。当前仅完成设计，新增数据、代码、在线 Ask 和 Agent 轨迹均未运行或验证。
+
+当前状态更准确地说是：公开扩展的离线协议、来源字段与哈希校验、suite/适用性检查、确定性答案归一化、结果报告以及 `scripts/check_public_expansion_offline.py` 审计入口已经写入代码，但尚未冻结新增题目数据，也没有运行或验证 Native、Product、模型或 Agent 轨迹实验。离线审计只读取本地 JSON/JSONL，不下载数据、不调用模型或 Silicon Notebook。
 
 此前已完成 DeepEval 调研与环境链路验证。SQuAD / DROP 两模式持续评测曾获授权执行，现已暂停；当前授权工作已推进到公开起步方案的代码与逻辑实现，用户要求本轮不运行和测试。既有实验不充当质量基线。
 

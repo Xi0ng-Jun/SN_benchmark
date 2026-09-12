@@ -26,7 +26,11 @@ Git 保存源码、测试、配置、冻结的公开样本、学习材料及结�
 
 ## 当前扩展阶段
 
-阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](docs/public-benchmark-agent-expansion-design.md)：第一批候选为 MMLU、GSM8K、TruthfulQA、HellaSwag 和 BIG-Bench Hard，并为未来 Agent trace 预留协议。该阶段尚未实施或运行。
+阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](docs/public-benchmark-agent-expansion-design.md)：第一批候选为 MMLU、GSM8K、TruthfulQA、HellaSwag 和 BIG-Bench Hard，并为未来 Agent trace 预留协议。公开扩展的本地协议、来源适配、确定性评分、结果报告和离线审计逻辑已实现；题目数据尚未冻结，Native、Product 和 Agent 实验均未运行或验证。可对已保存的 bundle 或 run 工件执行纯本地检查：
+
+```bash
+.venv/bin/python scripts/check_public_expansion_offline.py /path/to/bundle-or-run
+```
 
 ## SQuAD / DROP 持续评测
 
