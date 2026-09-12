@@ -6,18 +6,20 @@ corresponding official template when it is available.
 """
 from __future__ import annotations
 
-import math
 import re
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 
-PRODUCT_SUPPORTED = frozenset({"squad", "drop", "boolq", "mmlu", "gsm8k", "truthfulqa"})
-PRODUCT_UNSUPPORTED = frozenset({"hellaswag", "bbh", "bigbenchhard"})
+PRODUCT_SUPPORTED = frozenset({"squad", "drop", "boolq"})
+PRODUCT_UNSUPPORTED = frozenset({"mmlu", "gsm8k", "truthfulqa", "hellaswag", "bbh", "bigbenchhard"})
 
 
 def _text(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        return _text(value[0])
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return str(value)
     return ""
@@ -70,7 +72,7 @@ def score_mmlu(prediction: Any, expected: Any) -> dict[str, Any]:
 _NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
 
 
-def normalize_gsm8k_number(value: Any) -> float | None:
+def normalize_gsm8k_number(value: Any) -> str | None:
     """Extract GSM8K's final numeric answer (``#### n`` when present)."""
     text = _text(value).replace(",", "")
     if not text:
@@ -80,10 +82,16 @@ def normalize_gsm8k_number(value: Any) -> float | None:
     if not candidates:
         return None
     try:
-        number = float(candidates[-1])
-    except (TypeError, ValueError):
+        number = Decimal(candidates[-1])
+    except (InvalidOperation, TypeError, ValueError):
         return None
-    return number if math.isfinite(number) else None
+    if not number.is_finite():
+        return None
+    # Decimal operations use the process context and can silently round long
+    # GSM8K integers.  Normalize under a precision sized to the parsed value.
+    with localcontext() as context:
+        context.prec = max(len(number.as_tuple().digits), 1)
+        return format(number.normalize(), "f")
 
 
 def score_gsm8k(prediction: Any, expected: Any) -> dict[str, Any]:
@@ -123,7 +131,8 @@ def score_truthfulqa(prediction: Any, expected: Any, *, behavior_label: str | No
     score = float(answer.casefold() in refs) if refs else None
     return _status(score, normalized=answer, raw=prediction,
                    reason=None if score is not None else "no usable TruthfulQA reference",
-                   behavior_label=behavior_label, evidence=evidence)
+                   behavior_label=behavior_label, evidence=evidence,
+                   applicability="exact reference matching only; semantic truthfulness and refusal behavior require human review")
 
 
 def product_applicability(suite: str) -> dict[str, Any]:
@@ -132,7 +141,7 @@ def product_applicability(suite: str) -> dict[str, Any]:
         return {"status": "applicable", "applicable": True, "reason": None}
     if suite in PRODUCT_UNSUPPORTED:
         return {"status": "not_applicable", "applicable": False,
-                "reason": f"Product track is not implemented for {suite}"}
+                "reason": f"Product adapter is not implemented for {suite}; Native-only scoring"}
     return {"status": "not_applicable", "applicable": False,
             "reason": f"unknown Product suite: {suite}"}
 
