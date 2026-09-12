@@ -103,18 +103,30 @@ def score_prediction(case, request, prediction, manifest, *, judge=None, instruc
     This is an execution API for later use, not part of the preparation command.
     Errors propagate to the result writer; they are never converted into zero.
     """
-    root = check_sdk(manifest)
     if not isinstance(prediction, str):
         raise ValueError("Prediction must be the schema-parsed answer as text")
     # Expansion requests are prepared by the expansion source adapter.  Keep
     # their deterministic answer checks independent from the legacy starter
     # request reconstruction until those suites receive frozen SDK templates.
     if case.get("suite") in {"mmlu", "gsm8k", "truthfulqa"}:
-        if not isinstance(request, dict) or request.get("suite") != case["suite"] or request.get("case_id") != case.get("case_id"):
+        suite = case["suite"]
+        if not isinstance(request, dict) or request.get("suite") != suite or request.get("case_id") != case.get("case_id"):
             raise ValueError("Prediction request does not match the expansion case")
-        return score_expansion(case["suite"], prediction, request.get("expected_output"),
+        expected = case.get("references")
+        if not isinstance(expected, list) or not expected:
+            raise ValueError("Expansion case has no frozen references")
+        # Requests are untrusted serialized inputs.  Their expected output must
+        # equal the canonical representation derived from the frozen case, and
+        # the scorer always receives the case references below.
+        canonical_expected = expected if suite == "truthfulqa" else expected[0]
+        if "expected_output" in case and case["expected_output"] != canonical_expected:
+            raise ValueError("Expansion case expected output differs from frozen references")
+        if request.get("expected_output") != canonical_expected:
+            raise ValueError("Expansion request expected output differs from frozen case")
+        return score_expansion(suite, prediction, expected,
                                behavior_label=request.get("behavior_label"),
                                evidence=request.get("evidence"))
+    root = check_sdk(manifest)
     rebuilt, _ = build_request(case, manifest)
     if request != rebuilt:
         raise ValueError("Prediction request does not match the frozen protocol")
