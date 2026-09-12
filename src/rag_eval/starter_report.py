@@ -74,6 +74,9 @@ def load_run(run):
         if any(p[field] != manifest[field] for field in ("run_id", "protocol_id", "suite", "track", "mode")):
             raise ValueError("Planned identity differs from manifest")
     for score in scores:
+        score.setdefault("applicability", next((p.get("applicability", {"status": "applicable", "reason": None})
+                                                 for p in planned if p["result_id"] == score.get("result_id")),
+                             {"status": "applicable", "reason": None}))
         score.setdefault("task", next((p.get("task", p["suite"]) for p in planned if p["result_id"] == score.get("result_id")), score.get("suite")))
         score.setdefault("trace", {"trace_id": None, "completeness": "none", "spans": []})
         if score.get("output_available") and not observed.get(score["case_id"], {}).get("output_available"):

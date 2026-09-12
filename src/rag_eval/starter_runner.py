@@ -202,13 +202,20 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path, reviews
     product = None
     if track == "R":
         if source["suite"] not in {"squad", "drop", "boolq"}:
-            raise ValueError("This starter only adapts SQuAD, DROP and BoolQ to the product")
-        if mode not in {"chunk", "reasoning"} or reviews_path is None:
-            raise ValueError("R requires mode and human suitability reviews")
-        raw = read_rows(bundle_dir / "raw.jsonl")
-        field = "context" if source["suite"] == "squad" else "passage"
-        reviews = json.loads(reviews_path.read_text(encoding="utf-8"))
-        product = product_bundle(cases, reviews, [r[field] for r in raw])
+            if mode not in {"chunk", "reasoning"}:
+                raise ValueError("R requires mode chunk or reasoning")
+            # Unsupported expansion suites are represented explicitly as N/A.
+            product = {"manifest": {"product_applicability": "not_applicable",
+                                     "reason": f"Product adapter is not implemented for {source['suite']}"},
+                       "questions": []}
+            cases = []
+        else:
+            if mode not in {"chunk", "reasoning"} or reviews_path is None:
+                raise ValueError("R requires mode and human suitability reviews")
+            raw = read_rows(bundle_dir / "raw.jsonl")
+            field = "context" if source["suite"] == "squad" else "passage"
+            reviews = json.loads(reviews_path.read_text(encoding="utf-8"))
+            product = product_bundle(cases, reviews, [r[field] for r in raw])
         product["manifest"]["source_manifest_sha256"] = digest(bundle_dir / "manifest.json")
         product["manifest"]["distractor_provenance"] = "same frozen raw.jsonl in original order"
         eligible = {q["case_id"] for q in product["questions"]}
