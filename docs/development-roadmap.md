@@ -8,6 +8,8 @@
 
 阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](public-benchmark-agent-expansion-design.md)。第一批增加 MMLU、GSM8K、TruthfulQA，并先以 Native 形式纳入 HellaSwag 与 BIG-Bench Hard；同时在统一结果协议中预留 SN trace。当前仍不修改生产代码、不恢复在线评测或 timer。DAG 作为后续产品专属条件指标，待人工规则校准后再实现。
 
+离线实施已覆盖来源与 manifest 身份、五个 suite 的适用性、确定性答案归一化、结果/trace 字段和本地审计脚本；审计不会触发网络、模型或 SN Ask。新增数据尚未冻结，Native、Product 和 Agent 运行及人工核验仍待用户恢复在线评测后进行，因此这些实现不代表实验已完成或质量结果已验证。
+
 ## 后续方向：扩大业务覆盖
 
 用户已选择广度优先，当前方案见[能力广度扩展计划](product-capability-breadth-plan.md)。A 批推荐综合比较、摘要导读、来源范围、澄清/拒答/冲突、清单完整性；B 批推荐多轮会话、用户知识 Memory、回答偏好。中文和半导体语境作为横向覆盖维度。交互可靠性、资料更新后的知识一致性明确不做。
