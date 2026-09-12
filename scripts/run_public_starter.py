@@ -7,10 +7,17 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from rag_eval.starter_protocol import SUITES
+from rag_eval.public_expansion_protocol import EXPANSION_SUITES
+
+ALL_SUITES = {**SUITES, **EXPANSION_SUITES}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument("--suite", choices=tuple(ALL_SUITES),
+                        help="Optional explicit suite identity check for the frozen bundle")
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--track", choices=("N", "R"), required=True)
     parser.add_argument("--mode", choices=("chunk", "reasoning"))
@@ -24,6 +31,13 @@ def main():
             setattr(args, name, value.resolve())
     if args.run_dir.exists():
         parser.error("Use a new run directory; implicit resume is not supported")
+    if args.suite:
+        manifest_path = args.bundle / "manifest.json"
+        if not manifest_path.exists():
+            parser.error("--suite requires a frozen bundle manifest")
+        import json
+        if json.loads(manifest_path.read_text(encoding="utf-8")).get("suite") != args.suite:
+            parser.error("--suite does not match the frozen bundle")
     from rag_eval.starter_runner import execute
     from rag_eval.starter_report import write_report
     code = 0

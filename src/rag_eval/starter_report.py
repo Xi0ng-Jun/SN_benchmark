@@ -7,7 +7,10 @@ from pathlib import Path
 
 from .artifacts import digest, save_json
 from .starter_protocol import SUITES, fingerprint
+from .public_expansion_protocol import EXPANSION_SUITES
 from .starter_results import GROUP_FIELDS, summarize
+
+ALL_SUITES = {**SUITES, **EXPANSION_SUITES}
 
 
 def read_journal(path, warnings):
@@ -53,6 +56,9 @@ def load_run(run):
     planned = read_journal(run / "planned.jsonl", warnings)
     outputs = read_journal(run / "outputs.jsonl", warnings)
     scores = read_journal(run / "scores.jsonl", warnings)
+    for row in planned:
+        row.setdefault("task", row.get("suite"))
+        row.setdefault("applicability", {"status": "applicable", "reason": None})
     cases = {p["case_id"] for p in planned}
     observed = {}
     for output in outputs:
@@ -68,6 +74,8 @@ def load_run(run):
         if any(p[field] != manifest[field] for field in ("run_id", "protocol_id", "suite", "track", "mode")):
             raise ValueError("Planned identity differs from manifest")
     for score in scores:
+        score.setdefault("task", next((p.get("task", p["suite"]) for p in planned if p["result_id"] == score.get("result_id")), score.get("suite")))
+        score.setdefault("trace", {"trace_id": None, "completeness": "none", "spans": []})
         if score.get("output_available") and not observed.get(score["case_id"], {}).get("output_available"):
             raise ValueError("Score claims an output that was not saved")
     groups = summarize(planned, scores)
@@ -144,7 +152,7 @@ def write_report(run_dirs, output):
     lines = ["# 公开评测起步报告", "", "模型参照 N 与产品路径 R 分开报告；分数未经人工校准，不作为发布门禁。",
              "", "最终上下文覆盖不代表检索排名，引用对象存在不代表逐项断言获得支持。", "", "## 覆盖范围", "",
              "| 公开套件 | 模型参照 N | 产品 chunk | 产品 reasoning |", "|---|---|---|---|"]
-    for suite in SUITES:
+    for suite in ALL_SUITES:
         statuses = []
         for track, mode in (("N", None), ("R", "chunk"), ("R", "reasoning")):
             matches = [r for r in runs if r["manifest"] and r["manifest"]["suite"] == suite
@@ -170,10 +178,13 @@ def write_report(run_dirs, output):
                           "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
             for group in run["groups"]:
                 counts = group["status_counts"]
-                values = [group["scorer"], group["planned"], group["saved_outputs"], group["scored"],
+                values = [f"{group.get('task', group['suite'])} / {group['scorer']}", group["planned"], group["saved_outputs"], group["scored"],
                           _number(group["mean_over_scored"]), group["missing"], counts["error"],
                           counts["not_applicable"], counts["unparsed"], counts["unscored"]]
                 lines.append("| " + " | ".join(map(_cell, values)) + " |")
+                lines.append("任务适用性：" + _cell(group.get("non_applicable", counts["not_applicable"]))
+                             + "；trace 完整度：" + _cell(group.get("trace_completeness", {}))
+                             + ("；Agent 指标已抑制（没有 complete trace）。" if group.get("agent_metrics_suppressed") else ""))
             for group in run["groups"]:
                 if "label_parse_coverage_over_saved_outputs" in group:
                     lines.extend(["", "BoolQ 标签解析覆盖率（已完成解析 / 已存输出）："

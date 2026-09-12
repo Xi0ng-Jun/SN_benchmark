@@ -13,6 +13,7 @@ from .artifacts import digest, save_json, save_jsonl
 from .starter_product import check_boolq, product_bundle
 from .starter_protocol import fingerprint, load_bundle
 from .starter_results import EventJournal, planned_result, result_record
+from .public_expansion_protocol import EXPANSION_SUITES, TraceEnvelope, normalize_answer
 
 PRODUCT_CORRECTNESS = "product.GEval.AnswerCorrectness"
 BOOLQ_SCORER = "product.boolq.explicit_conclusion.v1"
@@ -50,8 +51,10 @@ def native_predictions(run, source, cases, tested, audits, outputs):
     from .usage_capture import capture_usage
     for case in cases:
         update_state(run, "predicting", case_id=case["case_id"])
-        record = {"case_id": case["case_id"], "sample_id": case["sample_id"], "status": "error",
+        record = {"case_id": case["case_id"], "sample_id": case["sample_id"], "suite": case["suite"],
+                  "task": case.get("task", case["suite"]), "status": "error",
                   "output_available": False, "prediction": None, "request_id": uuid4().hex}
+        record["trace"] = TraceEnvelope.missing().to_dict()
         started = time.monotonic()
         try:
             request, schema = build_request(case, source)
@@ -64,6 +67,8 @@ def native_predictions(run, source, cases, tested, audits, outputs):
                         with tested.for_case(case["case_id"], record["request_id"]):
                             response = tested.generate(request["prompt"], schema=schema)
                         record.update(status="success", output_available=True, prediction=str(response.answer))
+                        if case["suite"] in EXPANSION_SUITES:
+                            record["normalized_answer"] = normalize_answer(case["suite"], record["prediction"], task=case.get("task"))
                     finally:
                         record["usage"] = usage
         except Exception as exc:
@@ -97,12 +102,14 @@ def product_predictions(run, cases, bundle, mode, repo, outputs):
                 raise ValueError("Expected exactly one persisted product output")
             record = saved[0]
             output = {"case_id": question["case_id"], "sample_id": question["sample_id"],
+                     "suite": question.get("suite", cases[0]["suite"]), "task": question.get("task", cases[0].get("task", cases[0]["suite"])),
                      "status": "success" if record["status"] == "success" else "error",
                      "output_available": bool(record.get("answer", "").strip()),
                      "prediction": record.get("answer", ""), "product_record": record,
                      "reason": None if record["status"] == "success" else "native product error or clarification interception"}
         except Exception as exc:
             output = {"case_id": question["case_id"], "sample_id": question["sample_id"],
+                     "suite": question.get("suite", cases[0]["suite"]), "task": question.get("task", cases[0].get("task", cases[0]["suite"])),
                      "status": "error", "output_available": False, "prediction": None,
                      "error_type": type(exc).__name__, "reason": "product invocation or capture error; see product-artifacts"}
         # Journal write errors must stop execution, not create a second result.
@@ -176,7 +183,8 @@ def score_outputs(run, source, cases, planned, judge, audits, scores):
                     result = _product_score(output["product_record"], item["scorer"], judge, item["result_id"])
                 row = result_record(item, status=result["status"], score=result["score"],
                                     reason=result.get("reason"), output_available=available,
-                                    details={**details, "scorer_result": result})
+                                    normalized_answer=result.get("normalized_answer"),
+                                    trace=result.get("trace"), details={**details, "scorer_result": result})
             except Exception as exc:
                 row = result_record(item, status="error", output_available=available,
                                     reason="scorer invocation or validation error",
