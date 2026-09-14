@@ -47,6 +47,8 @@ Excel 文件保留为原始调研材料；其中的结论在经过复核后再�
 
 ## 后续工作约定
 
+- 2026-09-13 最新已批准任务是[公开题的 SN 系统接入](sn-public-system-adaptation.md)，[实施计划](superpowers/plans/2026-09-13-sn-public-system.md)：七套新系统适配以资料问答、题面推理、知识/常识和指令遵循分类；保留 Native 参照。新七套 R 默认 `sn-public-system-v1`，明确指定 legacy 才走旧 N/A。只写代码与回归用例，不运行测试、应用或在线任务。此前[Native 补齐](superpowers/plans/2026-09-13-expansion-code-completion.md)保留为阶段记录；Agent/DAG 尚未实现，所有新代码待验证。
+
 - 最新优先级是[DeepEval 公开评测起步](deepeval-public-starter-plan.md)：先复用现成 benchmark 的数据与评分，区分模型参照和产品适配；之后再按[广度计划](product-capability-breadth-plan.md)构造业务场景，原深度方案按需复用。明确排除交互可靠性与资料更新后的知识一致性。用户已授权开始实施及执行/报告接入，仍要求只写代码和逻辑，暂不运行和测试；模型调用未恢复。[首批代码交接](deepeval-public-starter-implementation.md)与[执行报告说明](deepeval-public-starter-orchestration.md)记录未验证实现和后续边界。
 
 - 2026-09-10 起暂停在线 benchmark 与自动触发，恢复运行需用户重新提出；当前在新分支整理产品能力矩阵、数据协议、真实样例和离线实施计划，入口为 [产品能力评测方案](product-capability-evaluation-plan.md)。

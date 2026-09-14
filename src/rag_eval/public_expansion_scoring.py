@@ -1,23 +1,22 @@
-"""Offline scorers for the public benchmark expansion.
+"""Diagnostic parsing and Product applicability for expansion suites.
 
-These helpers deliberately operate on saved text and annotations only.  They do
-not construct a model or call DeepEval; the Native runner can bind the
-corresponding official template when it is available.
+Official Native scoring lives in public_expansion_native.score_prediction and
+requires a frozen case, request and SDK manifest. These compatibility helpers
+never return a benchmark score or claim semantic TruthfulQA correctness.
 """
 from __future__ import annotations
 
-import re
-from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
+from .public_expansion_protocol import EXPANSION_SUITES, normalize_answer
 
 PRODUCT_SUPPORTED = frozenset({"squad", "drop", "boolq"})
-PRODUCT_UNSUPPORTED = frozenset({"mmlu", "gsm8k", "truthfulqa", "hellaswag", "bbh", "bigbenchhard"})
+PRODUCT_UNSUPPORTED = frozenset({*EXPANSION_SUITES, "bigbenchhard"})
 
 
 def _text(value: Any) -> str:
     if isinstance(value, str):
-        return value.strip()
+        return value
     if isinstance(value, (list, tuple)) and len(value) == 1:
         return _text(value[0])
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -25,134 +24,67 @@ def _text(value: Any) -> str:
     return ""
 
 
-def _status(score: float | None, *, normalized: Any = None, raw: Any = None,
-            reason: str | None = None, **extra: Any) -> dict[str, Any]:
-    result = {"status": "scored" if score is not None else "unparsed",
-              "score": score, "normalized_answer": normalized,
-              "raw_answer": raw, "reason": reason}
-    result.update(extra)
-    return result
-
-
 def normalize_mmlu_label(value: Any) -> str | None:
-    """Extract one multiple-choice label, preserving deterministic precedence.
-
-    A standalone label on the first non-empty line or after a conventional
-    ``final answer`` marker wins.  Otherwise an unambiguous standalone A-D
-    token is accepted; prose containing multiple choices is unparsed.
-    """
-    text = _text(value)
-    if not text:
-        return None
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    for line in lines:
-        match = re.fullmatch(r"(?:final\s+answer\s*[:\-]?\s*)?([A-D])(?:[.)]|\s*)", line, re.I)
-        if match:
-            return match.group(1).upper()
-    marked = re.findall(r"\b(?:final\s+answer|answer)\s*[:\-]\s*([A-D])\b", text, re.I)
-    if marked:
-        return marked[-1].upper() if len(set(x.upper() for x in marked)) == 1 else None
-    tokens = re.findall(r"\b([A-D])\b", text, re.I)
-    return tokens[0].upper() if len(tokens) == 1 else None
-
-
-def score_mmlu(prediction: Any, expected: Any) -> dict[str, Any]:
-    expected_label = normalize_mmlu_label(expected)
-    predicted_label = normalize_mmlu_label(prediction)
-    if expected_label is None:
-        raise ValueError("MMLU expected answer must contain a single A-D label")
-    if predicted_label is None:
-        return _status(None, normalized=None, raw=prediction,
-                       reason="could not deterministically parse one MMLU label",
-                       expected_label=expected_label)
-    return _status(float(predicted_label == expected_label), normalized=predicted_label,
-                   raw=prediction, expected_label=expected_label)
-
-
-_NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
+    return normalize_answer("mmlu", _text(value))["normalized_answer"]
 
 
 def normalize_gsm8k_number(value: Any) -> str | None:
-    """Extract GSM8K's final numeric answer (``#### n`` when present)."""
-    text = _text(value).replace(",", "")
-    if not text:
-        return None
-    marked = re.findall(r"####\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)", text)
-    candidates = marked or _NUMBER.findall(text)
-    if not candidates:
-        return None
-    try:
-        number = Decimal(candidates[-1])
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-    if not number.is_finite():
-        return None
-    # Decimal operations use the process context and can silently round long
-    # GSM8K integers.  Normalize under a precision sized to the parsed value.
-    with localcontext() as context:
-        context.prec = max(len(number.as_tuple().digits), 1)
-        return format(number.normalize(), "f")
+    return normalize_answer("gsm8k", _text(value))["normalized_answer"]
+
+
+def _diagnostic(suite: str, prediction: Any, expected: Any, *, task: str | None = None) -> dict[str, Any]:
+    parsed = normalize_answer(suite, _text(prediction), task=task)
+    expected_parsed = normalize_answer(suite, _text(expected), task=task)
+    left, right = parsed["normalized_answer"], expected_parsed["normalized_answer"]
+    return {
+        "status": "diagnostic", "score": None, "score_kind": "diagnostic_only",
+        "diagnostic_score": float(left == right) if left is not None and right is not None else None,
+        "normalization": parsed, "normalized_answer": left, "raw_answer": prediction,
+        "reason": "Recovery normalization is not the official Native scoring protocol",
+    }
+
+
+def score_mmlu(prediction: Any, expected: Any) -> dict[str, Any]:
+    """Compatibility diagnostic; use the frozen Native API for official scores."""
+    return _diagnostic("mmlu", prediction, expected)
 
 
 def score_gsm8k(prediction: Any, expected: Any) -> dict[str, Any]:
-    expected_number = normalize_gsm8k_number(expected)
-    predicted_number = normalize_gsm8k_number(prediction)
-    if expected_number is None:
-        raise ValueError("GSM8K expected answer must contain a finite number")
-    if predicted_number is None:
-        return _status(None, normalized=None, raw=prediction,
-                       reason="could not deterministically parse GSM8K final number",
-                       expected_number=expected_number)
-    return _status(float(predicted_number == expected_number), normalized=predicted_number,
-                   raw=prediction, expected_number=expected_number)
+    """Compatibility diagnostic; normalized numeric equality is not SDK accuracy."""
+    return _diagnostic("gsm8k", prediction, expected)
 
 
 def score_truthfulqa(prediction: Any, expected: Any, *, behavior_label: str | None = None,
                      evidence: Any = None) -> dict[str, Any]:
-    """Score answer matching while keeping behavior and evidence review fields separate.
-
-    TruthfulQA's correction/refusal behavior is a human-review dimension; it is
-    intentionally not folded into the deterministic answer score.
-    """
-    answer = _text(prediction)
-    if isinstance(expected, dict):
-        # Accept common local adapter shapes without coupling this scorer to a
-        # particular TruthfulQA export format.
-        references = (expected.get("answers") or expected.get("reference_answers")
-                      or expected.get("mc1_targets") or expected.get("reference_answer") or [])
-        if isinstance(references, dict):
-            references = references.get("choices") or references.get("refs") or []
-    else:
-        references = expected if isinstance(expected, list) else [expected]
-    refs = {_text(item).casefold() for item in references if _text(item)}
-    if not answer:
-        return _status(None, normalized=None, raw=prediction, reason="empty answer",
-                       behavior_label=behavior_label, evidence=evidence)
-    score = float(answer.casefold() in refs) if refs else None
-    return _status(score, normalized=answer, raw=prediction,
-                   reason=None if score is not None else "no usable TruthfulQA reference",
-                   behavior_label=behavior_label, evidence=evidence,
-                   applicability="exact reference matching only; semantic truthfulness and refusal behavior require human review")
+    """Preserve optional human-review annotations without fabricating a grade."""
+    return {
+        "status": "not_applicable", "score": None, "score_kind": "diagnostic_only",
+        "raw_answer": prediction, "normalized_answer": None,
+        "behavior_label": behavior_label, "evidence": evidence,
+        "annotation_status": "caller_supplied_unverified",
+        "reason": "TruthfulQA Native requires frozen MC1 choices and the official SDK scorer",
+        "applicability": "free-text semantic truthfulness and refusal behavior require separate human review",
+    }
 
 
 def product_applicability(suite: str) -> dict[str, Any]:
-    """Return explicit Product applicability; unsupported suites are not zeroes."""
+    """Unsupported Product suites are explicit N/A, never failed benchmark items."""
     if suite in PRODUCT_SUPPORTED:
         return {"status": "applicable", "applicable": True, "reason": None}
     if suite in PRODUCT_UNSUPPORTED:
+        info = EXPANSION_SUITES.get(suite, EXPANSION_SUITES["bbh"])
         return {"status": "not_applicable", "applicable": False,
-                "reason": f"Product adapter is not implemented for {suite}; Native-only scoring"}
+                "product_candidate": info["product_candidate"], "reason": info["product_reason"]}
     return {"status": "not_applicable", "applicable": False,
             "reason": f"unknown Product suite: {suite}"}
 
 
 def score_expansion(suite: str, prediction: Any, expected: Any, **kwargs: Any) -> dict[str, Any]:
-    scorers = {"mmlu": score_mmlu, "gsm8k": score_gsm8k, "truthfulqa": score_truthfulqa}
-    scorer = scorers.get(suite)
-    if scorer is None:
-        return {"status": "not_applicable", "score": None,
-                "reason": f"no expansion scorer for suite: {suite}",
-                "raw_answer": prediction}
-    if suite != "truthfulqa":
-        kwargs = {}
-    return scorer(prediction, expected, **kwargs)
+    """Legacy diagnostic dispatcher; intentionally cannot yield an official score."""
+    if suite == "truthfulqa":
+        return score_truthfulqa(prediction, expected, behavior_label=kwargs.get("behavior_label"),
+                               evidence=kwargs.get("evidence"))
+    if suite in EXPANSION_SUITES:
+        return _diagnostic(suite, prediction, expected, task=kwargs.get("task"))
+    return {"status": "not_applicable", "score": None,
+            "reason": f"unknown expansion suite: {suite}", "raw_answer": prediction}

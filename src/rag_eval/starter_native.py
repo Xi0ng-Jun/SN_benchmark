@@ -5,7 +5,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 
 from .artifacts import digest
-from .public_expansion_scoring import score_expansion
+from .public_expansion_protocol import EXPANSION_SUITES
 from .starter_protocol import SDK_VERSION, fingerprint, make_case
 
 
@@ -14,6 +14,10 @@ def check_sdk(manifest):
     if dist.version != SDK_VERSION or manifest["deepeval_version"] != SDK_VERSION:
         raise ValueError("DeepEval version changed; freeze a new protocol")
     root = Path(dist.locate_file("deepeval"))
+    if manifest.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_native import validate_sdk_snapshot
+        validate_sdk_snapshot(root, manifest)
+        return root
     expected = manifest.get("sdk_source_hashes")
     if not expected:
         raise ValueError("Frozen SDK hashes required")
@@ -26,6 +30,9 @@ def check_sdk(manifest):
 
 def build_request(case, manifest):
     """Return serializable request plus Pydantic schema, using native templates."""
+    if case.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_native import build_request as build_expansion_request
+        return build_expansion_request(case, manifest)
     check_sdk(manifest)
     from deepeval.benchmarks import schema as schemas
 
@@ -105,27 +112,9 @@ def score_prediction(case, request, prediction, manifest, *, judge=None, instruc
     """
     if not isinstance(prediction, str):
         raise ValueError("Prediction must be the schema-parsed answer as text")
-    # Expansion requests are prepared by the expansion source adapter.  Keep
-    # their deterministic answer checks independent from the legacy starter
-    # request reconstruction until those suites receive frozen SDK templates.
-    if case.get("suite") in {"mmlu", "gsm8k", "truthfulqa"}:
-        suite = case["suite"]
-        if not isinstance(request, dict) or request.get("suite") != suite or request.get("case_id") != case.get("case_id"):
-            raise ValueError("Prediction request does not match the expansion case")
-        expected = case.get("references")
-        if not isinstance(expected, list) or not expected:
-            raise ValueError("Expansion case has no frozen references")
-        # Requests are untrusted serialized inputs.  Their expected output must
-        # equal the canonical representation derived from the frozen case, and
-        # the scorer always receives the case references below.
-        canonical_expected = expected if suite == "truthfulqa" else expected[0]
-        if "expected_output" in case and case["expected_output"] != canonical_expected:
-            raise ValueError("Expansion case expected output differs from frozen references")
-        if request.get("expected_output") != canonical_expected:
-            raise ValueError("Expansion request expected output differs from frozen case")
-        return score_expansion(suite, prediction, expected,
-                               behavior_label=request.get("behavior_label"),
-                               evidence=request.get("evidence"))
+    if case.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_native import score_prediction as score_expansion_prediction
+        return score_expansion_prediction(case, request, prediction, manifest)
     root = check_sdk(manifest)
     rebuilt, _ = build_request(case, manifest)
     if request != rebuilt:

@@ -1,14 +1,20 @@
 # 评测状态
 
-更新时间：2026-09-11
+更新时间：2026-09-13
 
 ## 公开 Benchmark 与 Agent 扩展设计
 
-Task 1–5 的离线协议、source adapter、scorer、报告字段和审计入口已实现；新增数据尚未下载冻结，在线 Native/Product/Agent 运行仍未执行。离线审计脚本为 `scripts/check_public_expansion_offline.py`。
+最新工作为[公开题的 SN 系统接入](sn-public-system-adaptation.md)，实施入口为[系统适配计划](superpowers/plans/2026-09-13-sn-public-system.md)。七套新系统路径的代码与回归用例已写入，并完成独立静态审阅；仅执行补丁空白检查，未运行测试、SN、SDK 评分或任何在线模型调用，不代表运行验收通过。改动保留在当前分支，尚未提交。
 
-已形成[阶段设计](public-benchmark-agent-expansion-design.md)：拟增加 MMLU、GSM8K、TruthfulQA，并先以 Native 形式覆盖 HellaSwag、BIG-Bench Hard；结果协议预留 `trace`，未来用于 DeepEval trajectory/component metrics。当前仅完成设计，新增数据、代码、在线 Ask 和 Agent 轨迹均未运行或验证。
+此前将 Task 1–5 全部勾选为完成不准确：新增 Native 请求尚未接通，Product 不适用分支也不能完整落盘。本轮按[代码补齐计划](superpowers/plans/2026-09-13-expansion-code-completion.md)修正这些缺口；代码和回归用例仅作静态审阅，未运行测试或应用，不代表验收通过。
 
-当前状态更准确地说是：公开扩展的离线协议、来源字段与哈希校验、suite/适用性检查、确定性答案归一化、结果报告以及 `scripts/check_public_expansion_offline.py` 审计入口已经写入代码，但尚未冻结新增题目数据，也没有运行或验证 Native、Product、模型或 Agent 轨迹实验。离线审计只读取本地 JSON/JSONL，不下载数据、不调用模型或 Silicon Notebook。
+新增 MMLU、GSM8K、TruthfulQA MC1、HellaSwag、BIG-Bench Hard 的 Native 请求与官方 scorer 分派，使用 `public-expansion-v2` 冻结原始数据、答案映射和 SDK 源码/资源身份。旧扩展 v1 bundle 不自动迁移，需要以后重新准备；原五套 `public-starter-v1` 保留兼容路径。归一化结果只供诊断，不能替换官方 scorer 的原始答案输入。
+
+此前新增五套 Product 的 N/A 记录现在保留在显式 legacy 路径。新 `sn-public-system-v1` 为 LogiQA/GSM8K/BBH/MMLU/TruthfulQA MC1/HellaSwag/IFEval 增加正常 SN Ask：LogiQA 使用配套文章，其余导入原题面和候选项，不导入解答或正确标签。无需自行配教材或填写虚构的人审意见。新系统适配由独立 registry 声明，冻结 Native manifest 的 product=False 不修改。
+
+新路径保存原生澄清、无答案、错误、答案正文与引用；文本拒答只作待核验候选。主指标为适配后的官方客观 scorer/IFEval verifier，诊断引用和资料覆盖分开，不默认加 Faithfulness。IFEval 缺少参数匹配的规则审核时评分 N/A，真实回答仍保留。Agent 和 DAG 指标未接入；当前读取到的 reasoning_trace 至多标记 partial，完整度不是 Agent 分数。离线审计入口为 `scripts/check_public_expansion_offline.py`。
+
+新增数据尚未冻结，Native/Product/Agent 实验均未执行；生产、旧 baseline 和 timer 保持原状态。阶段边界见[扩展设计](public-benchmark-agent-expansion-design.md)。
 
 此前已完成 DeepEval 调研与环境链路验证。SQuAD / DROP 两模式持续评测曾获授权执行，现已暂停；当前授权工作已推进到公开起步方案的代码与逻辑实现，用户要求本轮不运行和测试。既有实验不充当质量基线。
 
@@ -80,7 +86,7 @@ Task 1–5 的离线协议、source adapter、scorer、报告字段和审计入�
 
 ## 当前开发重点
 
-具体在线评分任务继续暂停。当前先冻结 DeepEval 公开 benchmark 的题目与评分协议，设计最小离线适配，再在用户恢复在线任务后建立模型参照及产品评测。SQuAD/DROP 复用既有基础，BoolQ 为首个新增产品题型；LogiQA/IFEval 先作模型参照。之后再设计真实业务人工核验集。公开成绩不作为产品领域质量的唯一依据。
+具体在线评分任务继续暂停。当前已为七套公开题编写 SN 系统适配，SQuAD/DROP/BoolQ 沿用已有产品路径；此前 LogiQA/IFEval 仅作模型参照的安排已由新系统协议扩展。下一步在允许执行后先做离线回归，再冻结小样本，在恢复在线任务后建立模型参照及产品评测。之后再设计真实业务人工核验集。公开成绩不作为产品领域质量的唯一依据。
 
 ## 历史候选试运行与限时更正
 

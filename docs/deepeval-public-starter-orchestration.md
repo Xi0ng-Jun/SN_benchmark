@@ -1,5 +1,7 @@
 # 公开起步方案：执行与报告入口
 
+2026-09-13 增补：[SN 系统接入](sn-public-system-adaptation.md)为七套新产品任务增加 `sn-public-system-v1`；默认 R 自动选择，使用 SN 服务配置而非 `--models`，无需原三套的人审文件。`--product-protocol legacy` 保留旧路径。下文描述原五套首批流程，原三套产品审核要求不变；所有新代码仍未执行验证。
+
 2026-09-10：本轮已编写执行编排和报告入口，**没有运行新代码、没有测试、没有新评测成绩**。这些命令说明供后续使用，当前在线暂停要求仍有效。
 
 本轮续接[首批实现](deepeval-public-starter-implementation.md)，对应[编排实施计划](superpowers/plans/2026-09-10-public-starter-orchestration.md)。不改生产项目和历史 baseline/smoke 入口，不恢复 timer。

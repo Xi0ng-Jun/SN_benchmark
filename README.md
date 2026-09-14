@@ -26,11 +26,25 @@ Git 保存源码、测试、配置、冻结的公开样本、学习材料及结�
 
 ## 当前扩展阶段
 
-阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](docs/public-benchmark-agent-expansion-design.md)：第一批候选为 MMLU、GSM8K、TruthfulQA、HellaSwag 和 BIG-Bench Hard，并为未来 Agent trace 预留协议。公开扩展的本地协议、来源适配、确定性评分、结果报告和离线审计逻辑已实现；题目数据尚未冻结，Native、Product 和 Agent 实验均未运行或验证。可对已保存的 bundle 或 run 工件执行纯本地检查：
+阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](docs/public-benchmark-agent-expansion-design.md)。本轮补齐 MMLU、GSM8K、TruthfulQA MC1、HellaSwag 和 BIG-Bench Hard 的 Native 请求与官方评分分派，以及 Product 不适用记录、来源重建和报告兼容逻辑，详见[代码补齐计划](docs/superpowers/plans/2026-09-13-expansion-code-completion.md)。**代码和回归用例尚未执行验证，新增数据未冻结。**
+
+当前转入[SN 系统接入](docs/sn-public-system-adaptation.md)：在保留模型参照的基础上，为 LogiQA、GSM8K、BBH、MMLU、TruthfulQA MC1、HellaSwag、IFEval 编写 `sn-public-system-v1`。LogiQA 导入配套阅读材料；其他套件导入不含解答的原始题面，通过正常 SN Ask 分别测推理、知识/常识和指令遵循。候选选项不作为事实证据，IFEval 保留原始 prompt 和完整答案正文。
+
+新七套的 R 路径默认使用系统协议；`--product-protocol legacy` 才保留之前的 N/A 记录。SQuAD/DROP/BoolQ 沿用原产品适配。新系统路径使用隔离 SN 模型服务配置，不要求 `--models` 或伪造人审标签。冻结数据中的旧 product=False 不回填，当前能力由独立 adapter registry 定义。**本阶段代码与回归用例未运行，尚未验收。** Agent/DAG 指标未接入；在线、baseline 和 timer 继续暂停。
+
+扩展数据仍使用 `public-expansion-v2`，旧扩展 bundle 需重新准备，原五套起步数据协议保持兼容。以下为后续验证入口，本轮未执行：
 
 ```bash
 .venv/bin/python scripts/check_public_expansion_offline.py /path/to/bundle-or-run
 ```
+
+系统运行入口示例（会调用 SN 和模型，本轮不执行）：
+
+```bash
+.venv/bin/python scripts/run_public_starter.py --bundle /path/to/gsm8k-bundle --track R --mode chunk --product-protocol sn-public-system-v1 --run-dir var/public-starter/NEW_SYSTEM_RUN
+```
+
+每个 suite/mode 使用新运行目录、独立 notebook，每题独立会话。IFEval 的 `--instruction-audits` 只控制规则评分可用性，缺少审核时仍保留真实 Ask 输出和 N/A 分数。实现与静态审阅进度见[实施计划](docs/superpowers/plans/2026-09-13-sn-public-system.md)。
 
 ## SQuAD / DROP 持续评测
 

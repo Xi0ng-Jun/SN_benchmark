@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from .artifacts import digest, save_json, save_jsonl
 from .starter_product import check_boolq, product_bundle
-from .starter_protocol import fingerprint, load_bundle
+from .starter_protocol import SUITES, fingerprint, load_bundle
 from .starter_results import EventJournal, planned_result, result_record
 from .public_expansion_protocol import EXPANSION_SUITES, TraceEnvelope, normalize_answer
 
@@ -116,6 +116,51 @@ def product_predictions(run, cases, bundle, mode, repo, outputs):
         outputs(output)
 
 
+def system_predictions(run, cases, bundle, mode, repo, outputs):
+    from .benchmark_runtime import prepare_notebook
+    from .system_runtime import run_system_question
+    from .system_scoring import parse_system_answer
+    from .usage_capture import capture_usage
+    from app.core.llm_logging import LLMInteractionLogger
+    cell = run / "product-artifacts"
+    cell.mkdir()
+    by_case = {c["case_id"]: c for c in cases}
+    update_state(run, "importing")
+    usage = {}
+    try:
+        with capture_usage(LLMInteractionLogger) as usage:
+            notebook, mapping = prepare_notebook(repo, cell, bundle["documents"], bundle["manifest"]["suite"])
+    finally:
+        save_json(run / "preparation-usage.json", usage)
+    with EventJournal(cell / "attempts.jsonl") as attempts:
+        for question in bundle["questions"]:
+            update_state(run, "asking", case_id=question["case_id"])
+            attempts({"event": "started", "case_id": question["case_id"], "mode": mode})
+            try:
+                record = run_system_question(repo, notebook, question, mode, mapping)
+            except Exception as exc:
+                record = {**question, "status": "error", "answer": "", "response": {},
+                          "reason": "product capture failed; inspect isolated product logs",
+                          "error_type": type(exc).__name__, "trace": TraceEnvelope.missing().to_dict(),
+                          "behavior": {"kind": "error", "method": "runtime_state", "human_label": None}}
+            extraction = {"status": "not_attempted", "value": None, "reason": "no normal system answer"}
+            if record["status"] == "success":
+                try:
+                    extraction = parse_system_answer(by_case[question["case_id"]], record["answer"])
+                except Exception as exc:
+                    extraction = {"status": "error", "value": None, "reason": "answer extraction failed",
+                                  "error_type": type(exc).__name__}
+            outputs({"case_id": question["case_id"], "sample_id": question["sample_id"],
+                     "suite": question["suite"], "task": question["task"],
+                     "product_protocol": question["product_protocol"], "material_role": question["material_role"],
+                     "status": record["status"], "output_available": bool(record.get("answer", "").strip()),
+                     "prediction": record.get("answer", ""), "product_record": record,
+                     "answer_extraction": extraction,
+                     "trace": record["trace"], "behavior": record["behavior"], "reason": record.get("reason")})
+            attempts({"event": "finished", "case_id": question["case_id"], "mode": mode,
+                      "status": record["status"]})
+
+
 def _product_score(record, scorer, judge, result_id):
     if scorer == BOOLQ_SCORER:
         return check_boolq(record["answer"], record["expected_answer"], product_status=record["status"])
@@ -130,6 +175,8 @@ def _product_score(record, scorer, judge, result_id):
         return {"status": "scored", "score": len(gold & set(covered)) / len(gold),
                 "details": {"gold": sorted(gold), "observed": covered, "ranking_available": False}}
     if scorer == CITATIONS:
+        if "deterministic" not in record:
+            return {"status": "not_applicable", "score": None, "reason": "citation object checks unavailable"}
         checks = record["deterministic"]
         if not checks["citation_count"]:
             return {"status": "not_applicable", "score": None, "reason": "no citation objects; absence is not a passing score"}
@@ -162,11 +209,15 @@ def score_outputs(run, source, cases, planned, judge, audits, scores):
         update_state(run, "scoring", case_id=item["case_id"], scorer=item["scorer"])
         output = outputs.get(item["case_id"])
         details = {"output_file": "outputs.jsonl", "case_id": item["case_id"]}
+        if output:
+            details["behavior"] = output.get("behavior")
+            details["answer_extraction"] = output.get("answer_extraction")
         available = bool(output and output["output_available"])
         if output is None or output["status"] != "success":
             status = "not_applicable" if output and output["status"] == "not_applicable" else "unscored"
             scores(result_record(item, status=status, output_available=available,
-                                 reason=output.get("reason", "prediction unavailable") if output else "prediction missing", details=details))
+                                 reason=output.get("reason") or "prediction unavailable" if output else "prediction missing",
+                                 trace=output.get("trace") if output else None, details=details))
             continue
         started = time.monotonic()
         with capture_usage(LLMInteractionLogger) as usage:
@@ -179,43 +230,71 @@ def score_outputs(run, source, cases, planned, judge, audits, scores):
                     else:
                         result = score_prediction(by_case[item["case_id"]], output["request"], output["prediction"], source,
                                                   instruction_audits=audits)
+                elif item.get("metric_role") == "primary" and item.get("product_protocol"):
+                    from .system_scoring import score_system_answer
+                    result = score_system_answer(by_case[item["case_id"]], output["prediction"], source,
+                                                 instruction_audits=audits)
                 else:
                     result = _product_score(output["product_record"], item["scorer"], judge, item["result_id"])
                 row = result_record(item, status=result["status"], score=result["score"],
                                     reason=result.get("reason"), output_available=available,
-                                    normalized_answer=result.get("normalized_answer"),
-                                    trace=result.get("trace"), details={**details, "scorer_result": result})
+                                    normalized_answer=result.get("normalization", result.get("normalized_answer")),
+                                    trace=result.get("trace", output.get("trace")), details={**details, "scorer_result": result})
             except Exception as exc:
                 row = result_record(item, status="error", output_available=available,
                                     reason="scorer invocation or validation error",
+                                    trace=output.get("trace"),
                                     details={**details, "error_type": type(exc).__name__})
         row["details"].update(seconds=time.monotonic() - started, usage=usage)
         scores(row)
 
 
-def execute(*, root, project, bundle_dir, run, track, mode, models_path, reviews_path=None, audits_path=None):
+def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, reviews_path=None,
+            audits_path=None, product_protocol=None):
     """One explicit execution, no implicit resume. No callers run this at import."""
-    from .starter_runtime import configure_environment, make_adapter, resolve_models, snapshot_sources
+    root, project, bundle_dir, run = (Path(p).resolve() for p in (root, project, bundle_dir, run))
+    if track not in {"N", "R"} or (track == "N" and mode is not None) or (track == "R" and mode not in {"chunk", "reasoning"}):
+        raise ValueError("N requires no mode; R requires chunk or reasoning")
+    for forbidden in (root / "src", root / "scripts", project, bundle_dir):
+        if run.is_relative_to(forbidden) or forbidden.is_relative_to(run):
+            raise ValueError("Run directory must be separate from source/product/frozen input")
+    if run.exists():
+        raise ValueError("Use a new run directory; implicit resume is not supported")
     source, cases = load_bundle(bundle_dir)
     if not cases:
         raise ValueError("Frozen selection is empty; no execution possible")
+    info = {**SUITES, **EXPANSION_SUITES}[source["suite"]]
+    from .system_product import SYSTEM_VERSION, SYSTEM_SUITES, build_system_bundle
+    if product_protocol not in {None, "legacy", SYSTEM_VERSION} or (track == "N" and product_protocol is not None):
+        raise ValueError("Product protocol applies only to R and must be legacy or " + SYSTEM_VERSION)
+    system_track = track == "R" and (product_protocol == SYSTEM_VERSION or (
+        product_protocol is None and source["suite"] in SYSTEM_SUITES))
+    if system_track and source["suite"] not in SYSTEM_SUITES:
+        raise ValueError("This suite uses the existing legacy product adaptation")
+    if track == "R" and not system_track and not info["product"]:
+        if audits_path is not None or reviews_path is not None:
+            raise ValueError("Unsupported Product suite does not accept reviews or instruction audits")
+        from .starter_not_applicable import record_not_applicable
+        return record_not_applicable(root=root, bundle_dir=bundle_dir, source=source,
+                                     cases=cases, run=run, mode=mode,
+                                     reason=("Legacy Product protocol has no adapter for this suite; use " + SYSTEM_VERSION
+                                             if source["suite"] in SYSTEM_SUITES else
+                                             info.get("product_reason") or "Product adapter is not implemented for this suite"))
+    if models_path is None and not system_track:
+        raise ValueError("Executable N/R cells require an explicit model configuration")
     product = None
-    if track == "R":
-        if source["suite"] not in {"squad", "drop", "boolq"}:
-            if mode not in {"chunk", "reasoning"}:
-                raise ValueError("R requires mode chunk or reasoning")
-            # Unsupported expansion suites are represented explicitly as N/A.
-            product = {"manifest": {"product_applicability": "not_applicable",
-                                     "reason": f"Product adapter is not implemented for {source['suite']}"},
-                       "questions": []}
-            cases = []
-        else:
-            if mode not in {"chunk", "reasoning"} or reviews_path is None:
-                raise ValueError("R requires mode and human suitability reviews")
-            raw = read_rows(bundle_dir / "raw.jsonl")
-            field = "context" if source["suite"] == "squad" else "passage"
-            reviews = json.loads(reviews_path.read_text(encoding="utf-8"))
-            product = product_bundle(cases, reviews, [r[field] for r in raw])
+    if system_track:
+        if reviews_path is not None or models_path is not None:
+            raise ValueError("New system protocol uses frozen task fields and SN model services; omit --reviews and --models")
+        product = build_system_bundle(cases, source)
+        product["manifest"]["source_manifest_sha256"] = digest(bundle_dir / "manifest.json")
+    elif track == "R":
+        if reviews_path is None:
+            raise ValueError("R requires human suitability reviews")
+        raw = read_rows(bundle_dir / "raw.jsonl")
+        field = "context" if source["suite"] == "squad" else "passage"
+        reviews = json.loads(Path(reviews_path).read_text(encoding="utf-8"))
+        product = product_bundle(cases, reviews, [r[field] for r in raw])
         product["manifest"]["source_manifest_sha256"] = digest(bundle_dir / "manifest.json")
         product["manifest"]["distractor_provenance"] = "same frozen raw.jsonl in original order"
         eligible = {q["case_id"] for q in product["questions"]}
@@ -224,21 +303,20 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path, reviews
             raise ValueError("No product questions approved with usable official annotations")
     elif track != "N" or mode is not None or reviews_path is not None:
         raise ValueError("N has no product mode or suitability reviews")
-    roles = (["tested"] if track == "N" else []) + (["judge"] if track == "R" or source["suite"] == "squad" else [])
-    resolved, public_models = resolve_models(models_path, roles)
-    if audits_path is not None and (track != "N" or source["suite"] != "ifeval"):
-        raise ValueError("Instruction audits apply only to IFEval N")
+    from .starter_runtime import configure_environment, make_adapter, resolve_models, snapshot_sources
+    roles = [] if system_track else (["tested"] if track == "N" else []) + (
+        ["judge"] if track == "R" or source["suite"] == "squad" else [])
+    resolved, public_models = resolve_models(models_path, roles) if roles else ({}, {})
+    if audits_path is not None and (source["suite"] != "ifeval" or not (track == "N" or system_track)):
+        raise ValueError("Instruction audits apply only to IFEval Native or system protocol")
     audits = read_rows(audits_path) if audits_path else []
-    for forbidden in (root / "src", root / "scripts", project, bundle_dir):
-        if run.is_relative_to(forbidden) or forbidden.is_relative_to(run):
-            raise ValueError("Run directory must be separate from source/product/frozen input")
     run.mkdir(parents=True, exist_ok=False)
     update_state(run, "initializing")
     try:
         shutil.copytree(bundle_dir, run / "input")
         # Recheck the copied bytes, so later phases use only the pinned input.
-        copied_source, _ = load_bundle(run / "input")
-        if copied_source != source:
+        copied_source, copied_cases = load_bundle(run / "input")
+        if copied_source != source or (system_track and copied_cases != cases):
             raise ValueError("Frozen source changed during copying")
         save_jsonl(run / "instruction-audits.jsonl", audits)
         if product:
@@ -256,12 +334,24 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path, reviews
         protocol_id = fingerprint({**identity, "mode": mode})
         scorers = ([BOOLQ_SCORER if source["suite"] == "boolq" else PRODUCT_CORRECTNESS,
                     FAITHFULNESS, EVIDENCE, CITATIONS] if track == "R" else [source["scorer"]])
-        planned = [planned_result(c, run_id=run.name, protocol_id=protocol_id, track=track, mode=mode, scorer=scorer)
-                   for c in cases for scorer in scorers]
+        plan_cases = cases
+        if system_track:
+            from .system_scoring import primary_scorer
+            primary = primary_scorer(source["suite"])
+            scorers = [primary, CITATIONS] + ([EVIDENCE] if source["suite"] == "logiqa" else [])
+            questions = {q["case_id"]: q for q in product["questions"]}
+            plan_cases = [{**c, "product_protocol": SYSTEM_VERSION,
+                           "material_role": questions[c["case_id"]]["material_role"],
+                           "product_review": {"status": "applicable", "reason": "deterministic public-task adaptation; human calibration pending"}}
+                          for c in cases]
+        planned = [planned_result({**c, **({"metric_role": "primary" if scorer == primary else "diagnostic"} if system_track else {})},
+                                  run_id=run.name, protocol_id=protocol_id, track=track, mode=mode, scorer=scorer)
+                   for c in plan_cases for scorer in scorers]
         save_jsonl(run / "planned.jsonl", planned)
         save_json(run / "manifest.json", {"format": "public-starter-run-v1", "run_id": run.name,
                   "suite": source["suite"], "track": track, "mode": mode, "protocol_id": protocol_id,
                   "pairing_id": pairing_id, "models": public_models, "source_manifest": source,
+                  "product_protocol": SYSTEM_VERSION if system_track else ("legacy" if track == "R" else None),
                   "planned_sha256": digest(run / "planned.jsonl"), "planned_predictions": len(cases),
                   "planned_scores": len(planned), "human_calibration": "pending", "release_gate": False,
                   "adaptation_counts": dict(Counter(d["status"] for d in product["decisions"])) if product else None,
@@ -282,7 +372,10 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path, reviews
                 stack.callback(repo.close)
                 if repo.db_path.resolve() != run / "runtime/database.db":
                     raise ValueError("Product database isolation failed")
-                product_predictions(run, cases, product, mode, repo, outputs)
+                if system_track:
+                    system_predictions(run, cases, product, mode, repo, outputs)
+                else:
+                    product_predictions(run, cases, product, mode, repo, outputs)
             score_outputs(run, source, cases, planned, adapters.get("judge"), audits, scores)
         rows = read_rows(run / "scores.jsonl")
         output_rows = read_rows(run / "outputs.jsonl")

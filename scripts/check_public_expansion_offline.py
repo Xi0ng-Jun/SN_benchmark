@@ -8,7 +8,6 @@ JSON artifacts for truthful trace envelopes and applicability values.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -17,7 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from rag_eval.public_expansion_protocol import EXPANSION_SUITES, TraceEnvelope
+from rag_eval.public_expansion_protocol import EXPANSION_SUITES, EXPANSION_VERSION, TraceEnvelope
 
 _HASH_FIELDS = ("origin_sha256", "export_sha256")
 _HASH_RE = set("0123456789abcdef")
@@ -38,8 +37,8 @@ def audit_manifest(manifest: Any, *, path: str = "manifest.json") -> list[dict[s
     if not isinstance(manifest, dict):
         return [_error("manifest_not_object", path)]
     suite = manifest.get("suite")
-    info = EXPANSION_SUITES.get(suite)
-    if manifest.get("protocol_version") != "public-starter-v1":
+    info = EXPANSION_SUITES.get(suite) if isinstance(suite, str) else None
+    if manifest.get("protocol_version") != EXPANSION_VERSION:
         errors.append(_error("unsupported_protocol", f"{path}.protocol_version"))
     if info is None:
         errors.append(_error("unknown_suite", f"{path}.suite", value=suite))
@@ -61,6 +60,17 @@ def audit_manifest(manifest: Any, *, path: str = "manifest.json") -> list[dict[s
         if source.get("dataset") != info["dataset"] or source.get("split") != info["split"]:
             errors.append(_error("suite_source_mismatch", f"{path}.source", suite=suite))
 
+    artifacts = manifest.get("artifacts")
+    required = {"raw.jsonl", "cases.jsonl", "instruction-audit.jsonl", "cards.md"}
+    if not isinstance(artifacts, dict) or not required <= artifacts.keys():
+        errors.append(_error("incomplete_artifacts", f"{path}.artifacts"))
+    elif any(not isinstance(k, str) or not _is_sha256(v) for k, v in artifacts.items()):
+        errors.append(_error("invalid_artifact_hash", f"{path}.artifacts"))
+    sdk = manifest.get("sdk_source_hashes")
+    if not isinstance(sdk, dict) or not sdk or any(not _is_sha256(v) for v in sdk.values()):
+        errors.append(_error("missing_sdk_identity", f"{path}.sdk_source_hashes"))
+    if manifest.get("release_gate") is not False:
+        errors.append(_error("uncalibrated_release_gate", f"{path}.release_gate"))
     if manifest.get("scorer") != info["scorer"]:
         errors.append(_error("suite_scorer_mismatch", f"{path}.scorer", suite=suite))
 
@@ -109,55 +119,73 @@ def _load_json(path: Path) -> Any:
 
 
 def audit_path(path: str | Path) -> dict[str, Any]:
-    """Audit a manifest, bundle directory, or saved JSON run artifact."""
-    path = Path(path)
+    """Rebuild bundles and validate run ledgers; generic files only scan trace fields."""
+    path = Path(path).resolve()
     errors: list[dict[str, Any]] = []
     checked: list[str] = []
+    scope = "trace_fields_only"
+    if not path.exists():
+        return {"path": str(path), "scope": scope, "checked": [],
+                "errors": [_error("missing_path", str(path))]}
+    if path.is_file() and path.name == "manifest.json":
+        return audit_path(path.parent)
     if path.is_dir():
         manifest_path = path / "manifest.json"
-        if not manifest_path.exists():
-            return {"path": str(path), "checked": [], "errors": [_error("missing_manifest", str(manifest_path))]}
+        # Validate containment before either loader reads ledger or manifest files.
+        for artifact in [manifest_path, *path.glob("*.json"), *path.glob("*.jsonl")]:
+            if not artifact.resolve().is_relative_to(path):
+                errors.append(_error("artifact_path_escape", str(artifact)))
+        if errors:
+            return {"path": str(path), "scope": "bundle_or_run", "checked": [], "errors": errors}
         try:
             manifest = _load_json(manifest_path)
-        except (OSError, json.JSONDecodeError):
-            return {"path": str(path), "checked": [], "errors": [_error("malformed_manifest", str(manifest_path))]}
-        errors.extend(audit_manifest(manifest, path=str(manifest_path)))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {"path": str(path), "scope": "bundle_or_run", "checked": [],
+                    "errors": [_error("missing_or_malformed_manifest", str(manifest_path))]}
         checked.append(str(manifest_path))
-        artifacts = manifest.get("artifacts", {}) if isinstance(manifest, dict) else {}
-        if isinstance(artifacts, dict):
-            for relative, expected in artifacts.items():
-                artifact = (path / relative).resolve()
-                if not artifact.is_relative_to(path.resolve()) or not artifact.is_file():
-                    errors.append(_error("missing_artifact", str(artifact)))
-                    continue
-                actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
-                checked.append(str(artifact))
-                if actual != expected:
-                    errors.append(_error("artifact_hash_mismatch", str(artifact)))
-        json_paths = sorted(path.rglob("*.json")) + sorted(path.rglob("*.jsonl"))
+        if isinstance(manifest, dict) and manifest.get("format") == "public-starter-run-v1":
+            scope = "run_ledger"
+            try:
+                from rag_eval.starter_report import load_run
+                run = load_run(path)
+                for warning in run["warnings"]:
+                    errors.append(_error("incomplete_run", str(path), reason=warning))
+                if run["state"]["phase"] not in {"finished", "not_applicable"}:
+                    errors.append(_error("run_not_successful", str(path)))
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                errors.append(_error("invalid_run_ledger", str(path)))
+        else:
+            scope = "bundle_reconstruction"
+            errors.extend(audit_manifest(manifest, path=str(manifest_path)))
+            try:
+                from rag_eval.public_expansion_sources import load_expansion_bundle
+                load_expansion_bundle(path)
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                errors.append(_error("bundle_reconstruction_failed", str(path)))
+        # Inspect this bundle/run only, never recurse into runtime/private logs.
+        json_paths = sorted(path.glob("*.json")) + sorted(path.glob("*.jsonl"))
+    elif path.suffix in {".json", ".jsonl"}:
+        json_paths = [path]
     else:
-        json_paths = [path] if path.suffix in {".json", ".jsonl"} else []
+        return {"path": str(path), "scope": scope, "checked": [],
+                "errors": [_error("unsupported_path", str(path))]}
     for json_path in json_paths:
-        if json_path == path and not json_path.exists():
-            errors.append(_error("missing_path", str(json_path)))
+        if not json_path.resolve().is_relative_to(path if path.is_dir() else path.parent):
+            errors.append(_error("artifact_path_escape", str(json_path)))
             continue
         try:
             if json_path.suffix == ".jsonl":
-                values = [_load_json_line(line) for line in json_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                values = [json.loads(line) for line in json_path.read_text(encoding="utf-8").splitlines()]
             else:
                 values = [_load_json(json_path)]
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        except (OSError, UnicodeDecodeError, ValueError):
             errors.append(_error("malformed_json", str(json_path)))
             continue
         if str(json_path) not in checked:
             checked.append(str(json_path))
         for index, value in enumerate(values):
-            errors.extend(_scan_values(value, f"{json_path}[{index}]" if json_path.suffix == ".jsonl" else str(json_path)))
-    return {"path": str(path), "checked": checked, "errors": errors}
-
-
-def _load_json_line(line: str) -> Any:
-    return json.loads(line)
+            errors.extend(_scan_values(value, f"{json_path}[{index}]"))
+    return {"path": str(path), "scope": scope, "checked": checked, "errors": errors}
 
 
 def main(argv: list[str] | None = None) -> int:
