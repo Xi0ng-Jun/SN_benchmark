@@ -1,5 +1,7 @@
 # Silicon Notebook 公开 Benchmark 评测项目
 
+交互式动态流程图：[打开 SQuAD → Silicon Notebook 动态评测流程](squad-flow-interactive.html)。
+
 > 汇报用一页框图：目标是用公开、可复现的任务，解释 Silicon Notebook 在真实 notebook 场景中的系统能力。当前实验正在公司服务器上执行，图中“实验结果”部分等待回填。
 
 想动态查看一条 SQuAD 样本如何流经 SN 评测系统，可打开[交互式 SQuAD 流程演示](squad-evaluation-flow.html)。页面支持逐步播放，并展开 SN Ask、检索、context、回答、引用和评分细节。
