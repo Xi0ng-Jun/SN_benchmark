@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQuAD × Silicon Notebook 评测流转</title>
+  <style>
+    :root { --bg:#08111f; --panel:#101d31; --panel2:#142640; --line:#284365; --text:#e7f0ff; --muted:#8fa8c8; --cyan:#42d9ff; --amber:#ffc857; --green:#5ee6a8; --red:#ff7f96; --purple:#b59bff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(circle at 75% -10%,#19345a 0,#08111f 44%); color:var(--text); font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    .wrap { max-width:1440px; margin:auto; padding:28px 30px 44px; }
+    header { display:flex; justify-content:space-between; gap:22px; align-items:flex-start; margin-bottom:22px; }
+    h1 { margin:0 0 6px; letter-spacing:-.03em; font-size:clamp(26px,4vw,44px); }
+    h2 { font-size:18px; margin:0 0 12px; }
+    h3 { font-size:14px; margin:0 0 7px; color:var(--cyan); text-transform:uppercase; letter-spacing:.08em; }
+    p { margin:7px 0; }
+    .lede { max-width:780px; color:var(--muted); }
+    .badge { display:inline-flex; padding:5px 10px; border:1px solid #32628c; border-radius:999px; color:#9eeaff; background:#0d263b; font-size:12px; }
+    .controls, .panel { background:linear-gradient(145deg,rgba(20,38,64,.95),rgba(12,25,44,.94)); border:1px solid var(--line); border-radius:16px; box-shadow:0 14px 36px #0004; }
+    .controls { padding:14px 16px; display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; }
+    button, select { color:var(--text); background:#172d4a; border:1px solid #3b6289; border-radius:9px; padding:8px 12px; cursor:pointer; font:inherit; }
+    button:hover, select:hover { border-color:var(--cyan); }
+    button.primary { color:#04121d; background:var(--cyan); border-color:var(--cyan); font-weight:700; }
+    .control-label { color:var(--muted); font-size:13px; margin-right:4px; }
+    .switch { display:flex; align-items:center; gap:8px; }
+    .layout { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(320px,.75fr); gap:18px; margin-top:18px; }
+    .panel { padding:18px; }
+    .flow { position:relative; min-height:610px; overflow:hidden; }
+    .flow-line { position:absolute; left:55px; top:48px; bottom:48px; width:3px; background:linear-gradient(var(--cyan),#355579 72%,#263c5c); }
+    .node { position:relative; display:grid; grid-template-columns:42px 1fr; gap:14px; padding:0 0 18px; cursor:pointer; }
+    .dot { width:36px; height:36px; display:grid; place-items:center; border-radius:50%; background:#1a3150; border:2px solid #527298; z-index:1; color:var(--muted); font-weight:700; transition:.2s; }
+    .node.active .dot { border-color:var(--cyan); background:#10445d; color:#fff; box-shadow:0 0 0 7px #42d9ff18,0 0 24px #42d9ff66; }
+    .node.done .dot { border-color:var(--green); color:var(--green); }
+    .node-card { border:1px solid #274463; border-radius:12px; padding:11px 13px; background:#0e2037; transition:.2s; }
+    .node.active .node-card { border-color:var(--cyan); background:#12314b; transform:translateX(3px); }
+    .node-title { display:flex; justify-content:space-between; gap:10px; font-weight:700; }
+    .node-sub { color:var(--muted); font-size:13px; margin-top:3px; }
+    .tag { font-size:11px; color:var(--amber); white-space:nowrap; }
+    .packet { position:absolute; left:44px; width:24px; height:24px; border-radius:50%; background:var(--amber); box-shadow:0 0 20px #ffc857; z-index:2; transition:top .55s ease; }
+    .packet::after { content:""; position:absolute; inset:6px; background:#fff8; border-radius:50%; }
+    .detail { min-height:610px; }
+    .step-kicker { color:var(--cyan); font-size:12px; letter-spacing:.12em; text-transform:uppercase; }
+    .detail h2 { font-size:25px; margin:4px 0 14px; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .card { background:#0b192d; border:1px solid #243f61; border-radius:10px; padding:11px 12px; min-width:0; }
+    .card strong { display:block; color:#b9d2f1; font-size:12px; margin-bottom:4px; }
+    pre, code { font-family:"SFMono-Regular",Consolas,monospace; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#07111f; border:1px solid #1d3553; border-radius:9px; padding:11px; color:#c5dcf8; font-size:12px; max-height:210px; overflow:auto; }
+    .metric { display:flex; justify-content:space-between; border-bottom:1px solid #203753; padding:7px 0; }
+    .metric:last-child { border-bottom:0; }
+    .value { color:var(--green); font-weight:700; }
+    .note { color:var(--muted); font-size:12px; }
+    .legend { display:flex; gap:13px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:14px; }
+    .legend span::before { content:""; display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--cyan); }
+    .legend .gold::before { background:var(--amber); } .legend .obs::before { background:var(--purple); } .legend .human::before { background:var(--red); }
+    .callout { margin-top:14px; padding:12px; border-left:3px solid var(--amber); background:#302912; border-radius:5px; color:#f5df9e; }
+    .sn-lane { margin-top:18px; display:grid; grid-template-columns:repeat(6,1fr); gap:8px; }
+    .sn-box { padding:10px 7px; text-align:center; border:1px solid #34567b; background:#0c213a; border-radius:9px; font-size:12px; color:#bbd3ef; }
+    .sn-box small { display:block; color:var(--muted); margin-top:4px; font-size:10px; }
+    .footer { margin-top:18px; color:var(--muted); font-size:12px; }
+    @media(max-width:900px) { .layout { grid-template-columns:1fr; } .sn-lane { grid-template-columns:repeat(3,1fr); } header { flex-direction:column; } }
+    @media(max-width:560px) { .wrap { padding:18px 14px 30px; } .grid2 { grid-template-columns:1fr; } .flow-line { left:43px; } .packet { left:32px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <span class="badge">SQuAD · 单样本动态演示</span>
+        <h1>一条题目如何穿过 Silicon Notebook 评测系统</h1>
+        <p class="lede">点击流程节点或播放动画，观察同一条公开题目如何从数据选择进入隔离 notebook，再经由 SN Ask、检索、回答和引用，最后被 DeepEval 与确定性检查记录。示例回答是演示数据；SN 内部未暴露的步骤会明确标注。</p>
+      </div>
+      <div class="controls">
+        <div class="switch"><span class="control-label">轨道</span><select id="track"><option value="product">SN Product</option><option value="native">Native Model</option></select></div>
+        <div class="switch"><span class="control-label">模式</span><select id="mode"><option value="chunk">chunk</option><option value="reasoning">reasoning</option></select></div>
+        <button class="primary" id="play">▶ 播放</button><button id="prev">← 上一步</button><button id="next">下一步 →</button><button id="reset">重置</button>
+      </div>
+    </header>
+
+    <section class="layout">
+      <section class="panel flow" aria-label="评测数据流转图">
+        <div class="flow-line"></div><div id="packet" class="packet" aria-hidden="true"></div>
+        <div id="nodes"></div>
+        <div class="legend"><span>当前步骤</span><span class="gold">数据包位置</span><span class="obs">产品可观测</span><span class="human">需人工判断</span></div>
+      </section>
+      <aside class="panel detail" id="detail" aria-live="polite"></aside>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <h2>SN Product 内部路径（用于解释系统如何被使用）</h2>
+      <p class="note">下面的节点对应产品中可能发生的服务阶段。只有 Ask 请求、最终回答、返回状态、实际上下文和引用等外部结果可以作为黑盒观测；问题理解、query rewrite、检索排序和规划细节在没有真实 trace 时只是流程示意。</p>
+      <div class="sn-lane">
+        <div class="sn-box">前端输入<small>用户问题</small></div><div class="sn-box">Ask API<small>请求进入 SN</small></div><div class="sn-box">问题理解<small>示意 / partial</small></div><div class="sn-box">Query + 检索<small>示意 / 可记录结果</small></div><div class="sn-box">Context 组装<small>实际上下文</small></div><div class="sn-box">回答 + 引用<small>最终可观测</small></div>
+      </div>
+    </section>
+    <p class="footer">汇报提示：Native 轨道说明模型本身会不会答；SN Product 轨道说明资料进入 notebook 后，系统能否找到证据、生成回答并给出可回查引用。chunk/reasoning 只改变执行模式，题目、资料分区和评分身份保持一致。</p>
+  </main>
+  <script>
+    const sample = {
+      question: "In what century did the Normans give their name to Normandy?",
+      reference: "10th and 11th centuries",
+      passage: "The Normans were the people who in the 10th and 11th centuries gave their name to Normandy...",
+      answer: "They gave their name to Normandy in the 10th and 11th centuries. [1]"
+    };
+    const base = [
+      ["公开原题", "读取 SQuAD validation 的 Normans 题目", "source"],
+      ["选择容器", "校验 revision、split、原始行和参考答案身份", "protocol"],
+      ["资料分区", "把资料放入 squad-0001；题目数量不作为容量单位", "partition"],
+      ["隔离 notebook", "创建 SN 专用 runtime，导入分区资料，不导入 gold answer", "notebook"],
+      ["SN Ask", "向 Silicon Notebook 发送原始问题", "ask"],
+      ["检索资料", "从当前 notebook 找到相关文档与 chunk", "retrieval"],
+      ["组装上下文", "把实际检索结果送入最终回答生成", "context"],
+      ["回答与引用", "返回正文、状态和 [1] 引用", "answer"],
+      ["评分与审计", "DeepEval + 确定性检查 + 人工判断", "score"],
+      ["覆盖报告", "按分区、模式和 scorer 汇总缺失与结果", "report"]
+    ];
+    const nodes = document.getElementById('nodes'), detail = document.getElementById('detail'), packet = document.getElementById('packet');
+    let step=0, timer=null;
+    const $ = id => document.getElementById(id);
+    function mode(){ return $('mode').value; }
+    function track(){ return $('track').value; }
+    function displayNodes(){
+      const list = track()==='native' ? base.filter((_,i)=>![2,3,4,5,6,7].includes(i)).map((x,i)=> i===2 ? ["模型回答", "直接把题目交给被测模型", "native-answer"] : x) : base;
+      nodes.innerHTML = list.map((x,i)=>`<div class="node ${i===step?'active':''} ${i<step?'done':''}" data-i="${i}"><div class="dot">${i<step?'✓':i+1}</div><div class="node-card"><div class="node-title"><span>${x[0]}</span><span class="tag">${i===step?'当前':''}</span></div><div class="node-sub">${x[1]}</div></div></div>`).join('');
+      nodes.querySelectorAll('.node').forEach(n=>n.onclick=()=>{ step=Number(n.dataset.i); render(); });
+      requestAnimationFrame(()=>{ const active=nodes.querySelector('.active'); packet.style.top=(active?active.offsetTop+6:6)+'px'; });
+    }
+    function code(obj){ return '<pre>'+JSON.stringify(obj,null,2).replaceAll('&','&amp;').replaceAll('<','&lt;')+'</pre>'; }
+    function render(){ displayNodes(); const native=track()==='native'; const current=(native?base.filter((_,i)=>![2,3,4,5,6,7].includes(i)).map((x,i)=>i===2?["模型回答","直接把题目交给被测模型","native-answer"]:x):base)[step]; const key=current[2];
+      const common=`<div class="step-kicker">STEP ${step+1} / ${native?4:10}</div><h2>${current[0]}</h2><p>${current[1]}</p>`;
+      let body='';
+      if(key==='source') body=`<div class="grid2"><div class="card"><strong>输入：原始 JSONL 行</strong>${code({id:"5733be284776f41900661182",title:"Normans",question:sample.question,context:sample.passage,answers:{text:[sample.reference],answer_start:[31]}})}</div><div class="card"><strong>评测侧保留</strong><p>题目、资料、参考答案、answer_start、来源行号。</p><p class="note">参考答案只留在评测侧，不能进入 notebook。</p></div></div>`;
+      if(key==='protocol') body=`<div class="grid2"><div class="card"><strong>统一 case</strong>${code({suite:"squad",task:"Normans",case_id:"squad:Normans:5733be284776f41900661182",references:[sample.reference],source_row_index:0})}</div><div class="card"><strong>完整性决定</strong><div class="metric"><span>scope</span><span class="value">in_scope</span></div><div class="metric"><span>status</span><span class="value">selected</span></div><div class="metric"><span>upstream completeness</span><span class="tag">unknown</span></div></div></div>`;
+      if(key==='partition') body=`<div class="grid2"><div class="card"><strong>本分区</strong>${code({partition_id:"squad-0001",documents:12,case_ids:["squad:Normans:5733be284776f41900661182"]})}</div><div class="card"><strong>为什么按资料分区</strong><p>同一资料的多道题保持在一起；40 是资料文档容量参数，不是题目上限。</p><p class="note">分区计划保存 product bundle、case IDs 和哈希。</p></div></div>`;
+      if(key==='notebook') body=`<div class="grid2"><div class="card"><strong>导入到 SN 的内容</strong><p>Normans 资料正文、标题和系统可用的文档元数据。</p><p class="note">不会导入：参考答案、answer_start、gold 标签或 scorer。</p></div><div class="card"><strong>隔离边界</strong><div class="metric"><span>database / storage / logs</span><span class="value">fresh runtime</span></div><div class="metric"><span>conversation</span><span class="value">empty</span></div><div class="metric"><span>mode</span><span class="value">${mode()}</span></div></div></div>`;
+      if(key==='ask') body=`<div class="card"><strong>SN Ask 输入（实际发送）</strong>${code({question:sample.question,notebook_id:"squad-0001",mode:mode()})}<p class="note">这是系统评测真正调用 Silicon Notebook 的入口：问题从 runner 进入 SN 服务，随后由 SN 自己完成理解、检索和生成。</p></div>`;
+      if(key==='retrieval') body=`<div class="grid2"><div class="card"><strong>SN 内部阶段</strong><p>问题理解 → query rewrite → 向量/BM25 等检索 → 选择候选 chunk。</p><p class="note">没有真实 Agent trace 时，上述细节是流程示意；评测只保存能实际观测到的检索结果。</p></div><div class="card"><strong>可观测结果</strong>${code({document_id:"squad-passage-abc123",chunk_id:"chunk-004",hit:true})}</div></div>`;
+      if(key==='context') body=`<div class="card"><strong>送入最终生成的实际 context</strong>${code({chunk_id:"chunk-004",text:sample.passage})}<p class="note">Faithfulness 使用这里的真实上下文；不能用 gold passage 替代。</p></div>`;
+      if(key==='answer') body=`<div class="grid2"><div class="card"><strong>SN 最终输出</strong><pre>${sample.answer}</pre><div class="metric"><span>status</span><span class="value">success</span></div></div><div class="card"><strong>引用记录</strong>${code({label:"[1]",document_id:"squad-passage-abc123",chunk_id:"chunk-004",anchor_resolves:true})}<p class="note">对象存在和锚点可回查可确定性检查；是否真正支持断言仍需语义/人工判断。</p></div></div>`;
+      if(key==='score') body=`<div class="grid2"><div class="card"><strong>机器评分</strong><div class="metric"><span>Answer Correctness</span><span class="value">1.0</span></div><div class="metric"><span>Faithfulness</span><span class="value">待 judge</span></div><div class="metric"><span>Citation object / anchor</span><span class="value">1 / 1</span></div></div><div class="card"><strong>人工判断</strong><p>引用是否支持“10th and 11th centuries”？回答是否遗漏限定条件？澄清或拒答是否合理？</p><span class="tag">未校准前不作为发布门禁</span></div></div>`;
+      if(key==='report') body=`<div class="grid2"><div class="card"><strong>报告分母</strong>${code({selected_questions:135,planned_partitions:4,chunk_completed:"3/4",reasoning_completed:"2/4"})}</div><div class="card"><strong>最终用途</strong><p>分别解释模型能力、SN 检索与回答能力、chunk/reasoning 差异，以及澄清/拒答/缺失情况。</p><p class="note">未完成的分区保留在报告中，不会从分母中删除。</p></div></div>`;
+      if(key==='native-answer') body=`<div class="card"><strong>Native Track：不经过 notebook</strong><pre>${sample.answer.replace(' [1]','')}</pre><p>这一步只回答“模型本身会不会答”。它作为参照，不与 SN Product 结果直接相减。</p></div>`;
+      if(native && key==='report') body=`<div class="card"><strong>Native 结果</strong><p>以 DeepEval 官方 SQuAD scorer 记录模型的任务完成能力，并保存模型、提示词和原始返回。</p></div>`;
+      detail.innerHTML=common+body;
+    }
+    function move(delta){ const count=track()==='native'?4:10; step=Math.max(0,Math.min(count-1,step+delta)); render(); }
+    $('next').onclick=()=>move(1); $('prev').onclick=()=>move(-1); $('reset').onclick=()=>{step=0; if(timer){clearInterval(timer);timer=null;} $('play').textContent='▶ 播放';render();};
+    $('play').onclick=()=>{ if(timer){clearInterval(timer);timer=null;$('play').textContent='▶ 播放';return;} $('play').textContent='⏸ 暂停'; timer=setInterval(()=>{ const count=track()==='native'?4:10; if(step>=count-1){clearInterval(timer);timer=null;$('play').textContent='▶ 播放';return;} move(1); },1500); };
+    $('track').onchange=()=>{step=0;render();}; $('mode').onchange=render; render();
+  </script>
+</body>
+</html>
