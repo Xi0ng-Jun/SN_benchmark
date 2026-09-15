@@ -69,7 +69,7 @@ def test_hellaswag_rejects_bool_and_out_of_range_labels(tmp_path):
 
 def test_hellaswag_rejects_unicode_digit_with_normalized_error(tmp_path):
     path = write_jsonl(tmp_path, {"ctx": "C", "endings": ["a", "b", "c", "d"], "label": "²"})
-    with pytest.raises(ValueError, match="HellaSwag label must be an index 0\.\.3"):
+    with pytest.raises(ValueError, match=r"HellaSwag label must be an index 0\.\.3"):
         read_source("hellaswag", path, revision="v1")
 
 

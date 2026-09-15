@@ -152,6 +152,10 @@ def load_bundle(directory):
     """Read a complete local bundle and check recorded bytes; never acquire data."""
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("protocol_version") == "public-selection-v1":
+        from .selection_bundle import load_selection_bundle
+        bundle = load_selection_bundle(directory)
+        return bundle["native_source"], bundle["cases"]
     if manifest.get("suite") in EXPANSION_SUITES:
         from .public_expansion_sources import load_expansion_bundle
         return load_expansion_bundle(directory)

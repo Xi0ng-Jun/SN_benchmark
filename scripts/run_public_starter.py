@@ -28,6 +28,9 @@ def main():
     parser.add_argument("--project-root", type=Path, default=next((parent / "project" for parent in ROOT.parents
                                   if (parent / "project/backend").is_dir()), ROOT.parent / "project"))
     parser.add_argument("--reviews", type=Path)
+    parser.add_argument("--partition-plan", type=Path,
+                        help="Frozen corpus partition plan, required for a new selection R run")
+    parser.add_argument("--partition-id", help="One explicit partition ID; omitted partitions remain unexecuted")
     parser.add_argument("--instruction-audits", type=Path)
     args = parser.parse_args()
     for name, value in vars(args).items():
@@ -49,7 +52,8 @@ def main():
         execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=args.run_dir,
                 track=args.track, mode=args.mode, models_path=args.models,
                 reviews_path=args.reviews, audits_path=args.instruction_audits,
-                product_protocol=args.product_protocol)
+                product_protocol=args.product_protocol, partition_plan_path=args.partition_plan,
+                partition_id=args.partition_id)
     except KeyboardInterrupt:
         code = 130
         print("Execution interrupted; saved artifacts retained", file=sys.stderr)

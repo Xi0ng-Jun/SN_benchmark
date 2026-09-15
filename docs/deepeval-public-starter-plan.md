@@ -1,5 +1,7 @@
 # DeepEval 公开评测起步方案 v1
 
+> 历史方案。2026-09-14 用户明确选题规模不设预先上限，具体范围以[十套公开评测任务与选题方案](public-benchmark-selection-plan.md)为准。本页每套 20 题、每类前 10 题和 DROP 首个满足题量要求 section 的安排已被新设计替代；已有冻结 bundle 保留原身份，选择器尚未按新设计修改。最新系统接入与离线回归进度见[状态文档](evaluation-status.md)。当前测试与实验暂停。
+
 日期：2026-09-10。状态：**P0/P1 基础和 N/R 执行、报告入口已写入代码，未运行或测试新增套件**。本地核对版本为 DeepEval 4.2.2；在线文档可能随版本变化。首批实现见[代码交接](deepeval-public-starter-implementation.md)，最新接入与待验证边界见[执行与报告说明](deepeval-public-starter-orchestration.md)。
 
 ## 1. 当前选择：先用现成题目和评分建立参照

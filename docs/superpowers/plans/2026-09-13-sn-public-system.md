@@ -1,5 +1,9 @@
 # SN Public System Implementation Plan
 
+> 最新选题更新：用户要求规模不设预先上限，只沉淀[十套公开评测任务与选题方案](../../public-benchmark-selection-plan.md)，测试与实验暂停。本文后续“小样本”安排是历史建议，已被按 task/split 完整选题、独立设计执行分库的方案替代；新选择器与分库代码尚未实施。
+
+> 2026-09-14 进度补记：用户已授权离线回归，完成 205 项测试，无跳过或警告。代码 `63214c7` 已于上一阶段推送；本轮测试与文档改动未提交。见[回归记录](../../offline-regression-2026-09-14.md)。下文不测试/不提交为 2026-09-13 实施时的历史边界，在线任务仍未恢复。
+
 > 使用 subagent-driven-development 分工实施并独立静态审查。用户已授权实施，优先级高于技能中的测试/提交步骤：本轮不执行测试或应用，不提交。
 
 **Goal:** 将 LogiQA、GSM8K、BBH、MMLU、TruthfulQA MC1、HellaSwag、IFEval 接到 SN Ask，保留 Native 参照。

@@ -1,4 +1,4 @@
-"""Regression specifications for later offline validation; no model fixtures."""
+"""Offline regression with synthetic rows and the real pinned SDK; no models."""
 from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, distribution
 import shutil
@@ -8,7 +8,7 @@ import pytest
 from rag_eval.artifacts import digest, save_json, save_jsonl
 from rag_eval.public_expansion_protocol import EXPANSION_SUITES, EXPANSION_VERSION
 from rag_eval.public_expansion_sources import load_expansion_bundle
-from rag_eval.starter_protocol import SDK_VERSION, fingerprint, load_bundle
+from rag_eval.starter_protocol import SDK_VERSION, SUITES, fingerprint, load_bundle
 
 
 ROWS = {
@@ -20,6 +20,17 @@ ROWS = {
     "hellaswag": {"ctx": "C", "endings": ["a", "b", "c", "d"], "label": "2",
                   "activity_label": "Applying sunscreen"},
     "bbh": {"input": "I", "target": "True", "task_name": "boolean_expressions"},
+    "logiqa": {"id": "logic", "text": "All robins are birds.", "question": "What follows?",
+               "options": ["A robin is a bird", "No birds", "No robins", "Nothing"], "answer": 0,
+               "type": {"Necessary Conditional Reasoning": True}},
+    "ifeval": {"key": 1, "prompt": "  Write without commas.\r\n",
+               "instruction_id_list": ["punctuation:no_comma"], "kwargs": [{}]},
+    "squad": {"id": "s1", "title": "Normans", "context": "Ada wrote notes.",
+              "question": "Who wrote notes?", "answers": {"text": ["Ada"], "answer_start": [0]}},
+    "drop": {"query_id": "d1", "section_id": "history_fixture", "passage": "Ada has two apples.",
+             "question": "How many apples?", "answers_spans": {"spans": ["2"], "types": ["number"]},
+             "_annotations": [{"number": "2"}]},
+    "boolq": {"passage": "Ada wrote notes.", "question": "Did Ada write notes?", "answer": True},
 }
 
 
@@ -38,8 +49,11 @@ def prepared_bundle(tmp_path):
         base = tmp_path / suite
         base.mkdir()
         raw, source_path, bundle = base / "source.jsonl", base / "source.json", base / "bundle"
-        save_jsonl(raw, [deepcopy(ROWS[suite] if row is None else row)])
-        info = EXPANSION_SUITES[suite]
+        original = deepcopy(ROWS[suite] if row is None else row)
+        # The legacy DROP selector requires ten rows in an eligible section.
+        rows = [{**original, "query_id": f"d{i}"} for i in range(10)] if suite == "drop" else [original]
+        save_jsonl(raw, rows)
+        info = {**SUITES, **EXPANSION_SUITES}[suite]
         source = {
             "dataset": info["dataset"], "split": info["split"], "revision": "fixture-v1",
             "source_url": "https://example.invalid/fixture", "license": "fixture",
@@ -210,3 +224,92 @@ def test_bbh_uses_selected_task_schema_and_resource(prepared_bundle, task, targe
     assert request["expected_output"] == target
     assert request["prompt"].startswith("Task description: ")
     assert f"benchmarks/big_bench_hard/shot_prompts/{task}.txt" in manifest["sdk_source_hashes"]
+
+
+@pytest.mark.parametrize("suite,correct,wrong", [
+    ("logiqa", "A", "B"), ("gsm8k", "1,200", "1200"), ("bbh", "True", "False"),
+    ("mmlu", "B", "A"), ("truthfulqa", "4", "1"), ("hellaswag", "C", "D"),
+])
+def test_system_materials_to_real_sdk_score(prepared_bundle, suite, correct, wrong):
+    from rag_eval.system_product import build_system_bundle
+    from rag_eval.system_scoring import score_system_answer
+
+    _, manifest, cases = prepared_bundle(suite)
+    product = build_system_bundle(cases, manifest)
+    assert len(product["questions"]) == len(cases) == 1
+    assert product["questions"][0]["case_id"] == cases[0]["case_id"]
+    body = f"Explanation with a source [1].\nFinal answer: {correct}"
+    result = score_system_answer(cases[0], body, manifest)
+    assert result["status"] == "scored"
+    assert result["score"] == 1.0
+    assert result["normalized_answer"] == correct
+    assert result["details"]["official_native"] is False
+    assert score_system_answer(cases[0], f"Final answer: {wrong}", manifest)["score"] == 0.0
+
+
+def test_system_ifeval_real_verifier_requires_reproducible_audit_and_full_body(prepared_bundle):
+    from rag_eval.starter_native import audit_instruction
+    from rag_eval.system_product import build_system_bundle
+    from rag_eval.system_scoring import score_system_answer
+
+    _, manifest, cases = prepared_bundle("ifeval")
+    case = cases[0]
+    product = build_system_bundle(cases, manifest)
+    assert product["questions"][0]["question"] == "  Write without commas.\r\n"
+    body = "  A short response\r\n[1] Source\n"
+    unavailable = score_system_answer(case, body, manifest)
+    assert unavailable["status"] == "not_applicable"
+    assert unavailable["score"] is None
+    assert unavailable["normalized_answer"] == body
+    # Synthetic rule examples verify code only; they are not human calibration.
+    audit = audit_instruction("punctuation:no_comma", {}, "hello world", "hello, world", manifest)
+    assert audit["status"] == "passed"
+    assert score_system_answer(case, body, manifest, [audit])["score"] == 1.0
+    with_citation_comma = body + "[2] Author, title\n"
+    result = score_system_answer(case, with_citation_comma, manifest, [audit])
+    assert result["score"] == 0.0
+    assert result["normalized_answer"] == with_citation_comma
+    assert score_system_answer(case, body, manifest, [{**audit, "kwargs": {"changed": True}}])["score"] is None
+    assert score_system_answer(case, body, manifest, [{**audit, "verifier_sha256": "0" * 64}])["score"] is None
+    with pytest.raises(ValueError, match="audit no longer reproduces"):
+        score_system_answer(case, body, manifest, [{**audit, "negative": "also without commas"}])
+
+
+@pytest.mark.parametrize("suite,expected", [("squad", "Ada"), ("drop", "2"), ("boolq", "Yes")])
+def test_legacy_product_reviews_and_native_scoring_remain_separate(prepared_bundle, suite, expected):
+    from rag_eval.starter_native import build_request, score_prediction
+    from rag_eval.starter_product import product_bundle, check_boolq
+
+    _, manifest, cases = prepared_bundle(suite)
+    case = cases[0]
+    pending = product_bundle([case], {}, [])
+    assert pending["questions"] == []
+    assert pending["decisions"][0]["status"] == "pending"
+    # Fictional review of a synthetic row, used only to exercise the approved branch.
+    reviews = {case["sample_id"]: {"status": "approved", "reason": "synthetic unit-test fixture",
+                                  "reviewer": "test fixture only", "raw_row_sha256": case["raw_row_sha256"]}}
+    product = product_bundle([case], reviews, [])
+    assert len(product["questions"]) == len(product["documents"]) == 1
+    assert product["questions"][0]["references"] == [expected]
+    assert product["questions"][0]["gold_document_ids"] == [product["documents"][0]["id"]]
+    assert product["documents"][0]["text"] == case["passage"]
+    request, _ = build_request(case, manifest)
+    if suite == "squad":
+        with pytest.raises(ValueError, match="explicit judge-role"):
+            score_prediction(case, request, expected, manifest)
+    else:
+        assert score_prediction(case, request, expected, manifest)["score"] == 1.0
+        assert score_prediction(case, request, "incorrect", manifest)["score"] == 0.0
+    if suite == "boolq":
+        assert check_boolq("Final answer: Yes\nSee [1].", expected)["score"] == 1.0
+        assert check_boolq("Final answer: No\nSee [1].", expected)["score"] == 0.0
+        assert check_boolq("Yes or No", expected)["status"] == "unparsed"
+    if suite == "drop":
+        from rag_eval.starter_protocol import make_case
+        incomplete = deepcopy(case["raw_row"])
+        del incomplete["_annotations"]
+        incomplete_case = make_case(suite, incomplete, case["source_row_index"], case["task"])
+        reviews[case["sample_id"]]["raw_row_sha256"] = incomplete_case["raw_row_sha256"]
+        rejected = product_bundle([incomplete_case], reviews, [])
+        assert rejected["questions"] == []
+        assert rejected["decisions"][0]["status"] == "not_applicable"

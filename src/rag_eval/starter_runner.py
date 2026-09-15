@@ -250,7 +250,7 @@ def score_outputs(run, source, cases, planned, judge, audits, scores):
 
 
 def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, reviews_path=None,
-            audits_path=None, product_protocol=None):
+            audits_path=None, product_protocol=None, partition_plan_path=None, partition_id=None):
     """One explicit execution, no implicit resume. No callers run this at import."""
     root, project, bundle_dir, run = (Path(p).resolve() for p in (root, project, bundle_dir, run))
     if track not in {"N", "R"} or (track == "N" and mode is not None) or (track == "R" and mode not in {"chunk", "reasoning"}):
@@ -261,10 +261,32 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, re
     if run.exists():
         raise ValueError("Use a new run directory; implicit resume is not supported")
     source, cases = load_bundle(bundle_dir)
+    all_cases = cases
     if not cases:
         raise ValueError("Frozen selection is empty; no execution possible")
     info = {**SUITES, **EXPANSION_SUITES}[source["suite"]]
     from .system_product import SYSTEM_VERSION, SYSTEM_SUITES, build_system_bundle
+    selection_track = source.get("selection_protocol") is not None
+    selection_context = None
+    partition_plan = None
+    partition_product = None
+    if selection_track:
+        from .selection_execution import execution_context, select_partition
+        if track == "R":
+            if partition_plan_path is None or partition_id is None:
+                raise ValueError("A full selection R run requires an explicit partition plan and partition ID")
+            if reviews_path is not None:
+                raise ValueError("Selection reviews belong to the frozen partition plan; omit --reviews")
+            if product_protocol == "legacy" and source["suite"] in SYSTEM_SUITES:
+                raise ValueError("Selection partitions for new suites require the system product protocol")
+            cases, partition_product, selection_context, partition_plan = select_partition(
+                cases, source, partition_plan_path, partition_id)
+        else:
+            if partition_plan_path is not None or partition_id is not None:
+                raise ValueError("Native selection uses all selected cases, without product partitions")
+            selection_context = execution_context(source, len(cases))
+    elif partition_plan_path is not None or partition_id is not None:
+        raise ValueError("Partition parameters require a public-selection bundle")
     if product_protocol not in {None, "legacy", SYSTEM_VERSION} or (track == "N" and product_protocol is not None):
         raise ValueError("Product protocol applies only to R and must be legacy or " + SYSTEM_VERSION)
     system_track = track == "R" and (product_protocol == SYSTEM_VERSION or (
@@ -283,7 +305,11 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, re
     if models_path is None and not system_track:
         raise ValueError("Executable N/R cells require an explicit model configuration")
     product = None
-    if system_track:
+    if partition_product is not None:
+        if system_track and models_path is not None:
+            raise ValueError("System partitions use frozen SN model services; omit --models")
+        product = partition_product
+    elif system_track:
         if reviews_path is not None or models_path is not None:
             raise ValueError("New system protocol uses frozen task fields and SN model services; omit --reviews and --models")
         product = build_system_bundle(cases, source)
@@ -316,8 +342,15 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, re
         shutil.copytree(bundle_dir, run / "input")
         # Recheck the copied bytes, so later phases use only the pinned input.
         copied_source, copied_cases = load_bundle(run / "input")
-        if copied_source != source or (system_track and copied_cases != cases):
+        if copied_source != source or copied_cases != all_cases:
             raise ValueError("Frozen source changed during copying")
+        if partition_plan is not None:
+            save_json(run / "partition-plan.json", partition_plan)
+            from .selection_execution import select_partition
+            copied_selected, copied_product, copied_context, _ = select_partition(
+                copied_cases, copied_source, run / "partition-plan.json", partition_id)
+            if copied_selected != cases or copied_product != product or copied_context != selection_context:
+                raise ValueError("Partition plan changed during copying")
         save_jsonl(run / "instruction-audits.jsonl", audits)
         if product:
             save_json(run / "product-bundle.json", product)
@@ -330,6 +363,8 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, re
                     "product_services": runtime_identity["service_config_sha256"],
                     "product_bundle": product["manifest"] if product else None,
                     "audits_sha256": fingerprint(audits), "track": track}
+        if selection_context is not None:
+            identity["selection_context"] = selection_context
         pairing_id = fingerprint(identity) if track == "R" else None
         protocol_id = fingerprint({**identity, "mode": mode})
         scorers = ([BOOLQ_SCORER if source["suite"] == "boolq" else PRODUCT_CORRECTNESS,
@@ -355,6 +390,7 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, re
                   "planned_sha256": digest(run / "planned.jsonl"), "planned_predictions": len(cases),
                   "planned_scores": len(planned), "human_calibration": "pending", "release_gate": False,
                   "adaptation_counts": dict(Counter(d["status"] for d in product["decisions"])) if product else None,
+                  **({"selection_context": selection_context} if selection_context is not None else {}),
                   "identity": identity, "outer_timeout": None})
         with ExitStack() as stack:
             events = stack.enter_context(EventJournal(run / "model-events.jsonl"))

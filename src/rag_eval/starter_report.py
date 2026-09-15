@@ -60,6 +60,12 @@ def load_run(run):
     planned = read_journal(run / "planned.jsonl", warnings)
     outputs = read_journal(run / "outputs.jsonl", warnings)
     scores = read_journal(run / "scores.jsonl", warnings)
+    is_selection = manifest.get("identity", {}).get("source", {}).get("selection_protocol") is not None
+    if is_selection:
+        from .selection_execution import validate_saved_selection
+        validate_saved_selection(run, manifest, planned, outputs)
+    elif "selection_context" in manifest or "selection_context" in manifest.get("identity", {}):
+        raise ValueError("Selection context has no frozen selection source")
     cases = {p["case_id"] for p in planned}
     observed = {}
     for output in outputs:
@@ -200,6 +206,11 @@ def write_report(run_dirs, output):
             skipped = sum(o["status"] == "not_applicable" for o in run["outputs"])
             missing = manifest["planned_predictions"] - len(run["outputs"])
             lines.extend(["", f"计划预测 {manifest['planned_predictions']} 题；预测错误 {errors}；预测不适用 {skipped}；缺失预测 {missing}。"])
+            if manifest.get("selection_context") is not None:
+                context = manifest["selection_context"]
+                lines.extend(["", "完整题单任务记录数：" + str(context["selected_memberships"])
+                              + "；本次分区：" + _cell(context["partition_id"] or "Native 完整有效题单"),
+                              "本页仅记录当前运行。未运行分区和待审核题请查看完整选题报告；分区内检索不代表整套数据统一大库检索。"])
             if manifest.get("product_protocol") == SYSTEM_VERSION:
                 lines.extend(["", "系统适配协议：" + SYSTEM_VERSION + "；模型身份由运行 identity 中的 SN 服务配置与源码记录。",
                               "题面和候选选项属于待分析资料；引用它们不证明选项、常识或推导结论正确。",

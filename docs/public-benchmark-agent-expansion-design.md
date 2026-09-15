@@ -1,6 +1,8 @@
 # 公开 Benchmark 与 SN Agent 评测扩展设计
 
-更新时间：2026-09-13
+更新时间：2026-09-14
+
+最新选题依据为[十套公开评测任务与选题方案](public-benchmark-selection-plan.md)：不预设每套题数，选定任务和 split 下符合规则的原题全部纳入；MMLU 四个学科、BBH 四类任务各自完整覆盖。题单与分库清单分开，选择器与多分区执行尚待实施。当前仅文档工作，测试与实验暂停。
 
 ## 目标
 
@@ -10,11 +12,11 @@
 
 | Suite | 主要能力 | Native 代码 | 当前 SN Product | 说明 |
 |---|---|---:|---:|---|
-| MMLU | 多领域知识与选择题 | 已编写，未验证 | 系统适配，未验证 | 导入不含正确标签的原题与选项 |
-| GSM8K | 多步数学推理 | 已编写，未验证 | 系统适配，未验证 | 原题面作为待分析资料，不导入解题过程 |
-| TruthfulQA | 含常见误解问题的答案选择 | MC1，未验证 | 系统适配，未验证 | MC1 题面与候选项；不宣称开放式诚实性 |
-| HellaSwag | 语境理解与常识推断 | 已编写，未验证 | 系统适配，未验证 | 情境与候选续写；候选不作为已发生事实 |
-| BIG-Bench Hard | 复杂推理子任务 | 已编写，未验证 | 系统适配，未验证 | 原始 input，按 task 标明资料性质与输出域 |
+| MMLU | 多领域知识与选择题 | 离线检查通过 | 已适配，真实 SN 待验证 | 导入不含正确标签的原题与选项 |
+| GSM8K | 多步数学推理 | 离线检查通过 | 已适配，真实 SN 待验证 | 原题面作为待分析资料，不导入解题过程 |
+| TruthfulQA | 含常见误解问题的答案选择 | MC1 离线检查通过 | 已适配，真实 SN 待验证 | MC1 题面与候选项；不宣称开放式诚实性 |
+| HellaSwag | 语境理解与常识推断 | 离线检查通过 | 已适配，真实 SN 待验证 | 情境与候选续写；候选不作为已发生事实 |
+| BIG-Bench Hard | 复杂推理子任务 | 离线检查通过 | 已适配，真实 SN 待验证 | 原始 input，按 task 标明资料性质与输出域 |
 
 HumanEval、KG、重排、PDF/OCR、交互可靠性和资料更新一致性不在本阶段范围内。
 
@@ -24,7 +26,7 @@ Native track 使用 DeepEval 官方 benchmark 的题目模板和 scorer，衡量
 
 最新接入见[SN 系统适配方案](sn-public-system-adaptation.md)：新增五套及 LogiQA/IFEval 的 R 默认 `sn-public-system-v1`；冻结数据中的 product=False 保留历史含义，当前执行能力从独立 registry 读取。LogiQA 导入配套文章，IFEval 原始指令不加统一答案格式，其余导入白名单原题面。系统请求不携带答案标签，题面不是正确答案的证据。
 
-显式 `--product-protocol legacy` 才对这些套件保存旧 N/A 记录（不创建 notebook）；原 SQuAD/DROP/BoolQ 产品路径仍按原审核方案执行。新系统路径正常预览 reasoning 意图并保留澄清，不补造澄清答案；其答案提取和评分单独版本化。代码与回归用例只静态审阅，尚未运行。
+显式 `--product-protocol legacy` 才对这些套件保存旧 N/A 记录（不创建 notebook）；原 SQuAD/DROP/BoolQ 产品路径仍按原审核方案执行。新系统路径正常预览 reasoning 意图并保留澄清，不补造澄清答案；其答案提取和评分单独版本化。已有代码完成[205 项离线回归](offline-regression-2026-09-14.md)，使用合成数据和模拟 SN 响应，未运行正式公开题实验。
 
 ## Native 协议与结果解释
 
@@ -59,7 +61,7 @@ MMLU/GSM8K/HellaSwag/BBH 固定零样本，GSM8K/BBH 不启用 CoT；TruthfulQA 
 1. 扩展 suite、数据 manifest、Native/Product 适用性和离线重建检查。
 2. 扩展 runner、结果协议和报告，保持失败、澄清、拒答和不适用可区分。
 3. 定义最小 trace/span schema，并用已有 captures 离线构造 `none/partial` 轨迹。
-4. 在用户明确恢复在线评测后，选择小样本验证新增 suite；不恢复旧 baseline 或 weekly timer。
+4. 按新选题方案完整定义 task/split 范围并设计执行分库；在用户恢复相关工作后实施、准备数据，恢复在线后按固定执行计划验证新增 suite，不把尚未执行分区从整体题单中删除；不恢复旧 baseline 或 weekly timer。
 5. 根据真实观测和人工校准决定 Agent metrics、DAG 指标及后续最小观测改动。
 
 ## 验收标准

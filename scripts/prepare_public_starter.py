@@ -78,7 +78,12 @@ def instruction_inventory(cases, verifier_path):
     ]
 
 
-def prepare(suite, raw_path, source_path, output):
+def prepare(suite, raw_path, source_path, output, *, selection_protocol="legacy"):
+    if selection_protocol == "public-selection-v1":
+        from rag_eval.selection_bundle import prepare_selection
+        return prepare_selection(suite, raw_path, source_path, output)
+    if selection_protocol != "legacy":
+        raise ValueError("Unsupported selection protocol")
     raw_path, source_path, output = Path(raw_path), Path(source_path), Path(output)
     source = json.loads(source_path.read_text(encoding="utf-8"))
     validate_source(source, suite, raw_path)
@@ -142,8 +147,10 @@ def main():
     parser.add_argument("--raw-jsonl", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True, help="Operator-provided source provenance JSON")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing directories rejected")
+    parser.add_argument("--selection-protocol", choices=("public-selection-v1", "legacy"),
+                        default="public-selection-v1", help="Versioned full-scope selection (default), or legacy prefixes")
     args = parser.parse_args()
-    prepare(args.suite, args.raw_jsonl, args.source, args.output)
+    prepare(args.suite, args.raw_jsonl, args.source, args.output, selection_protocol=args.selection_protocol)
 
 
 if __name__ == "__main__":

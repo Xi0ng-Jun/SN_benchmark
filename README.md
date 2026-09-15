@@ -16,9 +16,9 @@ Git 保存源码、测试、配置、冻结的公开样本、学习材料及结�
 
 ## 产品能力评测设计
 
-**当前先用 DeepEval 公开评测起步**：见[公开评测起步方案](docs/deepeval-public-starter-plan.md)。建议以 SQuAD、DROP、BoolQ、LogiQA、IFEval 建立模型参照，产品侧先适配前三类，分开报告模型与产品成绩。随后按[能力广度扩展计划](docs/product-capability-breadth-plan.md)设计业务场景；[Memory 与 Agent 上下文说明](docs/memory-and-agent-context.md)保留为背景。交互可靠性与资料更新一致性明确排除；在线调用继续暂停。
+**当前按能力确定十套公开评测的选题范围**：见[任务与选题方案](docs/public-benchmark-selection-plan.md)。不预设每套题数，选定 task/split 内符合规则的原题全部纳入；MMLU 四个学科、BBH 四类推理任务的选择理由单独说明。原“每套 20 题”的[起步方案](docs/deepeval-public-starter-plan.md)保留为历史设计。随后按[能力广度扩展计划](docs/product-capability-breadth-plan.md)设计业务场景；[Memory 与 Agent 上下文说明](docs/memory-and-agent-context.md)保留为背景。交互可靠性与资料更新一致性明确排除；在线调用继续暂停。
 
-2026-09-10 已按用户要求编写 P0/P1 准备代码，并串起 N/R 执行与离线报告入口：五套公开题的本地冻结、SDK 模板/scorer、显式模型适配、产品原生导入/Ask、BoolQ 解析和结果覆盖率。数据格式见[首批代码交接](docs/deepeval-public-starter-implementation.md)，命令、配置、产物和边界见[执行与报告说明](docs/deepeval-public-starter-orchestration.md)。**本轮没有运行或测试，新代码未验证，新数据尚未冻结，在线调用仍暂停。**
+2026-09-10 已按用户要求编写 P0/P1 准备代码，并串起 N/R 执行与离线报告入口：五套公开题的本地冻结、SDK 模板/scorer、显式模型适配、产品原生导入/Ask、BoolQ 解析和结果覆盖率。数据格式见[首批代码交接](docs/deepeval-public-starter-implementation.md)，命令、配置、产物和边界见[执行与报告说明](docs/deepeval-public-starter-orchestration.md)。当时未运行测试；最新离线回归进度见下方，新增正式数据尚未冻结，在线调用仍暂停。
 
 第一阶段已形成[详细方案](docs/product-capability-evaluation-plan.md)、[能力矩阵](docs/product-capability-matrix.md)、[统一数据协议草案与隔离规则](docs/evaluation-data-contract.md)、[真实 DROP 样本全链路说明](docs/evaluation-case-walkthrough.md)及[后续离线实施计划](docs/superpowers/plans/2026-09-10-product-capability-evaluation.md)。[公开样例快照](docs/examples/drop-smoke-case.json)随 Git 保存，包含真实输入、完整合成上下文、引用与历史评分，独立克隆也可查看。
 
@@ -26,11 +26,13 @@ Git 保存源码、测试、配置、冻结的公开样本、学习材料及结�
 
 ## 当前扩展阶段
 
-阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](docs/public-benchmark-agent-expansion-design.md)。本轮补齐 MMLU、GSM8K、TruthfulQA MC1、HellaSwag 和 BIG-Bench Hard 的 Native 请求与官方评分分派，以及 Product 不适用记录、来源重建和报告兼容逻辑，详见[代码补齐计划](docs/superpowers/plans/2026-09-13-expansion-code-completion.md)。**代码和回归用例尚未执行验证，新增数据未冻结。**
+2026-09-14 最新仅沉淀选题文档，测试与实验再次暂停。题量不由现有 40 篇单库资料上限决定；后续选择器与分库、覆盖对账需要独立实现，当前 runner 尚不支持新方案的多分区执行。没有下载或冻结新数据，本次文档更新不改代码。
+
+阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](docs/public-benchmark-agent-expansion-design.md)。已补齐 MMLU、GSM8K、TruthfulQA MC1、HellaSwag 和 BIG-Bench Hard 的 Native 请求与官方评分分派，以及 Product 不适用记录、来源重建和报告兼容逻辑，详见[代码补齐计划](docs/superpowers/plans/2026-09-13-expansion-code-completion.md)。**2026-09-14 全量离线回归 205 项通过，无失败、跳过或警告；新增正式数据尚未冻结，真实 SN 运行待验证。** 结果与复现步骤见[离线回归记录](docs/offline-regression-2026-09-14.md)。
 
 当前转入[SN 系统接入](docs/sn-public-system-adaptation.md)：在保留模型参照的基础上，为 LogiQA、GSM8K、BBH、MMLU、TruthfulQA MC1、HellaSwag、IFEval 编写 `sn-public-system-v1`。LogiQA 导入配套阅读材料；其他套件导入不含解答的原始题面，通过正常 SN Ask 分别测推理、知识/常识和指令遵循。候选选项不作为事实证据，IFEval 保留原始 prompt 和完整答案正文。
 
-新七套的 R 路径默认使用系统协议；`--product-protocol legacy` 才保留之前的 N/A 记录。SQuAD/DROP/BoolQ 沿用原产品适配。新系统路径使用隔离 SN 模型服务配置，不要求 `--models` 或伪造人审标签。冻结数据中的旧 product=False 不回填，当前能力由独立 adapter registry 定义。**本阶段代码与回归用例未运行，尚未验收。** Agent/DAG 指标未接入；在线、baseline 和 timer 继续暂停。
+新七套的 R 路径默认使用系统协议；`--product-protocol legacy` 才保留之前的 N/A 记录。SQuAD/DROP/BoolQ 沿用原产品适配。新系统路径使用隔离 SN 模型服务配置，不要求 `--models` 或伪造人审标签。冻结数据中的旧 product=False 不回填，当前能力由独立 adapter registry 定义。**离线回归包含合成样本与真实 SDK 客观评分；SN 执行使用测试替身，尚未进行在线验收。** Agent/DAG 指标未接入；在线、baseline 和 timer 继续暂停。
 
 扩展数据仍使用 `public-expansion-v2`，旧扩展 bundle 需重新准备，原五套起步数据协议保持兼容。以下为后续验证入口，本轮未执行：
 
@@ -44,7 +46,7 @@ Git 保存源码、测试、配置、冻结的公开样本、学习材料及结�
 .venv/bin/python scripts/run_public_starter.py --bundle /path/to/gsm8k-bundle --track R --mode chunk --product-protocol sn-public-system-v1 --run-dir var/public-starter/NEW_SYSTEM_RUN
 ```
 
-每个 suite/mode 使用新运行目录、独立 notebook，每题独立会话。IFEval 的 `--instruction-audits` 只控制规则评分可用性，缺少审核时仍保留真实 Ask 输出和 N/A 分数。实现与静态审阅进度见[实施计划](docs/superpowers/plans/2026-09-13-sn-public-system.md)。
+现有单库协议中，每个 suite/mode 使用新运行目录、独立 notebook，每题独立会话。后续完整题单的分库设计见[选题方案](docs/public-benchmark-selection-plan.md)，尚未实现。IFEval 的 `--instruction-audits` 只控制规则评分可用性，缺少审核时仍保留真实 Ask 输出和 N/A 分数。已有实现进度见[实施计划](docs/superpowers/plans/2026-09-13-sn-public-system.md)。
 
 ## SQuAD / DROP 持续评测
 
@@ -111,6 +113,8 @@ pip install -e '.[dev,deepeval]'
 完整离线测试需要 `dev,deepeval` 依赖，但不调用模型。原生 judge JSON 适配测试另外需要同级 `../project/backend`；缺少时明确跳过，单独克隆可运行其余检查。产品在线运行还需 Silicon Notebook 后端及其 Python 依赖、本地 `.env` 和 `.local/model-services.toml`；它们不随本仓库分发。默认产品位置为同级 `../project`，在线命令也可通过 `--project-root /absolute/path/to/project` 指定。历史在线运行使用 Python 3.13.15、DeepEval 4.2.2；新安装的依赖范围不等同于历史锁定环境，续跑前须通过身份校验。`config.example.json` 的数值是早期示例，不是正式阈值。
 
 ## 测试
+
+在 worktree 或产品位于其他目录时，可用 `SILICON_NOTEBOOK_PROJECT_ROOT=/absolute/path/to/project` 为原生 judge JSON 契约测试指定产品位置。它只加载纯校验代码并使用假模型客户端；显式路径无效时测试失败，未配置且没有同级产品检出时该项跳过。带网络阻断的本轮复现命令见[回归记录](docs/offline-regression-2026-09-14.md)。
 
 ```bash
 pytest -q
