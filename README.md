@@ -1,5 +1,15 @@
 # Silicon Notebook RAG Benchmark + DeepEval
 
+实验完成或阶段性运行后，可用离线 Dashboard 汇总已保存结果：
+
+```bash
+python scripts/build_experiment_dashboard.py \
+  --runs-root /path/to/runs \
+  --output /path/to/reports/dashboard
+```
+
+打开生成的 `dashboard.html` 即可查看运行状态、指标、模式和警告。该命令只读取结果文件，不启动 Silicon Notebook、不调用模型，也不重新评分。
+
 这是独立的 RAG 评测脚手架。大体量数据保留在：
 
 ```text
