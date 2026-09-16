@@ -1,5 +1,9 @@
 # 评测状态
 
+## 2026-09-16：IFEval 直接评分
+
+按用户要求取消项目自加的人工正反例审核门槛：Native 正常生成回答，Native/SN Product 均直接调用固定版本 DeepEval verifier，按所有指令是否通过评分。SN 完整正文及引用原样参与检查。新运行记录独立策略和 scorer；已有数据包、分区计划和旧报告保持兼容，不改历史 N/A。详见 [实施决定与服务器使用](ifeval-direct-scoring.md)。本地全量离线回归 **281 passed，联网尝试 0**，含本地合成样本与真实 SDK；独立代码审阅未发现阻断问题。未启动模型实验或改动 SN；服务器实验进度仍以服务器记录为准。
+
 更新时间：2026-09-16
 
 ## 当前离线报告开发
@@ -36,7 +40,7 @@
 
 此前新增五套 Product 的 N/A 记录现在保留在显式 legacy 路径。新 `sn-public-system-v1` 为 LogiQA/GSM8K/BBH/MMLU/TruthfulQA MC1/HellaSwag/IFEval 增加正常 SN Ask：LogiQA 使用配套文章，其余导入原题面和候选项，不导入解答或正确标签。无需自行配教材或填写虚构的人审意见。新系统适配由独立 registry 声明，冻结 Native manifest 的 product=False 不修改。
 
-新路径保存原生澄清、无答案、错误、答案正文与引用；文本拒答只作待核验候选。主指标为适配后的官方客观 scorer/IFEval verifier，诊断引用和资料覆盖分开，不默认加 Faithfulness。IFEval 缺少参数匹配的规则审核时评分 N/A，真实回答仍保留。Agent 和 DAG 指标未接入；当前读取到的 reasoning_trace 至多标记 partial，完整度不是 Agent 分数。离线审计入口为 `scripts/check_public_expansion_offline.py`。
+新路径保存原生澄清、无答案、错误、答案正文与引用；文本拒答只作待核验候选。主指标为适配后的官方客观 scorer/IFEval verifier，诊断引用和资料覆盖分开，不默认加 Faithfulness。此前 IFEval 缺少规则审核时为 N/A；2026-09-16 已取消此前置条件，当前直接调用 SDK 评分。Agent 和 DAG 指标未接入；当前读取到的 reasoning_trace 至多标记 partial，完整度不是 Agent 分数。离线审计入口为 `scripts/check_public_expansion_offline.py`。
 
 新增数据尚未冻结，Native/Product/Agent 实验均未执行；生产、旧 baseline 和 timer 保持原状态。阶段边界见[扩展设计](public-benchmark-agent-expansion-design.md)。
 

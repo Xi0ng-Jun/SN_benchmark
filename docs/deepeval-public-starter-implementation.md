@@ -1,5 +1,7 @@
 # 公开评测起步：代码交接
 
+**2026-09-16 更新：IFEval 已取消人工正反例审计前置条件，N/R 直接调用 DeepEval 4.2.2 verifier。冻结数据中的 pending/audited 字段仅作来源归档，不阻止问答或评分。新 scorer 与历史记录分开，详见 [IFEval 直接评分与服务器使用说明](ifeval-direct-scoring.md)。下文早期阶段记录中的审计要求已被此决定取代。**
+
 2026-09-10：已写入 P0/P1 准备代码，**未执行、未测试、未验收**。用户本轮明确要求先专注代码和逻辑。没有下载或冻结新数据，没有创建模型客户端、产品 notebook/runtime，没有新成绩。
 
 后续已按用户指示继续编写 N/R 执行编排和离线报告入口，见[执行与报告说明](deepeval-public-starter-orchestration.md)。下文保留基础模块协议；最新入口已串起调用关系，但仍未运行或测试。
@@ -12,7 +14,7 @@
 |---|---|---|
 | `src/rag_eval/starter_protocol.py` | 五套 suite 定义；保留原题和标注；按原始顺序选题；重复 ID/偏移检查；冻结包读取和重建对账 | 只用本地 JSONL，不下载；不 import DeepEval |
 | `scripts/prepare_public_starter.py` | 来源声明与导出哈希检查；冻结 raw/cases/manifest；SDK 源码副本；可读题卡与 IFEval 待审计清单 | 单次准备一个 suite；拒绝已有输出目录；尚未执行 |
-| `src/rag_eval/starter_native.py` | 使用 4.2.2 原生模板和 schema 构造 N 请求；原生 scorer；参数化 IFEval 正反例审计接口 | 延迟导入 SDK；不调用自动下载的 loader；SQuAD 评分接口属于在线操作 |
+| `src/rag_eval/starter_native.py` | 使用 4.2.2 原生模板和 schema 构造 N 请求；原生 scorer；IFEval 直接调用 SDK verifier | 延迟导入 SDK；不调用自动下载的 loader；SQuAD 评分接口属于在线操作 |
 | `src/rag_eval/starter_model.py` | `ExplicitBenchmarkModel` 接收显式客户端、角色、模型身份、配置哈希；请求/响应/错误留痕；schema 校验 | 不负责创建客户端；未配置不得回落默认供应商；未做真实调用 |
 | `src/rag_eval/starter_product.py` | 人审后转换 SQuAD/DROP/BoolQ 产品题；最多 40 段固定候选库；BoolQ 结论解析；隔离路径描述 | 不创建产品对象；DROP 需要完整官方标注；来源、人审不可由代码代填 |
 | `src/rag_eval/starter_results.py` | 独占创建的事件日志；计划/结果身份；分组均分、覆盖率、缺失和失败数量 | 单进程、支持线程写日志；无自动续跑，不提供跨套件总分 |
@@ -66,7 +68,7 @@ manifest 明确写 `source_provenance_status=operator_declared; export hash chec
 
 SQuAD 必须传入 judge-role adapter 才能评分。DROP 使用原生字符串列表匹配并保留多 span 限制；BoolQ/LogiQA 使用原生精确匹配。所有二元 scorer 返回值须为 0 或 1，异常不填零。
 
-IFEval 的静态清单仅表示源码有无显式分支，全部初始状态均为 pending。`audit_instruction` 是后续才执行的离线接口，使用人工准备的同参数正反例调用原 verifier；`score_prediction` 只接受相同 verifier 哈希、ID 和参数的通过记录，并重查正反例。任一指令未审计，整题主分为不适用，已检查指令明细保留。正反例检查不等于完备证明，也不等于原论文 strict/loose 实现；本轮没有已通过记录。
+IFEval 静态清单和 pending 字段保留为 v1 来源归档，当前不参与评分准入。`score_prediction` 直接调用固定 SDK verifier，按全部指令的布尔结果计算整题分数，并保存位置、参数和理由。旧 `audit_instruction` 接口已删除，不再要求准备或复核正反例；详细兼容约定见 [IFEval 直接评分](ifeval-direct-scoring.md)。
 
 ## 产品适配 R
 

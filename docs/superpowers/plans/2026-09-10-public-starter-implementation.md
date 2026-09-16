@@ -1,5 +1,7 @@
 # 公开评测起步：P0/P1 代码实施计划
 
+> 2026-09-16：本文为历史实施记录。其中 IFEval 人工正反例审核前置条件已取消，当前直接使用固定 SDK verifier，见 [最新决定](../../ifeval-direct-scoring.md)。无需执行本文旧审核步骤。
+
 > **For agentic workers:** Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 写出五套公开题的离线冻结逻辑、显式模型适配、逐题评分接口与 BoolQ 产品适配；本轮不执行代码或测试。

@@ -31,7 +31,8 @@ def main():
     parser.add_argument("--partition-plan", type=Path,
                         help="Frozen corpus partition plan, required for a new selection R run")
     parser.add_argument("--partition-id", help="One explicit partition ID; omitted partitions remain unexecuted")
-    parser.add_argument("--instruction-audits", type=Path)
+    parser.add_argument("--instruction-audits", type=Path,
+                        help="Deprecated: ignored for IFEval; direct SDK scoring requires no audit file")
     args = parser.parse_args()
     for name, value in vars(args).items():
         if isinstance(value, Path):

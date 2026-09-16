@@ -6,6 +6,7 @@ scores always retain their own source/model identities and saved judge events.
 from copy import deepcopy
 
 from .starter_protocol import SUITES
+from .ifeval_protocol import NATIVE_SCORER, PRODUCT_SCORER
 from .public_expansion_protocol import EXPANSION_SUITES
 
 
@@ -21,14 +22,23 @@ EXACT = _metric(
     "格式/请求失败单独记录；0/1 不评价推导步骤。GSM8K 产品数值不做数值等价换算。",
     ["src/rag_eval/starter_native.py:score_prediction", "src/rag_eval/public_expansion_native.py:score_prediction"])
 
-IFEVAL = _metric(
-    "全部指令满足", "确定性 / 已审计 verifier", ["完整回答正文", "instruction_id_list", "kwargs", "instruction-audits"],
+LEGACY_IFEVAL = _metric(
+    "全部指令满足（历史审计协议）", "确定性 / 历史已审计 verifier", ["完整回答正文", "instruction_id_list", "kwargs", "instruction-audits"],
     "所有指令均通过 → 1；有任意一条失败 → 0；有任意未审计指令 → N/A。",
     "逐条匹配 instruction_id、kwargs、verifier 哈希和正反例审计，复核正反例，再执行 verify_instruction_compliance；保存逐指令结果。",
-    "Native 缺审计时不发起模型预测；Product 可保存回答但不给规则分。只评价列出的指令。",
+    "仅用于解释历史记录；旧版 Native 缺审计时不预测，Product 可保存回答但不给规则分。当前运行已取消此前置条件。",
     ["src/rag_eval/starter_native.py:score_prediction", "src/rag_eval/starter_native.py:audit_instruction"])
 
+IFEVAL = _metric(
+    "全部指令满足", "确定性 / DeepEval IFEval verifier", ["完整回答正文", "instruction_id_list", "kwargs"],
+    "所有指令均通过 → 1；任意指令失败 → 0。有效题级分数取均值，并单列评分覆盖率。",
+    "直接调用固定版本 SDK verify_instruction_compliance，按 IFEval.predict 的逻辑合取结果；保存每个位置的指令、参数、结果和理由，无人工正反例审计前置条件。",
+    "使用 DeepEval 4.2.2 的实际规则（包括默认分支），不是原论文 strict/loose 复现。SN 正文的引用与解释原样参与检查；执行异常和未正常回答单独记录。",
+    ["src/rag_eval/starter_native.py:score_prediction", "src/rag_eval/system_scoring.py:score_system_answer"])
+
 CATALOG = {
+    NATIVE_SCORER: deepcopy(IFEVAL),
+    PRODUCT_SCORER: deepcopy(IFEVAL),
     **{info["scorer"]: deepcopy(EXACT) for suite, info in {**SUITES, **EXPANSION_SUITES}.items()
        if suite not in {"squad", "drop", "ifeval"}},
     "deepeval.squad_score.binary_judge": _metric(
@@ -43,8 +53,8 @@ CATALOG = {
         "使用 SDK quasi_contains_score；名字含 contains，但实际检查归一化后的整串是否等于任一列表项。",
         "不是数值运算验证，也不等同 DROP 多 span 完整性 F1；Product 使用另一套 GEval 口径。",
         ["src/rag_eval/starter_native.py:score_prediction"]),
-    "deepeval.ifeval.audited_all_instructions": deepcopy(IFEVAL),
-    "product.ifeval.audited_all_instructions.full_body.v1": deepcopy(IFEVAL),
+    "deepeval.ifeval.audited_all_instructions": deepcopy(LEGACY_IFEVAL),
+    "product.ifeval.audited_all_instructions.full_body.v1": deepcopy(LEGACY_IFEVAL),
     "product.deepeval.exact_match_score.final_answer.v1": _metric(
         "SN 最终答案精确匹配", "确定性 / 产品提取 + SDK Scorer", ["SN 完整回答", "原题答案域", "SDK expected_output"],
         EXACT["formula"],
@@ -93,10 +103,10 @@ def describe_metric(scorer):
 def benchmark_rows():
     rows = []
     for suite, info in {**SUITES, **EXPANSION_SUITES}.items():
-        rows.append((suite, "Native（N）", info["scorer"]))
+        rows.append((suite, "Native（N）", NATIVE_SCORER if suite == "ifeval" else info["scorer"]))
         primary = ("product.GEval.AnswerCorrectness" if suite in {"squad", "drop"} else
                    "product.boolq.explicit_conclusion.v1" if suite == "boolq" else
-                   "product.ifeval.audited_all_instructions.full_body.v1" if suite == "ifeval" else
+                   PRODUCT_SCORER if suite == "ifeval" else
                    "product.deepeval.exact_match_score.final_answer.v1")
         metrics = [primary]
         if suite in {"squad", "drop", "boolq"}:

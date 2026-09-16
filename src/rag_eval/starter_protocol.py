@@ -24,6 +24,7 @@ SUITES = {
               "scorer": "deepeval.exact_match_score.YesNo", "product": True},
     "logiqa": {"dataset": "csitfun/LogiQA2.0/logiqa/DATA/LOGIQA/test.txt",
                "split": "test", "scorer": "deepeval.exact_match_score.ABCD", "product": False},
+    # Frozen v1 source label; current execution uses ifeval_protocol.py.
     "ifeval": {"dataset": "google/IFEval", "split": "train",
                "scorer": "deepeval.ifeval.audited_all_instructions", "product": False},
 }
@@ -88,6 +89,8 @@ def make_case(suite: str, row: dict, row_index: int, task: str) -> dict:
         if not isinstance(kwargs, list) or len(ids) != len(kwargs) or not all(isinstance(k, dict) for k in kwargs):
             raise ValueError("IFEval instruction/kwargs alignment is required")
         answer_type = "instructions"
+        # Archived v1 text retained for byte-for-byte bundle reconstruction.
+        # It is superseded by the run identity policy, not an execution gate.
         notes.append("all instruction instances require verifier audit before scoring")
     public_id = row.get("id", row.get("query_id", row.get("key")))
     sample_id = f"{suite}-{public_id}" if public_id is not None else f"{suite}-{fingerprint(row)}"

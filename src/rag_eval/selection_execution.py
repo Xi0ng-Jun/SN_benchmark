@@ -2,6 +2,7 @@
 from copy import deepcopy
 
 from .starter_protocol import fingerprint
+from .ifeval_protocol import DIRECT_POLICY, scorer_for
 
 
 def execution_context(source, selected_memberships, plan=None, partition=None):
@@ -32,13 +33,15 @@ def select_partition(cases, source, plan_path, partition_id):
             execution_context(source, len(cases), plan, partition), plan)
 
 
-def expected_scorers(suite, track):
+def expected_scorers(suite, track, *, ifeval_scoring=DIRECT_POLICY):
     """Reuse scorer identities from the existing runner; no metric construction."""
     from .starter_runner import BOOLQ_SCORER, PRODUCT_CORRECTNESS, FAITHFULNESS, EVIDENCE, CITATIONS
     from .starter_protocol import SUITES
     from .public_expansion_protocol import EXPANSION_SUITES
     from .system_product import SYSTEM_SUITES
     from .system_scoring import primary_scorer
+    if suite == "ifeval":
+        return [scorer_for(track, ifeval_scoring)] + ([CITATIONS] if track == "R" else [])
     if track == "N":
         return [{**SUITES, **EXPANSION_SUITES}[suite]["scorer"]]
     if suite in SYSTEM_SUITES:
@@ -68,7 +71,8 @@ def validate_saved_selection(run, manifest, planned, outputs):
             or manifest["identity"].get("selection_context") != expected_context):
         raise ValueError("Saved selection context differs from the full frozen plan")
     expected = Counter((c["case_id"], scorer) for c in cases
-                       for scorer in expected_scorers(source["suite"], manifest["track"]))
+                       for scorer in expected_scorers(source["suite"], manifest["track"],
+                                                      ifeval_scoring=manifest["identity"].get("ifeval_scoring")))
     if Counter((p["case_id"], p["scorer"]) for p in planned) != expected:
         raise ValueError("Saved result plan drops or changes frozen selection cases/scorers")
     by_id = {c["case_id"]: c for c in cases}

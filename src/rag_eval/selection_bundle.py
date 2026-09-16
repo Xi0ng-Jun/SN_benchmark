@@ -82,6 +82,7 @@ def _validate_sdk(root, native, cases):
             raise ValueError("Frozen SDK source changed: " + relative)
 
 
+# Frozen v1 inventory only; pending fixtures never gate current IFEval scoring.
 def _instruction_inventory(cases, sdk_root, suite):
     if suite != "ifeval":
         return []

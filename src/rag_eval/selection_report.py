@@ -29,7 +29,13 @@ def summarize_selection(selection, plan, runs, modes=("chunk", "reasoning")):
     for pid, p in partitions.items():
         if any(decisions[cid].get("partition_id") != pid for cid in p["case_ids"]):
             raise ValueError("Partition decisions and assignment disagree")
-    scorers = expected_scorers(suite, "R")
+    from .ifeval_protocol import DIRECT_POLICY
+    policies = {r["manifest"]["identity"].get("ifeval_scoring") for r in runs
+                if r["manifest"] is not None} if suite == "ifeval" else set()
+    if len(policies) > 1:
+        raise ValueError("Cannot aggregate different IFEval scoring policies/configurations")
+    policy = next(iter(policies)) if policies else DIRECT_POLICY
+    scorers = expected_scorers(suite, "R", ifeval_scoring=policy)
     observed, unbound, family = {}, [], None
     for run in runs:
         manifest = run["manifest"]

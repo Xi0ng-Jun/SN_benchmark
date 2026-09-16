@@ -14,7 +14,7 @@ python scripts/build_experiment_dashboard.py \
 
 侧栏选项与数量随其他已选标签和搜索词联动：无匹配的未选项隐藏，已选的零结果条件保留以便取消，同一组仍支持追加多选。
 
-**2026-09-16 当前工作：** 服务端实验由用户另行执行；本地只开发离线报告并用合成记录验证，不据此声明服务器成绩。以下 2026-09-14 及更早章节保留为历史阶段记录，最新进度以 [evaluation-status.md](docs/evaluation-status.md) 顶部和当前代码为准。
+**2026-09-16 当前工作：** IFEval 已改为直接使用 DeepEval verifier，无需人工正反例审计，详见 [评分与服务器使用说明](docs/ifeval-direct-scoring.md)。服务端实验由用户另行执行；本地开发评分与离线报告，用合成记录验证，不据此声明服务器成绩。以下 2026-09-14 及更早章节保留为历史阶段记录，最新进度以 [evaluation-status.md](docs/evaluation-status.md) 顶部和当前代码为准。
 
 这是独立的 RAG 评测脚手架。大体量数据保留在：
 
@@ -62,7 +62,7 @@ Git 保存源码、测试、配置、冻结的公开样本、学习材料及结�
 .venv/bin/python scripts/run_public_starter.py --bundle /path/to/gsm8k-bundle --track R --mode chunk --product-protocol sn-public-system-v1 --run-dir var/public-starter/NEW_SYSTEM_RUN
 ```
 
-现有单库协议中，每个 suite/mode 使用新运行目录、独立 notebook，每题独立会话。后续完整题单的分库设计见[选题方案](docs/public-benchmark-selection-plan.md)，尚未实现。IFEval 的 `--instruction-audits` 只控制规则评分可用性，缺少审核时仍保留真实 Ask 输出和 N/A 分数。已有实现进度见[实施计划](docs/superpowers/plans/2026-09-13-sn-public-system.md)。
+现有单库协议中，每个 suite/mode 使用新运行目录、独立 notebook，每题独立会话。后续完整题单的分库设计见[选题方案](docs/public-benchmark-selection-plan.md)，尚未实现。IFEval 不需要 `--instruction-audits`；该参数仅兼容旧命令并被忽略，直接评分不受冻结数据中 pending 字段影响。已有实现进度见[实施计划](docs/superpowers/plans/2026-09-13-sn-public-system.md)。
 
 ## SQuAD / DROP 持续评测
 

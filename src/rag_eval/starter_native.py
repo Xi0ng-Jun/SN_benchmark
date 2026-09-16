@@ -84,31 +84,13 @@ def build_request(case, manifest):
     return request, schema
 
 
-def audit_instruction(instruction_id, kwargs, positive, negative, manifest):
-    """Explicit OFFLINE execution for a later verification phase; never auto-run.
-
-    This checks one parameterized rule with human-supplied positive/negative
-    fixtures. It is implementation evidence, not benchmark or quality calibration.
-    """
-    root = check_sdk(manifest)
-    if not all(isinstance(t, str) and t for t in (positive, negative)) or positive == negative:
-        raise ValueError("Distinct nonempty positive/negative fixtures required")
-    from deepeval.benchmarks.ifeval.ifeval import IFEvalInstructionVerifier as verifier
-    yes, yes_reason = verifier.verify_instruction_compliance(positive, instruction_id, kwargs)
-    no, no_reason = verifier.verify_instruction_compliance(negative, instruction_id, kwargs)
-    return {"instruction_id": instruction_id, "kwargs": kwargs,
-            "positive": positive, "negative": negative,
-            "positive_result": yes, "negative_result": no,
-            "reasons": [yes_reason, no_reason],
-            "verifier_sha256": digest(root / "benchmarks/ifeval/ifeval.py"),
-            "status": "passed" if yes is True and no is False else "failed"}
-
-
 def score_prediction(case, request, prediction, manifest, *, judge=None, instruction_audits=()):
     """Score a saved prediction. SQuAD calls the explicitly supplied judge.
 
     This is an execution API for later use, not part of the preparation command.
-    Errors propagate to the result writer; they are never converted into zero.
+    Errors escaping the SDK propagate to the result writer, never becoming zero.
+    SDK-returned failure verdicts retain the benchmark's own scoring semantics.
+    instruction_audits is an ignored compatibility argument; IFEval uses the SDK directly.
     """
     if not isinstance(prediction, str):
         raise ValueError("Prediction must be the schema-parsed answer as text")
@@ -122,27 +104,18 @@ def score_prediction(case, request, prediction, manifest, *, judge=None, instruc
     suite = case["suite"]
     if suite == "ifeval":
         from deepeval.benchmarks.ifeval.ifeval import IFEvalInstructionVerifier as verifier
-        verifier_hash = digest(root / "benchmarks/ifeval/ifeval.py")
+        from .ifeval_protocol import DIRECT_POLICY
         details = []
+        # The frozen row requires aligned, nonempty instruction/kwargs lists.
+        # Match IFEval.predict's all-instructions conjunction, including SDK
+        # default branches. Keep positions so duplicate IDs retain each result.
         for position, (instruction, kwargs) in enumerate(zip(case["raw_row"]["instruction_id_list"], case["raw_row"]["kwargs"])):
-            evidence = next((a for a in instruction_audits
-                             if a.get("instruction_id") == instruction and a.get("kwargs") == kwargs
-                             and a.get("verifier_sha256") == verifier_hash and a.get("status") == "passed"
-                             and a.get("positive_result") is True and a.get("negative_result") is False), None)
-            if evidence is None:
-                details.append({"position": position, "instruction_id": instruction,
-                                "status": "not_applicable", "reason": "missing matching positive/negative audit"})
-            else:
-                # Recheck supplied audit evidence, rather than trusting an editable status flag.
-                checked = audit_instruction(instruction, kwargs, evidence["positive"], evidence["negative"], manifest)
-                if checked["status"] != "passed":
-                    raise ValueError("Instruction audit no longer reproduces")
-                passed, reason = verifier.verify_instruction_compliance(prediction, instruction, kwargs)
-                details.append({"position": position, "instruction_id": instruction,
-                                "status": "scored", "score": int(passed), "reason": reason})
-        if not details or any(d["status"] != "scored" for d in details):
-            return {"status": "not_applicable", "score": None, "reason": "not all instruction instances audited", "details": details}
-        return {"status": "scored", "score": float(all(d["score"] for d in details)), "details": details}
+            passed, reason = verifier.verify_instruction_compliance(prediction, instruction, kwargs)
+            details.append({"position": position, "instruction_id": instruction, "kwargs": kwargs,
+                            "status": "scored", "score": int(passed), "reason": reason})
+        return {"status": "scored", "score": float(all(d["score"] for d in details)), "details": details,
+                "scoring_policy": DIRECT_POLICY, "deepeval_version": SDK_VERSION,
+                "verifier_sha256": digest(root / "benchmarks/ifeval/ifeval.py")}
 
     from deepeval.scorer import Scorer
     scorer = Scorer()

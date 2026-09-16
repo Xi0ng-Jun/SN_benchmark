@@ -80,22 +80,19 @@ def test_extracted_value_must_also_match_official_literal_schema(scoring):
     assert scoring == []
 
 
-def test_ifeval_passes_full_body_and_audits_without_stripping(scoring, monkeypatch):
+def test_ifeval_passes_full_body_directly_without_stripping(scoring, monkeypatch):
     calls = []
-
-    def score(case, request, prediction, source, *, instruction_audits):
-        calls.append((prediction, instruction_audits))
-        return {"status": "not_applicable", "score": None, "reason": "not all instruction instances audited",
-                "details": [{"instruction_id": "fixture", "status": "not_applicable"}]}
-
+    def score(case, request, prediction, source):
+        calls.append(prediction)
+        return {"status": "scored", "score": 1.0,
+                "details": [{"instruction_id": "fixture", "status": "scored", "score": 1}]}
     monkeypatch.setattr(starter_native, "score_prediction", score)
-    answer, audits = "  A response.\r\n[1] citation\n", [{"fixture": True}]
-    result = score_system_answer({"suite": "ifeval", "task": "ifeval", "expected": ""},
-                                 answer, {}, instruction_audits=audits)
-    assert calls == [(answer, audits)]
+    answer = "  A response.\r\n[1] citation\n"
+    result = score_system_answer({"suite": "ifeval", "task": "ifeval", "expected": ""}, answer, {})
+    assert calls == [answer]
     assert result["normalized_answer"] == answer
-    assert result["status"] == "not_applicable"
-    assert result["score"] is None
+    assert result["status"] == "scored"
+    assert result["score"] == 1.0
     assert result["details"]["instruction_results"][0]["instruction_id"] == "fixture"
 
 

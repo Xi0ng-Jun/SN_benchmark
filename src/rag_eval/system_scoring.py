@@ -17,7 +17,8 @@ def primary_scorer(suite):
     if suite not in SYSTEM_SUITES:
         raise ValueError("Unknown public system suite")
     if suite == "ifeval":
-        return "product.ifeval.audited_all_instructions.full_body.v1"
+        from .ifeval_protocol import PRODUCT_SCORER
+        return PRODUCT_SCORER
     return "product.deepeval.exact_match_score.final_answer.v1"
 
 
@@ -77,7 +78,8 @@ def score_system_answer(case, answer, source, instruction_audits=()):
     ``source`` is the frozen Native manifest. build_request verifies its SDK
     bytes and original answer mapping; its prompt is metadata, never SN input.
     Product clarification/refusal state is handled by the runtime, not guessed
-    here. IFEval passes the untouched full body to the existing audited scorer.
+    here. IFEval passes the untouched full body directly to the SDK verifier.
+    instruction_audits is retained only as an ignored compatibility argument.
     """
     suite = case["suite"]
     scorer_id = primary_scorer(suite)
@@ -100,8 +102,10 @@ def score_system_answer(case, answer, source, instruction_audits=()):
                    native_schema=deepcopy(request["schema"]), native_schema_name=request["schema_name"],
                    sdk_identity=request["sdk_identity"])
     if suite == "ifeval":
-        result = score_prediction(case, request, value, source, instruction_audits=instruction_audits)
+        result = score_prediction(case, request, value, source)
         details["instruction_results"] = deepcopy(result.get("details", []))
+        for key in ("scoring_policy", "deepeval_version", "verifier_sha256"):
+            details[key] = result.get(key)
         return {"status": result["status"], "score": result.get("score"), "reason": result.get("reason"),
                 "normalized_answer": value, "details": details}
 

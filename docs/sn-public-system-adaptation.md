@@ -19,7 +19,7 @@
 | MMLU | 导入原 question 与 choices，明确选项是候选 | 知识题系统作答；不以题库引文证明知识正确 |
 | TruthfulQA MC1 | 导入 question 与 seed-42 排序后的 mc1 choices | 固定数字选项 exact-match，不冒充开放式诚实性/拒答评分 |
 | HellaSwag | 导入 ctx 与 endings；Ask 选择后续 | 常识推断；候选续写不是已发生事实 |
-| IFEval | 导入原 prompt；Ask 严格原样 prompt | 完整答案正文过经正反例审核的官方规则，不增加 Final answer 指令、不删引用或解释 |
+| IFEval | 导入原 prompt；Ask 严格原样 prompt | 完整答案正文直接交给固定版本 DeepEval verifier，不增加 Final answer 指令、不删引用或解释 |
 
 ## 数据边界
 
@@ -33,7 +33,7 @@ reasoning 通过产品正常 intent preview 与确认协议提交；仅在原生
 
 除 IFEval 外，新系统请求明确要求独立一行 `Final answer: ...`，其余解释与引用原样保存。只提取唯一明确的最终答案行，拒绝矛盾的多行结论；不通过猜测正文最后一个数字/字母取得成绩。产品提取规则单独版本化，属于适配协议，不能冒充 Native 原始模型 schema 路径。
 
-调用已冻结 DeepEval 模板核对官方答案与 schema；评分使用对应 exact-match / IFEval verifier，均不调用 judge。IFEval 缺少匹配的规则审核时，保留 SN 输出，规则分数 N/A。新套件不默认加 Faithfulness：题面与候选项不一定是事实证据。LogiQA 的资料覆盖与所有套件的引用对象存在检查仅作诊断，不证明推导或断言获得支持。
+调用已冻结 DeepEval 模板核对官方答案与 schema；评分使用对应 exact-match / IFEval verifier，均不调用 judge。IFEval 无人工正反例审计前置条件，全部指令直接按 DeepEval 4.2.2 评分；旧审计元数据不阻止执行。新旧指标与兼容规则见 [直接评分说明](ifeval-direct-scoring.md)。新套件不默认加 Faithfulness：题面与候选项不一定是事实证据。LogiQA 的资料覆盖与所有套件的引用对象存在检查仅作诊断，不证明推导或断言获得支持。
 
 报告按 suite/task/mode/scorer 分组，保留每题计划、回答状态和 null 未评分项。对二元主指标补充“已知答对数 / 全部计划题数”，明确是包含缺失项的答对覆盖率；未完成运行不是最终正确率。已评分均分、输出覆盖率、解析覆盖率和行为候选分开展示。不合并模型与系统总分，不把 N/R 差值当作系统损失的因果估计。引用完整对象、上下文和原始正文可回查。Agent/DAG 未实现，trace 即使 complete 也不产生 Agent 分数。
 

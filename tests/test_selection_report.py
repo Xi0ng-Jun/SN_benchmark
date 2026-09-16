@@ -93,3 +93,41 @@ def test_mixed_runtime_settings_cannot_be_aggregated():
     b["manifest"]["identity"]["code"] = {"different": True}
     with pytest.raises(ValueError, match="configuration"):
         summarize_selection(selection, plan, [a, b])
+
+
+@pytest.mark.parametrize("policy,scorer", [
+    (None, "product.ifeval.audited_all_instructions.full_body.v1"),
+    ("deepeval-ifeval-direct-v1", "product.ifeval.all_instructions.full_body.v2"),
+])
+def test_ifeval_reports_preserve_saved_scoring_policy(policy, scorer):
+    selection, plan = inputs()
+    selection["native_source"]["suite"] = "ifeval"
+    for case in selection["cases"]:
+        case.update(suite="ifeval", task="ifeval")
+    run = saved_run(selection, plan)
+    run["manifest"]["suite"] = "ifeval"
+    if policy is not None:
+        run["manifest"]["identity"]["ifeval_scoring"] = policy
+    for row in run["planned"] + run["scores"]:
+        if row["scorer"] == expected_scorers("gsm8k", "R")[0]:
+            row["scorer"] = scorer
+    report = summarize_selection(selection, plan, [run])
+    primary = [g for g in report["groups"] if g["metric_role"] == "primary"]
+    assert all(g["scorer"] == scorer for g in primary)
+    assert primary[0]["mean_over_scored"] == 1
+    mixed = deepcopy(run)
+    mixed["manifest"]["mode"] = "reasoning"
+    mixed["manifest"]["identity"]["ifeval_scoring"] = (
+        "deepeval-ifeval-direct-v1" if policy is None else None)
+    with pytest.raises(ValueError, match="configuration|scoring polic"):
+        summarize_selection(selection, plan, [run, mixed])
+
+
+def test_new_ifeval_plan_uses_direct_scorers_and_rejects_unknown_policy():
+    from rag_eval.selection_execution import expected_scorers
+    assert expected_scorers("ifeval", "N") == ["deepeval.ifeval.all_instructions.v1"]
+    assert expected_scorers("ifeval", "R")[0] == "product.ifeval.all_instructions.full_body.v2"
+    assert expected_scorers("ifeval", "N", ifeval_scoring=None) == [
+        "deepeval.ifeval.audited_all_instructions"]
+    with pytest.raises(ValueError, match="scoring policy"):
+        expected_scorers("ifeval", "N", ifeval_scoring="unknown")

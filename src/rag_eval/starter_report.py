@@ -66,6 +66,13 @@ def load_run(run):
         validate_saved_selection(run, manifest, planned, outputs)
     elif "selection_context" in manifest or "selection_context" in manifest.get("identity", {}):
         raise ValueError("Selection context has no frozen selection source")
+    if manifest["suite"] == "ifeval" and (manifest["track"] == "N" or manifest.get("product_protocol") == SYSTEM_VERSION):
+        from .selection_execution import expected_scorers
+        expected = expected_scorers("ifeval", manifest["track"],
+                                    ifeval_scoring=manifest["identity"].get("ifeval_scoring"))
+        counts = Counter((p["case_id"], p["scorer"]) for p in planned)
+        if counts != Counter((cid, scorer) for cid in {p["case_id"] for p in planned} for scorer in expected):
+            raise ValueError("IFEval result plan differs from its scoring policy")
     cases = {p["case_id"] for p in planned}
     observed = {}
     for output in outputs:

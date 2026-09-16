@@ -1,5 +1,7 @@
 # 公开起步方案：执行与报告入口
 
+**2026-09-16 更新：IFEval 已取消人工正反例审计前置条件，N/R 直接调用 DeepEval 4.2.2 verifier。冻结数据中的 pending/audited 字段仅作来源归档，不阻止问答或评分。新 scorer 与历史记录分开，详见 [IFEval 直接评分与服务器使用说明](ifeval-direct-scoring.md)。下文早期阶段记录中的审计要求已被此决定取代。**
+
 2026-09-13 增补：[SN 系统接入](sn-public-system-adaptation.md)为七套新产品任务增加 `sn-public-system-v1`；默认 R 自动选择，使用 SN 服务配置而非 `--models`，无需原三套的人审文件。`--product-protocol legacy` 保留旧路径。下文描述原五套首批流程，原三套产品审核要求不变；所有新代码仍未执行验证。
 
 2026-09-10：本轮已编写执行编排和报告入口，**没有运行新代码、没有测试、没有新评测成绩**。这些命令说明供后续使用，当前在线暂停要求仍有效。
@@ -50,7 +52,7 @@ R 的命令形状如下。它会调用产品导入所需的模型、Ask 和语�
 
 reasoning 使用独立 run-dir 和 `--mode reasoning`。`--project-root` 默认指向评测仓库同级的 `project`，可显式指定。已有运行目录被拒绝，本轮不实现续跑、自动重评或批量调度。
 
-IFEval N 可以提供 `--instruction-audits /absolute/path/to/audits.jsonl`。必须是此前 `audit_instruction` 产生、经人工理解其正反例的参数化记录；runner 会核对 verifier 哈希并重查正反例。任一指令缺少有效记录，该题不发模型请求，并记为不适用；不会使用未经审计的默认通过分支补分。
+IFEval N/R 均不需要 `--instruction-audits`，该参数已弃用并忽略。按固定 SDK 的 verifier 直接检查原始回答和指令参数，包括 SDK 的默认分支；逐条保存结果，所有指令通过得 1，否则得 0。旧数据包和分区计划可直接复用，在新的 run-dir 执行。
 
 离线报告入口仅阅读保存产物，不创建模型或产品 runtime：
 
@@ -77,7 +79,7 @@ R 读取生产 `.env` 作为配置输入，独立覆盖数据库、存储、缓�
 
 ## 实际评分安排
 
-N 沿用首批接口：SQuAD 内置 judge、DROP 归一化字符串列表匹配、BoolQ/LogiQA 精确匹配、IFEval 已审计规则。它仍是小样本指定协议，不冒称全量官方榜单复现。
+N 沿用首批接口：SQuAD 内置 judge、DROP 归一化字符串列表匹配、BoolQ/LogiQA 精确匹配、IFEval 的 SDK 原生 verifier。它仍是小样本指定协议，不冒称全量官方榜单复现。
 
 R 的评分计划每题四项：
 
@@ -110,4 +112,4 @@ R 的人审文件与题目哈希绑定；同集干扰原文直接取自同一冻
 
 这轮只阅读代码和 Git 差异并修改文件，没有 import、编译、运行、pytest、mock 调用或在线评分。所有新入口都属于**待验证实现**，不能继承历史 47 项测试的通过记录。
 
-下一步先按[实施计划](superpowers/plans/2026-09-10-public-starter-orchestration.md)验证显式模型配置/schema、产物身份、R 隔离、失败保留、报告分母与两模式配对；再冻结真实数据、完成人审和 IFEval 规则审计。只有用户重新要求在线评测后，才实际执行 N/R。交互可靠性、资料更新一致性、KG、重排、PDF/OCR 等范围不扩展。
+下一步先按[实施计划](superpowers/plans/2026-09-10-public-starter-orchestration.md)验证显式模型配置/schema、产物身份、R 隔离、失败保留、报告分母与两模式配对；再冻结真实数据、完成适用轨道所需的人审；IFEval 无规则审计前置条件。只有用户重新要求在线评测后，才实际执行 N/R。交互可靠性、资料更新一致性、KG、重排、PDF/OCR 等范围不扩展。

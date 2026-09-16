@@ -247,32 +247,78 @@ def test_system_materials_to_real_sdk_score(prepared_bundle, suite, correct, wro
     assert score_system_answer(cases[0], f"Final answer: {wrong}", manifest)["score"] == 0.0
 
 
-def test_system_ifeval_real_verifier_requires_reproducible_audit_and_full_body(prepared_bundle):
-    from rag_eval.starter_native import audit_instruction
+@pytest.mark.parametrize("body,expected", [
+    ("  A short response\r\n[1] Source\n", 1.0),
+    ("  A short response\r\n[1] Source\n[2] Author, title\n", 0.0),
+])
+def test_ifeval_direct_sdk_scoring_without_audits_preserves_full_body(prepared_bundle, body, expected):
+    from rag_eval.starter_native import build_request, score_prediction
     from rag_eval.system_product import build_system_bundle
     from rag_eval.system_scoring import score_system_answer
-
-    _, manifest, cases = prepared_bundle("ifeval")
+    bundle, manifest, cases = prepared_bundle("ifeval")
+    before = {p.name: p.read_bytes() for p in bundle.iterdir() if p.is_file()}
     case = cases[0]
     product = build_system_bundle(cases, manifest)
-    assert product["questions"][0]["question"] == "  Write without commas.\r\n"
-    body = "  A short response\r\n[1] Source\n"
-    unavailable = score_system_answer(case, body, manifest)
-    assert unavailable["status"] == "not_applicable"
-    assert unavailable["score"] is None
-    assert unavailable["normalized_answer"] == body
-    # Synthetic rule examples verify code only; they are not human calibration.
-    audit = audit_instruction("punctuation:no_comma", {}, "hello world", "hello, world", manifest)
-    assert audit["status"] == "passed"
-    assert score_system_answer(case, body, manifest, [audit])["score"] == 1.0
-    with_citation_comma = body + "[2] Author, title\n"
-    result = score_system_answer(case, with_citation_comma, manifest, [audit])
-    assert result["score"] == 0.0
-    assert result["normalized_answer"] == with_citation_comma
-    assert score_system_answer(case, body, manifest, [{**audit, "kwargs": {"changed": True}}])["score"] is None
-    assert score_system_answer(case, body, manifest, [{**audit, "verifier_sha256": "0" * 64}])["score"] is None
-    with pytest.raises(ValueError, match="audit no longer reproduces"):
-        score_system_answer(case, body, manifest, [{**audit, "negative": "also without commas"}])
+    assert product["questions"][0]["question"] == ROWS["ifeval"]["prompt"]
+    request, _ = build_request(case, manifest)
+    native = score_prediction(case, request, body, manifest)
+    result = score_system_answer(case, body, manifest)
+    assert native["status"] == result["status"] == "scored"
+    assert native["score"] == result["score"] == expected
+    assert result["normalized_answer"] == body
+    assert result["details"]["instruction_results"] == native["details"]
+    assert native["details"][0]["kwargs"] == {}
+    assert native["details"][0]["position"] == 0
+    assert score_system_answer(case, body, manifest, [{"invalid": True}])["score"] == expected
+    assert load_bundle(bundle) == (manifest, cases)
+    assert before == {p.name: p.read_bytes() for p in bundle.iterdir() if p.is_file()}
+
+
+@pytest.mark.parametrize("body", ["hello, world", "hello world"])
+def test_ifeval_matches_sdk_predict_including_duplicates_and_default_branch(prepared_bundle, body):
+    from types import SimpleNamespace
+    from deepeval.benchmarks.ifeval.ifeval import IFEval
+    from deepeval.dataset import Golden
+    from rag_eval.starter_native import build_request, score_prediction
+    row = {**ROWS["ifeval"], "instruction_id_list": [
+        "punctuation:no_comma", "length_constraints:number_words",
+        "length_constraints:number_words", "combination:two_responses"],
+        "kwargs": [{}, {"relation": "at least", "num_words": 50},
+                   {"relation": "at least", "num_words": 1}, {}]}
+    _, manifest, cases = prepared_bundle("ifeval", row)
+    request, _ = build_request(cases[0], manifest)
+    model = SimpleNamespace(generate=lambda **_: SimpleNamespace(answer=body))
+    golden = Golden(input=row["prompt"], additional_metadata={
+        "instruction_ids": row["instruction_id_list"], "kwargs_list": row["kwargs"]})
+    prediction, overall, breakdown = IFEval.predict(None, model, golden)
+    actual = score_prediction(cases[0], request, prediction, manifest)
+    assert actual["status"] == "scored"
+    assert actual["score"] == float(overall) == 0.0
+    assert [d["position"] for d in actual["details"]] == list(range(4))
+    assert [d["score"] for d in actual["details"]][1:] == [0, 1, 1]
+    assert bool(actual["details"][-1]["score"]) == breakdown["combination:two_responses"]
+
+
+def test_ifeval_native_generation_is_attempted_without_audits(prepared_bundle, tmp_path, monkeypatch):
+    import sys
+    from contextlib import nullcontext
+    from types import ModuleType, SimpleNamespace
+    from rag_eval import starter_runner, usage_capture
+    _, source, cases = prepared_bundle("ifeval")
+    logging = ModuleType("app.core.llm_logging")
+    logging.LLMInteractionLogger = object
+    monkeypatch.setitem(sys.modules, "app.core.llm_logging", logging)
+    monkeypatch.setattr(usage_capture, "capture_usage", lambda _: nullcontext({}))
+    calls = []
+    def generate(prompt, schema):
+        calls.append(prompt)
+        return schema(answer="hello world")
+    model = SimpleNamespace(generate=generate, for_case=lambda *args: nullcontext())
+    outputs = []
+    starter_runner.native_predictions(tmp_path, source, cases, model, [], outputs.append)
+    assert calls == [ROWS["ifeval"]["prompt"]]
+    assert outputs[0]["status"] == "success"
+    assert outputs[0]["prediction"] == "hello world"
 
 
 @pytest.mark.parametrize("suite,expected", [("squad", "Ada"), ("drop", "2"), ("boolq", "Yes")])
@@ -313,3 +359,98 @@ def test_legacy_product_reviews_and_native_scoring_remain_separate(prepared_bund
         rejected = product_bundle([incomplete_case], reviews, [])
         assert rejected["questions"] == []
         assert rejected["decisions"][0]["status"] == "not_applicable"
+
+
+@pytest.mark.parametrize("selection", [False, True])
+@pytest.mark.parametrize("track", ["N", "R"])
+def test_ifeval_runner_and_reports_use_direct_policy_with_existing_bundles(
+        prepared_bundle, tmp_path, monkeypatch, selection, track):
+    import json
+    import sys
+    from contextlib import nullcontext
+    from types import ModuleType, SimpleNamespace
+    from rag_eval import starter_runner, usage_capture
+    from rag_eval.ifeval_protocol import DIRECT_POLICY, scorer_for
+    from rag_eval.selection_bundle import prepare_selection
+    from rag_eval.selection_partitions import build_partition_plan
+    from rag_eval.starter_report import load_run
+    from rag_eval.starter_results import planned_result, result_record
+    from rag_eval.experiment_aggregation import aggregate_runs
+
+    directory, source, cases = prepared_bundle("ifeval")
+    if selection:
+        selected = tmp_path / "selection"
+        prepare_selection("ifeval", directory / "raw.jsonl", directory.parent / "source.json", selected)
+        directory = selected
+        source, cases = load_bundle(directory)
+    before = {p.relative_to(directory): p.read_bytes() for p in directory.rglob("*") if p.is_file()}
+    options = {}
+    if selection and track == "R":
+        plan = build_partition_plan(cases, source)
+        plan_path = tmp_path / "partitions.json"
+        save_json(plan_path, plan)
+        options = dict(partition_plan_path=plan_path, partition_id=plan["partitions"][0]["partition_id"])
+    logging = ModuleType("app.core.llm_logging")
+    logging.LLMInteractionLogger = object
+    monkeypatch.setitem(sys.modules, "app.core.llm_logging", logging)
+    monkeypatch.setattr(usage_capture, "capture_usage", lambda _: nullcontext({}))
+    runtime = ModuleType("rag_eval.starter_runtime")
+    runtime.resolve_models = lambda *args: ({"tested": {}}, {"tested": {"fixture": True}})
+    model = SimpleNamespace(generate=lambda prompt, schema: schema(answer="hello world"),
+        for_case=lambda *args: nullcontext(), client=SimpleNamespace(close=lambda: None))
+    runtime.make_adapter = lambda *args: model
+    runtime.snapshot_sources = lambda *args: {"fixture": True}
+    runtime.configure_environment = lambda *args, **kwargs: (None, {
+        "comparable_settings_sha256": "settings", "service_config_sha256": "services"})
+    monkeypatch.setitem(sys.modules, "rag_eval.starter_runtime", runtime)
+    run = tmp_path / "direct"
+    repository = ModuleType("app.services.sqlite_repository")
+    repository.SQLiteRepository = lambda *args: SimpleNamespace(db_path=run / "runtime/database.db", close=lambda: None)
+    monkeypatch.setitem(sys.modules, "app.services.sqlite_repository", repository)
+    def predict(run, cases, bundle, mode, repo, sink):
+        for question in bundle["questions"]:
+            sink({**question, "status": "success", "output_available": True, "prediction": "hello world",
+                  "product_record": {"answer": "hello world", "citation_count": 0},
+                  "answer_extraction": {"status": "not_applicable", "value": "hello world"}})
+    monkeypatch.setattr(starter_runner, "system_predictions", predict)
+    starter_runner.execute(root=tmp_path / "repo", project=tmp_path / "sn", bundle_dir=directory,
+        run=run, track=track, mode="chunk" if track == "R" else None,
+        models_path=tmp_path / "models.json" if track == "N" else None,
+        audits_path=tmp_path / "nonexistent-audits.jsonl", **options)
+    loaded = load_run(run)
+    assert not loaded["warnings"]
+    assert loaded["manifest"]["identity"]["ifeval_scoring"] == DIRECT_POLICY
+    primary = next(row for row in loaded["scores"] if row["scorer"] == scorer_for(track))
+    assert (primary["status"], primary["score"]) == ("scored", 1.0)
+    assert source["verifier_audit"] == "pending"
+    assert before == {p.relative_to(directory): p.read_bytes() for p in directory.rglob("*") if p.is_file()}
+    # Reconstruct a synthetic legacy run to exercise old policy/scorer readers.
+    old = tmp_path / "legacy"
+    shutil.copytree(run, old)
+    manifest = deepcopy(loaded["manifest"])
+    manifest["identity"].pop("ifeval_scoring")
+    manifest["run_id"] = old.name
+    manifest["protocol_id"] = fingerprint({**manifest["identity"], "mode": manifest["mode"]})
+    manifest["pairing_id"] = fingerprint(manifest["identity"]) if track == "R" else None
+    planned = [planned_result(p, run_id=old.name, protocol_id=manifest["protocol_id"],
+        track=track, mode=manifest["mode"], scorer=scorer_for(track, None)
+        if p["scorer"] == scorer_for(track) else p["scorer"]) for p in loaded["planned"]]
+    save_jsonl(old / "planned.jsonl", planned)
+    save_jsonl(old / "scores.jsonl", [result_record(p, status="not_applicable", output_available=True,
+        reason="historical fixture: missing audit or diagnostic unavailable") for p in planned])
+    manifest["planned_sha256"] = digest(old / "planned.jsonl")
+    save_json(old / "manifest.json", manifest)
+    legacy = load_run(old)
+    assert not legacy["warnings"]
+    assert all(r["status"] == "not_applicable" and r["score"] is None for r in legacy["scores"])
+    data = aggregate_runs([old, run])
+    assert scorer_for(track) in data["catalog"]
+    assert scorer_for(track, None) in data["catalog"]
+    assert "历史" in data["catalog"][scorer_for(track, None)]["name"]
+    # A declared direct policy must not accept a legacy planned scorer.
+    manifest["identity"]["ifeval_scoring"] = DIRECT_POLICY
+    manifest["protocol_id"] = fingerprint({**manifest["identity"], "mode": manifest["mode"]})
+    manifest["pairing_id"] = fingerprint(manifest["identity"]) if track == "R" else None
+    save_json(old / "manifest.json", manifest)
+    with pytest.raises(ValueError, match="scorers|scoring policy"):
+        load_run(old)

@@ -30,21 +30,6 @@ def update_state(run, phase, **fields):
     save_json(run / "state.json", {"phase": phase, "updated_at": time.time(), **fields})
 
 
-def _ifeval_ready(case, source, audits):
-    from .starter_native import audit_instruction
-    expected_hash = source["sdk_source_hashes"]["benchmarks/ifeval/ifeval.py"]
-    for instruction, kwargs in zip(case["raw_row"]["instruction_id_list"], case["raw_row"]["kwargs"]):
-        evidence = next((a for a in audits if a.get("instruction_id") == instruction
-                         and a.get("kwargs") == kwargs and a.get("verifier_sha256") == expected_hash
-                         and a.get("status") == "passed"), None)
-        if evidence is None:
-            return False
-        check = audit_instruction(instruction, kwargs, evidence["positive"], evidence["negative"], source)
-        if check["status"] != "passed":
-            return False
-    return True
-
-
 def native_predictions(run, source, cases, tested, audits, outputs):
     from .starter_native import build_request
     from app.core.llm_logging import LLMInteractionLogger
@@ -59,18 +44,15 @@ def native_predictions(run, source, cases, tested, audits, outputs):
         try:
             request, schema = build_request(case, source)
             record["request"] = request
-            if case["suite"] == "ifeval" and not _ifeval_ready(case, source, audits):
-                record.update(status="not_applicable", reason="instruction audit incomplete; model prediction not attempted")
-            else:
-                with capture_usage(LLMInteractionLogger) as usage:
-                    try:
-                        with tested.for_case(case["case_id"], record["request_id"]):
-                            response = tested.generate(request["prompt"], schema=schema)
-                        record.update(status="success", output_available=True, prediction=str(response.answer))
-                        if case["suite"] in EXPANSION_SUITES:
-                            record["normalized_answer"] = normalize_answer(case["suite"], record["prediction"], task=case.get("task"))
-                    finally:
-                        record["usage"] = usage
+            with capture_usage(LLMInteractionLogger) as usage:
+                try:
+                    with tested.for_case(case["case_id"], record["request_id"]):
+                        response = tested.generate(request["prompt"], schema=schema)
+                    record.update(status="success", output_available=True, prediction=str(response.answer))
+                    if case["suite"] in EXPANSION_SUITES:
+                        record["normalized_answer"] = normalize_answer(case["suite"], record["prediction"], task=case.get("task"))
+                finally:
+                    record["usage"] = usage
         except Exception as exc:
             record.update(error_type=type(exc).__name__, reason="prediction_or_protocol_error; see model events")
         record["seconds"] = time.monotonic() - started
@@ -226,14 +208,12 @@ def score_outputs(run, source, cases, planned, judge, audits, scores):
                     if judge is not None:
                         with judge.for_case(item["case_id"], item["result_id"]):
                             result = score_prediction(by_case[item["case_id"]], output["request"], output["prediction"], source,
-                                                      judge=judge, instruction_audits=audits)
+                                                      judge=judge)
                     else:
-                        result = score_prediction(by_case[item["case_id"]], output["request"], output["prediction"], source,
-                                                  instruction_audits=audits)
+                        result = score_prediction(by_case[item["case_id"]], output["request"], output["prediction"], source)
                 elif item.get("metric_role") == "primary" and item.get("product_protocol"):
                     from .system_scoring import score_system_answer
-                    result = score_system_answer(by_case[item["case_id"]], output["prediction"], source,
-                                                 instruction_audits=audits)
+                    result = score_system_answer(by_case[item["case_id"]], output["prediction"], source)
                 else:
                     result = _product_score(output["product_record"], item["scorer"], judge, item["result_id"])
                 row = result_record(item, status=result["status"], score=result["score"],
@@ -335,7 +315,8 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, re
     resolved, public_models = resolve_models(models_path, roles) if roles else ({}, {})
     if audits_path is not None and (source["suite"] != "ifeval" or not (track == "N" or system_track)):
         raise ValueError("Instruction audits apply only to IFEval Native or system protocol")
-    audits = read_rows(audits_path) if audits_path else []
+    # Deprecated IFEval argument: do not read, replay, or require audit files.
+    audits = []
     run.mkdir(parents=True, exist_ok=False)
     update_state(run, "initializing")
     try:
@@ -363,12 +344,18 @@ def execute(*, root, project, bundle_dir, run, track, mode, models_path=None, re
                     "product_services": runtime_identity["service_config_sha256"],
                     "product_bundle": product["manifest"] if product else None,
                     "audits_sha256": fingerprint(audits), "track": track}
+        if source["suite"] == "ifeval":
+            from .ifeval_protocol import DIRECT_POLICY
+            identity["ifeval_scoring"] = DIRECT_POLICY
         if selection_context is not None:
             identity["selection_context"] = selection_context
         pairing_id = fingerprint(identity) if track == "R" else None
         protocol_id = fingerprint({**identity, "mode": mode})
         scorers = ([BOOLQ_SCORER if source["suite"] == "boolq" else PRODUCT_CORRECTNESS,
                     FAITHFULNESS, EVIDENCE, CITATIONS] if track == "R" else [source["scorer"]])
+        if track == "N" and source["suite"] == "ifeval":
+            from .ifeval_protocol import NATIVE_SCORER
+            scorers = [NATIVE_SCORER]
         plan_cases = cases
         if system_track:
             from .system_scoring import primary_scorer
