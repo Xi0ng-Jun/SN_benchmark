@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Silicon Notebook 实验结果探索器</title>
+  <style>__STYLE__</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">SN</span><div><strong>实验结果探索器</strong><span>离线工件审阅</span></div></div>
+    <div class="top-actions"><button class="button ghost" id="export-button" type="button">导出当前选择</button><button class="button" id="save-group-button" type="button">保存为比较组</button></div>
+  </header>
+  <div class="workspace">
+    <aside class="filters" aria-label="筛选条件">
+      <div class="filter-heading"><div><span class="eyebrow">筛选器</span><h1>定位实验记录</h1></div><button class="icon-button" id="clear-button" type="button" title="清除全部筛选" aria-label="清除全部筛选">×</button></div>
+      <label class="search"><span class="sr-only">搜索题目、回答和原因</span><input id="search-input" type="search" placeholder="搜索题目、回答、原因…" autocomplete="off"></label>
+      <div id="active-chips" class="chips" aria-live="polite"></div>
+      <div id="facet-list" class="facet-list"></div>
+    </aside>
+    <main>
+      <section class="intro">
+        <div><span class="eyebrow">已保存数据 · 不触发模型</span><h2>从总体分布追到每一次评分</h2><p>回答次数按 run × case 去重；评分条目保留计划分母与缺失状态。均值始终按套件、轨道、指标和配置族分别计算。</p></div>
+        <div class="data-badge"><span id="visible-label">0 条评分</span><small>当前视图</small></div>
+      </section>
+
+      <section id="summary-cards" class="summary-grid" aria-label="当前筛选概览"></section>
+
+      <section class="analysis-grid">
+        <article class="panel chart-panel"><div class="panel-head"><div><span class="eyebrow">完成情况</span><h3>评分状态</h3></div><span class="hint">计划条目中的有效与缺失</span></div><div id="status-chart" class="chart" role="img" aria-label="评分状态分布图"></div></article>
+        <article class="panel chart-panel"><div class="panel-head"><div><span class="eyebrow">单一指标族</span><h3>分数直方图</h3></div><span class="hint" id="histogram-hint"></span></div><div id="histogram-chart" class="chart" role="img" aria-label="分数直方图"></div></article>
+      </section>
+
+      <section class="panel wide-panel"><div class="panel-head"><div><span class="eyebrow">分面结果</span><h3>同口径均值</h3></div><span class="hint">绿色：均分（0–1） · 蓝线：有效分数数 ÷ 计划数</span></div><div id="group-chart" class="group-chart" role="img" aria-label="各同口径分组平均分与有效覆盖率"></div></section>
+
+      <section class="panel comparison-panel">
+        <div class="panel-head"><div><span class="eyebrow">保存的视图</span><h3>严格配对比较</h3></div><span class="hint">以第一组为参照，逐一比较其余各组</span></div>
+        <div id="saved-groups" class="saved-groups"></div><div id="comparison-results" class="comparison-results"></div>
+      </section>
+
+      <details class="panel diagnostics-panel">
+        <summary><div><span class="eyebrow">解释边界</span><h3>运行提示与报告限制</h3></div><span class="hint" id="diagnostic-count">展开查看</span></summary>
+        <div id="diagnostics" class="diagnostics"></div>
+      </details>
+
+      <section class="panel table-panel">
+        <div class="panel-head"><div><span class="eyebrow">逐条核查</span><h3>评分条目</h3></div><span class="hint">选择一行查看题目、回答、检索和 judge 证据</span></div>
+        <div class="table-scroll"><table><thead><tr><th>套件 / 任务</th><th>轨道 / 模式</th><th>指标</th><th>输出</th><th>评分</th><th>分数</th></tr></thead><tbody id="entry-body"></tbody></table></div>
+        <div class="pagination"><span id="page-label"></span><div><button class="icon-button" id="prev-page" type="button" aria-label="上一页">‹</button><button class="icon-button" id="next-page" type="button" aria-label="下一页">›</button></div></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="detail-dialog" class="drawer" aria-labelledby="detail-title">
+    <div class="drawer-head"><div><span class="eyebrow" id="detail-kicker">评分详情</span><h2 id="detail-title">条目</h2></div><button class="icon-button" id="detail-close" type="button" aria-label="关闭详情">×</button></div>
+    <div id="detail-tabs" class="tabs" role="tablist" aria-label="详情分类"></div>
+    <div id="detail-content" class="detail-content"></div>
+  </dialog>
+  <script type="application/json" id="dashboard-data">__DATA__</script>
+  <script>__CORE__</script>
+  <script>__APP__</script>
+</body>
+</html>

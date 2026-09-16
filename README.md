@@ -8,7 +8,11 @@ python scripts/build_experiment_dashboard.py \
   --output /path/to/reports/dashboard
 ```
 
-打开生成的 `dashboard.html` 即可查看运行状态、指标、模式和警告。该命令只读取结果文件，不启动 Silicon Notebook、不调用模型，也不重新评分。
+打开新生成的 `dashboard.html`，可以组合 Benchmark / Task / Track / Mode / Scorer / 状态等标签，联动查看状态图、分数分布和分面均值；点击条目追查题目、SN 回答、上下文、引用与评分依据；保存多个筛选组进行可比结果分析。旧 HTML 需要重新生成才能使用新界面。该命令只读结果文件，不启动 Silicon Notebook、不调用模型、不重新评分。
+
+[Dashboard 操作、比较规则与服务器 Agent prompt](docs/experiment-dashboard.md) · [十套 Benchmark 的轨道与指标实现四列表](docs/benchmark-metrics-reference.md)。输出需用运行目录之外的新目录；问答和评分分别计数，缺失分数保留，不混算质量总分。
+
+**2026-09-16 当前工作：** 服务端实验由用户另行执行；本地只开发离线报告并用合成记录验证，不据此声明服务器成绩。以下 2026-09-14 及更早章节保留为历史阶段记录，最新进度以 [evaluation-status.md](docs/evaluation-status.md) 顶部和当前代码为准。
 
 这是独立的 RAG 评测脚手架。大体量数据保留在：
 

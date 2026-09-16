@@ -1,72 +1,212 @@
-"""Offline aggregation for completed or in-progress SN benchmark runs."""
+"""Read-only result explorer. No SDK, product runtime or model construction."""
 from __future__ import annotations
 
-from collections import Counter
-from pathlib import Path
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
 import json
+import os
+from pathlib import Path
+import re
 
-from .starter_report import load_run
+from .artifacts import digest, save_json
+from .metric_catalog import describe_metric
+from .starter_protocol import fingerprint
+from .starter_report import load_run, read_journal
+
+ASSETS = Path(__file__).with_name("dashboard")
+_SECRET = re.compile(r"(?:api[_-]?key|authorization|password|secret|access[_-]?token|refresh[_-]?token|endpoint|base[_-]?url|service[_-]?url)$", re.I)
+
+
+def _redact(value):
+    """Do not export configured credentials/addresses; keep hashes and usage."""
+    if isinstance(value, dict):
+        return {key: "[redacted]" if _SECRET.search(key) else _redact(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    return value
 
 
 def discover_runs(root: str | Path) -> list[Path]:
+    """Stop descent at a run, so its input/snapshots never become other runs."""
     root = Path(root).resolve()
     if not root.is_dir():
         raise ValueError(f"Run root does not exist: {root}")
-    return sorted(p.parent for p in root.rglob("manifest.json") if p.parent.is_dir())
+    found = []
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        path = Path(directory)
+        dirs[:] = sorted(d for d in dirs if d not in {
+            ".git", ".venv", "node_modules", "runtime", "input", "invocations", "sdk-source"})
+        if "manifest.json" in files:
+            try:
+                manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                if "planned.jsonl" in files or "state.json" in files:
+                    raise ValueError(f"Unreadable run manifest: {path}") from None
+                continue
+            if isinstance(manifest, dict) and manifest.get("format") == "public-starter-run-v1":
+                found.append(path)
+                dirs[:] = []
+        elif "state.json" in files:
+            state = json.loads((path / "state.json").read_text(encoding="utf-8"))
+            if isinstance(state, dict) and state.get("phase") in {"initializing", "failed", "interrupted"}:
+                found.append(path)
+                dirs[:] = []
+    return sorted(found)
+
+
+def _local_file(run, relative):
+    path = (run / relative).resolve()
+    if not path.is_relative_to(run):
+        raise ValueError("Dashboard artifact points outside run: " + relative)
+    return path
+
+
+def _source_cases(run, manifest, warnings):
+    path = _local_file(run, "input/cases.jsonl")
+    source = manifest["identity"].get("source", {})
+    expected = source.get("artifacts", {}).get("cases.jsonl")
+    if expected and (not path.exists() or digest(path) != expected):
+        raise ValueError("Frozen source cases artifact changed: " + str(path))
+    if not path.exists():
+        warnings.append("input/cases.jsonl 未保存；详情中原始题目不可用。")
+        return {}
+    rows = read_journal(path, warnings)
+    by_id = {row["case_id"]: row for row in rows}
+    if len(by_id) != len(rows):
+        raise ValueError("Duplicate source case ID")
+    if not expected:
+        warnings.append("原始 case 没有 cases.jsonl 哈希；仅展示记录，不声称已核实原始文件。")
+    return by_id
 
 
 def aggregate_runs(run_dirs: list[str | Path]) -> dict:
-    if not run_dirs:
-        raise ValueError("No run directories supplied")
-    runs = [load_run(Path(p).resolve()) for p in run_dirs]
-    cells, metrics, statuses, errors = [], [], Counter(), Counter()
-    for run in runs:
-        manifest = run["manifest"]
+    paths = [Path(p).resolve() for p in run_dirs]
+    if not paths or len(paths) != len(set(paths)):
+        raise ValueError("Provide distinct run directories")
+    runs, entries, observations, audit = [], [], {}, []
+    seen_runs = set()
+    for path in paths:
+        # The existing loader rejects changed identities, duplicate and invalid
+        # scores; an unfinished JSONL tail remains a disclosed missing record.
+        loaded = load_run(path)
+        manifest = loaded["manifest"]
+        warnings = list(loaded["warnings"])
+        key = fingerprint(str(path))
+        cell = dict(key=key, path=str(path), run_id=path.name, suite=None, track=None, mode="native",
+                    phase=loaded["state"].get("phase", "unknown"), planned_predictions=0,
+                    planned_scores=0, saved_outputs=0, recorded_outputs=0, recorded_scores=0,
+                    warnings=warnings, manifest=manifest)
+        runs.append(cell)
         if manifest is None:
-            cells.append({"path": run["path"], "phase": run["state"].get("phase", "unknown"), "suite": None, "track": None, "mode": None, "planned": 0, "outputs": 0, "scores": 0, "warnings": run["warnings"]})
+            audit.append({"run_key": key, "warnings": warnings})
             continue
-        outputs = run["outputs"]
-        statuses.update(o.get("status", "unknown") for o in outputs)
-        errors.update((o.get("behavior") or {}).get("kind", "unknown") for o in outputs)
-        cells.append({"path": run["path"], "run_id": manifest.get("run_id"), "suite": manifest.get("suite"),
-                      "track": manifest.get("track"), "mode": manifest.get("mode"),
-                      "phase": run["state"].get("phase", "unknown"), "planned": len(run["planned"]),
-                      "outputs": len(outputs), "scores": len(run["scores"]), "warnings": run["warnings"]})
-        for row in run["scores"]:
-            metrics.append({"suite": manifest.get("suite"), "task": row.get("task", ""), "track": manifest.get("track"),
-                            "mode": manifest.get("mode"), "case_id": row.get("case_id"), "scorer": row.get("scorer"),
-                            "score": row.get("score"), "status": row.get("status"), "reason": row.get("reason")})
-    numeric = [m["score"] for m in metrics if m["status"] == "scored" and isinstance(m["score"], (int, float))]
-    return {"format": "sn-experiment-dashboard-v1", "runs": cells, "metrics": metrics,
-            "summary": {"run_count": len(runs), "planned_outputs": sum(c["planned"] for c in cells),
-                        "saved_outputs": sum(c["outputs"] for c in cells), "saved_scores": sum(c["scores"] for c in cells),
-                        "mean_scored": sum(numeric) / len(numeric) if numeric else None,
-                        "prediction_status": dict(statuses), "behavior": dict(errors)},
-            "limitations": ["Scores are grouped by scorer; they are not averaged across metric families.",
-                            "Missing, clarification, refusal and not_applicable records remain visible.",
-                            "This report reads saved artifacts and never starts SN or calls a judge."]}
+        identity = manifest["identity"]
+        run_identity = (manifest["run_id"], manifest["protocol_id"])
+        if run_identity in seen_runs:
+            raise ValueError("Duplicate saved run identity; copied runs must not be counted twice")
+        seen_runs.add(run_identity)
+        config = dict(identity)
+        if identity.get("source", {}).get("selection_protocol"):
+            # The validated partition-plan hash identifies the shared corpus
+            # policy. Only members of that SAME plan may pool partitions.
+            config["selection_context"] = {
+                k: v for k, v in identity["selection_context"].items()
+                if k not in {"partition_id", "case_ids"}}
+            config.pop("product_bundle", None)
+        # Non-selection runs keep the full corpus/review identity; different
+        # distractors must never disappear into an apparently comparable mean.
+        complete_identity = {"source", "models", "code", "runtime_settings", "product_services", "audits_sha256", "track"} <= config.keys()
+        if manifest["track"] == "R" and not identity.get("product_bundle"):
+            complete_identity = False
+        family = fingerprint(config) if complete_identity else None
+        if not complete_identity:
+            warnings.append("配置身份不完整：条目可查看，但不可进行配对差值比较。")
+        source_cases = _source_cases(path, manifest, warnings)
+        outputs = {r["case_id"]: r for r in loaded["outputs"]}
+        results = {r["result_id"]: r for r in loaded["scores"]}
+        events = defaultdict(list)
+        for event in read_journal(_local_file(path, "model-events.jsonl"), warnings):
+            if event.get("case_id"):
+                events[event["case_id"]].append(event)
+        plans_by_case = defaultdict(list)
+        for plan in loaded["planned"]:
+            plans_by_case[plan["case_id"]].append(plan)
+        for case_id, plans in plans_by_case.items():
+            oid = fingerprint([key, case_id])
+            output = outputs.get(case_id)
+            source_case = source_cases.get(case_id)
+            observations[oid] = {"case": source_case, "output": output,
+                                 "events": events[case_id],
+                                 "warnings": ([] if source_case else ["原始 case 未保存"])}
+            for plan in plans:
+                result = results.get(plan["result_id"])
+                behavior = ((output or {}).get("behavior") or (output or {}).get("product_record", {}).get("behavior") or {})
+                entries.append({
+                    "id": fingerprint([key, plan["result_id"]]), "observation_id": oid,
+                    "run_key": key, "run_id": manifest["run_id"], "suite": plan["suite"],
+                    "task": plan.get("task", plan["suite"]), "track": manifest["track"],
+                    "mode": manifest["mode"] or "native", "scorer": plan["scorer"],
+                    "case_id": case_id, "status": result["status"] if result else "missing",
+                    "output_status": output["status"] if output else "missing",
+                    "behavior": behavior.get("kind", "not_observed"),
+                    "partition": (manifest.get("selection_context") or {}).get("partition_id") or "unpartitioned",
+                    "phase": cell["phase"], "config_family": family,
+                    "pairing_id": manifest.get("pairing_id"),
+                    "score": result["score"] if result else None,
+                    "reason": result.get("reason") if result else "计划中存在，但尚未保存评分记录。",
+                    "plan": plan, "result": result,
+                })
+        cell.update(run_id=manifest["run_id"], suite=manifest["suite"], track=manifest["track"],
+                    mode=manifest["mode"] or "native", config_family=family,
+                    planned_predictions=len(plans_by_case), planned_scores=len(loaded["planned"]),
+                    saved_outputs=sum(o["output_available"] for o in outputs.values()),
+                    recorded_outputs=len(outputs), recorded_scores=len(results))
+        audit.append({"run_key": key, "warnings": warnings,
+                      "missing_outputs": len(plans_by_case) - len(outputs),
+                      "missing_scores": len(loaded["planned"]) - len(results)})
+    status = Counter((o["output"] or {}).get("status", "missing") for o in observations.values())
+    data = {
+        "format": "sn-experiment-dashboard-v2", "generated_at": datetime.now(timezone.utc).isoformat(),
+        "runs": runs, "entries": entries, "observations": observations,
+        "catalog": {scorer: describe_metric(scorer) for scorer in sorted({e["scorer"] for e in entries})},
+        "summary": {"run_count": len(runs), "planned_outputs": len(observations),
+                    "planned_scores": len(entries), "saved_outputs": sum(r["saved_outputs"] for r in runs),
+                    "recorded_outputs": sum(r["recorded_outputs"] for r in runs),
+                    "saved_scores": sum(r["recorded_scores"] for r in runs),
+                    "scored": sum(e["status"] == "scored" for e in entries),
+                    "prediction_status": dict(status)},
+        "audit": audit,
+        "limitations": ["范围为本次提供的 run；没有 run 的分区不在分母。全题单覆盖请使用 report_public_selection.py。",
+                        "条目 = run × case × scorer；问题数按 run × case 去重，跨运行是尝试次数。",
+                        "均值按 suite / task / track / mode / scorer / 配置身份分组；缺配置身份时按 run 分开，不生成综合质量总分。",
+                        "这是运行产物的离线快照；未终止 run 的结果可能继续增长。刷新需要生成新报告。",
+                        "文本拒答仅为 refusal_candidate；引用对象存在不证明语义支持；未做人审不设门禁。",
+                        "计算说明描述当前代码；具体实验以保存的源码/SDK 身份、details 与 judge 事件为准。未保存的过程不补造。"],
+    }
+    return _redact(data)
 
 
 def write_dashboard(run_dirs: list[str | Path], output: str | Path) -> Path:
-    data = aggregate_runs(run_dirs)
     output = Path(output).resolve()
+    paths = [Path(p).resolve() for p in run_dirs]
+    if any(output.is_relative_to(p) or p.is_relative_to(output) for p in paths):
+        raise ValueError("Report directory must be separate from saved runs")
+    if output.exists():
+        raise FileExistsError("Use a new report directory: " + str(output))
+    data = aggregate_runs(paths)
+    # Replace static placeholders before inserting data, so an artifact cannot
+    # inject asset placeholders. Escape '<' even inside application/json scripts.
+    html = (ASSETS / "template.html").read_text(encoding="utf-8")
+    for marker, name in (("__STYLE__", "style.css"), ("__CORE__", "core.js"), ("__APP__", "app.js")):
+        html = html.replace(marker, (ASSETS / name).read_text(encoding="utf-8"))
+    payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
+    html = html.replace("__DATA__", payload)
     output.mkdir(parents=True, exist_ok=False)
-    (output / "dashboard-data.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    html = _HTML.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"))
-    (output / "dashboard.html").write_text(html, encoding="utf-8")
+    save_json(output / "dashboard-data.json", data)
+    save_json(output / "summary.json", data["summary"])
+    save_json(output / "audit.json", {"runs": data["audit"], "limitations": data["limitations"]})
+    target = output / "dashboard.html"
+    with target.open("x", encoding="utf-8") as handle:
+        os.chmod(target, 0o600)
+        handle.write(html)
     return output
-
-
-_HTML = r'''<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SN Experiment Dashboard</title>
-<style>
-:root{--bg:#07111f;--panel:#102038;--line:#294461;--text:#eef6ff;--muted:#9eb1c9;--cyan:#49dcff;--green:#69e6a4;--amber:#ffc857;--red:#ff718d}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#173457 0,#07111f 48%);color:var(--text);font:14px/1.5 system-ui,sans-serif;padding:28px;max-width:1500px;margin:auto}h1{margin:0;font-size:30px}h2{font-size:17px;margin:26px 0 10px}.muted{color:var(--muted)}.hero{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:24px}.hero p{max-width:780px}.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.card,.panel{background:rgba(16,32,56,.9);border:1px solid var(--line);border-radius:13px;padding:16px}.card label{color:var(--muted);display:block}.value{font-size:28px;color:var(--cyan);font-weight:700;margin-top:5px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.barrow{display:grid;grid-template-columns:115px 1fr 45px;align-items:center;gap:8px;margin:10px 0}.bar{height:10px;background:#1b304b;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));border-radius:99px}.donut{width:150px;height:150px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--green) var(--ok),var(--amber) 0 var(--warn),var(--red) 0);margin:10px auto}.donut:after{content:attr(data-label);width:96px;height:96px;border-radius:50%;background:var(--panel);display:grid;place-items:center;text-align:center;color:var(--text);font-weight:700}.legend{display:flex;justify-content:center;gap:15px;color:var(--muted);font-size:12px}.legend b{color:var(--green)}.legend b:nth-child(2){color:var(--amber)}.legend b:nth-child(3){color:var(--red)}table{border-collapse:collapse;width:100%;background:rgba(16,32,56,.9);border:1px solid var(--line);border-radius:13px;overflow:hidden}td,th{padding:10px 12px;border-bottom:1px solid #203853;text-align:left}th{color:var(--muted);font-weight:500}tr.clickable{cursor:pointer}tr.clickable:hover{background:#193452}.score{font-weight:700;color:var(--green)}select,button{background:#132a45;border:1px solid #416181;color:var(--text);border-radius:7px;padding:8px 10px}.flow{display:flex;align-items:center;justify-content:center;gap:5px;flex-wrap:wrap;padding:16px 0}.flow span{background:#163352;border:1px solid #3d6388;border-radius:20px;padding:7px 11px}.flow em{color:var(--cyan);font-style:normal}.detail{white-space:pre-wrap;background:#081421;border:1px solid var(--line);border-radius:9px;padding:14px;color:#cce3ff;max-height:260px;overflow:auto}.empty{text-align:center;color:var(--muted);padding:20px}@media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:550px){body{padding:16px}.cards{grid-template-columns:1fr}.hero{display:block}}
-</style>
-<div class="hero"><div><h1>Silicon Notebook 实验看板</h1><p class="muted">把“题目 → SN → 评分 → 报告”压缩成一眼能读懂的实验全景。数据来自已保存 run；本页面不会重新执行实验。</p></div><div><button id="reset">清除筛选</button></div></div>
-<div class="flow"><span>公开 Benchmark</span><em>→</em><span>隔离 notebook</span><em>→</em><span>SN Ask</span><em>→</em><span>chunk / reasoning</span><em>→</em><span>DeepEval + 审计</span></div>
-<div id="cards" class="cards"></div>
-<div class="grid"><section class="panel"><h2>回答状态分布</h2><div id="donut"></div><div id="legend" class="legend"></div></section><section class="panel"><h2>各指标表现</h2><div id="bars"></div></section></div>
-<h2>指标明细 <select id="metric"><option value="">全部 scorer</option></select></h2><table><thead><tr><th>Suite</th><th>Task</th><th>Track</th><th>Mode</th><th>Scorer</th><th>状态</th><th>分数</th></tr></thead><tbody id="metrics"></tbody></table>
-<h2>运行单元</h2><p class="muted">点击某一行查看该 run 的路径和警告。</p><table><thead><tr><th>Run</th><th>Suite</th><th>Track</th><th>Mode</th><th>状态</th><th>输出 / 计划</th><th>警告</th></tr></thead><tbody id="runs"></tbody></table><pre id="detail" class="detail">尚未选择运行单元。</pre>
-<script>
-const d=__DATA__,s=d.summary,$=id=>document.getElementById(id);const total=s.planned_outputs||0, saved=s.saved_outputs||0;function pct(a,b){return b?Math.round(a/b*100):0}$("cards").innerHTML=[['运行单元',s.run_count],['计划输出',total],['已保存输出',saved+' ('+pct(saved,total)+'%)'],['已保存评分',s.saved_scores],['平均已评分',s.mean_scored==null?'—':s.mean_scored.toFixed(3)]].map(x=>`<div class="card"><label>${x[0]}</label><div class="value">${x[1]}</div></div>`).join('');const st=s.prediction_status||{},ok=st.success||0,warn=(st.clarification||0)+(st.no_answer||0),bad=(st.error||0)+(st.product_error||0);$('donut').innerHTML=`<div class="donut" style="--ok:${pct(ok,saved)}%;--warn:${pct(ok+warn,saved)}%" data-label="${pct(ok,saved)}%<br>成功</div>`;$('legend').innerHTML=`<b>● 成功 ${ok}</b><b>● 待处理 ${warn}</b><b>● 错误 ${bad}</b>`;const grouped={};(d.metrics||[]).forEach(x=>{if(x.status==='scored'&&typeof x.score==='number'){const k=x.scorer||'unknown';(grouped[k]??=[]).push(x.score)}});const av=Object.entries(grouped).map(([k,v])=>[k,v.reduce((a,b)=>a+b,0)/v.length]);$('bars').innerHTML=av.length?av.map(([k,v])=>`<div class="barrow"><span title="${k}">${k.replace('product.','')}</span><div class="bar"><i style="width:${Math.max(0,Math.min(100,v*100))}%"></i></div><strong>${v.toFixed(3)}</strong></div>`).join(''):'<div class="empty">暂无已评分指标</div>';const names=[...new Set(d.metrics.map(x=>x.scorer).filter(Boolean))];$('metric').innerHTML+=[...names].map(x=>`<option>${x}</option>`).join('');function render(){const f=$('metric').value,m=d.metrics.filter(x=>!f||x.scorer===f);$('metrics').innerHTML=m.map(x=>`<tr><td>${x.suite||''}</td><td>${x.task||''}</td><td>${x.track||''}</td><td>${x.mode||''}</td><td>${x.scorer||''}</td><td>${x.status}</td><td class="${x.status==='scored'?'score':''}">${x.score==null?'—':Number(x.score).toFixed(3)}</td></tr>`).join('')||'<tr><td colspan=7 class="empty">暂无评分记录</td></tr>'}render();$('metric').onchange=render;$('reset').onclick=()=>{$('metric').value='';render()};$('runs').innerHTML=d.runs.map((x,i)=>`<tr class="clickable" data-i="${i}"><td>${x.run_id||x.path}</td><td>${x.suite||'—'}</td><td>${x.track||'—'}</td><td>${x.mode||'—'}</td><td>${x.phase}</td><td>${x.outputs}/${x.planned}</td><td>${(x.warnings||[]).length}</td></tr>`).join('');document.querySelectorAll('#runs tr').forEach(x=>x.onclick=()=>{$('detail').textContent=JSON.stringify(d.runs[x.dataset.i],null,2)});
-</script>'''

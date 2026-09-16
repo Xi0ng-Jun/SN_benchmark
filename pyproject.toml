@@ -20,3 +20,6 @@ rag-eval-deepeval = "rag_eval.deepeval_cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.setuptools.package-data]
+rag_eval = ["dashboard/*.html", "dashboard/*.css", "dashboard/*.js"]
