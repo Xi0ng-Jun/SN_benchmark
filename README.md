@@ -12,6 +12,8 @@ python scripts/build_experiment_dashboard.py \
 
 [Dashboard 操作、比较规则与服务器 Agent prompt](docs/experiment-dashboard.md) · [十套 Benchmark 的轨道与指标实现四列表](docs/benchmark-metrics-reference.md)。输出需用运行目录之外的新目录；问答和评分分别计数，缺失分数保留，不混算质量总分。
 
+侧栏选项与数量随其他已选标签和搜索词联动：无匹配的未选项隐藏，已选的零结果条件保留以便取消，同一组仍支持追加多选。
+
 **2026-09-16 当前工作：** 服务端实验由用户另行执行；本地只开发离线报告并用合成记录验证，不据此声明服务器成绩。以下 2026-09-14 及更早章节保留为历史阶段记录，最新进度以 [evaluation-status.md](docs/evaluation-status.md) 顶部和当前代码为准。
 
 这是独立的 RAG 评测脚手架。大体量数据保留在：

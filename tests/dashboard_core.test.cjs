@@ -26,6 +26,46 @@ test('filterEntries uses OR within a facet and AND across facets', () => {
   assert.deepEqual(got.map((row) => row.id), ['1', '2']);
 });
 
+test('facetOptions respects other filters while keeping alternatives in its own facet', () => {
+  const rows = [
+    entry({id: '1', suite: 'boolq', task: 'reading', scorer: 'yesno', mode: 'chunk'}),
+    entry({id: '2', suite: 'boolq', task: 'reading', scorer: 'citation', mode: 'chunk'}),
+    entry({id: '3', suite: 'squad', task: 'qa', scorer: 'geval', mode: 'chunk'}),
+    entry({id: '4', suite: 'squad', task: 'qa', scorer: 'geval', mode: 'reasoning'}),
+  ];
+  const filters = {suite: ['boolq'], mode: ['chunk']};
+  assert.deepEqual(core.facetOptions(rows, 'scorer', filters), [
+    {value: 'citation', count: 1}, {value: 'yesno', count: 1},
+  ]);
+  assert.deepEqual(core.facetOptions(rows, 'task', filters), [{value: 'reading', count: 2}]);
+  assert.deepEqual(core.facetOptions(rows, 'suite', filters), [
+    {value: 'boolq', count: 2}, {value: 'squad', count: 1},
+  ]);
+  assert.deepEqual(core.facetOptions(rows, 'scorer', {...filters, suite: ['boolq', 'squad']}), [
+    {value: 'citation', count: 1}, {value: 'geval', count: 1}, {value: 'yesno', count: 1},
+  ]);
+  assert.deepEqual(filters, {suite: ['boolq'], mode: ['chunk']});
+});
+
+test('facetOptions retains selected zero-count values so an empty combination can be undone', () => {
+  const rows = [entry({suite: 'squad', scorer: 'geval'}), entry({id: '2', suite: 'boolq', scorer: 'yesno'})];
+  const filters = {suite: ['boolq'], scorer: ['geval']};
+  assert.deepEqual(core.facetOptions(rows, 'scorer', filters), [
+    {value: 'yesno', count: 1}, {value: 'geval', count: 0},
+  ]);
+  assert.deepEqual(core.facetOptions(rows, 'scorer', filters, 'no matches anywhere'), [{value: 'geval', count: 0}]);
+  assert.deepEqual(core.facetOptions(rows, 'task', filters, 'no matches anywhere'), []);
+});
+
+test('facetOptions follows source search and preserves missing-score status options', () => {
+  const rows = core.indexSearchText([
+    entry({id: '1', observation_id: 'mars', suite: 'boolq', status: 'missing', score: null}),
+    entry({id: '2', observation_id: 'moon', suite: 'squad'}),
+  ], {mars: {case: {question: '火星有几颗卫星？'}}, moon: {case: {question: '月亮是什么？'}}});
+  assert.deepEqual(core.facetOptions(rows, 'suite', {}, '火星'), [{value: 'boolq', count: 1}]);
+  assert.deepEqual(core.facetOptions(rows, 'status', {}, '火星'), [{value: 'missing', count: 1}]);
+});
+
 test('filterEntries searches case, output and scalar entry fields', () => {
   const rows = [entry({id: '1', task: 'reading', search_text: '火星 检索答案'}), entry({id: '2', task: 'logic'})];
   assert.deepEqual(core.filterEntries(rows, {}, '火星').map((row) => row.id), ['1']);

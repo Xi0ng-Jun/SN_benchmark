@@ -45,12 +45,17 @@
     });
   }
 
-  function facetOptions(entries, field) {
+  function facetOptions(entries, field, filters = {}, query = '') {
+    // Ignore this field's own selections so OR alternatives remain available.
+    // Other fields and text search still constrain its counts.
+    const otherFilters = {...filters, [field]: []};
     const counts = new Map();
-    for (const entry of entries || []) {
+    for (const entry of filterEntries(entries, otherFilters, query)) {
       const value = facetValue(entry, field);
       counts.set(value, (counts.get(value) || 0) + 1);
     }
+    // Never silently remove a selected constraint, even for an empty result.
+    for (const value of filters[field] || []) if (!counts.has(value)) counts.set(value, 0);
     return [...counts].map(([value, count]) => ({value, count})).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
   }
 

@@ -8,6 +8,7 @@
   const entries = C.indexSearchText(Array.isArray(data.entries) ? data.entries : [], observations);
   const catalog = data.catalog && typeof data.catalog === 'object' ? data.catalog : {};
   const state = {filters: {}, query: '', page: 1, pageSize: 20, saved: []};
+  const facetViews = new Map();
   const labels = {suite:'套件',task:'任务',track:'轨道',mode:'模式',scorer:'评分指标',status:'评分状态',output_status:'输出状态',behavior:'行为',partition:'分区',run_id:'运行',config_family:'配置族'};
   const errors = {empty_cohort:'组内没有条目',multiple_modes:'每个比较组必须只有一种模式',incompatible_dimensions:'套件、轨道、指标或配置族不一致',missing_dimension:'比较条目缺少 config_family',missing_identity:'条目缺少 pairing_id、case_id 或 scorer',duplicate_pair:'组内存在重复配对键，可能包含重试歧义',overlapping_runs:'两组包含同一 run',same_mode:'两组模式相同，无法作模式比较',no_common_pairs:'两组没有共同计划题'};
   const $ = (id) => document.getElementById(id);
@@ -43,12 +44,16 @@
 
   function renderFacets() {
     const host = $('facet-list'); host.replaceChildren();
+    facetViews.clear();
     for (const field of C.FACETS) {
       const options = C.facetOptions(entries, field);
       if (!options.length) continue;
       const details = el('details', 'facet'); details.open = ['suite','mode','scorer','status'].includes(field);
-      const summary = el('summary'); summary.append(el('span', '', labels[field]), el('span', 'count', `${(state.filters[field] || []).length || options.length}`));
+      details.dataset.facet = field;
+      const summaryCount = el('span', 'count');
+      const summary = el('summary'); summary.append(el('span', '', labels[field]), summaryCount);
       const list = el('div', 'facet-options');
+      const optionViews = new Map();
       for (const option of options) {
         const label = el('label', 'check');
         const input = document.createElement('input'); input.type = 'checkbox'; input.value = option.value; input.checked = (state.filters[field] || []).includes(option.value);
@@ -58,21 +63,44 @@
           input.checked ? values.add(option.value) : values.delete(option.value);
           state.filters[field] = [...values]; state.page = 1; render();
         });
-        const optionLabel=field==='scorer'?scorerLabel(option.value):field==='track'?trackLabel(option.value):option.value;const textNode=el('span','',optionLabel);if(field==='scorer'&&optionLabel!==option.value)textNode.title=option.value;if(field==='config_family')textNode.title=option.value;label.append(input,textNode,el('span','count',option.count));list.append(label);
+        const optionLabel=field==='scorer'?scorerLabel(option.value):field==='track'?trackLabel(option.value):option.value;const textNode=el('span','',optionLabel);if(field==='scorer'&&optionLabel!==option.value)textNode.title=option.value;if(field==='config_family')textNode.title=option.value;
+        const count = el('span', 'count', option.count);
+        label.append(input, textNode, count); list.append(label);
+        optionViews.set(option.value, {label, input, count});
       }
       details.append(summary, list); host.append(details);
+      facetViews.set(field, {details, summaryCount, options: optionViews});
     }
   }
 
-  function syncFacetChecks() {
-    document.querySelectorAll('.facet-options input').forEach((input) => { input.checked = (state.filters[input.dataset.facet] || []).includes(input.value); });
+  function updateFacets() {
+    // Search the full observations once, not once per facet. Keep existing DOM
+    // nodes so focus, expanded sections and each list's scroll position survive.
+    const candidates = state.query ? C.filterEntries(entries, {}, state.query) : entries;
+    let visibleGroups = 0;
+    for (const [field, view] of facetViews) {
+      const counts = new Map(C.facetOptions(candidates, field, state.filters).map((option) => [option.value, option.count]));
+      const selected = state.filters[field] || [];
+      for (const [value, option] of view.options) {
+        const count = counts.get(value) || 0;
+        option.input.checked = selected.includes(value);
+        option.label.hidden = !counts.has(value);
+        option.label.classList.toggle('zero-count', option.input.checked && count === 0);
+        option.label.title = option.input.checked && count === 0 ? '当前其他条件下为 0 条；可取消此条件' : '';
+        option.count.textContent = count;
+      }
+      view.details.hidden = counts.size === 0;
+      if (counts.size) visibleGroups += 1;
+      view.summaryCount.textContent = selected.length ? `${selected.length} 已选 / ${counts.size} 项` : `${counts.size} 项`;
+    }
+    $('facet-empty').hidden = visibleGroups > 0;
   }
 
   function renderChips() {
     const host = $('active-chips'); host.replaceChildren();
     for (const field of C.FACETS) for (const value of state.filters[field] || []) {
       const chip = el('span', 'chip', `${labels[field]} · ${value}`); const remove = el('button', '', '×'); remove.type = 'button'; remove.setAttribute('aria-label', `移除 ${value}`);
-      remove.addEventListener('click', () => { state.filters[field] = state.filters[field].filter((item) => item !== value); state.page = 1; syncFacetChecks(); render(); });
+      remove.addEventListener('click', () => { state.filters[field] = state.filters[field].filter((item) => item !== value); state.page = 1; render(); });
       chip.append(remove); host.append(chip);
     }
   }
@@ -150,7 +178,7 @@
   }
 
   function renderSaved() {
-    const host=$('saved-groups');host.replaceChildren();state.saved.forEach((group,index)=>{const card=el('article',`saved-card ${index===0?'reference':''}`);const header=el('header');header.append(el('strong','',`${index===0?'参照 · ':''}${group.name}`));const remove=el('button','', '×');remove.type='button';remove.setAttribute('aria-label',`删除 ${group.name}`);remove.addEventListener('click',()=>{state.saved.splice(index,1);renderSaved();});header.append(remove);card.append(header,el('p','',group.description));C.groupScores(group.rows).forEach((summary)=>{const mini=el('div','saved-metric');const dimensions=el('span','',`${summary.suite} · ${trackLabel(summary.track)} · ${scorerLabel(summary.scorer)} · ${shortConfig(summary.config_family)} · ${summary.mode} · ${summary.task}`);dimensions.title=`${summary.scorer} · ${summary.config_family}`;mini.append(dimensions,el('i',''));mini.children[1].style.width=`${Math.max(0,Math.min(100,(summary.mean||0)*100))}%`;mini.append(el('small','',`${formatNumber(summary.mean)} · ${summary.valid}/${summary.planned}`));card.append(mini);});const restore=el('button','restore-button','恢复此筛选');restore.type='button';restore.addEventListener('click',()=>{state.filters=JSON.parse(JSON.stringify(group.filters));state.query=group.query;state.page=1;$('search-input').value=state.query;syncFacetChecks();render();});card.append(restore);host.append(card);});
+    const host=$('saved-groups');host.replaceChildren();state.saved.forEach((group,index)=>{const card=el('article',`saved-card ${index===0?'reference':''}`);const header=el('header');header.append(el('strong','',`${index===0?'参照 · ':''}${group.name}`));const remove=el('button','', '×');remove.type='button';remove.setAttribute('aria-label',`删除 ${group.name}`);remove.addEventListener('click',()=>{state.saved.splice(index,1);renderSaved();});header.append(remove);card.append(header,el('p','',group.description));C.groupScores(group.rows).forEach((summary)=>{const mini=el('div','saved-metric');const dimensions=el('span','',`${summary.suite} · ${trackLabel(summary.track)} · ${scorerLabel(summary.scorer)} · ${shortConfig(summary.config_family)} · ${summary.mode} · ${summary.task}`);dimensions.title=`${summary.scorer} · ${summary.config_family}`;mini.append(dimensions,el('i',''));mini.children[1].style.width=`${Math.max(0,Math.min(100,(summary.mean||0)*100))}%`;mini.append(el('small','',`${formatNumber(summary.mean)} · ${summary.valid}/${summary.planned}`));card.append(mini);});const restore=el('button','restore-button','恢复此筛选');restore.type='button';restore.addEventListener('click',()=>{state.filters=JSON.parse(JSON.stringify(group.filters));state.query=group.query;state.page=1;$('search-input').value=state.query;render();});card.append(restore);host.append(card);});
     const results=$('comparison-results');results.replaceChildren();if(state.saved.length<2){results.append(notice('保存至少两组筛选结果后开始比较。第一组自动作为参照组。'));return;}
     const reference=state.saved[0];state.saved.slice(1).forEach((group)=>{const result=C.compareCohorts(reference.rows,group.rows);const card=el('article',`comparison ${result.ok?'':'error'}`);card.append(el('h4','',`${reference.name} → ${group.name}`));if(!result.ok){card.append(el('div','delta',errors[result.code]||result.code));}else{card.append(el('div','delta',result.meanDelta==null?'无共同有效分数':`${result.meanDelta>=0?'+':''}${formatNumber(result.meanDelta)}`),el('p','',`${result.comparisonMode} 相对 ${result.referenceMode} 的共同有效均值差`),comparisonGraphic(result),el('p','',`配对总体：共同计划 ${result.commonPlanned}；有效总体：共同有效 ${result.commonValid}，部分缺失 ${result.partialPairs}，双方缺失 ${result.missingBoth}`),el('p','',`共同有效中的胜 / 平 / 负 ${result.wins} / ${result.ties} / ${result.losses} · 非共同计划：仅参照 ${result.onlyA}，仅比较 ${result.onlyB}`),el('p','',`图形与差值只使用共同有效配对。结果为描述性统计，不表示统计显著性或因果关系。`));}results.append(card);});
   }
@@ -161,10 +189,10 @@
     [['报告限制',limitations],['运行提示',warnings]].forEach(([title,items])=>{const section=el('section','diagnostic-list');section.append(el('h4','',title));if(!items.length)section.append(el('p','', '无'));else items.forEach((item)=>section.append(el('p','',typeof item==='string'?item:JSON.stringify(item))));host.append(section);});
   }
 
-  function render() { const rows=currentRows();renderChips();renderSummary(rows);renderStatus(rows);renderHistogram(rows);renderGroups(rows);renderEntries(rows);renderSaved();renderDiagnostics(); }
+  function render() { const rows=currentRows();updateFacets();renderChips();renderSummary(rows);renderStatus(rows);renderHistogram(rows);renderGroups(rows);renderEntries(rows);renderSaved();renderDiagnostics(); }
 
   $('search-input').addEventListener('input',(event)=>{state.query=event.target.value;state.page=1;render();});
-  $('clear-button').addEventListener('click',()=>{state.filters={};state.query='';state.page=1;$('search-input').value='';renderFacets();render();});
+  $('clear-button').addEventListener('click',()=>{state.filters={};state.query='';state.page=1;$('search-input').value='';render();});
   $('prev-page').addEventListener('click',()=>{state.page-=1;renderEntries(currentRows());});$('next-page').addEventListener('click',()=>{state.page+=1;renderEntries(currentRows());});
   $('detail-close').addEventListener('click',()=>$('detail-dialog').close());$('detail-dialog').addEventListener('click',(event)=>{if(event.target===$('detail-dialog'))$('detail-dialog').close();});
   $('save-group-button').addEventListener('click',()=>{const rows=currentRows();const index=state.saved.length+1;const proposed=globalThis.prompt('比较组名称',`比较组 ${index}`);if(proposed==null)return;const name=proposed.trim()||`比较组 ${index}`;state.saved.push({name,description:describeFilter(state.filters,state.query),filters:JSON.parse(JSON.stringify(state.filters)),query:state.query,rows:[...rows]});renderSaved();});
