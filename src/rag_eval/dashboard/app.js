@@ -177,10 +177,101 @@
     const total=result.wins+result.ties+result.losses;let x=25;[['胜',result.wins,'#176b4c'],['平',result.ties,'#8b948f'],['负',result.losses,'#b84b43']].forEach(([name,count,color])=>{const width=total?count/total*270:0;const rect=svgEl('rect',{x,y:68,width,height:9,fill:color});rect.appendChild(document.createElementNS('http://www.w3.org/2000/svg','title')).textContent=`${name} ${count}`;svg.append(rect);x+=width;});wrap.append(svg);return wrap;
   }
 
+  function runConfigRows(rows) {
+    const seen = new Set(); const configs = [];
+    rows.forEach((row) => {
+      const key = row.run_key || row.run_id;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      const run = (data.runs || []).find((item) => item.key === key || item.run_key === key || item.run_id === row.run_id) || {};
+      const manifest = run.manifest || {};
+      const identity = manifest.identity || {};
+      configs.push({run: manifest.run_id || run.run_id || row.run_id || '未记录',
+        models: identity.models || manifest.models || '未记录',
+        product_protocol: manifest.product_protocol || '未记录',
+        runtime_settings: identity.runtime_settings || '未记录',
+        product_services: identity.product_services || '未记录',
+        source: identity.source ? {dataset: identity.source.dataset, split: identity.source.split, revision: identity.source.revision} : '未记录'});
+    });
+    return configs;
+  }
+
+  function comparisonConfig(result, reference, comparison) {
+    const wrap = el('div', 'comparison-config');
+    [['参照组', result.configs.reference, reference.rows], ['比较组', result.configs.comparison, comparison.rows]].forEach(([label, config, rows]) => {
+      const card = el('div', 'config-card');
+      card.append(el('strong', '', label));
+      card.append(el('span', '', `运行：${config.runs.join('、') || '未记录'}`));
+      card.append(el('span', '', `模式：${config.modes.join('、') || '未记录'}`));
+      card.append(el('span', '', `配置：${config.configs.join('、') || '未记录'}`));
+      runConfigRows(rows).forEach((details) => {
+        card.append(el('small', '', `模型：${JSON.stringify(details.models)}`));
+        card.append(el('small', '', `协议：${details.product_protocol} · 设置哈希：${details.runtime_settings} · 服务哈希：${details.product_services}`));
+        card.append(el('small', '', `来源：${JSON.stringify(details.source)}`));
+      });
+      wrap.append(card);
+    });
+    return wrap;
+  }
+
+  function comparisonStatus(result) {
+    const wrap = el('div', 'comparison-status');
+    [['评分状态', result.statusCounts], ['输出状态', result.outputStatusCounts]].forEach(([title, values]) => {
+      const section = el('div', 'status-breakdown'); section.append(el('strong', '', title));
+      const grid = el('div', 'status-breakdown-grid');
+      [['参照', values.reference], ['比较', values.comparison]].forEach(([label, counts]) => {
+        const item = el('div', 'status-breakdown-side'); item.append(el('span', '', label));
+        Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)).forEach(([name, count]) => item.append(el('small', '', `${name} ${count}`)));
+        grid.append(item);
+      });
+      section.append(grid); wrap.append(section);
+    });
+    return wrap;
+  }
+
+  function comparisonPartitionTable(result) {
+    const section = el('section', 'comparison-section');
+    section.append(el('h5', '', '按分区查看差异'));
+    const table = document.createElement('table'); table.className = 'comparison-table';
+    const head = document.createElement('thead'); const headRow = document.createElement('tr');
+    ['分区', '共同题', '共同有效', '参照均分', '比较均分', '差值'].forEach((name) => headRow.append(el('th', '', name)));
+    head.append(headRow); table.append(head);
+    const body = document.createElement('tbody');
+    result.partitions.forEach((part) => {
+      const row = document.createElement('tr');
+      [part.partition, part.commonPlanned, part.commonValid, formatNumber(part.referenceMean), formatNumber(part.comparisonMean), formatNumber(part.meanDelta)].forEach((value) => row.append(el('td', '', value)));
+      body.append(row);
+    });
+    table.append(body); section.append(table); return section;
+  }
+
+  function comparisonPairTable(result, reference, comparison) {
+    const section = el('details', 'comparison-section pair-details');
+    const summary = el('summary'); summary.append(el('strong', '', `逐题配对（${result.pairs.length} 题）`), el('span', '', '展开查看')); section.append(summary);
+    const table = document.createElement('table'); table.className = 'comparison-table';
+    const head = document.createElement('thead'); const headRow = document.createElement('tr');
+    ['题目', '分区', '参照分数', '比较分数', '差值', '状态', '详情'].forEach((name) => headRow.append(el('th', '', name)));
+    head.append(headRow); table.append(head);
+    const body = document.createElement('tbody');
+    result.pairs.forEach((pair) => {
+      const row = document.createElement('tr');
+      [pair.case_id, pair.partition, formatNumber(pair.reference.score), formatNumber(pair.comparison.score), formatNumber(pair.delta), pair.state].forEach((value) => row.append(el('td', '', value)));
+      const actions = el('td');
+      [['参照', pair.reference.id, reference.rows], ['比较', pair.comparison.id, comparison.rows]].forEach(([label, id, rows]) => {
+        const button = el('button', 'pair-link', `查看${label}`); button.type = 'button';
+        const target = rows.find((entry) => entry.id === id);
+        button.disabled = !target; if (target) button.addEventListener('click', () => openDetail(target));
+        actions.append(button);
+      });
+      row.append(actions); body.append(row);
+    });
+    table.append(body); section.append(table); return section;
+  }
+
   function renderSaved() {
     const host=$('saved-groups');host.replaceChildren();state.saved.forEach((group,index)=>{const card=el('article',`saved-card ${index===0?'reference':''}`);const header=el('header');header.append(el('strong','',`${index===0?'参照 · ':''}${group.name}`));const remove=el('button','', '×');remove.type='button';remove.setAttribute('aria-label',`删除 ${group.name}`);remove.addEventListener('click',()=>{state.saved.splice(index,1);renderSaved();});header.append(remove);card.append(header,el('p','',group.description));C.groupScores(group.rows).forEach((summary)=>{const mini=el('div','saved-metric');const dimensions=el('span','',`${summary.suite} · ${trackLabel(summary.track)} · ${scorerLabel(summary.scorer)} · ${shortConfig(summary.config_family)} · ${summary.mode} · ${summary.task}`);dimensions.title=`${summary.scorer} · ${summary.config_family}`;mini.append(dimensions,el('i',''));mini.children[1].style.width=`${Math.max(0,Math.min(100,(summary.mean||0)*100))}%`;mini.append(el('small','',`${formatNumber(summary.mean)} · ${summary.valid}/${summary.planned}`));card.append(mini);});const restore=el('button','restore-button','恢复此筛选');restore.type='button';restore.addEventListener('click',()=>{state.filters=JSON.parse(JSON.stringify(group.filters));state.query=group.query;state.page=1;$('search-input').value=state.query;render();});card.append(restore);host.append(card);});
     const results=$('comparison-results');results.replaceChildren();if(state.saved.length<2){results.append(notice('保存至少两组筛选结果后开始比较。第一组自动作为参照组。'));return;}
-    const reference=state.saved[0];state.saved.slice(1).forEach((group)=>{const result=C.compareCohorts(reference.rows,group.rows);const card=el('article',`comparison ${result.ok?'':'error'}`);card.append(el('h4','',`${reference.name} → ${group.name}`));if(!result.ok){card.append(el('div','delta',errors[result.code]||result.code));}else{card.append(el('div','delta',result.meanDelta==null?'无共同有效分数':`${result.meanDelta>=0?'+':''}${formatNumber(result.meanDelta)}`),el('p','',`${result.comparisonMode} 相对 ${result.referenceMode} 的共同有效均值差`),comparisonGraphic(result),el('p','',`配对总体：共同计划 ${result.commonPlanned}；有效总体：共同有效 ${result.commonValid}，部分缺失 ${result.partialPairs}，双方缺失 ${result.missingBoth}`),el('p','',`共同有效中的胜 / 平 / 负 ${result.wins} / ${result.ties} / ${result.losses} · 非共同计划：仅参照 ${result.onlyA}，仅比较 ${result.onlyB}`),el('p','',`图形与差值只使用共同有效配对。结果为描述性统计，不表示统计显著性或因果关系。`));}results.append(card);});
+    const reference=state.saved[0];state.saved.slice(1).forEach((group)=>{const result=C.compareCohorts(reference.rows,group.rows);const card=el('article',`comparison ${result.ok?'':'error'}`);card.append(el('h4','',`${reference.name} → ${group.name}`));if(!result.ok){card.append(el('div','delta',errors[result.code]||result.code));}else{const title=result.analysisType==='mode'?`模式对比：${result.referenceMode} → ${result.comparisonMode}`:'严格配对比较';card.append(el('div','comparison-question',title),el('div','delta',result.meanDelta==null?'无共同有效分数':`${result.meanDelta>=0?'+':''}${formatNumber(result.meanDelta)}`),el('p','',`${result.comparisonMode} 相对 ${result.referenceMode} 的共同有效均值差`),comparisonGraphic(result),comparisonConfig(result,reference,group),comparisonStatus(result),el('p','',`配对总体：共同计划 ${result.commonPlanned}；有效总体：共同有效 ${result.commonValid}，部分缺失 ${result.partialPairs}，双方缺失 ${result.missingBoth}`),el('p','',`共同有效中的胜 / 平 / 负 ${result.wins} / ${result.ties} / ${result.losses} · 非共同计划：仅参照 ${result.onlyA}，仅比较 ${result.onlyB}`),comparisonPartitionTable(result),comparisonPairTable(result,reference,group),el('p','comparison-footnote','图形与差值只使用共同有效配对；状态和配置用于解释差异。结果为描述性统计，不表示统计显著性或因果关系。'));}results.append(card);});
   }
 
   function renderDiagnostics() {

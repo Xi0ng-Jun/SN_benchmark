@@ -180,3 +180,41 @@ test('compareCohorts rejects mismatched dimensions, modes, missing identities, d
   assert.equal(core.compareCohorts(baseA, [entry({run_key: 'different/path', run_id: 'a', mode: 'chunk'})]).ok, true);
   assert.equal(core.compareCohorts(baseA, [entry({run_key: 'b', run_id: 'b', mode: 'native'})]).code, 'same_mode');
 });
+
+test('compareCohorts returns experiment analysis for mode comparisons', () => {
+  const a = [
+    entry({id: 'a1', run_key: 'chunk-run', run_id: 'chunk-run', mode: 'chunk', partition: 'p1', score: 1}),
+    entry({id: 'a2', run_key: 'chunk-run', run_id: 'chunk-run', mode: 'chunk', partition: 'p2', case_id: 'case-2', score: 0, output_status: 'clarification'}),
+  ];
+  const b = [
+    entry({id: 'b1', run_key: 'reasoning-run', run_id: 'reasoning-run', mode: 'reasoning', partition: 'p1', score: 0}),
+    entry({id: 'b2', run_key: 'reasoning-run', run_id: 'reasoning-run', mode: 'reasoning', partition: 'p2', case_id: 'case-2', score: 1}),
+  ];
+  const result = core.compareCohorts(a, b);
+  assert.equal(result.analysisType, 'mode');
+  assert.deepEqual(result.modes, {reference: 'chunk', comparison: 'reasoning'});
+  assert.deepEqual(result.statusCounts.reference, {scored: 2});
+  assert.deepEqual(result.statusCounts.comparison, {scored: 2});
+  assert.deepEqual(result.outputStatusCounts.reference, {success: 1, clarification: 1});
+  assert.equal(result.pairs.length, 2);
+  assert.deepEqual(result.pairs.map((pair) => [pair.case_id, pair.partition, pair.delta]), [
+    ['case-1', 'p1', -1], ['case-2', 'p2', 1],
+  ]);
+  assert.deepEqual(result.partitions.map((part) => [part.partition, part.commonValid, part.meanDelta]), [
+    ['p1', 1, -1], ['p2', 1, 1],
+  ]);
+  assert.deepEqual(result.configs.reference, {runs: ['chunk-run'], modes: ['chunk'], configs: ['cfg-a']});
+  assert.deepEqual(result.configs.comparison, {runs: ['reasoning-run'], modes: ['reasoning'], configs: ['cfg-a']});
+});
+
+test('compareCohorts preserves partial and missing states in experiment analysis', () => {
+  const a = [entry({run_key: 'a', run_id: 'a', mode: 'chunk', score: null, status: 'missing', output_status: 'error'})];
+  const b = [entry({run_key: 'b', run_id: 'b', mode: 'reasoning', score: 0.5})];
+  const result = core.compareCohorts(a, b);
+  assert.equal(result.ok, true);
+  assert.equal(result.commonValid, 0);
+  assert.equal(result.partialPairs, 1);
+  assert.deepEqual(result.statusCounts.reference, {missing: 1});
+  assert.deepEqual(result.statusCounts.comparison, {scored: 1});
+  assert.deepEqual(result.pairs[0].state, 'partial');
+});

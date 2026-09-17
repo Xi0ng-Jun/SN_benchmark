@@ -139,18 +139,39 @@
     const commonKeys = [...a.pairs.keys()].filter((key) => b.pairs.has(key));
     if (!commonKeys.length) return {ok: false, code: 'no_common_pairs'};
     let commonValid = 0, partialPairs = 0, missingBoth = 0, deltaTotal = 0, referenceTotal = 0, comparisonTotal = 0, wins = 0, ties = 0, losses = 0;
+    const pairs = [];
+    const partitionMap = new Map();
     for (const key of commonKeys) {
       const left = a.pairs.get(key), right = b.pairs.get(key);
       const leftValid = isValidScore(left), rightValid = isValidScore(right);
+      const state = leftValid && rightValid ? 'scored' : leftValid || rightValid ? 'partial' : 'missing';
+      const pair = {key, case_id: left.case_id, partition: facetValue(left, 'partition'),
+        reference: {id: left.id, score: leftValid ? left.score : null, status: left.status,
+          output_status: left.output_status, observation_id: left.observation_id},
+        comparison: {id: right.id, score: rightValid ? right.score : null, status: right.status,
+          output_status: right.output_status, observation_id: right.observation_id},
+        delta: leftValid && rightValid ? right.score - left.score : null, state};
+      pairs.push(pair);
+      if (!partitionMap.has(pair.partition)) partitionMap.set(pair.partition, {partition: pair.partition, commonPlanned: 0, commonValid: 0, partialPairs: 0, missingBoth: 0, deltaTotal: 0, referenceTotal: 0, comparisonTotal: 0});
+      const partition = partitionMap.get(pair.partition); partition.commonPlanned += 1;
       if (leftValid && rightValid) {
         const delta = right.score - left.score;
         commonValid += 1; deltaTotal += delta; referenceTotal += left.score; comparisonTotal += right.score;
+        partition.commonValid += 1; partition.deltaTotal += delta; partition.referenceTotal += left.score; partition.comparisonTotal += right.score;
         if (Math.abs(delta) <= 1e-12) ties += 1;
         else if (delta > 0) wins += 1;
         else losses += 1;
-      } else if (leftValid || rightValid) partialPairs += 1;
-      else missingBoth += 1;
+      } else if (leftValid || rightValid) { partialPairs += 1; partition.partialPairs += 1; }
+      else { missingBoth += 1; partition.missingBoth += 1; }
     }
+    const count = (rows, field) => rows.reduce((result, row) => { const value = facetValue(row, field); result[value] = (result[value] || 0) + 1; return result; }, {});
+    const values = (rows, field) => [...new Set(rows.map((row) => field === 'config_family' && (row[field] == null || row[field] === '') ? `未记录@${row.run_key || row.run_id || row.id}` : facetValue(row, field)))].sort();
+    const partitionResults = [...partitionMap.values()].map((part) => ({...part,
+      meanDelta: part.commonValid ? part.deltaTotal / part.commonValid : null,
+      referenceMean: part.commonValid ? part.referenceTotal / part.commonValid : null,
+      comparisonMean: part.commonValid ? part.comparisonTotal / part.commonValid : null,
+    })).map(({deltaTotal, referenceTotal, comparisonTotal, ...part}) => part)
+      .sort((left, right) => left.partition.localeCompare(right.partition));
     return {
       ok: true, referenceMode: a.mode, comparisonMode: b.mode,
       commonPlanned: commonKeys.length, commonValid, partialPairs, missingBoth,
@@ -158,6 +179,15 @@
       referenceMean: commonValid ? referenceTotal / commonValid : null,
       comparisonMean: commonValid ? comparisonTotal / commonValid : null,
       meanDelta: commonValid ? deltaTotal / commonValid : null, wins, ties, losses,
+      analysisType: a.mode !== b.mode ? 'mode' : 'cohort',
+      modes: {reference: a.mode, comparison: b.mode},
+      configs: {
+        reference: {runs: values(aEntries, 'run_id'), modes: values(aEntries, 'mode'), configs: values(aEntries, 'config_family')},
+        comparison: {runs: values(bEntries, 'run_id'), modes: values(bEntries, 'mode'), configs: values(bEntries, 'config_family')},
+      },
+      statusCounts: {reference: count(aEntries, 'status'), comparison: count(bEntries, 'status')},
+      outputStatusCounts: {reference: count(aEntries, 'output_status'), comparison: count(bEntries, 'output_status')},
+      pairs, partitions: partitionResults,
     };
   }
 
