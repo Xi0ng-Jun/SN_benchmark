@@ -1,5 +1,7 @@
 # Silicon Notebook RAG Benchmark + DeepEval
 
+**2026-09-17 新增资料型评测接入：** QASPER、MultiHop-RAG、ALCE、QMSum；支持完整资料分区、隔离 SN Ask、独立指标及 Dashboard。见[实现与服务器命令](docs/notebook-benchmarks.md)。本地仅用构造数据验证，尚未下载真实数据或执行新实验。
+
 实验完成或阶段性运行后，可用离线 Dashboard 汇总已保存结果：
 
 ```bash

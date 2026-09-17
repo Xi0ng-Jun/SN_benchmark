@@ -1,5 +1,15 @@
 # 评测状态
 
+## 2026-09-17：Notebook 场景四套接入
+
+新增 QASPER、MultiHop-RAG、ALCE、QMSum 的本地原始文件适配、gold/资料分离、不可拆分资料分区、SN Product R 执行、评分与 Dashboard。独立协议 `sn-notebook-benchmarks-v1`，旧十套保持原解释。详见[服务器使用与指标表](notebook-benchmarks.md)及[实施计划](superpowers/plans/2026-09-17-notebook-benchmarks.md)。
+
+QASPER 按论文、QMSum 按会议；MultiHop 使用完整 corpus；ALCE 每题完整候选，不按 gold 缩小检索范围。容量可显式声明并仅写入隔离进程，不能据容量删题或拆散单题资料。新增连续主指标独立解释，澄清/缺评分不补 0。ALCE 引用通过真实 SN anchor/对象映射到官方编号，官方模型分显式执行、保存来源后挂接到新 run，不覆盖原始实验。
+
+**验证：319 项 Python 离线回归通过，无跳过，测试进程网络尝试 0；18 项 Dashboard JavaScript 回归通过。** 独立审阅的上下文前导说明映射、Dashboard 分区标签两项问题已修复并复核。当前机器未安装 rouge-score，缺依赖分支已验证；真实 ROUGE、ALCE 模型推断、官方完整文件与服务器 SN 验收未执行。不下载数据/权重、不改生产、不恢复 timer，不推断服务器正在进行的实验成绩。
+
+2026-09-17 同步：上述代码与文档已提交并推送到远程开发分支 `docs/public-benchmark-agent-expansion`（未合并 `main`）。推送内容仅为本机实现与离线回归，不改变上面的验收状态：真实数据适配、依赖安装、服务器 SN 端到端执行与 ALCE 模型评分仍需服务器完成。
+
 ## 2026-09-16：IFEval 直接评分
 
 按用户要求取消项目自加的人工正反例审核门槛：Native 正常生成回答，Native/SN Product 均直接调用固定版本 DeepEval verifier，按所有指令是否通过评分。SN 完整正文及引用原样参与检查。新运行记录独立策略和 scorer；已有数据包、分区计划和旧报告保持兼容，不改历史 N/A。详见 [实施决定与服务器使用](ifeval-direct-scoring.md)。本地全量离线回归 **281 passed，联网尝试 0**，含本地合成样本与真实 SDK；独立代码审阅未发现阻断问题。未启动模型实验或改动 SN；服务器实验进度仍以服务器记录为准。

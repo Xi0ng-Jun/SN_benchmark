@@ -32,6 +32,8 @@ Excel 文件保留为原始调研材料；其中的结论在经过复核后再�
 
 ## 当前交接入口
 
+2026-09-17：新增四套 Notebook 场景协议 `sn-notebook-benchmarks-v1`，不改变旧十套协议。使用独立 prepare/run 命令与既有 Dashboard；ALCE 模型分显式独立执行并挂接到新 run。服务器使用与边界见 [Notebook 评测说明](notebook-benchmarks.md)。当前不下载数据、不运行 SN/在线模型、不修改生产；本地回归仅构造样本。
+
 2026-09-16 最新决定：IFEval 按现成 DeepEval benchmark 使用，取消本项目的人工正反例审计前置条件；不得再因未审核而跳过 Native 生成或将主分记 N/A。固定 SDK 直接评分，原始 SN 正文含引用；新旧 scorer 分开。v1 冻结来源中的 pending 字段保留为归档，不是当前门槛。操作见 [IFEval 直接评分](ifeval-direct-scoring.md)。
 
 2026-09-16 更新：用户反馈旧 Dashboard 只有表格，现要求多标签组合筛选、图表、逐条评分过程和可比多组比较。当前本地工作是离线结果探索器及[实际指标实现表](benchmark-metrics-reference.md)，入口见[Dashboard 指南与服务器交接](experiment-dashboard.md)。公司服务器实验由用户另行推进，本地不重复在线任务、不下载 Benchmark 数据或修改 SN。以下日期段保留为历史上下文，不能据此推断公司服务器实验是否完成。

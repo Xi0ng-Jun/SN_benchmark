@@ -1,5 +1,7 @@
 # 当前十套 Benchmark 的指标实现对照
 
+2026-09-17 补充：下表保留旧十套轨道；新增 QASPER、MultiHop-RAG、ALCE、QMSum 的主分、诊断、公式与适用条件见 [Notebook 指标表](notebook-benchmarks.md#指标与适用条件)。Dashboard 指标目录已包含新 scorer。四套默认只测 SN Product R，不新增 Native N；ALCE 官方 NLI 分显式补算。
+
 口径：本分支 `starter_runner` 的默认执行路径与固定 DeepEval 4.2.2。N 为直接模型参照；R 为 SN Product（chunk / reasoning 分别执行）。这里描述实现，不代表服务器实验已经完成。
 
 每个 R 的主指标与诊断指标分别记录，不平均为总分。未产生正常预测先记 unscored；非适用和解析失败保留 null。
