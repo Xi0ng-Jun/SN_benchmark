@@ -77,8 +77,10 @@ def snapshot_sources(root, project, run):
     return identity
 
 
-def configure_environment(project, run, *, product_track):
+def configure_environment(project, run, *, product_track, document_limit=40):
     """Process-global setup: caller must use one fresh CLI process per cell."""
+    if type(document_limit) is not int or document_limit < 1:
+        raise ValueError("Document capacity must be a positive integer")
     private = run / "runtime"
     private.mkdir(mode=0o700)
     overrides = {
@@ -87,7 +89,7 @@ def configure_environment(project, run, *, product_track):
         "SILICON_NOTEBOOK_STORAGE_DIR": str(private / "storage"),
         "LLM_CACHE_PATH": str(private / "llm-cache.db"),
         "EVENT_LOG_DIR": str(private / "logs"), "LLM_LOG_PATH": str(private / "logs/llm.jsonl"),
-        "LLM_CACHE_ENABLED": "false", "LLM_LOG_ENABLED": "true", "USER_UPLOAD_DOCUMENT_LIMIT": "40",
+        "LLM_CACHE_ENABLED": "false", "LLM_LOG_ENABLED": "true", "USER_UPLOAD_DOCUMENT_LIMIT": str(document_limit),
         "AGENT_PROFILE_ENABLED": "false", "USER_SEARCH_PROFILE_ENABLED": "false",
         "RETRIEVAL_EXPERIENCE_ENABLED": "false", "RETRIEVAL_EXPERIENCE_INJECT_ENABLED": "false",
         "REASONING_CONSULT_MEMORY_ENABLED": "false", "GENERATED_QUESTION_INDEX_MODE": "off",

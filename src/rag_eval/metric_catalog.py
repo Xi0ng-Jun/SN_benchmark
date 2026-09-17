@@ -94,6 +94,9 @@ CATALOG = {
 }
 
 
+from .notebook_scoring import METRIC_DESCRIPTIONS
+CATALOG.update(METRIC_DESCRIPTIONS)
+
 def describe_metric(scorer):
     return deepcopy(CATALOG.get(scorer, _metric(
         scorer, "未登记", [], "未登记；以保存的 score/details/judge 事件为准。",
@@ -115,4 +118,10 @@ def benchmark_rows():
             metrics += ["product.final_context.document_coverage"]
         metrics += ["product.citation_object.existence_ratio"]
         rows.extend((suite, "SN Product（R；chunk / reasoning）", scorer) for scorer in metrics)
+    from .notebook_runner import metric_specs
+    for suite, tasks in {"qasper": ["extractive"], "multihop_rag": ["comparison_query"],
+                         "alce": ["asqa", "qampari", "eli5"], "qmsum": ["general", "specific"]}.items():
+        for task in tasks:
+            for spec in metric_specs({"suite": suite, "task": task}):
+                rows.append((suite + "/" + task, "SN Product（R；chunk / reasoning）", spec["scorer"]))
     return rows

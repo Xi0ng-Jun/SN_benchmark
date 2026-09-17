@@ -64,7 +64,7 @@ def _local_file(run, relative):
 def _source_cases(run, manifest, warnings):
     path = _local_file(run, "input/cases.jsonl")
     source = manifest["identity"].get("source", {})
-    expected = source.get("artifacts", {}).get("cases.jsonl")
+    expected = source.get("artifacts", {}).get("cases.jsonl") or source.get("files", {}).get("cases.jsonl")
     if expected and (not path.exists() or digest(path) != expected):
         raise ValueError("Frozen source cases artifact changed: " + str(path))
     if not path.exists():
@@ -113,6 +113,10 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
                 k: v for k, v in identity["selection_context"].items()
                 if k not in {"partition_id", "case_ids"}}
             config.pop("product_bundle", None)
+        if identity.get("source", {}).get("format") == "sn-notebook-benchmarks-v1":
+            # load_run already verified complete source and indivisible scopes.
+            config["notebook_context"] = {k: v for k, v in identity["notebook_context"].items() if k != "partition_id"}
+            config.pop("product_bundle", None)
         # Non-selection runs keep the full corpus/review identity; different
         # distractors must never disappear into an apparently comparable mean.
         complete_identity = {"source", "models", "code", "runtime_settings", "product_services", "audits_sha256", "track"} <= config.keys()
@@ -149,7 +153,8 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
                     "case_id": case_id, "status": result["status"] if result else "missing",
                     "output_status": output["status"] if output else "missing",
                     "behavior": behavior.get("kind", "not_observed"),
-                    "partition": (manifest.get("selection_context") or {}).get("partition_id") or "unpartitioned",
+                    "partition": ((manifest.get("selection_context") or {}).get("partition_id")
+                                  or (identity.get("notebook_context") or {}).get("partition_id") or "unpartitioned"),
                     "phase": cell["phase"], "config_family": family,
                     "pairing_id": manifest.get("pairing_id"),
                     "score": result["score"] if result else None,

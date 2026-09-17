@@ -64,7 +64,7 @@ def planned_result(case, *, run_id, protocol_id, track, mode=None, scorer=None):
     product_review = case.get("product_review", {})
     row["applicability"] = {"status": "applicable" if track == "N" else product_review.get("status", "pending"),
                              "reason": None if track == "N" else product_review.get("reason")}
-    for field in ("product_protocol", "material_role", "metric_role"):
+    for field in ("product_protocol", "material_role", "metric_role", "score_kind"):
         if field in case:
             row[field] = case[field]
     row["result_id"] = fingerprint(row)
@@ -124,7 +124,11 @@ def summarize(planned_rows, results):
         statuses = Counter(r["status"] for r in available)
         scores = [r["score"] for r in available if r["status"] == "scored"]
         primary = all(r.get("metric_role") == "primary" for r in rows)
-        if primary and any(score not in (0, 1) for score in scores):
+        kinds = {r.get("score_kind", "binary" if primary else "continuous") for r in rows}
+        if len(kinds) != 1 or not kinds <= {"binary", "continuous"}:
+            raise ValueError("Metric score kinds differ within a group")
+        binary_primary = primary and kinds == {"binary"}
+        if binary_primary and any(score not in (0, 1) for score in scores):
             raise ValueError("System primary metric requires binary scores")
         valid_outputs = sum(r["output_available"] for r in available)
         trace_counts = Counter((r.get("trace") or {}).get("completeness", "none") for r in available)
@@ -144,7 +148,8 @@ def summarize(planned_rows, results):
                           if key[-1] == "product.boolq.explicit_conclusion.v1" else None,
                           "mean_over_scored": sum(scores) / len(scores) if scores else None,
                           "metric_role": "primary" if primary else "diagnostic_or_legacy",
-                          "known_correct": sum(score == 1 for score in scores) if primary else None,
-                          "correct_over_planned": sum(score == 1 for score in scores) / len(rows) if primary else None,
+                          "score_kind": next(iter(kinds)),
+                          "known_correct": sum(score == 1 for score in scores) if binary_primary else None,
+                          "correct_over_planned": sum(score == 1 for score in scores) / len(rows) if binary_primary else None,
                           "release_gate": False})
     return summaries

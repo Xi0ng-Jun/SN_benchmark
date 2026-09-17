@@ -11,7 +11,9 @@ from .public_expansion_protocol import EXPANSION_SUITES
 from .starter_results import GROUP_FIELDS, summarize
 from .system_product import SYSTEM_SUITES, SYSTEM_VERSION
 
-ALL_SUITES = {**SUITES, **EXPANSION_SUITES}
+from .notebook_data import SUITES as NOTEBOOK_SUITES, VERSION as NOTEBOOK_VERSION
+
+ALL_SUITES = {**SUITES, **EXPANSION_SUITES, **NOTEBOOK_SUITES}
 
 
 def read_journal(path, warnings):
@@ -60,6 +62,11 @@ def load_run(run):
     planned = read_journal(run / "planned.jsonl", warnings)
     outputs = read_journal(run / "outputs.jsonl", warnings)
     scores = read_journal(run / "scores.jsonl", warnings)
+    if (identity_product.get("protocol_version") == NOTEBOOK_VERSION) != (manifest.get("product_protocol") == NOTEBOOK_VERSION):
+        raise ValueError("Notebook protocol declaration differs from run identity")
+    if manifest.get("product_protocol") == NOTEBOOK_VERSION:
+        from .notebook_runner import validate_saved_run
+        validate_saved_run(run, manifest, planned, outputs)
     is_selection = manifest.get("identity", {}).get("source", {}).get("selection_protocol") is not None
     if is_selection:
         from .selection_execution import validate_saved_selection
@@ -218,6 +225,11 @@ def write_report(run_dirs, output):
                 lines.extend(["", "完整题单任务记录数：" + str(context["selected_memberships"])
                               + "；本次分区：" + _cell(context["partition_id"] or "Native 完整有效题单"),
                               "本页仅记录当前运行。未运行分区和待审核题请查看完整选题报告；分区内检索不代表整套数据统一大库检索。"])
+            if manifest.get("product_protocol") == NOTEBOOK_VERSION:
+                context = manifest["identity"]["notebook_context"]
+                lines.extend(["", "Notebook 资料评测：本次为分区 " + context["partition_id"]
+                              + "；全题单 " + str(context["selected_cases"]) + " 题 / " + str(context["partition_count"]) + " 个资料分区。",
+                              "F1/ROUGE 等连续主分仅报告有效评分均值与覆盖率，不解释为答对率。ALCE 模型指标需要独立官方评分步骤；当前未评分保留 null。"])
             if manifest.get("product_protocol") == SYSTEM_VERSION:
                 lines.extend(["", "系统适配协议：" + SYSTEM_VERSION + "；模型身份由运行 identity 中的 SN 服务配置与源码记录。",
                               "题面和候选选项属于待分析资料；引用它们不证明选项、常识或推导结论正确。",

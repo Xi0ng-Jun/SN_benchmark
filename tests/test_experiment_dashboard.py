@@ -137,10 +137,22 @@ def test_metric_explanations_cover_the_actual_default_plan():
     from rag_eval.metric_catalog import benchmark_rows, describe_metric
     from rag_eval.selection_execution import expected_scorers
     rows = benchmark_rows()
-    suites = {row[0] for row in rows}
+    suites = {row[0] for row in rows if "/" not in row[0]}
     assert len(suites) == 10
     for suite in suites:
         for track, label in (("N", "Native（N）"), ("R", "SN Product（R；chunk / reasoning）")):
             actual = {scorer for name, path, scorer in rows if name == suite and path == label}
             assert actual == set(expected_scorers(suite, track))
             assert all(describe_metric(scorer)["method"] != "未登记" for scorer in actual)
+
+
+def test_notebook_metric_explanations_cover_each_task():
+    from rag_eval.metric_catalog import benchmark_rows, describe_metric
+    from rag_eval.notebook_runner import metric_specs
+    rows = benchmark_rows()
+    for suite, tasks in {'qasper':['extractive'], 'multihop_rag':['comparison_query'],
+                         'alce':['asqa','qampari','eli5'], 'qmsum':['general','specific']}.items():
+        for task in tasks:
+            actual = {scorer for name, path, scorer in rows if name == suite + '/' + task}
+            assert actual == {m['scorer'] for m in metric_specs({'suite':suite, 'task':task})}
+            assert all(describe_metric(scorer)['method'] != '未登记' for scorer in actual)
