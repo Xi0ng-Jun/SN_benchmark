@@ -154,5 +154,5 @@ def test_notebook_metric_explanations_cover_each_task():
                          'alce':['asqa','qampari','eli5'], 'qmsum':['general','specific']}.items():
         for task in tasks:
             actual = {scorer for name, path, scorer in rows if name == suite + '/' + task}
-            assert actual == {m['scorer'] for m in metric_specs({'suite':suite, 'task':task})}
+            assert actual == {m['scorer'] for m in metric_specs({'suite':suite, 'task':task, 'adaptation_revision':'notebook-data-v2'})}
             assert all(describe_metric(scorer)['method'] != '未登记' for scorer in actual)

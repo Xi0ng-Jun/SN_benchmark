@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 
 from .artifacts import digest, save_json, save_jsonl
-from .notebook_data import VERSION, SUITES, adapt
+from .notebook_data import VERSION, SUITES, ADAPTATION_REVISION, LEGACY_ADAPTATION, adapt
 from .starter_protocol import fingerprint, require_text
 
 
@@ -29,11 +29,11 @@ def _source(source, suite):
         raise ValueError('MultiHop-RAG publishes train only, not an independent test split')
 
 
-def _build(suite, raw, corpus, source, cap):
+def _build(suite, raw, corpus, source, cap, adaptation_revision=ADAPTATION_REVISION):
     _source(source, suite)
     if type(cap) is not int or cap < 1:
         raise ValueError('Document capacity must be a positive integer')
-    data = adapt(suite, raw, corpus=corpus, task=source.get('task'))
+    data = adapt(suite, raw, corpus=corpus, task=source.get('task'), adaptation_revision=adaptation_revision)
     groups = {}
     for case in data['cases']:
         case.update(dataset=source['dataset'], split=source['split'])
@@ -71,7 +71,7 @@ def prepare(suite, raw_path, source_path, output, *, corpus_path=None, max_docum
     files = ['raw-data', 'source.json', 'cases.jsonl', 'documents.jsonl', 'decisions.jsonl', 'partitions.jsonl']
     if corpus_path:
         files.append('raw-corpus')
-    manifest = dict(format=VERSION, protocol_version=VERSION, suite=suite, source=source,
+    manifest = dict(format=VERSION, protocol_version=VERSION, suite=suite, source=source, adaptation_revision=ADAPTATION_REVISION,
                     max_documents=max_documents, files={name: digest(output / name) for name in files},
                     selected_cases=len(data['cases']), excluded_cases=sum(d['status'] == 'excluded' for d in data['decisions']),
                     partition_count=len(data['partitions']), release_gate=False,
@@ -98,7 +98,7 @@ def load_bundle(directory):
         raise ValueError('Source metadata changed')
     rebuilt = _build(manifest['suite'], _read_data(directory / 'raw-data', manifest['suite']),
                      _read_data(directory / 'raw-corpus', 'multihop_rag') if 'raw-corpus' in expected else None,
-                     source, manifest['max_documents'])
+                     source, manifest['max_documents'], manifest.get('adaptation_revision', LEGACY_ADAPTATION))
     for field in ('cases', 'documents', 'decisions', 'partitions'):
         stored = [json.loads(line) for line in (directory / (field + '.jsonl')).read_text(encoding='utf-8').splitlines()]
         if stored != rebuilt[field]:

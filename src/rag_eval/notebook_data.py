@@ -6,6 +6,8 @@ from copy import deepcopy
 from .starter_protocol import fingerprint, require_text
 
 VERSION = 'sn-notebook-benchmarks-v1'
+LEGACY_ADAPTATION = 'notebook-data-v1'
+ADAPTATION_REVISION = 'notebook-data-v2'
 SUITES = {name: {'product': True} for name in ('qasper', 'multihop_rag', 'alce', 'qmsum')}
 
 
@@ -27,10 +29,14 @@ def _document(suite, key, title, text):
     return {**doc, 'text_sha256': sha256(text.encode()).hexdigest(), 'document_sha256': fingerprint(doc)}
 
 
-def _case(suite, sample, task, question, docs, references, gold, gold_ids, group):
+def _case(suite, sample, task, question, docs, references, gold, gold_ids, group, *, allow_empty_references=False):
     _text(question, 'question')
     for reference in references:
-        _text(reference, 'reference answer')
+        if allow_empty_references:
+            if not isinstance(reference, str):
+                raise ValueError('reference answer must be text')
+        else:
+            _text(reference, 'reference answer')
     if not references and not (suite == 'alce' and task == 'eli5'):
         raise ValueError('Reference answers required')
     return dict(protocol_version=VERSION, product_protocol=VERSION, suite=suite, task=task,
@@ -41,7 +47,12 @@ def _case(suite, sample, task, question, docs, references, gold, gold_ids, group
                 product_review={'status': 'applicable', 'reason': 'official text data adaptation; no manual approval gate'})
 
 
-def _qasper(raw):
+def whitespace_key(text):
+    """Only collapse whitespace; do not rewrite source bytes or merge words."""
+    return ' '.join(text.split())
+
+
+def _qasper(raw, revision):
     if not isinstance(raw, dict) or not raw:
         raise ValueError('QASPER requires the official paper-ID JSON object')
     cases, documents, decisions = [], [], []
@@ -66,6 +77,9 @@ def _qasper(raw):
             raise ValueError('Paper has no textual paragraphs')
         doc = _document('qasper', paper_id, paper['title'], '\n\n'.join(pieces))
         documents.append(doc)
+        paragraph_index = {}
+        for paragraph in paragraphs:
+            paragraph_index.setdefault(whitespace_key(paragraph['text']), []).append(paragraph)
         for qa in _list(paper['qas'], 'qas'):
             sample = _text(qa['question_id'], 'question_id')
             question = _text(qa['question'], 'question')
@@ -90,9 +104,21 @@ def _qasper(raw):
                     value, kind = ('Yes' if answer['yes_no'] else 'No'), 'boolean'
                 else:
                     raise ValueError('QASPER annotation has no answer')
-                if any(e not in {p['text'] for p in paragraphs} for e in evidence):
-                    exclusion = exclusion or 'evidence_not_mappable_to_imported_text'
-                annotations.append(dict(answer=value, type=kind, evidence=evidence))
+                annotation = dict(answer=value, type=kind, evidence=evidence)
+                if revision == LEGACY_ADAPTATION:
+                    if any(e not in {p['text'] for p in paragraphs} for e in evidence):
+                        exclusion = exclusion or 'evidence_not_mappable_to_imported_text'
+                else:
+                    mapping = []
+                    for index, text in enumerate(evidence):
+                        matches = paragraph_index.get(whitespace_key(text), [])
+                        if not matches:
+                            exclusion = exclusion or 'evidence_not_mappable_to_imported_text'
+                        mapping.append(dict(evidence_index=index, paragraph_ids=[p['id'] for p in matches],
+                                            match_method=('exact' if any(p['text'] == text for p in matches) else
+                                                          'whitespace' if matches else 'unmapped')))
+                    annotation['evidence_mapping'] = mapping
+                annotations.append(annotation)
             decision = dict(case_id='qasper:' + sample, sample_id=sample,
                             status='excluded' if exclusion else 'selected', reason=exclusion or 'text evidence available')
             decisions.append(decision)
@@ -145,7 +171,7 @@ def _multihop(raw, corpus):
     return cases, docs, []
 
 
-def _alce(raw, task):
+def _alce(raw, task, revision):
     if task not in {'asqa', 'qampari', 'eli5'}:
         raise ValueError('ALCE requires explicit asqa/qampari/eli5 task')
     rows = raw.get('data') if isinstance(raw, dict) else raw
@@ -169,19 +195,28 @@ def _alce(raw, task):
         else:
             refs = [_text(c, 'claim') for c in _list(gold.get('claims'), 'claims')]
         ids = [d['id'] for d in candidates]
-        case = _case('alce', str(index), task, row['question'], ids, refs, gold, [], [task, ids])
+        case = _case('alce', str(index), task, row['question'], ids, refs, gold, [], [task, ids],
+                     allow_empty_references=revision != LEGACY_ADAPTATION and task == 'qampari')
+        if revision != LEGACY_ADAPTATION and task == 'qampari':
+            case['data_observations'] = {'empty_alias_positions': [
+                [group, alias] for group, values in enumerate(gold['answers'])
+                for alias, value in enumerate(values) if not value.strip()]}
         case['candidate_documents'] = candidates
         cases.append(case)
     return cases, list(documents.values()), []
 
 
-def _qmsum(raw):
+def _qmsum(raw, revision):
     cases, docs = [], []
     for meeting_no, meeting in enumerate(_list(raw, 'meetings')):
         turns, lines = [], []
         for index, turn in enumerate(_list(meeting['meeting_transcripts'], 'meeting_transcripts')):
             speaker = _text(turn['speaker'], 'speaker')
-            content = _text(turn['content'], 'turn content')
+            content = turn['content']
+            if revision == LEGACY_ADAPTATION:
+                _text(content, 'turn content')
+            elif not isinstance(content, str):
+                raise ValueError('turn content must be text')
             turns.append(dict(id=index, speaker=speaker, content=content))
             lines.append(f'[turn {index}] {speaker}: {content}')
         doc = _document('qmsum', str(meeting_no), f'Meeting {meeting_no}', '\n\n'.join(lines))
@@ -205,10 +240,14 @@ def _qmsum(raw):
                 cases.append(_case('qmsum', f'{meeting_no}:{kind}:{index}', kind, query['query'], [doc['id']],
                                    [answer], dict(answer=answer, relevant_text_span=spans if kind == 'specific' else [], turns=turns),
                                    [doc['id']] if kind == 'specific' else [], str(meeting_no)))
+                if revision != LEGACY_ADAPTATION:
+                    cases[-1]['data_observations'] = {'empty_turn_ids': [t['id'] for t in turns if not t['content'].strip()]}
     return cases, docs, []
 
 
-def adapt(suite, raw, *, corpus=None, task=None):
+def adapt(suite, raw, *, corpus=None, task=None, adaptation_revision=ADAPTATION_REVISION):
+    if adaptation_revision not in {LEGACY_ADAPTATION, ADAPTATION_REVISION}:
+        raise ValueError('Unsupported notebook adaptation revision')
     if suite not in SUITES:
         raise ValueError('Unknown notebook benchmark')
     if suite != 'multihop_rag' and corpus is not None:
@@ -216,17 +255,20 @@ def adapt(suite, raw, *, corpus=None, task=None):
     if suite != 'alce' and task is not None:
         raise ValueError('Explicit task applies only to ALCE')
     if suite == 'qasper':
-        cases, docs, decisions = _qasper(raw)
+        cases, docs, decisions = _qasper(raw, adaptation_revision)
     elif suite == 'multihop_rag':
         cases, docs, decisions = _multihop(raw, corpus)
     elif suite == 'alce':
-        cases, docs, decisions = _alce(raw, task)
+        cases, docs, decisions = _alce(raw, task, adaptation_revision)
     else:
-        cases, docs, decisions = _qmsum(raw)
+        cases, docs, decisions = _qmsum(raw, adaptation_revision)
     if not decisions:
         decisions = [dict(case_id=c['case_id'], sample_id=c['sample_id'], status='selected',
                           reason='official text data adaptation') for c in cases]
     ids = [d['case_id'] for d in decisions]
     if len(ids) != len(set(ids)):
         raise ValueError('Duplicate question ID')
+    if adaptation_revision != LEGACY_ADAPTATION:
+        for case in cases:
+            case['adaptation_revision'] = adaptation_revision
     return dict(cases=cases, documents=docs, decisions=decisions)

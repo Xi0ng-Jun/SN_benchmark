@@ -1,5 +1,9 @@
 # Notebook 场景公开评测：实现与服务器使用
 
+本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](notebook-benchmark-experiment-plan.md)。
+
+服务器真实文件预检后的适配修正与迁移说明见 [数据修正记录](notebook-data-corrections.md)。新 prepare 使用 `adaptation_revision=notebook-data-v2`；旧包缺字段仍按原规则加载，不能手改旧 manifest。
+
 本阶段新增 **QASPER、MultiHop-RAG、ALCE、QMSum** 四套资料型评测，协议为 `sn-notebook-benchmarks-v1`。这些是独立公开数据集，不是四个新增 DeepEval 内置 Benchmark 类。它们复用本项目 SN 隔离执行、观测、结果账本与 Dashboard；确定性指标按各数据集方法实现，ALCE 的模型指标显式调用固定版本官方评分代码。没有默认新增 GEval 或 DeepEval LLM judge，也不把 Agent trace 完整度当作 Agent 得分。
 
 旧十套的数据协议、资料上限和历史成绩不自动迁移。本轮只开发代码，用构造样本验证，没有下载真实数据、运行 SN、调用模型或恢复 timer。公开来源与许可见[可用性核验](notebook-benchmark-data-availability.md)，开发拆分见[实施计划](superpowers/plans/2026-09-17-notebook-benchmarks.md)。
@@ -8,10 +12,10 @@
 
 | Benchmark | SN 能力 | 选择方式 | 导入 notebook 的资料 | 保留在评测侧的标注 |
 | --- | --- | --- | --- | --- |
-| QASPER | 论文问答、证据定位、不可回答识别 | 指定官方 v0.3 JSON 文件全部题；有 `FLOAT SELECTED` 或无法映射到已导入正文的证据时逐题排除并说明 | 一篇论文的 title、abstract、全部 full_text；一篇论文一个分区 | 所有备选答案、answer type、证据段落；不把 qas 导入 |
+| QASPER | 论文问答、证据定位、不可回答识别 | 指定官方 v0.3 JSON 文件全部题；有 `FLOAT SELECTED` 或合并空白后仍无法映射到已导入正文段落的证据时逐题排除并说明 | 一篇论文的 title、abstract、全部 full_text；一篇论文一个分区 | 所有备选答案、answer type、证据段落；不把 qas 导入 |
 | MultiHop-RAG | 多文档比较、时间/推理题、无答案题 | 指定官方 queries 全部有效题，四类 question_type 单独展示；发布 split=train 不冒称独立 test | **整个 corpus**，包含 gold 之外文章；一个完整 corpus 分区 | answer、evidence_list.fact、证据文章映射 |
 | ALCE | 长答案/列表回答、回答覆盖、引用支持 | 明确 asqa/qampari/eli5、retriever、普通/oracle variant；文件内全部有效题 | 每题原文件中的**全部候选片段**；保留顺序，同候选集合可共用分区 | qa_pairs、答案别名、claims、长答案等 |
-| QMSum | 面向问题的会议摘要 | 官方 JSONL 中全部 general/specific 查询 | 一场会议的全部发言，保留 speaker 与 `[turn N]`；一场会议一个分区 | 人工摘要、specific 的全部 relevant_text_span |
+| QMSum | 面向问题的会议摘要 | 官方 JSONL 中全部 general/specific 查询 | 一场会议的全部发言（含原样空发言），保留 speaker 与 `[turn N]`；一场会议一个分区 | 人工摘要、specific 的全部 relevant_text_span |
 
 QASPER 排除规则依据已发布 evidence 字段；不能据此保证所有剩余题都语义上不依赖图表。QMSum general 没有局部证据金标准，不计算 specific 的 turn 诊断。MultiHop 证据 URL 优先匹配；无 URL 时要求唯一标题；冲突、丢失或 fact 无法在文章中定位时直接报错，不静默删题。
 
@@ -33,6 +37,8 @@ QASPER 排除规则依据已发布 evidence 字段；不能据此保证所有剩
   → 确定性评分；ALCE 模型项先 unscored
   → 离线报告 / Dashboard；ALCE 可单独补算后生成派生 run
 ```
+
+QASPER 的匹配只合并连续空白并去首尾空白，原文与原始证据保持原样，另存 evidence_mapping。QMSum 空/空白 turn 不填占位符、不删除、不重排；QAMPARI 空字符串 alias 原样留在 gold，评分公式和答案组分母不变。
 
 数据包包括 `raw-data`、MultiHop 的 `raw-corpus`、`source.json`、`cases.jsonl`、`documents.jsonl`、`decisions.jsonl`、`partitions.jsonl`、`manifest.json`。文件加载时先验哈希，再从原文件确定性重建 cases 与分区。原始数据和标准答案可以保存在评测目录中；**只有 documents 的 title/text 被导入 SN，Ask 只收到原问题与任务要求**。
 
@@ -95,17 +101,17 @@ chunk 直接原生 Ask；reasoning 先走原生 intent preview，只在无需澄
 
 ## 指标与适用条件
 
-所有新 scorer 以 `product.notebook.` 开头；源码及公式也出现在 Dashboard 指标详情。
+以下为新适配版本的指标；旧包仍使用 v1 的 QASPER 精确段落与 QMSum 原分母诊断，不回写历史分。所有新 scorer 以 `product.notebook.` 开头；源码及公式也出现在 Dashboard 指标详情。
 
 | Benchmark | 主指标 | 诊断指标 | 算法与边界 |
 | --- | --- | --- | --- |
-| QASPER | `qasper_answer_token_f1_body_v1` | `qasper_context_paragraph_f1_v1` | 答案规范化 token F1，对全部标注取 max；SN 完整正文只去 `[kN]`，不抽出最有利答案。上下文诊断从有可靠来源映射的最终上下文中匹配**完整段落**，计算与 gold 的集合 F1；不是官方模型预测 evidence 字段的成绩。不可回答参考为 Unanswerable |
+| QASPER | `qasper_answer_token_f1_body_v1` | `qasper_context_paragraph_f1_whitespace_v2` | 答案规范化 token F1，对全部标注取 max；SN 完整正文只去 `[kN]`，不抽出最有利答案。上下文诊断从有可靠来源映射的最终上下文中仅合并空白后匹配**完整段落**，计算与 gold 的集合 F1；不是官方模型预测 evidence 字段的成绩。不可回答参考为 Unanswerable |
 | MultiHop-RAG | `multihop_official_weak_match_body_v1` | `multihop_context_fact_recall_v1` | 按指定官方版本的弱词重合：小写、空白分词，交集非空即 1；不是严格正确性。fact 诊断要求全文片段和原文档一致，null_query 为 N/A；没有检索排序，不提供 Hits@k/MRR/MAP |
 | ALCE ASQA | `alce_asqa_str_em_body_v1` | `alce_asqa_str_hit_body_v1` | 每组短答案任意别名是否出现在规范化正文中；覆盖组比例 / 全部覆盖二元值。沿用 substring，不能理解为语义判定 |
 | ALCE QAMPARI | `alce_qampari_f1_top5_body_v1` | prec、rec、rec_top5、f1 | 逗号拆分预测，与答案别名集比较；重复预测按官方实现参与 precision；top5 recall 的分母为 min(5, gold 数) |
 | ALCE ELI5 | `alce_eli5_claims_official_v1` | 引用分 | 显式官方 NLI 推断回答是否支持每个参考 claim，未执行时 unscored |
 | ALCE 全部任务 | 各任务主指标如上 | `alce_citation_rec_official_v1` / `alce_citation_prec_official_v1` | 固定官方 compute_autoais，逐句检查引用联合支持和多引用必要性；显式本地模型推断，不是 GEval |
-| QMSum | `qmsum_rouge1_f1_body_v1`、`qmsum_rouge2_f1_body_v1`、`qmsum_rougeL_f1_body_v1` | specific: `qmsum_context_turn_recall_v1` | 固定 rouge-score==0.1.2、use_stemmer=True，全文回答与人工摘要比较，不冒充原论文完全复现。turn 诊断匹配原始发言全文；重复发言不能证明唯一位置 |
+| QMSum | `qmsum_rouge1_f1_body_v1`、`qmsum_rouge2_f1_body_v1`、`qmsum_rougeL_f1_body_v1` | specific: `qmsum_context_nonempty_turn_recall_v2` | 固定 rouge-score==0.1.2、use_stemmer=True，全文回答与人工摘要比较，不冒充原论文完全复现。turn 诊断匹配原始非空发言全文，空发言不计分母并记录 ID；相关 span 全为空时 N/A，重复发言不能证明唯一位置 |
 | 全部四套 | — | `product.citation_object.existence_ratio` | 复用 SN 隔离库对象存在性检查，不代表语义支持 |
 
 QMSum 依赖通过项目可选 extra `notebook` 声明，服务器需自行准备。缺依赖是 **error**，不是数据集不适用；不会静默改用自制 ROUGE。已保存的完整上下文保持原样；仅在重新验证 context_block、handle 和来源分段完全一致后，证据评分忽略未绑定来源的前导说明，并记录 `unbound_context_indices`。缺可靠上下文映射时诊断 N/A；无法正常作答时评分 unscored。连续主分仅报告均值和评分覆盖率，不生成答对率、综合质量总分或发布门禁。

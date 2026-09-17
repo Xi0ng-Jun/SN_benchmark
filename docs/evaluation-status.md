@@ -1,5 +1,17 @@
 # 评测状态
 
+## 已确认的 Notebook 实验计划
+
+用户确认先执行四套资料型 benchmark 的 SN chunk/reasoning 主实验，再实现常规 RAG 对照。见 [实验计划](notebook-benchmark-experiment-plan.md)。本地仅整理文档与同步数据修正；服务器负责真实数据重新准备、运行与评分。外部基线尚未接入新协议，论文数字须区分参考值、同子集重算和同协议重跑。
+
+## 服务器真实文件预检后的适配修正
+
+用户提供的服务器汇报（版本 525633f）确认目前四套均仅 prepare，未导入/Ask。发现 QASPER 139 条段落映射排除中 138 条为空白差异；QMSum 原始 17 条空/空白 turn 被临时填占位；QAMPARI 有 5 处空字符串 alias，ELI5 实际可直接适配 1000 cases。真实数量与哈希来自服务器汇报，本机未下载或复算。
+
+本地已修正适配器：QASPER 空白归一化定位但保留原证据/原文，QMSum 原样保留空发言和位置，QAMPARI 原样保留空 alias 与答案组分母。新 prepare 标记 notebook-data-v2，缺版本字段的旧包继续按原规则重建；QASPER/QMSum 证据诊断分别使用新 scorer，主答案指标不变。服务器应在新目录重建 QASPER 和原始 QMSum，QAMPARI/ELI5 可新增准备，MultiHop/ASQA 原包可保留。详见[修正与服务器交接](notebook-data-corrections.md)。
+
+本次 **333 项 Python 离线回归通过，网络尝试 0**，含旧版冻结 fixture、空值/空白映射、分数与分母检查；未下载、未运行 SN/模型、未修改生产。本轮将修正与实验计划一并交接；服务器必须核对拉取版本已含 notebook-data-v2，不能仅凭旧 525633f 判断已获得修复。
+
 ## 2026-09-17：Notebook 场景四套接入
 
 新增 QASPER、MultiHop-RAG、ALCE、QMSum 的本地原始文件适配、gold/资料分离、不可拆分资料分区、SN Product R 执行、评分与 Dashboard。独立协议 `sn-notebook-benchmarks-v1`，旧十套保持原解释。详见[服务器使用与指标表](notebook-benchmarks.md)及[实施计划](superpowers/plans/2026-09-17-notebook-benchmarks.md)。

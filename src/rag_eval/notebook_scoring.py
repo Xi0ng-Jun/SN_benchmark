@@ -20,6 +20,8 @@ import importlib.metadata
 import re
 import string
 
+from .notebook_data import ADAPTATION_REVISION, LEGACY_ADAPTATION, whitespace_key
+
 PREFIX = 'product.notebook.'
 SN_MARKER = re.compile(r'\[k[1-9]\d*\]')
 
@@ -46,12 +48,16 @@ def _result(score=None, *, status='scored', reason=None, **details):
 def metric_specs(case):
     """Declare independent metrics, with no total score across these columns."""
     suite, task = case['suite'], case.get('task')
+    revision = case.get('adaptation_revision', LEGACY_ADAPTATION)
+    if revision not in {LEGACY_ADAPTATION, ADAPTATION_REVISION}:
+        raise ValueError('Unsupported notebook adaptation revision')
+    current = revision == ADAPTATION_REVISION
     specs = []
     def add(name, role='primary', kind='continuous'):
         specs.append({'scorer': PREFIX + name, 'metric_role': role, 'score_kind': kind})
     if suite == 'qasper':
         add('qasper_answer_token_f1_body_v1')
-        add('qasper_context_paragraph_f1_v1', 'diagnostic')
+        add('qasper_context_paragraph_f1_whitespace_v2' if current else 'qasper_context_paragraph_f1_v1', 'diagnostic')
     elif suite == 'multihop_rag':
         add('multihop_official_weak_match_body_v1', kind='binary')
         add('multihop_context_fact_recall_v1', 'diagnostic')
@@ -72,7 +78,7 @@ def metric_specs(case):
         for metric in ('1', '2', 'L'):
             add(f'qmsum_rouge{metric}_f1_body_v1')
         if task == 'specific':
-            add('qmsum_context_turn_recall_v1', 'diagnostic')
+            add('qmsum_context_nonempty_turn_recall_v2' if current else 'qmsum_context_turn_recall_v1', 'diagnostic')
     else:
         raise ValueError(f'Unknown notebook suite: {suite}')
     return specs
@@ -138,12 +144,15 @@ def _context_score(case, record, name):
     if mapped is None:
         return _result(status='not_applicable', reason='complete final-context document mapping unavailable', ranking_available=False)
     context_details = {'unbound_context_indices': [0] if len(record['retrieval_context']) > len(mapped) else []}
-    if name == 'qasper_context_paragraph_f1_v1':
+    if name in {'qasper_context_paragraph_f1_v1', 'qasper_context_paragraph_f1_whitespace_v2'}:
+        key = whitespace_key if name.endswith('_v2') else lambda text: text
         paper_ids = set(case['material_document_ids'])
-        observed = {p['text'] for p in gold['paragraphs'] if p['text'] and any(p['text'] in text and doc in paper_ids for text, doc in mapped)}
+        context_keys = [(key(text), doc) for text, doc in mapped]
+        observed = {key(p['text']) for p in gold['paragraphs'] if key(p['text']) and
+                    any(key(p['text']) in text and doc in paper_ids for text, doc in context_keys)}
         scores, recalls = [], []
         for annotation in gold['annotations']:
-            expected = set(annotation['evidence'])
+            expected = {key(text) for text in annotation['evidence']}
             overlap = len(observed & expected)
             scores.append(2 * overlap / (len(observed) + len(expected)) if observed or expected else 1.0)
             recalls.append(overlap / len(expected) if expected else None)
@@ -158,8 +167,13 @@ def _context_score(case, record, name):
                        scope='exact full fact text in final synthesis context')
     turns = {t['id']: t for t in gold['turns']}
     expected_ids = sorted({i for start, end in gold['relevant_text_span'] for i in range(start, end + 1)})
+    if name == 'qmsum_context_nonempty_turn_recall_v2':
+        excluded = [i for i in expected_ids if not turns[i]['content'].strip()]
+        expected_ids = [i for i in expected_ids if turns[i]['content'].strip()]
+        context_details['excluded_empty_turn_ids'] = excluded
     if not expected_ids:
-        return _result(status='not_applicable', reason='gold turn spans unavailable')
+        return _result(status='not_applicable', reason='gold turn spans have no nonempty text' if name.endswith('_v2') else
+                       'gold turn spans unavailable', **context_details)
     meeting_ids = set(case['material_document_ids'])
     matched = [i for i in expected_ids if turns[i]['content'] and any(turns[i]['content'] in text and doc in meeting_ids for text, doc in mapped)]
     return _result(len(matched) / len(expected_ids), **context_details, matched_turn_ids=matched, gold_turn_ids=expected_ids, ranking_available=False,
@@ -243,6 +257,7 @@ def _description(name, formula, *, source='', model=False, context=False):
 METRIC_DESCRIPTIONS = {
     PREFIX + 'qasper_answer_token_f1_body_v1': _description('QASPER 答案 token F1', '小写、去 ASCII 标点/冠词、合并空格；词多重集 F1，取所有标注最大值。无共同词为 0（包括双方空串）。', source='QASPER afd0fb96 scripts/evaluator.py；SN 正文仅去 [kN]。'),
     PREFIX + 'qasper_context_paragraph_f1_v1': _description('QASPER 最终上下文整段 F1', '完全包含在同论文实际上下文中的段落集合与各标注 evidence 集合计算 F1，取最大值；双方空集合为 1。', context=True),
+    PREFIX + 'qasper_context_paragraph_f1_whitespace_v2': _description('QASPER 空白归一化整段 F1', '段落、gold evidence 和上下文仅合并连续空白、去首尾空白；同论文完整段落集合与 gold 计算 F1，取最大值；不跨 chunk 拼接，不忽略大小写/标点。', context=True),
     PREFIX + 'multihop_official_weak_match_body_v1': _description('MultiHop 官方弱匹配', '先按官方模式提取 The answer to the question is "..."（如存在）；小写、按空白分词，词集合有任意交集 → 1，否则 0。不去标点。', source='MultiHop-RAG c1c1287 qa_evaluate.py；SN 正文仅去 [kN]。'),
     PREFIX + 'multihop_context_fact_recall_v1': _description('MultiHop 最终上下文 fact 覆盖', '在正确文档上下文中完整出现的 gold fact 数 / gold fact 数；null_query 无检索 gold 为 N/A。', context=True),
     PREFIX + 'alce_asqa_str_em_body_v1': _description('ALCE ASQA STR-EM', '每个 qa_pair 的任一归一化 short_answer 是归一化正文子串即命中；取 qa_pair 命中比例。'),
@@ -250,6 +265,7 @@ METRIC_DESCRIPTIONS = {
     PREFIX + 'alce_eli5_claims_official_v1': _description('ALCE ELI5 claims NLI', '官方 AutoAIS 判断回答是否蕴含每个 gold claim；取支持比例。', model=True),
     PREFIX + 'alce_citation_rec_official_v1': _description('ALCE 引用召回', '官方 AutoAIS 对回答单元和联合引用资料判断蕴含，再取单元支持比例；无引用或越界引用为不支持。', model=True),
     PREFIX + 'alce_citation_prec_official_v1': _description('ALCE 引用精确率', '官方 AutoAIS 在联合支持后检查单引用支持或移除引用的影响，必要/支持的引用数除以官方计入的引用总数。', model=True),
+    PREFIX + 'qmsum_context_nonempty_turn_recall_v2': _description('QMSum 非空相关发言覆盖', '完整匹配的相关非空发言数 / span 并集内非空发言数；保留原始 turn 编号并记录排除的空发言，全部为空时 N/A。重复文本不证明唯一位置。', context=True),
     PREFIX + 'qmsum_context_turn_recall_v1': _description('QMSum 特定查询发言覆盖', '正确会议上下文完整包含的相关发言文本数 / span 并集发言数；同文复现不证明唯一发言位置。', context=True),
 }
 for _key, _formula in {

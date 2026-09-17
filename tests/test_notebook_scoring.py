@@ -276,3 +276,40 @@ def test_context_prefix_alignment_rejects_mismatched_saved_capture(mutation):
     result = score_case(item, obs, 'product.notebook.multihop_context_fact_recall_v1')
     assert result['status'] == 'not_applicable'
     assert result['score'] is None
+
+
+def test_qasper_new_context_score_collapses_only_whitespace_and_keeps_old_formula():
+    item = case('qasper', annotations=[{'answer':'yes', 'evidence':['Red\n birds fly.']}],
+                paragraphs=[{'id':'p1', 'text':'Red birds fly.'}])
+    obs = record('yes', context_supported=True, retrieval_context=['Red birds fly.'], retrieved_document_ids=['d1'])
+    old_scorer = 'product.notebook.qasper_context_paragraph_f1_v1'
+    assert score_case(item, obs, old_scorer)['score'] == 0
+    item['adaptation_revision'] = 'notebook-data-v2'
+    spec = next(s for s in metric_specs(item) if s['metric_role'] == 'diagnostic')
+    assert spec['scorer'] == 'product.notebook.qasper_context_paragraph_f1_whitespace_v2'
+    obs['retrieval_context'] = ['Red\t birds\n fly.']
+    assert score_case(item, obs, spec['scorer'])['score'] == 1
+    obs['retrieval_context'] = ['Redbirds fly.']
+    assert score_case(item, obs, spec['scorer'])['score'] == 0
+    obs['retrieval_context'] = ['Red birds', 'fly.']
+    obs['retrieved_document_ids'] = ['d1', 'd1']
+    assert score_case(item, obs, spec['scorer'])['score'] == 0
+
+
+def test_qmsum_empty_turns_do_not_dilute_coverage_or_get_free_credit():
+    item = case('qmsum', 'specific', relevant_text_span=[[0,2]], turns=[
+        {'id':0,'speaker':'A','content':''}, {'id':1,'speaker':'A','content':' \t '},
+        {'id':2,'speaker':'B','content':'Agreed.'}])
+    item['adaptation_revision'] = 'notebook-data-v2'
+    scorer = next(s['scorer'] for s in metric_specs(item) if s['metric_role'] == 'diagnostic')
+    assert scorer == 'product.notebook.qmsum_context_nonempty_turn_recall_v2'
+    obs = record('Agreed.', context_supported=True, retrieval_context=['Agreed.'], retrieved_document_ids=['d1'])
+    result = score_case(item, obs, scorer)
+    assert result['score'] == 1
+    assert result['details']['gold_turn_ids'] == [2]
+    assert result['details']['excluded_empty_turn_ids'] == [0,1]
+    item['gold']['relevant_text_span'] = [[0,1]]
+    result = score_case(item, obs, scorer)
+    assert result['status'] == 'not_applicable'
+    assert result['score'] is None
+    assert result['details']['excluded_empty_turn_ids'] == [0,1]

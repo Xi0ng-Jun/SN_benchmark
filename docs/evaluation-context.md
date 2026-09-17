@@ -1,5 +1,7 @@
 # Silicon Notebook 评测上下文
 
+本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](notebook-benchmark-experiment-plan.md)。
+
 ## 目标
 
 围绕 Silicon Notebook 建立一个可以持续运行、持续发现问题并验证优化效果的评测闭环。
@@ -31,6 +33,8 @@ Excel 文件保留为原始调研材料；其中的结论在经过复核后再�
 暂定方案应明确标记为实验性，避免把一次实验结果误认为系统质量结论。
 
 ## 当前交接入口
+
+服务器预检反馈：QASPER 空白差异误排除、QMSum 空 turn 和 QAMPARI 空 alias 已在本地复现并定向修正，新 prepare 标记 notebook-data-v2，旧包按原规则加载。来源与迁移见 [数据修正记录](notebook-data-corrections.md)。服务器报告仅 prepare 完成，尚未导入/Ask；真实计数为用户转述，本机未重算。
 
 2026-09-17：新增四套 Notebook 场景协议 `sn-notebook-benchmarks-v1`，不改变旧十套协议。使用独立 prepare/run 命令与既有 Dashboard；ALCE 模型分显式独立执行并挂接到新 run。服务器使用与边界见 [Notebook 评测说明](notebook-benchmarks.md)。当前不下载数据、不运行 SN/在线模型、不修改生产；本地回归仅构造样本。
 

@@ -119,3 +119,114 @@ def test_duplicate_question_ids_and_empty_documents_fail():
     corpus[0]['body'] = ''
     with pytest.raises(ValueError):
         adapt('multihop_rag', raw, corpus=corpus)
+
+
+def test_qasper_whitespace_evidence_maps_without_rewriting_official_text():
+    raw = paper()
+    evidence = '  Red\n\t birds   fly.  '
+    raw['p1']['qas'][0]['answers'][0]['answer']['evidence'] = [evidence]
+    result = adapt('qasper', raw)
+    assert len(result['cases']) == 1
+    case = result['cases'][0]
+    annotation = case['gold']['annotations'][0]
+    assert annotation['evidence'] == [evidence]
+    assert annotation['evidence_mapping'] == [{'evidence_index': 0, 'paragraph_ids': ['0:0'], 'match_method': 'whitespace'}]
+    assert 'Red birds fly.' in result['documents'][0]['text']
+    assert case['adaptation_revision'] == 'notebook-data-v2'
+
+
+@pytest.mark.parametrize('evidence', ['Redbirds fly.', 'red birds fly.', 'Results', 'FLOAT SELECTED: Figure 1'])
+def test_qasper_does_not_fuzzy_match_missing_or_figure_evidence(evidence):
+    raw = paper()
+    raw['p1']['qas'][0]['answers'][0]['answer']['evidence'] = [evidence]
+    result = adapt('qasper', raw)
+    assert result['cases'] == []
+    assert result['decisions'][0]['status'] == 'excluded'
+
+
+def test_qmsum_empty_turns_remain_original_and_keep_span_offsets():
+    raw = [dict(meeting_transcripts=[dict(speaker='A', content='First.'), dict(speaker='B', content=''),
+                                    dict(speaker='B', content=' \t '), dict(speaker='A', content='Last.')],
+                general_query_list=[], specific_query_list=[dict(query='Decisions?', answer='Last.', relevant_text_span=[['1','3']])])]
+    result = adapt('qmsum', raw)
+    case = result['cases'][0]
+    assert [t['content'] for t in case['gold']['turns']] == ['First.', '', ' \t ', 'Last.']
+    assert case['gold']['relevant_text_span'] == [[1,3]]
+    assert '[turn 3] A: Last.' in result['documents'][0]['text']
+    assert '[empty]' not in result['documents'][0]['text']
+    assert case['data_observations']['empty_turn_ids'] == [1,2]
+    raw[0]['meeting_transcripts'][1]['content'] = None
+    with pytest.raises(ValueError, match='content'):
+        adapt('qmsum', raw)
+
+
+def test_qampari_empty_aliases_preserve_gold_and_never_match_empty_predictions():
+    from rag_eval.notebook_scoring import score_case
+    raw = [dict(question='Cities?', docs=[dict(title='Cities',text='Paris Rome')], answers=[['','Paris'],['Rome'],['']])]
+    result = adapt('alce', raw, task='qampari')
+    case = result['cases'][0]
+    assert case['gold']['answers'] == [['','Paris'],['Rome'],['']]
+    assert case['data_observations']['empty_alias_positions'] == [[0,0],[2,0]]
+    assert '[empty]' not in json.dumps(result)
+    metric = 'product.notebook.alce_qampari_rec_body_v1'
+    assert score_case(case, dict(status='success',answer='Paris, Rome, '), metric)['score'] == pytest.approx(2/3)
+    raw[0]['answers'][0][0] = None
+    with pytest.raises(ValueError):
+        adapt('alce', raw, task='qampari')
+
+
+def test_legacy_qasper_bundle_keeps_original_exclusions(tmp_path):
+    from pathlib import Path
+    snapshot = json.loads((Path(__file__).parent/'fixtures/notebook/legacy-qasper-bundle.json').read_text())
+    for name, content in snapshot.items():
+        (tmp_path/name).write_text(content)
+    loaded = load_bundle(tmp_path)
+    assert [c['sample_id'] for c in loaded['cases']] == ['exact']
+    assert loaded['decisions'][1]['status'] == 'excluded'
+    assert 'adaptation_revision' not in loaded['manifest']
+    assert 'adaptation_revision' not in loaded['cases'][0]
+
+
+def test_new_bundle_rebuilds_whitespace_selection_and_freezes_revision(tmp_path):
+    raw = paper()
+    raw['p1']['qas'][0]['answers'][0]['answer']['evidence'] = ['Red\n birds fly.']
+    (tmp_path/'raw').write_text(json.dumps(raw))
+    (tmp_path/'source').write_text(json.dumps(source('qasper')))
+    prepare('qasper', tmp_path/'raw', tmp_path/'source', tmp_path/'bundle')
+    loaded = load_bundle(tmp_path/'bundle')
+    assert len(loaded['cases']) == 1
+    assert loaded['manifest']['adaptation_revision'] == 'notebook-data-v2'
+    manifest = loaded['manifest']
+    manifest['adaptation_revision'] = 'unknown'
+    (tmp_path/'bundle/manifest.json').write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='revision'):
+        load_bundle(tmp_path/'bundle')
+
+
+@pytest.mark.parametrize('suite', ['qmsum', 'alce'])
+def test_empty_official_fields_survive_prepare_and_reload(tmp_path, suite):
+    if suite == 'qmsum':
+        raw = [dict(meeting_transcripts=[dict(speaker='A', content=''), dict(speaker='B', content='Done.')],
+                    general_query_list=[], specific_query_list=[dict(query='What happened?', answer='Done.', relevant_text_span=[['0','1']])])]
+        text = '\n'.join(json.dumps(r) for r in raw) + '\n'
+        meta = source(suite)
+    else:
+        raw = [dict(question='Cities?', docs=[dict(title='Cities', text='Paris.')], answers=[['','Paris']])]
+        text = json.dumps(raw)
+        meta = dict(source(suite), task='qampari', retriever='gtr', variant='ordinary')
+    (tmp_path/'raw').write_text(text)
+    (tmp_path/'source').write_text(json.dumps(meta))
+    prepared = prepare(suite, tmp_path/'raw', tmp_path/'source', tmp_path/'bundle')
+    loaded = load_bundle(tmp_path/'bundle')
+    assert loaded == prepared
+    assert (tmp_path/'bundle/raw-data').read_text() == text
+    assert len(partition_bundle(loaded, loaded['partitions'][0]['partition_id'])['questions']) == 1
+
+
+def test_qasper_repeated_whitespace_equivalent_paragraphs_keep_all_locators():
+    raw = paper()
+    raw['p1']['full_text'][0]['paragraphs'] = ['Red birds fly.', 'Red\n birds fly.']
+    raw['p1']['qas'][0]['answers'][0]['answer']['evidence'] = ['Red\t birds fly.']
+    annotation = adapt('qasper', raw)['cases'][0]['gold']['annotations'][0]
+    assert annotation['evidence_mapping'][0]['paragraph_ids'] == ['0:0','0:1']
+    assert annotation['evidence'] == ['Red\t birds fly.']
