@@ -12,6 +12,7 @@ dependencies = []
 [project.optional-dependencies]
 deepeval = ["deepeval>=4.2,<5"]
 dev = ["pytest>=8"]
+notebook = ["rouge-score==0.1.2"]
 
 [project.scripts]
 rag-eval = "rag_eval.cli:main"
