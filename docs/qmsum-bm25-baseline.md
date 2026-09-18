@@ -59,6 +59,8 @@ python scripts/compare_notebook_baseline.py \
 
 比较核验完整冻结 source/cases/partition 身份、QMSum scorer ID、`notebook_scoring.py`/`notebook_data.py`/`protocol.py` 源码哈希及 rouge-score/nltk 版本；不要求不同系统整体源码身份完全相等。若已跑 SN 使用了不同 scorer 实现或数据修订，拒绝自动配对，不回写历史分数，也不要求为了更新报告重跑模型。应先核对差异，再另行安排必要的只读重评分方案。
 
+如果只是评分依赖缺失、指标补充或评分规则修订，使用 [`rescore_notebook_run.py`](../scripts/rescore_notebook_run.py) 对已有答卷建立新的评分批次，不重新执行 BM25 或生成模型；完整规则见[Notebook 独立重评分](notebook-rescoring.md)。
+
 ## 如何读结果
 
 | 产物 | 内容与用途 |
@@ -79,4 +81,4 @@ python scripts/compare_notebook_baseline.py \
 
 使用合成会议、真实 bundle 准备/验证逻辑和真实 ExplicitBenchmarkModel 适配器，模型传输替换为测试对象。覆盖手算 BM25、gold 不进入 prompt、预算/空上下文、数据篡改、输出与单项评分的中断落盘、Dashboard 汇总、跨系统同题比较与目录隔离。本机无 rouge-score，验证其缺依赖分支；比较分数测试使用显式合成数值，不能当作真实 ROUGE 验收。真实数据/模型实验仍由服务器执行。
 
-验证记录：2026-09-18，358 项 Python 测试通过（新增 25 项），阻断网络后的请求尝试 0；18 项 JavaScript 测试通过；CLI 帮助、diff 检查与独立审阅完成。
+验证记录：2026-09-18，362 项 Python 测试通过（新增 29 项），阻断网络后的请求尝试 0；18 项 JavaScript 测试通过；CLI 帮助、diff 检查与独立审阅完成。

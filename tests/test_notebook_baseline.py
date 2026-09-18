@@ -375,3 +375,71 @@ def test_interrupted_later_scorer_preserves_previous_scores(tmp_path, monkeypatc
     assert len(run['outputs']) == 1
     assert len(run['scores']) == 1 and run['scores'][0]['score'] == .5
     assert len(run['planned']) == 7
+
+
+def test_rescore_creates_derived_batch_without_model_calls(tmp_path, monkeypatch):
+    from rag_eval import notebook_scoring
+    from rag_eval.notebook_rescoring import rescore_run
+    from rag_eval.starter_report import load_run
+    source = run_fixture(tmp_path, monkeypatch)
+    original_outputs = (source/'outputs.jsonl').read_bytes()
+    original_scores = (source/'scores.jsonl').read_bytes()
+    # Leave one metric missing so default mode only fills missing/failed cells.
+    rows = (source/'scores.jsonl').read_text().splitlines()
+    (source/'scores.jsonl').write_text('\n'.join(rows[:-1])+'\n')
+    calls = []
+    monkeypatch.setattr(notebook_scoring, 'score_case', lambda case, record, scorer: calls.append(scorer) or dict(status='scored', score=.88, details={'batch':'test'}))
+    derived = rescore_run(source, tmp_path/'rescored')
+    assert len(calls) == sum(row['status'] in {'error', 'unscored'}
+                             for row in map(json.loads, rows[:-1])) + 1
+    assert (source/'outputs.jsonl').read_bytes() == original_outputs
+    assert (source/'scores.jsonl').read_bytes() != original_scores
+    loaded = load_run(derived)
+    assert loaded['manifest']['scoring_batch']['origin_run_id'] == source.name
+    assert loaded['manifest']['scoring_batch']['selection'] == 'missing_or_failed'
+    assert len(loaded['outputs']) == len(load_run(source)['outputs'])
+    assert any(row['score'] == .88 for row in loaded['scores'])
+    assert loaded['manifest']['run_id'] == derived.name
+    from rag_eval.starter_report import write_report
+    write_report([derived], tmp_path/'rescored-report')
+    assert '独立重评分' in (tmp_path/'rescored-report/report.md').read_text()
+
+
+def test_rescore_can_select_metrics_and_cases_and_never_overlaps_origin(tmp_path, monkeypatch):
+    from rag_eval.notebook_rescoring import rescore_run
+    source = run_fixture(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match='separate'):
+        rescore_run(source, source/'derived')
+    derived = rescore_run(source, tmp_path/'selected', metrics=['product.notebook.qmsum_rouge1_f1_body_v1'], case_ids=[qmsum_case()['case_id']], all_scores=True)
+    manifest = json.loads((derived/'manifest.json').read_text())
+    assert manifest['scoring_batch']['selection'] == 'explicit'
+    assert manifest['scoring_batch']['scorers'] == ['product.notebook.qmsum_rouge1_f1_body_v1']
+    assert manifest['scoring_batch']['case_ids'] == [qmsum_case()['case_id']]
+
+
+def test_rescore_rejects_tampered_origin_before_writing(tmp_path, monkeypatch):
+    from rag_eval.notebook_rescoring import rescore_run
+    source = run_fixture(tmp_path, monkeypatch)
+    (source/'outputs.jsonl').write_text((source/'outputs.jsonl').read_text().replace('June', 'TAMPERED'))
+    with pytest.raises(ValueError):
+        rescore_run(source, tmp_path/'rejected')
+    assert not (tmp_path/'rejected').exists()
+
+
+def test_rescore_interruption_keeps_scores_already_written(tmp_path, monkeypatch):
+    from rag_eval import notebook_scoring
+    from rag_eval.notebook_rescoring import rescore_run
+    from rag_eval.starter_report import load_run
+    source = run_fixture(tmp_path, monkeypatch)
+    count = {'n': 0}
+    def score(case, record, scorer):
+        count['n'] += 1
+        if count['n'] == 2:
+            raise KeyboardInterrupt()
+        return dict(status='scored', score=.66)
+    monkeypatch.setattr(notebook_scoring, 'score_case', score)
+    with pytest.raises(KeyboardInterrupt):
+        rescore_run(source, tmp_path/'interrupted', metrics=['product.notebook.qmsum_rouge1_f1_body_v1'], all_scores=True)
+    loaded = load_run(tmp_path/'interrupted')
+    assert loaded['state']['phase'] == 'interrupted'
+    assert sum(s['score'] == .66 for s in loaded['scores']) == 1

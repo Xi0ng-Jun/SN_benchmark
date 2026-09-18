@@ -225,6 +225,12 @@ def write_report(run_dirs, output):
         if not manifest:
             lines.append("初始化未完成，尚无可核对的执行计划。")
         else:
+            if manifest.get("scoring_batch"):
+                batch = manifest["scoring_batch"]
+                lines.extend(["评分批次：独立重评分；来源运行 " + _cell(batch["origin_run_id"])
+                              + "；选择 " + _cell(batch["selection"])
+                              + "；指标 " + _cell(batch.get("scorers", [])),
+                              "回答来自来源运行的只读副本；本批次没有重新执行 SN Ask 或生成模型。"])
             errors = sum(o["status"] == "error" for o in run["outputs"])
             skipped = sum(o["status"] == "not_applicable" for o in run["outputs"])
             missing = manifest["planned_predictions"] - len(run["outputs"])

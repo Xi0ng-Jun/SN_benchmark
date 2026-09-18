@@ -4,6 +4,8 @@
 
 **2026-09-18 新增 QMSum 常规 RAG 对照：** BM25 发言检索 + 显式生成模型，复用冻结数据和评分器；支持 Dashboard 查看及独立同题比较。见[用法与比较边界](docs/qmsum-bm25-baseline.md)。已做离线合成测试，尚未执行真实模型验收。
 
+已新增[Notebook 独立重评分](docs/notebook-rescoring.md)：读取已保存答卷生成新的评分批次，不重新调用 SN Ask 或生成模型，原运行目录保持只读。
+
 **2026-09-17 新增资料型评测接入：** QASPER、MultiHop-RAG、ALCE、QMSum；支持完整资料分区、隔离 SN Ask、独立指标及 Dashboard。见[实现与服务器命令](docs/notebook-benchmarks.md)。本地仅用构造数据验证，尚未下载真实数据或执行新实验。
 
 实验完成或阶段性运行后，可用离线 Dashboard 汇总已保存结果：
