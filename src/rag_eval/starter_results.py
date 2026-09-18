@@ -52,8 +52,10 @@ def planned_result(case, *, run_id, protocol_id, track, mode=None, scorer=None):
     """
     require_text(run_id, "run_id")
     require_text(protocol_id, "protocol_id")
-    if track not in {"N", "R"} or (track == "N" and mode is not None) or (track == "R" and mode not in {"chunk", "reasoning"}):
-        raise ValueError("Native track has no product mode; R requires chunk or reasoning")
+    if track not in {"N", "R"} or (track == "N" and mode is not None) or (track == "R" and mode not in {"chunk", "reasoning", "bm25"}):
+        raise ValueError("Native track has no product mode; R requires chunk, reasoning or bm25")
+    if mode == "bm25" and (case.get("suite") != "qmsum" or case.get("product_protocol") != "sn-notebook-baseline-v1"):
+        raise ValueError("BM25 requires the QMSum baseline protocol")
     if track == "R":
         require_text(scorer, "product scorer (must be explicit)")
     row = {"protocol_version": case.get("protocol_version", VERSION), "run_id": run_id, "protocol_id": protocol_id,

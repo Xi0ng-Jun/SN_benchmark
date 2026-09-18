@@ -1,6 +1,6 @@
 # Notebook 公开 Benchmark 实验计划
 
-本计划已由用户确认；当前可执行范围是现有 SN 主实验与评分，外部对照是后续实现目标。命令和参数以 [服务器使用说明](notebook-benchmarks.md) 为准，数据迁移见 [修正记录](notebook-data-corrections.md)。
+本计划已由用户确认；当前可执行范围是现有 SN 主实验、QMSum BM25 对照与评分，向量检索和全文输入对照仍是后续目标。命令和参数以 [服务器使用说明](notebook-benchmarks.md) 为准，数据迁移见 [修正记录](notebook-data-corrections.md)。
 
 ## 目标与结论边界
 
@@ -43,16 +43,30 @@
 
 ### 4. 对照实验
 
-当前代码已支持 SN 两种模式；BM25、向量检索和全文输入是下一阶段新增的生成基线，不能假定已经存在。基线应使用相同资料、题目、生成模型、回答提示和评分器：
+当前代码已支持 SN 两种模式，并已加入第一条可执行的 QMSum BM25 生成基线。向量检索和全文输入仍是后续新增的生成基线。基线与 SN 使用相同冻结资料、题目和评分器，并尽量对齐实际生成模型与采样设置。常规基线之间固定生成提示；SN 保留内部原生提示，因此目前比较的是端到端系统，不是只改变检索器的消融：
 
 | 对照 | 作用 | 约束 |
 | --- | --- | --- |
-| BM25 + 同一生成模型 | 透明的关键词检索参照（不保证是下界） | 固定 token/chunk、top-k 和上下文预算 |
+| BM25 + 同一生成模型 | 透明的关键词检索参照（不保证是下界） | QMSum 已支持；固定 turn、top-k 和字符上下文预算 |
 | Dense retrieval + 同一生成模型 | 常规语义 RAG 参照 | 固定 embedding、top-k、分块和上下文预算 |
 | Full-context（可行时） | 小资料集的全文输入参照（不保证是上限） | 资料必须完整放入上下文；截断要单独报告 |
 | Gold-evidence（诊断） | 诊断给定标准证据时的生成/推理 | 与自行检索结果分组，不能混作主结果 |
 
-先完成 SN 主实验，再加入至少一个常规检索基线。基线代码、模型和运行身份必须写入新的实验协议；不通过复制论文数字替代运行基线。
+QMSum BM25 使用 `scripts/run_notebook_baseline.py`，只支持一个完整会议分区一次运行；它按 turn 做 BM25，恢复原会议顺序，在预算内构造 prompt，再调用显式 `tested` 生成模型。回答和检索 turn、分数、模型事件保存为 `mode=bm25` 的现有 run 格式，Dashboard 可与 SN run 分面查看。基线代码、模型和运行身份必须写入新的实验协议；不通过复制论文数字替代运行基线。
+
+示例（会实际调用配置的模型，先用一个分区验收）：
+
+```bash
+python scripts/run_notebook_baseline.py \
+  --bundle /eval/bundles/qmsum \
+  --partition-id '<partitions.jsonl 中的 ID>' \
+  --project-root /path/to/silicon-notebook/project \
+  --model-config /eval/configs/qmsum-baseline-models.json \
+  --run-dir /eval/runs/qmsum-partition-bm25 \
+  --top-k 8 --max-context-chars 12000
+```
+
+`--model-config` 使用 `tested` 角色的显式 endpoint 环境变量；不把 SN 的内部检索结果或 gold span 注入 baseline。当前实现不下载数据、不自动安装依赖，也不恢复或修改 SN 服务。
 
 ## 指标与比较
 
@@ -81,7 +95,7 @@
 
 ## 边界
 
-本阶段不恢复 weekly timer，不修改 SN 生产代码，不下载或执行本机开发环境中的数据/模型，不扩展 KG、重排、PDF/OCR，也不把不完整的 reasoning trace 当作 Agent 得分。新增 BM25/dense 基线属于后续代码工作；在其实现前，服务器只执行 SN 主实验和已明确的离线评分。
+本阶段不恢复 weekly timer，不修改 SN 生产代码，不下载或执行本机开发环境中的数据/模型，不扩展 KG、重排、PDF/OCR，也不把不完整的 reasoning trace 当作 Agent 得分。QMSum BM25 已实现代码与离线验证，真实模型验收由服务器安排；dense、全文输入和其他数据集的基线仍属于后续代码工作。不会因更新代码自动启动任何新实验。
 
 
 ## 执行约定与检查清单
@@ -98,7 +112,7 @@
 - [ ] 本轮没有在测试集上调参。后续参数选择使用 train/dev；MultiHop 发布集合不得伪称独立 test，如需调参先固定独立留出方案。
 - [ ] 最终给出完成/部分完成及具体缺口，不把 ALCE 原 run 与补分派生 run 算作重复；不宣称未核对的论文可比性。
 
-成本字段仅报告可观测值，缺失用 unavailable；均值差异不自动解释成显著提升。若进一步统计置信区间，应保留同题配对，并考虑 QASPER 同论文、QMSum 同会议内样本相关性。此分析与外部基线均非现成自动功能。
+成本字段仅报告可观测值，缺失用 unavailable；均值差异不自动解释成显著提升。若进一步统计置信区间，应保留同题配对，并考虑 QASPER 同论文、QMSum 同会议内样本相关性。QMSum BM25 的逐题对照、覆盖率和配对均值差已由独立比较命令实现，见 [BM25 使用与边界](qmsum-bm25-baseline.md)；按会议聚类的置信区间、显著性和完整成本分析尚未实现。
 
 ## 官方依据
 

@@ -67,6 +67,14 @@ def load_run(run):
     if manifest.get("product_protocol") == NOTEBOOK_VERSION:
         from .notebook_runner import validate_saved_run
         validate_saved_run(run, manifest, planned, outputs)
+    baseline = "sn-notebook-baseline-v1"
+    if (identity_product.get("protocol_version") == baseline) != (manifest.get("product_protocol") == baseline):
+        raise ValueError("Baseline protocol declaration differs from run identity")
+    if manifest["mode"] == "bm25" and manifest.get("product_protocol") != baseline:
+        raise ValueError("BM25 requires the baseline protocol")
+    if manifest.get("product_protocol") == baseline:
+        from .notebook_baseline import validate_saved_baseline_run
+        validate_saved_baseline_run(run, manifest, planned, outputs)
     is_selection = manifest.get("identity", {}).get("source", {}).get("selection_protocol") is not None
     if is_selection:
         from .selection_execution import validate_saved_selection
@@ -155,7 +163,8 @@ def paired_modes(runs):
     for run in runs:
         manifest = run["manifest"]
         if (manifest and manifest["track"] == "R" and manifest.get("pairing_id")
-                and manifest.get("execution_status") != "not_applicable"):
+                and manifest.get("execution_status") != "not_applicable"
+                and manifest["mode"] in {"chunk", "reasoning"}):
             candidates[manifest["pairing_id"]].append(run)
     pairs, warnings = [], []
     for identity, members in candidates.items():
@@ -200,10 +209,10 @@ def write_report(run_dirs, output):
     (output / "cases").mkdir()
     lines = ["# 公开评测起步报告", "", "模型参照 N 与产品路径 R 分开报告；分数未经人工校准，不作为发布门禁。",
              "", "最终上下文覆盖不代表检索排名，引用对象存在不代表逐项断言获得支持。", "", "## 覆盖范围", "",
-             "| 公开套件 | 模型参照 N | 产品 chunk | 产品 reasoning |", "|---|---|---|---|"]
+             "| 公开套件 | 模型参照 N | 产品 chunk | 产品 reasoning | BM25 对照 |", "|---|---|---|---|---|"]
     for suite in ALL_SUITES:
         statuses = []
-        for track, mode in (("N", None), ("R", "chunk"), ("R", "reasoning")):
+        for track, mode in (("N", None), ("R", "chunk"), ("R", "reasoning"), ("R", "bm25")):
             matches = [r for r in runs if r["manifest"] and r["manifest"]["suite"] == suite
                        and r["manifest"]["track"] == track and r["manifest"]["mode"] == mode]
             statuses.append("；".join(f"{r['manifest']['run_id']}: {r['state']['phase']} / {sum(o['output_available'] for o in r['outputs'])} 份输出"
@@ -225,7 +234,7 @@ def write_report(run_dirs, output):
                 lines.extend(["", "完整题单任务记录数：" + str(context["selected_memberships"])
                               + "；本次分区：" + _cell(context["partition_id"] or "Native 完整有效题单"),
                               "本页仅记录当前运行。未运行分区和待审核题请查看完整选题报告；分区内检索不代表整套数据统一大库检索。"])
-            if manifest.get("product_protocol") == NOTEBOOK_VERSION:
+            if manifest.get("product_protocol") in {NOTEBOOK_VERSION, "sn-notebook-baseline-v1"}:
                 context = manifest["identity"]["notebook_context"]
                 lines.extend(["", "Notebook 资料评测：本次为分区 " + context["partition_id"]
                               + "；全题单 " + str(context["selected_cases"]) + " 题 / " + str(context["partition_count"]) + " 个资料分区。",

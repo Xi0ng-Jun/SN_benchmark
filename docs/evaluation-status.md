@@ -2,7 +2,13 @@
 
 ## 已确认的 Notebook 实验计划
 
-用户确认先执行四套资料型 benchmark 的 SN chunk/reasoning 主实验，再实现常规 RAG 对照。见 [实验计划](notebook-benchmark-experiment-plan.md)。本地仅整理文档与同步数据修正；服务器负责真实数据重新准备、运行与评分。外部基线尚未接入新协议，论文数字须区分参考值、同子集重算和同协议重跑。
+用户确认先执行四套资料型 benchmark 的 SN chunk/reasoning 主实验，并加入 QMSum BM25 对照。见 [实验计划](notebook-benchmark-experiment-plan.md)。本地仅整理代码、文档与同步数据修正；服务器负责真实数据重新准备、运行与评分。向量检索和全文输入基线仍待实现，论文数字须区分参考值、同子集重算和同协议重跑。
+
+2026-09-18：已实现 QMSum BM25 turn 检索 + 显式 tested 生成模型，保存为 `mode=bm25`，复用冻结资料、ROUGE 和上下文诊断；支持 Dashboard 查看及独立同题 JSON/Markdown 比较。执行前固定计划与数据，逐项保存回答/分数；报告重建核验输入、prompt/context，缺失与错误不补 0。详见 [方法、服务器命令与比较边界](qmsum-bm25-baseline.md)。
+
+本地 **358 项 Python 离线回归通过（含 25 项新增 baseline/比较测试），网络尝试 0；18 项 Dashboard JavaScript 回归通过**，两条新 CLI 帮助与补丁空白检查通过。独立审阅发现的报告输出目录隔离、单项分数中断落盘及缺失原因展示已修复并复核。数据全部为合成 fixture；使用真实模型适配器但替换网络传输，本机无 rouge-score，尚未验证真实 ROUGE 或真实模型请求。未下载数据、未启动 SN 或修改生产/timer。
+
+服务器应对齐 SN 最终回答角色的实际模型与采样设置，先做一个 QMSum 会议分区验收再决定全量安排。报告不会自动证明两侧生成模型一致，SN 内部提示与 BM25 提示也不同；这是端到端系统对照，不能把差值仅归因于检索，更不是论文榜单复现。原严格 chunk/reasoning 配对保持原规则，新代码不要求服务器重跑正在进行的 SN 实验。
 
 ## 服务器真实文件预检后的适配修正
 

@@ -118,3 +118,10 @@ python scripts/build_experiment_dashboard.py \
 6. 用浏览器验证：多标签组合筛选；点击一题能看到真实问题、回答、引用、评分依据；保存相同 Benchmark/Track/Scorer/配置下的 chunk 与 reasoning 两组，查看比较图及共同有效题数量。身份不匹配时应显示拒绝配对原因。
 7. 给我新 HTML 的绝对路径和获取方式。不要把演示数据当实验结果，不公开上传含题目/上下文的报告。不要改变在线 SN、运行中的实验、baseline 或 weekly timer。
 ```
+
+
+## QMSum BM25 与 SN 对照
+
+`run_notebook_baseline.py` 产物可与 SN 运行一并传入 Dashboard，使用 `mode=bm25` 筛选，在详情中查看 prompt、检索 turn/BM25 分数、最终上下文、回答及共享 scorer 的分数。不同 top-k、字符预算、模型或源码配置保留为不同配置族；相同配置的不同会议可汇总。
+
+当前比较页仍只对严格兼容的 SN chunk/reasoning 计算模式差值。BM25 与 SN 的跨系统同题比较通过 `compare_notebook_baseline.py` 输出独立 JSON/Markdown 报告；不会伪造相同配置身份绕过配对检查。见 [使用步骤与限制](qmsum-bm25-baseline.md)。

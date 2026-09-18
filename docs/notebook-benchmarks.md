@@ -99,6 +99,25 @@ chunk 直接原生 Ask；reasoning 先走原生 intent preview，只在无需澄
 
 每次保存 frozen input、product-bundle、planned、outputs、scores、manifest、state，以及源码/配置身份和导入产物。导入/评分中断可读已有产物，不会用 0 填缺失项。`finished` 表示本次编排走完，不代表 ALCE 额外模型分已经算完；以 scores 的 unscored/error 和覆盖率为准。
 
+## QMSum BM25 对照
+
+QMSum 的第一条常规 RAG 对照是 `mode=bm25`：每个会议分区独立运行，按会议 turn 建立 BM25，按 query 选择 turn，在固定字符预算内恢复会议顺序，再用显式 `tested` 生成模型回答。它复用 QMSum 的 ROUGE 和上下文诊断 scorer，保存检索 turn、BM25 分数、完整 prompt、回答和模型事件；gold answer 与 relevant span 不进入 prompt。
+
+```bash
+python scripts/run_notebook_baseline.py \
+  --bundle /eval/bundles/qmsum \
+  --partition-id '<partitions.jsonl 中的 ID>' \
+  --project-root /path/to/silicon-notebook/project \
+  --model-config /eval/configs/qmsum-baseline-models.json \
+  --run-dir /eval/runs/qmsum-bm25-<partition> \
+  --top-k 8 --max-context-chars 12000
+```
+
+模型配置文件需先从 `configs/public-starter-models.example.json` 复制并填写，只使用 `tested` 角色，不需要 judge。服务器应对齐 SN 最终回答角色的实际模型与采样设置；代码不会仅凭模型名称认定一致。这个 baseline 自行检索和生成，不创建 notebook、不调用 SN Ask，仅复用显式模型客户端。
+
+结果可进入现有 Dashboard 查看和筛选。BM25 与 SN 使用不同配置族，不进入原来的严格 chunk/reasoning 配对；请用独立 `scripts/compare_notebook_baseline.py` 生成同题报告。完整命令、保存字段、预算和比较条件见 [QMSum BM25 对照](qmsum-bm25-baseline.md)。先完成单分区模型验收，再安排全量；本地实现未执行真实模型实验。
+
+
 ## 指标与适用条件
 
 以下为新适配版本的指标；旧包仍使用 v1 的 QASPER 精确段落与 QMSum 原分母诊断，不回写历史分。所有新 scorer 以 `product.notebook.` 开头；源码及公式也出现在 Dashboard 指标详情。
