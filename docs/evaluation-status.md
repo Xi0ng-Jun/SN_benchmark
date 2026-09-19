@@ -36,6 +36,12 @@ QASPER 按论文、QMSum 按会议；MultiHop 使用完整 corpus；ALCE 每题�
 
 更新时间：2026-09-16
 
+## 2026-09-19：Agent/DAG 离线评测第一阶段
+
+已新增独立的 `sn-agent-trace-v1` 轨迹适配器、完整性审计、确定性 Agent 诊断、DeepEval trajectory 适配和首个证据路径 DAGMetric。入口为 `scripts/evaluate_agent_traces.py`，默认只读取已有运行目录并生成独立的 `agent-traces.jsonl`、`agent-diagnostics.jsonl`、`agent-scores.jsonl` 与 `agent-summary.json`；`--judge` 和 `--dag` 均为显式选项。
+
+当前实现不会把 SN 的 reasoning step 自动宣称为完整 Agent trace：缺少模型调用、工具参数/结果或终止信息时标记为 `partial`，trajectory metrics 和 DAG 分数为 `not_applicable`。本阶段没有修改 SN 生产代码、下载数据、启动在线评测或设置质量阈值。ToolCorrectness/ArgumentCorrectness、底层模型 span、memory/plugin handoff 仍待完整 trace hook 后再纳入。
+
 ## 当前离线报告开发
 
 已将旧表格 Dashboard 扩展为结果探索器：组合标签筛选、状态/分数图、分面均值、保存比较组及共同题配对图、条目详情和原始记录查看。数据以 planned ledger 为基表，问答按 run×case 去重，缺评分条目仍保留；没有跨指标总分。相同资料/配置/评分口径且配对身份一致的 chunk/reasoning 可计算共同有效题差值；不同轨道或模型不强行配对。

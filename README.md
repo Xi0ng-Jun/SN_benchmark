@@ -6,6 +6,16 @@
 
 已新增[Notebook 独立重评分](docs/notebook-rescoring.md)：读取已保存答卷生成新的评分批次，不重新调用 SN Ask 或生成模型，原运行目录保持只读。
 
+已新增可选的 [SN Agent/DAG 离线评测](docs/superpowers/specs/2026-09-19-agent-dag-evaluation-design.md)：默认读取已有 `outputs.jsonl`，输出轨迹完整度、reasoning 动作诊断和 chunk/reasoning 配对信息；只有显式 `--judge` 才调用 DeepEval trajectory metrics，`--dag` 才运行产品证据路径 DAG。该命令不重新启动 SN、不覆盖原评分：
+
+```bash
+python scripts/evaluate_agent_traces.py \
+  --run-dir /path/to/existing-run \
+  --output-dir /path/to/agent-report
+```
+
+完整轨迹的 DeepEval 评分必须显式开启；当前 SN reasoning 输出通常会被保守标记为 `partial`，因此默认报告只做确定性诊断。
+
 **2026-09-17 新增资料型评测接入：** QASPER、MultiHop-RAG、ALCE、QMSum；支持完整资料分区、隔离 SN Ask、独立指标及 Dashboard。见[实现与服务器命令](docs/notebook-benchmarks.md)。本地仅用构造数据验证，尚未下载真实数据或执行新实验。
 
 实验完成或阶段性运行后，可用离线 Dashboard 汇总已保存结果：
