@@ -1,5 +1,13 @@
 # 评测状态
 
+## 2026-09-20：QMSum 首轮收口与下一轮代码
+
+已收到用户提供的服务器修订审计：QMSum 35 场会议、281 题，chunk 281 success；reasoning 132 success、148 clarification、1 error。共同 132 题 ROUGE-1 为 0.2506 / 0.2427（chunk / reasoning），会议等权差 +0.0006。旧 0.246 / 0.235 基于不同题集，停止作为配对结论使用。真实数字来源是服务器报告，本机没有下载或重新评分。引用统计中的 299/281 分母冲突只记为报告限制，不阻塞开发。
+
+已完成两个局部改动：显式版本化的 Notebook 提问模板，以及 Agent 意图预览/终止阶段诊断。新 `--request-revision notebook-request-v2` 移除 QMSum 追加指令的 `this query` 与 QASPER 追加指令的 `if it is`，原题/资料/gold 不变；新版本写入运行及比较配置身份，旧 run 和默认命令保持 v1。基于服务器 SN commit 的纯函数检查确认旧包装新增了指代规则命中，但实际线上澄清下降幅度未知，不将全部 148 次澄清归因于模板。
+
+Agent 命令默认离线生成 `agent-report.md`，展示保存的 intent_preview、Ask 是否进入和终止阶段；缺少观测使用 unknown/null，不伪造完整 Agent trace。已用 67 项相关离线回归验证新版/旧版重建、历史评分挂接、baseline、Agent 诊断等路径，未运行真实 SN 或模型。推进顺序和服务器交接见 [QMSum 后续工作](qmsum-next-iteration.md)。服务器已有 `--model-config` 和并发修复补丁尚未收到，交接时需要保留并整合。
+
 ## 已确认的 Notebook 实验计划
 
 用户确认先执行四套资料型 benchmark 的 SN chunk/reasoning 主实验，并加入 QMSum BM25 对照。见 [实验计划](notebook-benchmark-experiment-plan.md)。本地仅整理代码、文档与同步数据修正；服务器负责真实数据重新准备、运行与评分。向量检索和全文输入基线仍待实现，论文数字须区分参考值、同子集重算和同协议重跑。

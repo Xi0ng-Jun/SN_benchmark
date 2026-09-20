@@ -151,7 +151,9 @@ class AgentTraceEnvelope:
         if raw is None and ("spans" in record or "steps" in record):
             raw = record
         if raw is None:
-            return cls.missing(case_id=case_id, mode=mode, status=str(record.get("status") or "unknown"))
+            # No trajectory does not mean no answer/context: chunk normally has
+            # all three without any reasoning steps.
+            raw = {"completeness": "none", "spans": []}
         if not isinstance(raw, Mapping):
             raise ValueError("trace must be an object")
         raw_spans = raw.get("spans", raw.get("steps", []))

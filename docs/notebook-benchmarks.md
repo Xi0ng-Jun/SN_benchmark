@@ -95,6 +95,8 @@ python scripts/run_notebook_benchmarks.py \
 
 reasoning 用相同 bundle/partition、另一个新 run-dir 和新进程。默认不会遍历其他分区；服务器 Agent 应枚举完整 partitions，显式记录计划和实际执行范围。每次独立导入与建索引；代码没有实现跨 mode 共享已处理 notebook。数据库、上传存储、缓存、日志、模型服务配置快照均位于 run/runtime；禁用 KG、历史记忆、用户 profile 注入和检索经验。模型服务读取服务器 SN 已部署的配置，不要求额外 tested/judge 配置。
 
+2026-09-20 新增 `--request-revision notebook-request-v2`：QMSum 的追加指令改为 `Provide a query-focused summary using only the meeting transcript.`，QASPER 将 `if it is not answerable` 改为 `if the question is not answerable`。避免评测包装本身引入 SN 的指代澄清检查；原题中的指代照常保留，不绕过意图预览。默认 `notebook-request-v1` 完整复现旧模板。无需重新 prepare 数据；v2 仅用于新 run，同一模式对比的两侧必须选择同一请求版本。版本进入 `identity.notebook_context.request_revision` 与 product bundle，Dashboard 和 baseline cohort 不会将 v1/v2 静默混为同配置。动机、已知结果及下一步见 [QMSum 后续工作](qmsum-next-iteration.md)。
+
 chunk 直接原生 Ask；reasoning 先走原生 intent preview，只在无需澄清时确认。不会用 gold 替 SN 填澄清答案。正常、clarification、no_answer、error 单独保存，每题没有历史对话。实际模型服务仍共享算力和服务资源，运行时隔离不等于资源隔离。
 
 每次保存 frozen input、product-bundle、planned、outputs、scores、manifest、state，以及源码/配置身份和导入产物。导入/评分中断可读已有产物，不会用 0 填缺失项。`finished` 表示本次编排走完，不代表 ALCE 额外模型分已经算完；以 scores 的 unscored/error 和覆盖率为准。

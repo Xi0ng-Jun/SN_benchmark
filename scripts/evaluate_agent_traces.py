@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
 
 from rag_eval.agent_evaluator import evaluate_run
 from rag_eval.agent_deepeval import available_agent_metrics

@@ -2,6 +2,8 @@
 
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](docs/notebook-benchmark-experiment-plan.md)。
 
+**2026-09-20：QMSum 首轮结果收口，继续请求适配与 Agent 阶段诊断。** 服务器确认 chunk 成功 281 题，reasoning 成功 132、澄清 148、错误 1；共同题配对结果与下一步见 [QMSum 后续工作](docs/qmsum-next-iteration.md)。新增显式 `--request-revision notebook-request-v2`，避免评测追加指令中的 `this query` / `if it is` 引入指代检查；默认仍为 v1，历史题单与分数不改。Agent 离线命令新增 `agent-report.md`，可以展示没有 reasoning trace 的意图预览拦截。
+
 **2026-09-18 新增 QMSum 常规 RAG 对照：** BM25 发言检索 + 显式生成模型，复用冻结数据和评分器；支持 Dashboard 查看及独立同题比较。见[用法与比较边界](docs/qmsum-bm25-baseline.md)。已做离线合成测试，尚未执行真实模型验收。
 
 已新增[Notebook 独立重评分](docs/notebook-rescoring.md)：读取已保存答卷生成新的评分批次，不重新调用 SN Ask 或生成模型，原运行目录保持只读。
@@ -14,7 +16,7 @@ python scripts/evaluate_agent_traces.py \
   --output-dir /path/to/agent-report
 ```
 
-完整轨迹的 DeepEval 评分必须显式开启；当前 SN reasoning 输出通常会被保守标记为 `partial`，因此默认报告只做确定性诊断。
+完整轨迹的 DeepEval 评分必须显式开启；当前 SN reasoning 输出通常会被保守标记为 `partial`，因此默认报告只做确定性诊断。打开 `agent-report.md` 查看状态、可观察终止阶段与澄清理由计数；`agent-diagnostics.jsonl` 的 `execution` 保存原题、实际提交问题及判断阶段的字段依据，未知阶段保留 `unknown`，不会补造轨迹或判定澄清是否合理。
 
 **2026-09-17 新增资料型评测接入：** QASPER、MultiHop-RAG、ALCE、QMSum；支持完整资料分区、隔离 SN Ask、独立指标及 Dashboard。见[实现与服务器命令](docs/notebook-benchmarks.md)。本地仅用构造数据验证，尚未下载真实数据或执行新实验。
 

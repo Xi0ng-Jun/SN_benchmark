@@ -69,9 +69,12 @@ agent-traces.jsonl
 agent-diagnostics.jsonl
 agent-scores.jsonl
 agent-summary.json
+agent-report.md
 ```
 
 确定性诊断可以在无网络环境运行。LLM 评分只有显式开启，且不覆盖原 `scores.jsonl`。所有输出保留 `case_id`、mode、completeness、metric、status、score、reason 和错误原因；缺失项使用 `not_applicable` 或 `error`，不补 0。
+
+2026-09-20 扩展：`agent-diagnostics.jsonl.execution` 独立保存从现有 request/intent_preview/response 读出的实际请求、原题、澄清内容、Ask 进入情况和终止阶段。它与 `trace.steps` 分开，避免将预览字段伪造为模型轨迹。`agent-summary.json` 增加输出状态、终止阶段、澄清理由计数；`agent-report.md` 展示这些统计。没有轨迹时步骤总耗时为 null，已存在的答案/上下文/引用可用性仍保留。
 
 ## 后续扩展
 

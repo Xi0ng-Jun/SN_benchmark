@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 
 from .artifacts import digest, save_json, save_jsonl
-from .notebook_bundle import load_bundle, partition_bundle
+from .notebook_bundle import LEGACY_REQUEST_REVISION, load_bundle, partition_bundle
 from .notebook_data import VERSION
 from .starter_protocol import fingerprint
 from .starter_results import EventJournal, planned_result, result_record
@@ -116,7 +116,7 @@ def score_outputs(run, cases, planned, sink):
                            trace=(output or {}).get('trace')))
 
 
-def execute(*, root, project, bundle_dir, run, mode, partition_id):
+def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION):
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Explicit chunk/reasoning mode required')
     root, project, bundle_dir, run = [Path(p).resolve() for p in (root, project, bundle_dir, run)]
@@ -126,7 +126,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id):
     if run.exists():
         raise ValueError('Use a new run directory; no implicit resume')
     bundle = load_bundle(bundle_dir)
-    product = partition_bundle(bundle, partition_id)
+    product = partition_bundle(bundle, partition_id, request_revision=request_revision)
     members = {q['case_id'] for q in product['questions']}
     cases = [c for c in bundle['cases'] if c['case_id'] in members]
     if not cases:
@@ -148,6 +148,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id):
                         audits_sha256=fingerprint([]), track='R',
                         notebook_context=dict(partition_id=partition_id, selected_cases=bundle['manifest']['selected_cases'],
                                               partition_count=bundle['manifest']['partition_count']))
+        # Comparison cohorts drop per-partition product_bundle; keep the request
+        # revision in notebook_context as well, so v1/v2 cannot silently mix.
+        if request_revision != LEGACY_REQUEST_REVISION:
+            identity['notebook_context']['request_revision'] = request_revision
         protocol_id = fingerprint({**identity, 'mode': mode})
         planned = plan_rows(cases, run.name, protocol_id, mode)
         save_jsonl(run / 'planned.jsonl', planned)
@@ -185,9 +189,12 @@ def validate_saved_run(run, manifest, planned, outputs):
     context = manifest['identity']['notebook_context']
     expected_context = dict(partition_id=context['partition_id'], selected_cases=frozen['manifest']['selected_cases'],
                             partition_count=frozen['manifest']['partition_count'])
+    request_revision = context.get('request_revision', LEGACY_REQUEST_REVISION)
+    if request_revision != LEGACY_REQUEST_REVISION:
+        expected_context['request_revision'] = request_revision
     if context != expected_context or manifest.get('track') != 'R' or manifest.get('release_gate') is not False:
         raise ValueError('Notebook run scope changed')
-    product = partition_bundle(frozen, context['partition_id'])
+    product = partition_bundle(frozen, context['partition_id'], request_revision=request_revision)
     if (json.loads((run / 'product-bundle.json').read_text(encoding='utf-8')) != product
             or manifest['identity']['product_bundle'] != product['manifest']):
         raise ValueError('Notebook product materials changed')

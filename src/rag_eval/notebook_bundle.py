@@ -10,6 +10,10 @@ from .notebook_data import VERSION, SUITES, ADAPTATION_REVISION, LEGACY_ADAPTATI
 from .starter_protocol import fingerprint, require_text
 
 
+LEGACY_REQUEST_REVISION = 'notebook-request-v1'
+REQUEST_REVISIONS = (LEGACY_REQUEST_REVISION, 'notebook-request-v2')
+
+
 def _read_data(path, suite):
     text = Path(path).read_text(encoding='utf-8')
     if suite == 'qmsum':
@@ -110,7 +114,9 @@ def load_bundle(directory):
     return dict(rebuilt, manifest=manifest)
 
 
-def partition_bundle(bundle, partition_id):
+def partition_bundle(bundle, partition_id, *, request_revision=LEGACY_REQUEST_REVISION):
+    if request_revision not in REQUEST_REVISIONS:
+        raise ValueError('Unknown notebook request revision')
     partitions = {p['partition_id']: p for p in bundle['partitions']}
     if partition_id not in partitions:
         raise ValueError('Unknown notebook partition')
@@ -128,10 +134,17 @@ def partition_bundle(bundle, partition_id):
             'alce': ('Answer with a comma-separated list of answers, citing the notebook sources.' if case['task'] == 'qampari'
                      else 'Answer using the notebook sources and cite the supporting sources.'),
         }[case['suite']]
+        if request_revision == 'notebook-request-v2':
+            instruction = {
+                'qmsum': 'Provide a query-focused summary using only the meeting transcript.',
+                'qasper': 'Answer using the paper. Give a concise answer; if the question is not answerable from the paper, answer Unanswerable.',
+            }.get(case['suite'], instruction)
         questions.append({**{k: case[k] for k in ('case_id', 'sample_id', 'suite', 'task', 'dataset', 'split',
                          'references', 'gold_document_ids', 'material_document_ids', 'material_role', 'product_protocol')},
                           'id': cid, 'question': case['question'] + '\n\n' + instruction,
                           'original_question': case['question'], 'expected_answer': case['references'][0] if case['references'] else ''})
+        if request_revision != LEGACY_REQUEST_REVISION:
+            questions[-1]['request_revision'] = request_revision
     result = dict(questions=questions, documents=[documents[d] for d in part['document_ids']],
                   decisions=[d for d in bundle['decisions'] if d['case_id'] in part['case_ids']])
     result['manifest'] = dict(protocol_version=VERSION, product_protocol=VERSION, suite=bundle['manifest']['suite'],
@@ -139,4 +152,7 @@ def partition_bundle(bundle, partition_id):
                              document_count=len(result['documents']), question_count=len(questions),
                              max_documents=bundle['manifest']['max_documents'],
                              **{k + '_sha256': fingerprint(v) for k, v in result.items()})
+    # Omit the legacy field so already frozen product bundles rebuild identically.
+    if request_revision != LEGACY_REQUEST_REVISION:
+        result['manifest']['request_revision'] = request_revision
     return result

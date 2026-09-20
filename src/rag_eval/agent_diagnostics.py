@@ -79,11 +79,63 @@ def diagnose_trace(envelope: AgentTraceEnvelope) -> dict[str, Any]:
         "answer_present": any(step["type"] == "answer" for step in steps),
         "termination_reason": _termination_reason(steps),
         "anchor_count": len(anchors),
-        "total_duration_ms": sum(durations) if len(durations) == len(steps) else None,
+        "total_duration_ms": sum(durations) if steps and len(durations) == len(steps) else None,
         "duration_by_type_ms": dict(sorted(durations_by_type.items())),
         "final_output_available": envelope.final_output_available,
         "context_available": envelope.context_available,
         "citations_available": envelope.citations_available,
+    }
+
+
+def diagnose_execution(record: Mapping[str, Any], envelope: AgentTraceEnvelope) -> dict[str, Any]:
+    """Describe observed request stages without manufacturing trajectory spans.
+
+    Intent preview lives outside Ask.  A missing trace therefore cannot erase
+    an explicitly saved clarification, nor prove that an unknown error was
+    raised before Ask.  ``ask_entered=None`` preserves that distinction.
+    """
+    preview = record.get("intent_preview")
+    preview = preview if isinstance(preview, Mapping) else {}
+    response = record.get("response")
+    response = response if isinstance(response, Mapping) else {}
+    request = record.get("request")
+    request = request if isinstance(request, Mapping) else {}
+    ambiguities = preview.get("ambiguities")
+    ambiguities = [dict(item) for item in ambiguities if isinstance(item, Mapping)] if isinstance(ambiguities, list) else []
+    needs = preview.get("needs_clarification")
+    needs = needs if isinstance(needs, bool) else None
+    error_phase = record.get("error_phase")
+    phase, entered, evidence = "unknown", None, []
+    # Positive Ask observations take precedence over a saved earlier preview.
+    if response.get("llm_mode") == "synthesis_failed":
+        phase, entered, evidence = "answer_synthesis", True, ["response.llm_mode"]
+    elif error_phase in {"ask", "persistence"}:
+        phase, entered, evidence = error_phase, True, ["error_phase"]
+    elif envelope.status == "success" and envelope.final_output_available:
+        phase, entered, evidence = "answer_returned", True, ["status", "answer"]
+    elif response:
+        phase, entered, evidence = "ask_response", True, ["response"]
+    elif error_phase in {"request_validation", "intent_preview"}:
+        phase, entered, evidence = error_phase, False, ["error_phase"]
+    elif (envelope.status == "clarification" and needs is True
+          and record.get("reason") == "native intent requires clarification; no answers supplied"):
+        phase, entered, evidence = "intent_preview", False, ["status", "intent_preview.needs_clarification", "reason"]
+    elif envelope.steps:
+        entered, evidence = True, ["trace.steps"]
+    return {
+        "termination_phase": phase,
+        "ask_entered": entered,
+        "phase_evidence": evidence,
+        "intent_preview_available": bool(preview),
+        "intent_needs_clarification": needs,
+        "intent_type": preview.get("intent_type"),
+        "clarification_reasons": list(dict.fromkeys(
+            item["reason"] for item in ambiguities if isinstance(item.get("reason"), str) and item["reason"].strip()
+        )),
+        "ambiguities": ambiguities,
+        "original_question": record.get("original_question"),
+        "submitted_question": request.get("question") or record.get("question"),
+        "request_revision": record.get("request_revision"),
     }
 
 

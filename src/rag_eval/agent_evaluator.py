@@ -5,7 +5,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .agent_diagnostics import compare_modes, diagnose_trace
+from .agent_diagnostics import compare_modes, diagnose_execution, diagnose_trace
 from .agent_trace import AgentTraceEnvelope
 from .artifacts import save_json, save_jsonl
 from .starter_runner import read_rows
@@ -83,6 +83,29 @@ def _score_dag(test_case: Any, envelope: AgentTraceEnvelope, diagnostics: Mappin
         }
 
 
+def _write_report(output: Path, summary: Mapping[str, Any]) -> None:
+    def cell(value: object) -> str:
+        return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+    lines = [
+        "# Agent 执行阶段报告", "",
+        f"记录数：{summary['record_count']}；LLM Judge：{summary['judge_enabled']}。", "",
+        "按已保存的请求、意图预览和响应定位阶段；未知保留 unknown，不推断澄清是否合理。",
+        "缺少 reasoning trace 不等于未进入 Ask，也不等于没有答案。阶段统计不是质量分数。", "",
+    ]
+    for title, counts in (("输出状态", summary["output_status_counts"]),
+                          ("可观察终止阶段", summary["execution_stage_counts"]),
+                          ("澄清记录中的理由（同题可有多个）", summary["clarification_reason_counts"])):
+        lines.extend([f"## {title}", "", "| 项目 | 记录数 |", "| --- | ---: |"])
+        lines.extend(f"| {cell(key)} | {value} |" for key, value in counts.items())
+        if not counts:
+            lines.append("| 未记录 | — |")
+        lines.append("")
+    lines.extend(["逐题实际请求、原题、澄清内容及阶段证据见 [agent-diagnostics.jsonl](agent-diagnostics.jsonl)。",
+                  "完整性见 [agent-traces.jsonl](agent-traces.jsonl)；预览字段不会被添加为虚构的 Agent 步骤。", ""])
+    (output / "agent-report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def evaluate_run(
     run_dir: str | Path,
     output_dir: str | Path,
@@ -121,6 +144,7 @@ def evaluate_run(
         case, observed = _record_parts(row)
         envelope = _envelope(row, case, observed)
         diagnostics = diagnose_trace(envelope)
+        execution = diagnose_execution(observed, envelope)
         traces.append({"case_id": envelope.case_id, "mode": envelope.mode, "trace": envelope.to_dict()})
         diagnostics_row = {
             "case_id": envelope.case_id,
@@ -129,6 +153,7 @@ def evaluate_run(
             "task": row.get("task") or case.get("task"),
             "mode": envelope.mode,
             "diagnostics": diagnostics,
+            "execution": execution,
         }
         diagnostics_rows.append(diagnostics_row)
         comparison_rows.append({"case_id": envelope.case_id, "mode": envelope.mode, "diagnostics": diagnostics})
@@ -161,6 +186,11 @@ def evaluate_run(
     save_jsonl(output / "agent-scores.jsonl", scores)
     completeness_counts = Counter(row["trace"]["completeness"] for row in traces)
     score_counts = Counter(row["status"] for row in scores)
+    status_counts = Counter(row["diagnostics"]["status"] for row in diagnostics_rows)
+    stage_counts = Counter(row["execution"]["termination_phase"] for row in diagnostics_rows)
+    clarification_reasons = Counter(reason for row in diagnostics_rows
+                                    if row["diagnostics"]["status"] == "clarification"
+                                    for reason in row["execution"]["clarification_reasons"])
     summary = {
         "format": "sn-agent-evaluation-v1",
         "run_dir": str(run),
@@ -170,6 +200,9 @@ def evaluate_run(
         "metrics": list(selected_metrics),
         "completeness_counts": {key: completeness_counts.get(key, 0) for key in ("none", "partial", "complete")},
         "score_status_counts": {key: score_counts.get(key, 0) for key in ("scored", "not_applicable", "error")},
+        "output_status_counts": dict(sorted(status_counts.items())),
+        "execution_stage_counts": dict(sorted(stage_counts.items())),
+        "clarification_reason_counts": dict(sorted(clarification_reasons.items())),
         "mode_comparison": compare_modes(comparison_rows),
         "release_gate": False,
         "notes": [
@@ -178,4 +211,5 @@ def evaluate_run(
         ],
     }
     save_json(output / "agent-summary.json", summary)
+    _write_report(output, summary)
     return summary
