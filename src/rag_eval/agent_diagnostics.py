@@ -46,7 +46,9 @@ def _termination_reason(steps: list[dict[str, Any]]) -> str | None:
 def diagnose_trace(envelope: AgentTraceEnvelope) -> dict[str, Any]:
     """Project a trace into stable, non-LLM diagnostic fields."""
     steps = envelope.steps
-    action_seq = [step["type"] for step in steps if step["type"] not in NON_ACTION_TYPES]
+    native = envelope.execution_trace is not None
+    action_seq = [step["type"] for step in steps if (
+        step.get('detail', {}).get('stage') == 'action' if native else step["type"] not in NON_ACTION_TYPES)]
     action_counts = Counter(action_seq)
     repeated_types = sorted(name for name, count in action_counts.items() if count > 1)
     durations = [step.get("duration_ms") for step in steps if isinstance(step.get("duration_ms"), (int, float))]
@@ -69,17 +71,22 @@ def diagnose_trace(envelope: AgentTraceEnvelope) -> dict[str, Any]:
         "step_count": len(steps),
         "action_seq": action_seq,
         "action_counts": dict(sorted(action_counts.items())),
-        "retrieval_count": sum(action_counts.get(name, 0) for name in RETRIEVAL_TYPES),
+        "retrieval_count": (sum(step.get('detail', {}).get('stage') == 'retrieve' for step in steps)
+                            if native else sum(action_counts.get(name, 0) for name in RETRIEVAL_TYPES)),
         "repeated_action_count": sum(max(0, count - 1) for count in action_counts.values()),
         "repeated_action_types": repeated_types,
         "reflect_turns": sum(step["type"] == "reflect" for step in steps),
         "fallback_count": sum(step["type"] == "fallback" for step in steps),
         "plan_present": any(step["type"] == "plan" for step in steps),
         "synthesis_present": any(step["type"] == "synthesis" for step in steps),
-        "answer_present": any(step["type"] == "answer" for step in steps),
+        "answer_present": envelope.final_output_available if native else any(step["type"] == "answer" for step in steps),
         "termination_reason": _termination_reason(steps),
         "anchor_count": len(anchors),
-        "total_duration_ms": sum(durations) if steps and len(durations) == len(steps) else None,
+        "total_duration_ms": (next((s.get('duration_ms') for s in steps
+                                   if s.get('detail', {}).get('parent_id') is None), None)
+                              if native else sum(durations) if steps and len(durations) == len(steps) else None),
+        **({'duration_semantics': 'request_wall_clock; per-type totals may overlap',
+            'capture_scope': 'native_sync_ask'} if native else {}),
         "duration_by_type_ms": dict(sorted(durations_by_type.items())),
         "final_output_available": envelope.final_output_available,
         "context_available": envelope.context_available,

@@ -19,6 +19,8 @@ def main():
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=LEGACY_REQUEST_REVISION,
                         help='Question instruction revision; v2 avoids adapter-added unresolved pronouns. Default preserves v1.')
+    parser.add_argument('--capture-agent-trace', action='store_true',
+                        help='Save local execution spans using the optional SN patch; no judge or upload')
     args = parser.parse_args()
     from rag_eval.notebook_runner import execute
     from rag_eval.starter_report import write_report
@@ -26,7 +28,8 @@ def main():
     code = 0
     try:
         execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
-                mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision)
+                mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
+                capture_agent_trace=args.capture_agent_trace)
     except KeyboardInterrupt:
         code = 130
     except Exception as exc:

@@ -40,6 +40,7 @@ def _envelope(row: Mapping[str, Any], case: Mapping[str, Any], output: Mapping[s
         raw = output.get("trace")
     observed = {
         "trace": raw,
+        **({'execution_trace': output['execution_trace']} if 'execution_trace' in output else {}),
         "status": row.get("status") or output.get("status") or "unknown",
         "answer": row.get("prediction") or row.get("answer") or output.get("answer") or "",
         "context_available": _available(case, output, "context_available"),
@@ -61,6 +62,9 @@ def _score_dag(test_case: Any, envelope: AgentTraceEnvelope, diagnostics: Mappin
             "score": None,
             "reason": f"trace_not_complete:{envelope.completeness_reason}",
         }
+    if envelope.execution_trace is None or not envelope.final_output_available or not test_case.retrieval_context:
+        return {'metric': 'evidence_path_dag', 'status': 'not_applicable', 'score': None,
+                'reason': 'native_trace_answer_and_context_required'}
     from .agent_dag import build_evidence_path_metric, dag_metadata
 
     metric = build_evidence_path_metric(model=model, threshold=None)
@@ -102,7 +106,8 @@ def _write_report(output: Path, summary: Mapping[str, Any]) -> None:
             lines.append("| 未记录 | — |")
         lines.append("")
     lines.extend(["逐题实际请求、原题、澄清内容及阶段证据见 [agent-diagnostics.jsonl](agent-diagnostics.jsonl)。",
-                  "完整性见 [agent-traces.jsonl](agent-traces.jsonl)；预览字段不会被添加为虚构的 Agent 步骤。", ""])
+        "完整性见 [agent-traces.jsonl](agent-traces.jsonl)。新原生轨迹包含父子 span 与输入输出；旧摘要不会被补造为完整轨迹。",
+        "complete 仅表示已声明的同步 native Ask 范围被完整记录，不代表回答正确；澄清路径也可完整。", ""])
     (output / "agent-report.md").write_text("\n".join(lines), encoding="utf-8")
 
 

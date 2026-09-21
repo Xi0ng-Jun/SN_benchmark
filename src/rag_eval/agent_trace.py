@@ -109,6 +109,7 @@ class AgentTraceEnvelope:
     final_output_available: bool = False
     context_available: bool = False
     citations_available: bool = False
+    execution_trace: dict[str, Any] | None = None
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -147,6 +148,21 @@ class AgentTraceEnvelope:
     ) -> "AgentTraceEnvelope":
         if not isinstance(record, Mapping):
             raise ValueError("trace record must be an object")
+        execution = record.get("execution_trace")
+        if execution is not None:
+            from .sn_trace import audit_execution_trace, execution_steps
+            if not isinstance(execution, Mapping):
+                raise ValueError("execution_trace must be an object")
+            status = str(record.get("status") or "unknown")
+            completeness, reason = audit_execution_trace(execution, mode=mode, status=status)
+            return cls(
+                trace_id=_nonempty_text(execution.get("trace_id")), case_id=case_id, mode=mode, status=status,
+                completeness=completeness, completeness_reason=reason, steps=execution_steps(execution),
+                execution_trace=dict(execution),
+                final_output_available=bool(record.get("answer")) if final_output_available is None else final_output_available,
+                context_available=bool(record.get("context_available")) if context_available is None else context_available,
+                citations_available=bool(record.get("citations_available")) if citations_available is None else citations_available,
+            )
         raw = record.get("trace")
         if raw is None and ("spans" in record or "steps" in record):
             raw = record
@@ -203,10 +219,16 @@ class AgentTraceEnvelope:
             "final_output_available": self.final_output_available,
             "context_available": self.context_available,
             "citations_available": self.citations_available,
+            **({"execution_trace": self.execution_trace} if self.execution_trace is not None else {}),
         }
 
     def to_deepeval_dict(self) -> dict[str, Any]:
-        """Return a stable JSON object for DeepEval's private trace input."""
+        """Return the SDK trajectory projection, or the historical diagnostic form."""
+        if self.execution_trace is not None:
+            from .sn_trace import deepeval_tree
+            if self.completeness != "complete":
+                return {}
+            return deepeval_tree(self.execution_trace)
         return {
             "trace_id": self.trace_id,
             "mode": self.mode,

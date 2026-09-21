@@ -121,8 +121,20 @@ def evaluate_trajectory(
             }
             for name in selected
         ]
+    if not envelope.final_output_available:
+        return [{'metric': name, 'status': 'not_applicable', 'score': None,
+                 'reason': 'final_output_missing'} for name in selected]
     results: list[dict[str, Any]] = []
     for name in selected:
+        if envelope.execution_trace is None:
+            results.append({'metric': name, 'status': 'not_applicable', 'score': None,
+                            'reason': 'native_execution_trace_missing'})
+            continue
+        if name in {'plan_quality', 'plan_adherence'} and not any(
+                s['type'] == 'plan' and s.get('detail', {}).get('output_present') for s in envelope.steps):
+            results.append({'metric': name, 'status': 'not_applicable', 'score': None,
+                            'reason': 'explicit_plan_missing'})
+            continue
         try:
             metric = _metric(name, model=model)
             metric.measure(test_case)
@@ -134,6 +146,7 @@ def evaluate_trajectory(
                 "status": "scored",
                 "score": float(score),
                 "reason": getattr(metric, "reason", None),
+                'details': {'trajectory_input': 'deepeval_native_span_tree'},
             })
         except Exception as exc:
             results.append({

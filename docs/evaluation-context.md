@@ -1,5 +1,7 @@
 # Silicon Notebook 评测上下文
 
+2026-09-21 更新：用户明确授权在 SN 独立分支增加可选执行观测，通过本评测仓库的 Git 补丁包交付服务器。本机只做离线代码验证，不启动模型实验、恢复 baseline/timer 或修改运行中的生产配置。Notebook `--capture-agent-trace` 与 Agent 离线转换/评分的当前契约见 [SN 执行轨迹](sn-execution-tracing.md)。下文历史“不修改 SN”描述不适用于这次已授权的观测补丁。
+
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](notebook-benchmark-experiment-plan.md)。
 
 ## 目标

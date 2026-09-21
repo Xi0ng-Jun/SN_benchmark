@@ -58,7 +58,7 @@ def _anchor_documents(repo, record, mapping):
     return resolved, errors
 
 
-def predictions(run, cases, product, mode, repo, outputs):
+def predictions(run, cases, product, mode, repo, outputs, *, capture_agent_trace=False):
     from .benchmark_runtime import prepare_notebook
     from .system_runtime import run_system_question
     from .usage_capture import capture_usage
@@ -77,7 +77,8 @@ def predictions(run, cases, product, mode, repo, outputs):
             update_state(run, 'asking', case_id=question['case_id'])
             attempts(dict(event='started', case_id=question['case_id'], mode=mode))
             try:
-                record = run_system_question(repo, notebook, question, mode, mapping)
+                record = run_system_question(repo, notebook, question, mode, mapping,
+                                             **({'capture_agent_trace': True} if capture_agent_trace else {}))
             except Exception as exc:
                 record = dict(question, status='error', answer='', response={},
                               reason='native invocation/capture failed', error_type=type(exc).__name__)
@@ -116,7 +117,8 @@ def score_outputs(run, cases, planned, sink):
                            trace=(output or {}).get('trace')))
 
 
-def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION):
+def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
+            capture_agent_trace=False):
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Explicit chunk/reasoning mode required')
     root, project, bundle_dir, run = [Path(p).resolve() for p in (root, project, bundle_dir, run)]
@@ -142,6 +144,9 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         code = snapshot_sources(root, project, run)
         settings, runtime = configure_environment(project, run, product_track=True,
                                                    document_limit=bundle['manifest']['max_documents'])
+        if capture_agent_trace:
+            from .sn_trace import require_capture_api
+            require_capture_api()
         identity = dict(source=bundle['manifest'], models={}, code=code,
                         runtime_settings=runtime['comparable_settings_sha256'],
                         product_services=runtime['service_config_sha256'], product_bundle=product['manifest'],
@@ -152,6 +157,9 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         # revision in notebook_context as well, so v1/v2 cannot silently mix.
         if request_revision != LEGACY_REQUEST_REVISION:
             identity['notebook_context']['request_revision'] = request_revision
+        if capture_agent_trace:
+            from .sn_trace import CAPTURE_IDENTITY
+            identity['agent_trace_capture'] = dict(CAPTURE_IDENTITY)
         protocol_id = fingerprint({**identity, 'mode': mode})
         planned = plan_rows(cases, run.name, protocol_id, mode)
         save_jsonl(run / 'planned.jsonl', planned)
@@ -170,7 +178,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             stack.callback(repo.close)
             if repo.db_path.resolve() != run / 'runtime/database.db':
                 raise ValueError('Database isolation failed')
-            predictions(run, cases, product, mode, repo, outputs)
+            predictions(run, cases, product, mode, repo, outputs, capture_agent_trace=capture_agent_trace)
             score_outputs(run, cases, planned, scores)
         errors = any(row['status'] == 'error' for name in ('outputs.jsonl', 'scores.jsonl') for row in read_rows(run / name))
         update_state(run, 'finished_with_errors' if errors else 'finished')

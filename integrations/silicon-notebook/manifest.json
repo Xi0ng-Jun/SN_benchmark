@@ -1,0 +1,35 @@
+{
+  "format": "sn-evaluation-patch-v1",
+  "upstream": "https://github.com/huyangc/silicon-notebook",
+  "base_commit": "74e9c61e4600102e5324553b55a85be15339660f",
+  "implementation_commit": "1b4eb2b3b0e7db95353c9128bb9f6bfcf37707cb",
+  "implementation_tree": "c2dbf23dc06c9cf145e8274f3886e258c50431c7",
+  "branch": "feat/evaluation-tracing",
+  "capture_schema": "sn-execution-trace-v1",
+  "patch": "0001-feat-add-opt-in-local-evaluation-execution-tracing.patch",
+  "patch_sha256": "9143d9b4842b3bcfdbf6ee9bf5e5c28bde7e35d5a2e3ba278909f9a1b430cf98",
+  "files": {
+    "backend/app/core/evaluation_tracing.py": "d7874e7208547b4d33c3d85dee6a8bda6c4a4ef3168a8f05bb57a5094eb0c57d",
+    "backend/app/core/llm.py": "1a7b5366acdeb22e17abfd21a5970de72722b52f6daeeddd76cd4687f2b73d07",
+    "backend/app/services/ask_service.py": "49b3438acd472bb45966631660be169e86b8e91ef50e9e7cd3e942389b5c0a4e",
+    "backend/app/services/evaluation_trace_projection.py": "e4b3ebbe3519d1d3ea0011bd9eae75b6f53d0dca80bc1772acfc92b85c021738",
+    "backend/app/services/reasoning_retrieval.py": "7cae1e4b2af7d1c0aea413418cd0e89b82d9a57a5c6ba2b1801a5ed5a6a33aed",
+    "backend/app/services/retrieval_service.py": "4f0e521f9a69080021bd6fe64d2e71072b4aea89cbeaab6e99fb01213b67357c",
+    "backend/tests/test_evaluation_tracing.py": "0f09e7ebe4ce11bac304e5a9dfa89c7d649528c104e0072fd55813958c2a97f7",
+    "backend/tests/test_evaluation_tracing_integration.py": "bc48462627eba553a06ef82088762977661bcb15f60e4c32e73146e53f87470d",
+    "docs/operations.md": "8e38a1fccd88a090acc1d8fc3850e56f52d05076b8a7a2a656a2c0e2a2f613a4",
+    "docs/operations_zh.md": "becb39bd8c6486e910a3e40218ab8b1ed80b0ef366ed352562488298cd3117da"
+  },
+  "production_dependency_added": false,
+  "default_enabled": false,
+  "validation": {
+    "benchmark_related_tests_passed": 83,
+    "sn_backend_passed": 12754,
+    "sn_backend_failed": 1,
+    "sn_contracts_passed": 54,
+    "sn_frontend_node_passed": 2730,
+    "sn_frontend_component_passed": 1187,
+    "known_gate_failure": "test_packaged_migration_helper_runs_with_bundled_python_layout: dotenv missing in symlinked child interpreter; reproduced on unchanged base",
+    "real_model_run": false
+  }
+}

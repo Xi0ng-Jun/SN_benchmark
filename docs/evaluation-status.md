@@ -1,5 +1,11 @@
 # 评测状态
 
+## 2026-09-21：可选 SN 执行轨迹与离线 DeepEval 转换
+
+已实现 SN 标准库采集层、原生调用边界埋点、Notebook 显式开关、完整性检查和 DeepEval 官方 span 树转换。旧输出摘要保留原语义；澄清路径也可完整记录，不把完整度当质量。TaskCompletion/StepEfficiency 使用新树并要求非空答案，PlanQuality/PlanAdherence 还需显式计划；证据 DAG 需答案和上下文。见[使用说明与限制](sn-execution-tracing.md)。
+
+本机已用真实 DeepEval SDK 配合假 judge 验证转换与指标接口，未调用线上模型。[验证记录](sn-execution-tracing-validation.md)：benchmark 83 项通过；SN 标准 gate 前端/契约通过，后端 12754 项通过、1 项既有打包环境失败（未修改基准也复现）。服务器仍需在一个新隔离分区上检查实际轨迹；无需重跑已完成的 QMSum 对照。服务器的 model-config 注入/并发修复需保留，本机未收到其代码，不能宣称已经合并。
+
 ## 2026-09-20：QMSum 首轮收口与下一轮代码
 
 已收到用户提供的服务器修订审计：QMSum 35 场会议、281 题，chunk 281 success；reasoning 132 success、148 clarification、1 error。共同 132 题 ROUGE-1 为 0.2506 / 0.2427（chunk / reasoning），会议等权差 +0.0006。旧 0.246 / 0.235 基于不同题集，停止作为配对结论使用。真实数字来源是服务器报告，本机没有下载或重新评分。引用统计中的 299/281 分母冲突只记为报告限制，不阻塞开发。

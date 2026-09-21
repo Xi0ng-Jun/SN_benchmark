@@ -1,0 +1,1201 @@
+From 1b4eb2b3b0e7db95353c9128bb9f6bfcf37707cb Mon Sep 17 00:00:00 2001
+From: Xi0ng-Jun <Xi0ng-Jun@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 11:35:33 +0800
+Subject: [PATCH] feat: add opt-in local evaluation execution tracing
+
+---
+ backend/app/core/evaluation_tracing.py        | 212 ++++++++++++++++++
+ backend/app/core/llm.py                       |   9 +
+ backend/app/services/ask_service.py           |  25 +++
+ .../services/evaluation_trace_projection.py   | 105 +++++++++
+ backend/app/services/reasoning_retrieval.py   |  63 ++++++
+ backend/app/services/retrieval_service.py     |   8 +
+ backend/tests/test_evaluation_tracing.py      | 189 ++++++++++++++++
+ .../test_evaluation_tracing_integration.py    | 181 +++++++++++++++
+ docs/operations.md                            |  55 +++++
+ docs/operations_zh.md                         |  46 ++++
+ 10 files changed, 893 insertions(+)
+ create mode 100644 backend/app/core/evaluation_tracing.py
+ create mode 100644 backend/app/services/evaluation_trace_projection.py
+ create mode 100644 backend/tests/test_evaluation_tracing.py
+ create mode 100644 backend/tests/test_evaluation_tracing_integration.py
+
+diff --git a/backend/app/core/evaluation_tracing.py b/backend/app/core/evaluation_tracing.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d060ecab55d143def5343030eb7fb3249c051e2a
+--- /dev/null
++++ b/backend/app/core/evaluation_tracing.py
+@@ -0,0 +1,212 @@
++"""Opt-in, in-memory business traces for private evaluation artifacts.
++
++This module uses only the standard library and performs no I/O. Callers own
++export/storage and must explicitly select JSON business values: never pass a
++client, repository, settings object, credentials, or hidden model reasoning.
++Times are monotonic seconds; nested durations must not be summed as wall time.
++"""
++from __future__ import annotations
++
++from contextlib import contextmanager
++from contextvars import ContextVar
++from functools import wraps
++from inspect import signature
++import math
++from threading import RLock
++from time import perf_counter
++from uuid import uuid4
++
++
++CAPTURE_SCHEMA_VERSION = "sn-execution-trace-v1"
++_capture: ContextVar[EvaluationCapture | None] = ContextVar("evaluation_capture", default=None)
++_span: ContextVar[EvaluationSpan | None] = ContextVar("evaluation_span", default=None)
++
++
++def _snapshot(value):
++    """Copy only plain JSON values; never introspect/serialize arbitrary objects."""
++    if value is None or type(value) in (str, bool, int):
++        return value
++    if type(value) is float and math.isfinite(value):
++        return value
++    if type(value) in (list, tuple):
++        return [_snapshot(item) for item in value]
++    if type(value) is dict and all(type(key) is str for key in value):
++        return {key: _snapshot(item) for key, item in value.items()}
++    raise TypeError("evaluation values must be explicitly projected JSON")
++
++
++class EvaluationCapture:
++    def __init__(self):
++        self.trace_id = uuid4().hex
++        self._lock = RLock()
++        self._spans = []
++        self._errors = []
++        self._start = perf_counter()
++        self._end = None
++        self.closed = False
++
++    def _error(self, code, span_id=None):
++        with self._lock:
++            if not self.closed:
++                self._errors.append({"code": code, "span_id": span_id})
++
++    def _close(self):
++        with self._lock:
++            self._end = perf_counter()
++            for entry in self._spans:
++                if entry["end_time"] is None:
++                    self._error("span_open_at_close", entry["span_id"])
++            self.closed = True
++
++    def to_dict(self):
++        """Return a detached snapshot, including lifecycle/capture completeness."""
++        with self._lock:
++            return _snapshot({
++                "schema_version": CAPTURE_SCHEMA_VERSION,
++                "trace_id": self.trace_id,
++                "closed": self.closed,
++                "spans": self._spans,
++                "capture_errors": self._errors,
++                "duration_ms": ((self._end or perf_counter()) - self._start) * 1000,
++            })
++
++
++class EvaluationSpan:
++    def __init__(self, capture=None, entry=None):
++        self._capture = capture
++        self._entry = entry
++
++    def _set(self, key, value):
++        capture = self._capture
++        if capture is None or capture.closed:
++            return
++        try:
++            value = _snapshot(value)
++            with capture._lock:
++                if not capture.closed and self._entry["end_time"] is None:
++                    if key == "metadata":
++                        self._entry[key].update(value)
++                    else:
++                        self._entry[key] = value
++        except Exception:
++            capture._error("invalid_" + key, self._entry["span_id"])
++
++    def set_output(self, value):
++        self._set("output", value)
++
++    def set_metadata(self, **fields):
++        self._set("metadata", fields)
++
++    def _projection_error(self, field):
++        if self._capture is not None:
++            self._capture._error("projection_" + field, self._entry["span_id"])
++
++
++_NOOP_SPAN = EvaluationSpan()
++
++
++@contextmanager
++def capture_evaluation_trace():
++    """Capture the current context; copy_context propagates it to joined workers."""
++    capture = EvaluationCapture()
++    capture_token = _capture.set(capture)
++    span_token = _span.set(None)
++    try:
++        yield capture
++    finally:
++        capture._close()
++        _span.reset(span_token)
++        _capture.reset(capture_token)
++
++
++@contextmanager
++def evaluation_span(name: str, kind: str, *, input: object = None, metadata: dict | None = None):
++    capture = _capture.get()
++    if capture is None or capture.closed:
++        yield _NOOP_SPAN
++        return
++    with capture._lock:
++        if capture.closed:
++            handle = _NOOP_SPAN
++        else:
++            parent = _span.get()
++            entry = {
++                "span_id": uuid4().hex,
++                "parent_id": parent._entry["span_id"] if parent and parent._capture is capture else None,
++                "name": name,
++                "kind": kind,
++                "input": None,
++                "output": None,
++                "metadata": {},
++                "status": "running",
++                "start_time": perf_counter(),
++                "end_time": None,
++                "duration_ms": None,
++            }
++            capture._spans.append(entry)
++            handle = EvaluationSpan(capture, entry)
++    handle._set("input", input)
++    handle._set("metadata", metadata or {})
++    token = _span.set(handle)
++    status, error_type = "completed", None
++    try:
++        yield handle
++    except BaseException as error:
++        error_type = type(error).__name__
++        status = "cancelled" if error_type in {"AskCancelled", "CancelledError"} else "error"
++        raise
++    finally:
++        _span.reset(token)
++        with capture._lock:
++            if not capture.closed and handle._entry is not None:
++                end = perf_counter()
++                handle._entry.update(status=status, end_time=end,
++                                     duration_ms=(end - handle._entry["start_time"]) * 1000)
++                if error_type:
++                    handle._entry["error_type"] = error_type
++
++
++def set_evaluation_metadata(**fields):
++    """Attach explicitly selected business values to the active native span."""
++    handle = _span.get()
++    if handle is not None:
++        handle.set_metadata(**fields)
++
++
++def traced_evaluation(name, kind, *, stage=None, input_selector=None,
++                      output_selector=None, output_arguments_selector=None, metadata=None):
++    """Trace synchronous seams without changing their signatures or outcomes.
++
++    Selectors run only during capture, on bound arguments / the original result.
++    Capture failures never execute the business operation a second time.
++    """
++    def decorate(function):
++        parameters = signature(function)
++
++        @wraps(function)
++        def wrapped(*args, **kwargs):
++            capture = _capture.get()
++            if capture is None or capture.closed:
++                return function(*args, **kwargs)
++            with evaluation_span(name, kind, metadata={**(metadata or {}), **({"stage": stage} if stage else {})}) as handle:
++                bound = None
++                if input_selector is not None or output_arguments_selector is not None:
++                    try:
++                        bound = parameters.bind(*args, **kwargs)
++                        bound.apply_defaults()
++                        if input_selector is not None:
++                            handle._set("input", input_selector(bound.arguments))
++                    except Exception:
++                        handle._projection_error("input")
++                result = function(*args, **kwargs)
++                try:
++                    if output_arguments_selector is not None:
++                        handle.set_output(output_arguments_selector(bound.arguments))
++                    else:
++                        handle.set_output(output_selector(result) if output_selector else result)
++                except Exception:
++                    handle._projection_error("output")
++                return result
++
++        return wrapped
++    return decorate
+diff --git a/backend/app/core/llm.py b/backend/app/core/llm.py
+index f0265d95f6cca719b71f6dd5e2557a15ddc7a78e..535c2549d4afa6d360da87589026b8e919206634 100644
+--- a/backend/app/core/llm.py
++++ b/backend/app/core/llm.py
+@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional
+ from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+ 
+ from app.core.config import Settings
++from app.core.evaluation_tracing import traced_evaluation
+ from app.core.cache import CacheBackend, is_cacheable_llm_response, llm_key
+ from app.core.llm_logging import LLMInteractionLogger, new_interaction_id
+ from app.domain.cancellation import AskCancelled, CancelEvent, raise_if_cancelled, sleep_or_cancel
+@@ -523,6 +524,14 @@ class OpenAICompatibleClient:
+         _raise_if_cancelled_with_usage(cancel_event, usage)
+         return "".join(parts), finish_reason, usage
+ 
++    @traced_evaluation(
++        "sn.llm.chat_json", "llm", stage="llm",
++        input_selector=lambda bound: {
++            "messages": provider_messages(bound["messages"], bound["response_schema_hint"]),
++            "model": bound["self"].model,
++        },
++        metadata={"call_boundary": "logical", "includes_cache_and_retries": True},
++    )
+     def chat_json(
+         self,
+         messages: List[Dict[str, str]],
+diff --git a/backend/app/services/ask_service.py b/backend/app/services/ask_service.py
+index adc3f4a70de22e4dc0c4e476b2f33fd84061bfac..036d734f3451ed138a8f79af9fd2f53bf9f620cc 100644
+--- a/backend/app/services/ask_service.py
++++ b/backend/app/services/ask_service.py
+@@ -47,6 +47,7 @@ if TYPE_CHECKING:
+ from app.core.ask_context import _ASK_EMBED_CACHE, _ASK_MODEL_ERRORS
+ from app.core.ask_retrieval_policy import RetrievalEffort, ask_retrieval_limits
+ from app.core.config import Settings
++from app.core.evaluation_tracing import set_evaluation_metadata, traced_evaluation
+ from app.core.llm import cap_kwargs
+ from app.domain.citation_origin import foreign_notebook_id
+ from app.domain.gap_consult import (
+@@ -90,6 +91,13 @@ from app.services.ask_followup import (
+     current_followup_resolution,
+ )
+ from app.services.cancellation import AskCancelled, CancelEvent, raise_if_cancelled
++from app.services.evaluation_trace_projection import (
++    arguments as evaluation_arguments,
++    ask_input as evaluation_ask_input,
++    ask_output as evaluation_ask_output,
++    intent_output as evaluation_intent_output,
++    synthesis_output as evaluation_synthesis_output,
++)
+ from app.services.citation_markers import LOOSE_MARKER_RE, MARKER_RE, marker_keys
+ from app.services.document_read_answer import document_read_block_reserve
+ from app.services.evidence_context import anchor_image_targets
+@@ -969,6 +977,8 @@ class AskService:
+     # dispatch
+     # ------------------------------------------------------------------
+ 
++    @traced_evaluation("sn.ask", "agent", stage="ask",
++                       input_selector=evaluation_ask_input, output_selector=evaluation_ask_output)
+     def ask(
+         self,
+         notebook_id: str,
+@@ -1316,6 +1326,9 @@ class AskService:
+             user_id, notebook_id, query, 8
+         )
+ 
++    @traced_evaluation("sn.intent", "agent", stage="intent",
++                       input_selector=evaluation_arguments("question", "history"),
++                       output_selector=evaluation_intent_output)
+     def preview_reasoning_intent(
+         self,
+         notebook_id: str,
+@@ -2258,6 +2271,9 @@ class AskService:
+         except Exception:  # noqa: BLE001 — 风格提示是背景,不是必需品
+             return ""
+ 
++    @traced_evaluation("sn.synthesis.chunks", "agent", stage="synthesis",
++                       input_selector=evaluation_arguments("question", "history"),
++                       output_selector=evaluation_synthesis_output)
+     def _answer_chunks(
+         self,
+         question,
+@@ -2289,6 +2305,7 @@ class AskService:
+                 "ordered_handles": tuple(id_map),
+                 "budget_chars": self.settings.chunk_answer_budget_chars,
+             })
++        set_evaluation_metadata(context_block=context_block)
+         llm_client = llm_client or self.model_clients.chat("ask_answer")
+         raw = llm_client.chat_json(
+             [{"role": "user", "content": answer_prompt(
+@@ -2306,6 +2323,9 @@ class AskService:
+         anchors = self._parse_answer_anchors(answer, id_map)
+         return answer, llm_grounded, anchors
+ 
++    @traced_evaluation("sn.synthesis.mix", "agent", stage="synthesis",
++                       input_selector=evaluation_arguments("question", "history"),
++                       output_selector=evaluation_synthesis_output)
+     def _answer_mix(
+         self,
+         question,
+@@ -2347,6 +2367,7 @@ class AskService:
+                 "ordered_handles": tuple(id_map),
+                 "budget_chars": len(context_block),
+             })
++        set_evaluation_metadata(context_block=context_block)
+         llm_client = llm_client or self.model_clients.chat("ask_answer")
+         raw = llm_client.chat_json(
+             [{"role": "user", "content": answer_prompt(
+@@ -2528,6 +2549,9 @@ class AskService:
+         )
+         return answer, grounded, anchors, False
+ 
++    @traced_evaluation("sn.synthesis.reasoning", "agent", stage="synthesis",
++                       input_selector=evaluation_arguments("question", "history", "sectioned", "section_title"),
++                       output_selector=evaluation_synthesis_output)
+     def _answer_reasoning(
+         self,
+         notebook_id,
+@@ -2866,6 +2890,7 @@ class AskService:
+                     baseline_admission.get("ambiguous_truncations") or 0
+                 ),
+             })
++        set_evaluation_metadata(context_block=context_block, evidence_counts=counts)
+         raw = answer_client.chat_json(
+             [{"role": "user", "content": answer_prompt(
+                 question, context_block, history,
+diff --git a/backend/app/services/evaluation_trace_projection.py b/backend/app/services/evaluation_trace_projection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6bbcd7a62c67829b1eeec6b0b43c525618dca0ac
+--- /dev/null
++++ b/backend/app/services/evaluation_trace_projection.py
+@@ -0,0 +1,105 @@
++"""Explicit native business projections for private evaluation capture.
++
++Keep allowlists here; adding model/service attributes must never implicitly add
++them to evaluation artifacts. No generic model/dataclass/object serialization.
++"""
++
++
++def fields(value, names):
++    return {name: getattr(value, name) for name in names}
++
++
++def arguments(*names):
++    return lambda bound: {name: bound[name] for name in names}
++
++
++def ask_input(bound):
++    return fields(bound["payload"], ("question", "mode", "retrieval_effort"))
++
++
++def ask_output(value):
++    return fields(value, ("answer", "conclusion", "grounded", "mode", "retrieval_query"))
++
++
++def intent_output(value):
++    # This is a specific validated public model, not an arbitrary runtime object.
++    return value.model_dump(mode="json", include={
++        "objective", "resolved_question", "intent_type", "result_scope",
++        "completeness_required", "entities", "mandatory_topics", "comparison_axes",
++        "constraints", "excluded_topics", "expected_output", "assumptions",
++        "ambiguities", "confidence", "needs_clarification", "confirmed",
++    })
++
++
++def chunks_output(values):
++    return [fields(item, ("chunk_id", "source_id", "source_title", "section_path",
++                          "text", "score", "relevance")) for item in values]
++
++
++def knowledge_output(values):
++    # The full evidence text sent to synthesis is captured at the synthesis seam.
++    # Knowledge payload schemas are extension-defined and are not serialized here.
++    return [fields(item, ("object_id", "object_type", "score", "relevance")) for item in values]
++
++
++def elements_output(values):
++    return [fields(item, ("element_id", "source_id", "source_title", "location_label",
++                          "element_type", "text", "score")) for item in values]
++
++
++def synthesis_output(result):
++    return {"answer": result[0], "grounded": result[1]}
++
++
++def plan_output(values):
++    return [fields(item, ("query", "types", "prefer", "reason")) for item in values]
++
++
++def decision_output(value):
++    result = fields(value, (
++        "sufficient", "next_action", "reason", "expand_object_id", "expand_edge_type",
++        "expand_direction", "community_focal", "elements_query", "ppr_query",
++        "chunks_query", "exact_term", "chain_start_object_id", "chain_target_object_id",
++        "chain_edge_type", "chain_direction", "enumerate_kind", "enumerate_object_type",
++        "enumerate_source_id", "enumerate_source_title", "enumerate_collection",
++        "enumerate_scope", "read_document_source", "read_document_coverage",
++        "plugin_action_arguments",
++    ))
++    result["new_sub_query"] = plan_output([value.new_sub_query])[0] if value.new_sub_query else None
++    result["outline_sections"] = [fields(item, ("id", "title", "evidence_keys"))
++                                  for item in value.outline_sections]
++    return result
++
++
++def action_input(bound):
++    return decision_output(bound["decision"])
++
++
++def action_output(bound):
++    # Native state-mutating actions publish their admitted/skip result via record.
++    # Only selected outcome fields; never serialize arbitrary trace detail/errors.
++    step = bound["state"].trace[-1]
++    return {"step_type": step.step_type, "result": {
++        key: step.detail[key] for key in (
++            "result_ids", "result_ids_truncated", "new", "hits", "count",
++            "complete", "truncated", "source_title", "coverage",
++        ) if key in step.detail and type(step.detail[key]) in (str, int, bool, list)
++    }}
++
++
++def initial_plan_output(bound):
++    state = bound["state"]
++    return {"subqueries": plan_output(state.subqueries),
++            "pending_queries": state.pending_intent_queries,
++            "origin": "confirmed_intent" if state.intent_queries else "planner"}
++
++
++def reasoning_output(value):
++    return {
++        "top_hits": knowledge_output(value.top_hits),
++        "chunks": chunks_output(value.chunks),
++        "elements": elements_output(value.elements),
++        "attempted": [{key: row[key] for key in ("query", "new", "tries") if key in row}
++                      for row in value.attempted],
++        "outline": [fields(item, ("id", "title", "evidence_keys")) for item in value.outline],
++    }
+diff --git a/backend/app/services/reasoning_retrieval.py b/backend/app/services/reasoning_retrieval.py
+index 87b2e2955ef106bde916c4cc3f9efc03539d300b..d7ebe3529e0bf0ef8e33614f2eb8343dc01f182a 100644
+--- a/backend/app/services/reasoning_retrieval.py
++++ b/backend/app/services/reasoning_retrieval.py
+@@ -25,6 +25,19 @@ from app.core.ask_retrieval_policy import (
+     ask_retrieval_limits,
+ )
+ from app.core.llm import budget_kwargs
++from app.core.evaluation_tracing import traced_evaluation
++from app.services.evaluation_trace_projection import (
++    action_input as evaluation_action_input,
++    action_output as evaluation_action_output,
++    arguments as evaluation_arguments,
++    chunks_output as evaluation_chunks_output,
++    decision_output as evaluation_decision_output,
++    elements_output as evaluation_elements_output,
++    knowledge_output as evaluation_knowledge_output,
++    initial_plan_output as evaluation_initial_plan_output,
++    plan_output as evaluation_plan_output,
++    reasoning_output as evaluation_reasoning_output,
++)
+ from app.core.model_values import as_text
+ from app.core.config import (
+     DEFAULT_EXTERNAL_EVIDENCE_MAX_PER_RUN,
+@@ -3275,6 +3288,9 @@ class ReasoningRetriever:
+             return [] if self._unsafe_scope_restricted() else values
+         return values
+ 
++    @traced_evaluation("sn.action.search", "tool", stage="action",
++                       metadata={"action": "search"}, input_selector=evaluation_arguments("query", "types", "prefer"),
++                       output_selector=evaluation_knowledge_output)
+     def search(self, notebook_id, query, types=None, prefer="balanced"):
+         wk, ws = PREFER_WEIGHTS.get(prefer, PREFER_WEIGHTS["balanced"])
+         with retrieval_fanout_slot():
+@@ -3301,6 +3317,10 @@ class ReasoningRetriever:
+                 h.object_id: (h.relevance, h.score) for h in hits}
+         return hits
+ 
++    @traced_evaluation("sn.action.neighbors", "tool", stage="action",
++                       metadata={"action": "expand_graph"},
++                       input_selector=evaluation_arguments("object_id", "edge_type", "direction"),
++                       output_selector=lambda result: {"hits": evaluation_knowledge_output(result.hits), "truncated": result.truncated})
+     def neighbors(self, notebook_id, object_id, edge_type=None,
+                   direction="both") -> NeighborExpansion:
+         """1-hop 邻居 + 「本次展开是否被每方向上限截断」。
+@@ -3323,6 +3343,9 @@ class ReasoningRetriever:
+         except KeyError:
+             return {}
+ 
++    @traced_evaluation("sn.action.search_elements", "tool", stage="action",
++                       metadata={"action": "search_elements"}, input_selector=evaluation_arguments("query"),
++                       output_selector=evaluation_elements_output)
+     def search_elements(self, notebook_id, query):
+         with retrieval_fanout_slot():
+             retrieved = self.retrieval.retrieve_elements(notebook_id, query)
+@@ -3330,6 +3353,9 @@ class ReasoningRetriever:
+             "element", retrieved
+         )
+ 
++    @traced_evaluation("sn.action.ppr_retrieve", "tool", stage="action",
++                       metadata={"action": "ppr_retrieve"}, input_selector=evaluation_arguments("query"),
++                       output_selector=evaluation_chunks_output)
+     def ppr_retrieve(self, notebook_id, query):
+         with retrieval_fanout_slot():
+             retrieved = self.retrieval.ppr_retrieve(notebook_id, query)
+@@ -3337,6 +3363,9 @@ class ReasoningRetriever:
+             "chunk", retrieved
+         )
+ 
++    @traced_evaluation("sn.action.search_chunks", "tool", stage="action",
++                       metadata={"action": "search_chunks"}, input_selector=evaluation_arguments("query", "k"),
++                       output_selector=evaluation_chunks_output)
+     def search_chunks(self, notebook_id, query, *, k: Optional[int] = None):
+         """按语义 + 关键词检索来源原文段落(chunk)。零模型调用。
+ 
+@@ -3373,6 +3402,9 @@ class ReasoningRetriever:
+             self.settings.chunk_mmr_lambda)
+         return self._filter_candidates("chunk", selected)
+ 
++    @traced_evaluation("sn.action.keyword_chunks", "tool", stage="action",
++                       metadata={"action": "keyword_chunks"}, input_selector=evaluation_arguments("keywords"),
++                       output_selector=evaluation_chunks_output)
+     def keyword_chunks(self, notebook_id, keywords):
+         """按**整题关键词**做纯词法(FTS)的原文段落检索。零模型调用、零 embedding。
+ 
+@@ -3403,6 +3435,9 @@ class ReasoningRetriever:
+             hits = self.retrieval.keyword_chunk_candidates(notebook_id, keywords)
+         return self._filter_candidates("chunk", hits)
+ 
++    @traced_evaluation("sn.action.exact_lookup", "tool", stage="action",
++                       metadata={"action": "exact_lookup"}, input_selector=evaluation_arguments("query"),
++                       output_selector=evaluation_chunks_output)
+     def exact_lookup(self, notebook_id, query):
+         """按名称精确定位小节 → 整节 chunk。零模型调用、零 embedding。
+ 
+@@ -3432,6 +3467,10 @@ class ReasoningRetriever:
+                          MAX_QUOTED_PHRASES))
+         ]
+ 
++    @traced_evaluation("sn.action.follow_chain", "tool", stage="action",
++                       metadata={"action": "follow_chain"},
++                       input_selector=evaluation_arguments("start_object_id", "edge_type", "target_object_id", "direction"),
++                       output_selector=lambda result: {"nodes": evaluation_knowledge_output(result.nodes)})
+     def follow_chain(self, notebook_id, start_object_id, edge_type=None,
+                      target_object_id="", direction="out"):
+         with retrieval_fanout_slot():
+@@ -3463,6 +3502,9 @@ class ReasoningRetriever:
+         subqueries = self.plan(question, history, **kwargs)
+         return PlanOutcome(subqueries=subqueries, keywords=self._plan_keywords)
+ 
++    @traced_evaluation("sn.reasoning.plan", "agent", stage="plan",
++                       input_selector=evaluation_arguments("question", "history", "collection_map"),
++                       output_selector=evaluation_plan_output)
+     def plan(self, question, history="", max_subqueries=None, collection_map="",
+              profile_block="", experience_block="", style_block="",
+              kg_available=True):
+@@ -3523,6 +3565,9 @@ class ReasoningRetriever:
+                for s in ex.sub_queries]
+         return out or fallback
+ 
++    @traced_evaluation("sn.reasoning.reflect", "agent", stage="reflect",
++                       input_selector=evaluation_arguments("question", "candidates_summary"),
++                       output_selector=evaluation_decision_output)
+     def reflect(self, question, candidates_summary, outline: bool = False,
+                 consult_memory: bool = False, kg_actions: bool = True,
+                 *, plugin_actions: "Sequence[ReflectActionSpec]" = (),
+@@ -4558,6 +4603,9 @@ class ReasoningRetriever:
+         state.experience_entries = experience_entries
+         state.collection_map_text = collection_map_text
+ 
++    @traced_evaluation("sn.reasoning.initial_plan", "agent", stage="plan",
++                       input_selector=lambda bound: {"question": bound["state"].question},
++                       output_arguments_selector=evaluation_initial_plan_output)
+     def _first_round_plan(self, state: "_ReasoningRunState") -> None:
+         """确定本轮的检索方向:已确认意图优先,否则调 `plan()`,并记 plan 步。"""
+         record = state.record
+@@ -5157,6 +5205,9 @@ class ReasoningRetriever:
+                          summary=f"检索原文段落:{cq},新增 {len(new)} 段",
+                          detail=_chunk_action_detail))
+ 
++    @traced_evaluation("sn.action.read_document", "tool", stage="action",
++                       metadata={"action": "read_document"}, input_selector=evaluation_action_input,
++                       output_arguments_selector=evaluation_action_output)
+     def _action_read_document(
+         self, state: "_ReasoningRunState", decision: "ReflectDecision",
+     ) -> None:
+@@ -5495,6 +5546,9 @@ class ReasoningRetriever:
+             return summary + plugin_nudge
+         return summary
+ 
++    @traced_evaluation("sn.action.plugin", "tool", stage="action",
++                       metadata={"action": "plugin", "coverage": "call_boundary_only", "downstream_internals_traced": False},
++                       input_selector=evaluation_action_input, output_arguments_selector=evaluation_action_output)
+     def _action_plugin(
+         self, state: "_ReasoningRunState", decision: "ReflectDecision",
+         last_turn: bool,
+@@ -5706,6 +5760,9 @@ class ReasoningRetriever:
+                      if admitted else f"调用扩展检索「{name}」,未找到站外材料"),
+             detail=detail))
+ 
++    @traced_evaluation("sn.action.expand_community", "tool", stage="action",
++                       metadata={"action": "expand_community"}, input_selector=evaluation_action_input,
++                       output_arguments_selector=evaluation_action_output)
+     def _action_expand_community(
+         self, state: "_ReasoningRunState", decision: "ReflectDecision",
+     ) -> None:
+@@ -6014,6 +6071,9 @@ class ReasoningRetriever:
+         # 反复请求同一已访问节点 / 反复 search_elements, 这里强制收尾, 不空转到上限。
+         state.stale = 1 if state.no_progress else 0
+ 
++    @traced_evaluation("sn.action.enumerate", "tool", stage="action",
++                       metadata={"action": "enumerate"}, input_selector=evaluation_action_input,
++                       output_arguments_selector=evaluation_action_output)
+     def _run_enumeration(
+         self, state: "_ReasoningRunState", decision: "ReflectDecision",
+     ) -> None:
+@@ -6274,6 +6334,9 @@ class ReasoningRetriever:
+                         **({"local_only": True} if local_only else {}),
+                     }))
+ 
++    @traced_evaluation("sn.reasoning.run", "retriever", stage="retrieve",
++                       input_selector=evaluation_arguments("question", "history"),
++                       output_selector=evaluation_reasoning_output)
+     def run(self, notebook_id, question, history="", on_step=None, top_n=None,
+             max_steps=None, intent_queries=None,
+             limits: Optional[AskRetrievalLimits] = None,
+diff --git a/backend/app/services/retrieval_service.py b/backend/app/services/retrieval_service.py
+index e315d9b60b121a88bd4656c3c5ffd328c8ec1264..c5303dacbf13c47f75af0218df2c4bcb4b37b379 100644
+--- a/backend/app/services/retrieval_service.py
++++ b/backend/app/services/retrieval_service.py
+@@ -4,6 +4,8 @@ from __future__ import annotations
+ from dataclasses import replace
+ from typing import Any
+ 
++from app.core.evaluation_tracing import traced_evaluation
++from app.services.evaluation_trace_projection import arguments, chunks_output
+ from app.services.retrieval import NeighborExpansion
+ from app.services.source_scope import filter_retrieval_items
+ 
+@@ -233,10 +235,16 @@ class RetrievalService:
+             self.candidates._exact_lookup_chunks(notebook_id, query),
+         )
+ 
++    @traced_evaluation("sn.retrieve.chunks", "retriever", stage="retrieve",
++                       input_selector=arguments("query"),
++                       output_selector=lambda result: chunks_output(result[0]))
+     def retrieve_chunk_candidates(self, notebook_id, query):
+         scored, ids, matrix = self.candidates._retrieve_chunks(notebook_id, query)
+         return filter_retrieval_items(notebook_id, "chunk", scored), ids, matrix
+ 
++    @traced_evaluation("sn.retrieve.chunks_multi", "retriever", stage="retrieve",
++                       input_selector=arguments("queries"),
++                       output_selector=lambda result: chunks_output(result[0].values()))
+     def retrieve_chunk_candidates_multi(self, notebook_id, queries):
+         collected, per_query, ids, matrix = self.candidates._retrieve_chunks_multi(
+             notebook_id, queries
+diff --git a/backend/tests/test_evaluation_tracing.py b/backend/tests/test_evaluation_tracing.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0eaa6cc0040810f0769235f92e4b209e23ca620b
+--- /dev/null
++++ b/backend/tests/test_evaluation_tracing.py
+@@ -0,0 +1,189 @@
++"""Private evaluation traces preserve request behavior and context boundaries."""
++import asyncio
++from concurrent.futures import ThreadPoolExecutor
++from contextvars import copy_context
++import json
++from pathlib import Path
++import subprocess
++import sys
++import threading
++
++import pytest
++
++from app.core.evaluation_tracing import (
++    CAPTURE_SCHEMA_VERSION,
++    capture_evaluation_trace,
++    evaluation_span,
++    traced_evaluation,
++)
++
++
++def test_nested_snapshots_parentage_and_disabled_selector():
++    calls = []
++
++    @traced_evaluation("child", "tool", input_selector=lambda args: calls.append(1) or args["value"])
++    def operation(value):
++        return value
++
++    value = {"text": ["original"]}
++    assert operation(value) is value
++    assert calls == []
++    with capture_evaluation_trace() as capture:
++        with evaluation_span("root", "agent", input="question") as root:
++            assert operation(value) is value
++            root.set_output("answer")
++        value["text"].append("later")
++    trace = capture.to_dict()
++    assert trace["schema_version"] == CAPTURE_SCHEMA_VERSION
++    assert trace["closed"] is True
++    assert trace["capture_errors"] == []
++    parent, child = trace["spans"]
++    assert child["parent_id"] == parent["span_id"]
++    assert parent["parent_id"] is None
++    assert child["input"] == child["output"] == {"text": ["original"]}
++    assert parent["output"] == "answer"
++    assert child["start_time"] <= child["end_time"] <= parent["end_time"]
++    assert all(s["status"] == "completed" for s in trace["spans"])
++    trace["spans"].clear()
++    assert len(capture.to_dict()["spans"]) == 2
++
++
++@pytest.mark.parametrize("error", [ValueError("private exception"), asyncio.CancelledError("secret")])
++def test_business_errors_are_reraised_unchanged_and_never_leak_text(error):
++    with capture_evaluation_trace() as capture:
++        with pytest.raises(type(error)) as raised:
++            with evaluation_span("failing", "tool"):
++                raise error
++    assert raised.value is error
++    trace = capture.to_dict()
++    assert trace["spans"][0]["status"] == ("cancelled" if isinstance(error, asyncio.CancelledError) else "error")
++    assert trace["spans"][0]["error_type"] == type(error).__name__
++    assert "private exception" not in json.dumps(trace)
++    assert "secret" not in json.dumps(trace)
++
++
++def test_projection_failures_do_not_erase_result_or_repeat_business_work():
++    calls = []
++
++    def bad_selector(*args):
++        raise ValueError("secret selector text")
++
++    @traced_evaluation("work", "tool", input_selector=bad_selector, output_selector=bad_selector)
++    def operation():
++        calls.append(1)
++        return "result"
++
++    with capture_evaluation_trace() as capture:
++        assert operation() == "result"
++        with evaluation_span("unsafe", "tool", input=object()) as span:
++            span.set_metadata(unsafe=object())
++    trace = capture.to_dict()
++    assert calls == [1]
++    assert len(trace["capture_errors"]) == 4
++    assert "secret selector text" not in json.dumps(trace)
++
++
++def test_concurrent_requests_and_copy_context_threads_keep_parents():
++    barrier = threading.Barrier(2)
++
++    def request(question):
++        with capture_evaluation_trace() as capture:
++            with evaluation_span("request", "agent", input=question):
++                barrier.wait(timeout=5)
++                with ThreadPoolExecutor(max_workers=1) as pool:
++                    def work():
++                        with evaluation_span("tool", "tool", input=question):
++                            pass
++                    pool.submit(copy_context().run, work).result(timeout=5)
++        return capture.to_dict()
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        a, b = list(pool.map(request, ["a", "b"]))
++    assert a["trace_id"] != b["trace_id"]
++    for trace in (a, b):
++        root, child = trace["spans"]
++        assert child["parent_id"] == root["span_id"]
++        assert root["input"] == child["input"]
++
++
++def test_nested_capture_restores_outer_and_closed_copy_cannot_write():
++    with capture_evaluation_trace() as outer:
++        with evaluation_span("outer", "agent"):
++            late = copy_context()
++            with capture_evaluation_trace() as inner:
++                with evaluation_span("inner", "agent"):
++                    pass
++            with evaluation_span("outer-child", "tool"):
++                pass
++    original = outer.to_dict()
++    with capture_evaluation_trace() as next_capture:
++        def late_work():
++            with evaluation_span("late", "tool"):
++                pass
++        late.run(late_work)
++    assert outer.to_dict() == original
++    assert next_capture.to_dict()["spans"] == []
++    assert inner.to_dict()["spans"][0]["parent_id"] is None
++    assert original["spans"][1]["parent_id"] == original["spans"][0]["span_id"]
++
++
++def test_unfinished_child_is_disclosed_at_capture_close():
++    with capture_evaluation_trace() as capture:
++        manager = evaluation_span("unfinished", "tool")
++        manager.__enter__()
++    before = capture.to_dict()
++    manager.__exit__(None, None, None)
++    assert capture.to_dict() == before
++    assert before["capture_errors"][0]["code"] == "span_open_at_close"
++
++
++def test_async_tasks_are_isolated_even_when_their_scopes_interleave():
++    async def run():
++        entered = asyncio.Event()
++        release = asyncio.Event()
++
++        async def request(name):
++            with capture_evaluation_trace() as capture:
++                with evaluation_span(name, "agent"):
++                    if name == "first":
++                        entered.set()
++                        await release.wait()
++                    else:
++                        await entered.wait()
++                        release.set()
++                    with evaluation_span(name + "-child", "tool"):
++                        pass
++            return capture.to_dict()
++
++        return await asyncio.gather(request("first"), request("second"))
++
++    first, second = asyncio.run(run())
++    assert [span["name"] for span in first["spans"]] == ["first", "first-child"]
++    assert [span["name"] for span in second["spans"]] == ["second", "second-child"]
++
++
++def test_closed_span_handle_cannot_change_its_completed_snapshot():
++    with capture_evaluation_trace() as capture:
++        with evaluation_span("complete", "tool") as span:
++            span.set_output("original")
++        span.set_output("late")
++    assert capture.to_dict()["spans"][0]["output"] == "original"
++
++
++def test_standalone_recorder_needs_no_optional_dependencies_and_performs_no_io():
++    backend = Path(__file__).resolve().parents[1]
++    script = """
++import builtins, socket, sys
++sys.path.insert(0, sys.argv[1])
++from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
++def forbidden(*args, **kwargs):
++    raise AssertionError('capture attempted I/O')
++builtins.open = forbidden
++socket.socket = forbidden
++with capture_evaluation_trace() as capture:
++    with evaluation_span('root', 'agent', input='question') as span:
++        span.set_output('answer')
++assert capture.to_dict()['capture_errors'] == []
++assert not any(name.startswith(('deepeval', 'pydantic', 'openai')) for name in sys.modules)
++"""
++    subprocess.run([sys.executable, "-I", "-c", script, str(backend)], check=True, capture_output=True, text=True)
+diff --git a/backend/tests/test_evaluation_tracing_integration.py b/backend/tests/test_evaluation_tracing_integration.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9fe87ad0f7aae8073bcaaf5a59a596c0f40d16f3
+--- /dev/null
++++ b/backend/tests/test_evaluation_tracing_integration.py
+@@ -0,0 +1,181 @@
++"""Native seams use real domain values and preserve their original outcomes."""
++import json
++from types import SimpleNamespace
++
++import pytest
++
++from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
++from app.core.llm import provider_messages
++from app.domain.retrieval import RetrievedChunk
++from app.domain.cancellation import AskCancelled
++from app.models.ask import AskRequest, AskResponse
++from app.services.reasoning_retrieval import ReasoningRetriever
++from app.services.retrieval_service import RetrievalService
++from tests.model_testkit import bind_chat_client
++from tests.test_llm_client import _FakeCreate, _Resp, _make
++from tests.test_reasoning_retrieval import (
++    _AnswerRecordingLLM, _SeqLLM, _seed_two_nodes,
++    rrepo,  # noqa: F401 — shared hermetic repository fixture
++)
++from tests.test_reasoning_document_read_synthesis import (
++    _AnswerClient, _ask, _enumerate_sources_action, _notebook_with_documents,
++    _read_action, ANSWER,
++    repo,  # noqa: F401 — source/document fixture with native enumeration enabled
++)
++
++
++def _chunk():
++    return RetrievedChunk("chunk-1", "source-1", "Manual", "Gain", "gain is 4", score=0.8, relevance=0.9)
++
++
++def test_llm_captures_provider_messages_and_logical_result_without_client_secrets(monkeypatch):
++    response = _Resp('{"answer":"visible answer"}')
++    response.choices[0].message.reasoning_content = "hidden reasoning must stay hidden"
++    create = _FakeCreate([response])
++    client = _make(monkeypatch, create, model="public-model")
++    messages = [{"role": "user", "content": "business question"}]
++    with capture_evaluation_trace() as capture:
++        result = client.chat_json(messages, "answer schema")
++    trace = capture.to_dict()
++    span, = trace["spans"]
++    assert span["input"] == {"messages": provider_messages(messages, "answer schema"), "model": "public-model"}
++    assert span["output"] == result == '{"answer":"visible answer"}'
++    assert span["metadata"]["call_boundary"] == "logical"
++    assert trace["capture_errors"] == []
++    encoded = json.dumps(trace)
++    assert "https://x" not in encoded
++    assert "api_key" not in encoded
++    assert "hidden reasoning" not in encoded
++    assert len(create.calls) == 1
++
++
++def test_chunk_retrieval_projects_returned_evidence_without_vectors():
++    chunk = _chunk()
++    matrix = object()
++    original = ([chunk], [chunk.chunk_id], matrix)
++    service = RetrievalService(
++        candidates=SimpleNamespace(_retrieve_chunks=lambda *args: original),
++        graph=None, community_queries=None,
++    )
++    with capture_evaluation_trace() as capture:
++        result = service.retrieve_chunk_candidates("notebook", "gain")
++    assert result[2] is matrix
++    span, = capture.to_dict()["spans"]
++    assert span["input"] == {"query": "gain"}
++    assert span["output"][0]["text"] == chunk.text
++    assert span["output"][0]["chunk_id"] == chunk.chunk_id
++    assert capture.to_dict()["capture_errors"] == []
++
++
++def test_llm_cache_hit_is_one_logical_span_without_transport(monkeypatch):
++    create = _FakeCreate([AssertionError("transport must not be used")])
++    client = _make(monkeypatch, create)
++    client._cache = SimpleNamespace(get=lambda key: '{"cached":true}')
++    with capture_evaluation_trace() as capture:
++        result = client.chat_json([], "{}", response_validator=lambda value: True)
++    assert result == '{"cached":true}'
++    assert create.calls == []
++    assert len(capture.to_dict()["spans"]) == 1
++    assert capture.to_dict()["spans"][0]["output"] == result
++
++
++def test_native_cancel_retains_identity_and_stops_before_transport(monkeypatch):
++    import threading
++
++    create = _FakeCreate([AssertionError("transport must not be used")])
++    client = _make(monkeypatch, create)
++    event = threading.Event()
++    event.set()
++    with capture_evaluation_trace() as capture:
++        with pytest.raises(AskCancelled):
++            client.chat_json([], "{}", cancel_event=event)
++    assert create.calls == []
++    assert capture.to_dict()["spans"][0]["status"] == "cancelled"
++
++
++@pytest.mark.parametrize("mode", ["chunks", "reasoning", "mix"])
++def test_synthesis_records_actual_context_and_preserves_response(rrepo, mode):
++    nb = _seed_two_nodes(rrepo)
++    llm = _AnswerRecordingLLM()
++    bind_chat_client(rrepo, "ask_answer", llm)
++    service = rrepo._runtime.ask_service()
++    sink = {}
++
++    def run():
++        if mode == "chunks":
++            return service._answer_chunks("gain?", [_chunk()], notebook_id=nb.id, baseline_sink=sink)
++        if mode == "mix":
++            return service._answer_mix("gain?", [_chunk()], "", {}, notebook_id=nb.id, baseline_sink=sink)
++        return service._answer_reasoning(nb.id, "gain?", [], [], chunks=[_chunk()], baseline_sink=sink)
++
++    expected = run()
++    with capture_evaluation_trace() as capture:
++        actual = run()
++    assert actual == expected
++    span, = capture.to_dict()["spans"]
++    assert span["metadata"]["context_block"] == sink["context_block"]
++    assert "gain is 4" in span["metadata"]["context_block"]
++    assert span["output"] == {"answer": actual[0], "grounded": actual[1]}
++    assert capture.to_dict()["capture_errors"] == []
++
++
++def test_intent_and_ask_share_benchmark_root_and_do_not_serialize_service(rrepo, monkeypatch):
++    nb = _seed_two_nodes(rrepo)
++    service = rrepo._runtime.ask_service()
++    monkeypatch.setattr("app.services.query_intent.plan_query_intent", lambda *args, **kwargs: {
++        "objective": "explain gain", "resolved_question": "gain?", "needs_clarification": True,
++    })
++    response = AskResponse(conclusion="answer", answer="gain is 4", mode="chunk")
++    monkeypatch.setattr(service, "ask_chunk", lambda *args, **kwargs: response)
++    with capture_evaluation_trace() as capture:
++        with evaluation_span("sn.request", "agent", input="gain?"):
++            intent = service.preview_reasoning_intent(nb.id, "gain?")
++            actual = service.ask(nb.id, AskRequest(question="gain?"), user_id="user")
++    assert actual is response
++    assert intent.needs_clarification
++    root, intent_span, ask_span = capture.to_dict()["spans"]
++    assert intent_span["parent_id"] == ask_span["parent_id"] == root["span_id"]
++    assert intent_span["output"]["needs_clarification"] is True
++    assert ask_span["output"]["answer"] == "gain is 4"
++    assert capture.to_dict()["capture_errors"] == []
++
++
++@pytest.mark.parametrize("confirmed", [False, True])
++def test_reasoning_real_plan_tools_reflect_and_confirmed_plan_are_observable(rrepo, confirmed):
++    nb = _seed_two_nodes(rrepo)
++    bind_chat_client(rrepo, "reasoning_agent", _SeqLLM(
++        plan={"sub_queries": [{"query": "RTL到GDSII流程"}]},
++        reflects=[{"next_action": "answer", "sufficient": True, "reason": "enough evidence"}],
++    ))
++    retriever = ReasoningRetriever.from_repository(rrepo, rrepo.settings)
++    with capture_evaluation_trace() as capture:
++        with evaluation_span("sn.request", "agent"):
++            result = retriever.run(nb.id, "RTL到GDSII流程", intent_queries=["RTL到GDSII流程"] if confirmed else None)
++    trace = capture.to_dict()
++    assert result.top_hits
++    assert trace["capture_errors"] == []
++    by_name = {span["name"]: span for span in trace["spans"]}
++    assert by_name["sn.reasoning.initial_plan"]["output"]["origin"] == ("confirmed_intent" if confirmed else "planner")
++    assert by_name["sn.reasoning.initial_plan"]["output"]["subqueries"][0]["query"] == "RTL到GDSII流程"
++    assert by_name["sn.action.search"]["output"]
++    assert by_name["sn.reasoning.reflect"]["output"]["next_action"] == "answer"
++    assert by_name["sn.reasoning.run"]["output"]["top_hits"][0]["object_id"] == result.top_hits[0].object_id
++
++
++def test_native_document_actions_capture_admitted_results_and_synthesis_context(repo):
++    notebook = _notebook_with_documents(repo)
++    client = _AnswerClient()
++    with capture_evaluation_trace() as capture:
++        response, _ = _ask(repo, notebook.id, [
++            _enumerate_sources_action(), _read_action("无摘要文档"), ANSWER,
++        ], answer_client=client)
++    trace = capture.to_dict()
++    assert response.answer
++    assert trace["capture_errors"] == []
++    by_name = {span["name"]: span for span in trace["spans"]}
++    assert by_name["sn.action.enumerate"]["output"]["step_type"] == "enumerate"
++    read = by_name["sn.action.read_document"]
++    assert read["input"]["read_document_source"] == "无摘要文档"
++    assert read["output"]["step_type"] == "read_document"
++    assert read["output"]["result"]["result_ids"]
++    assert "末尾结论" in by_name["sn.synthesis.reasoning"]["metadata"]["context_block"]
+diff --git a/docs/operations.md b/docs/operations.md
+index dcded89566f87c6fa80b7e538f7a192431e13bd3..40362ae52a531dce55de38bde747cd823599f7d1 100644
+--- a/docs/operations.md
++++ b/docs/operations.md
+@@ -122,6 +122,61 @@ Error messages are split by audience. What a user sees is always Chinese: the fr
+ 
+ What a developer or an MCP agent sees is unchanged: backend `detail` stays as-is in the API response and in the logs, and the full diagnostic — status, status text, the raw response body, and the `X-Request-Id` that correlates with `requests.jsonl` — is written to the DevTools console on every failed request, alongside the original text of any error the UI replaced with a generic message. So "it says I have no permission" is answered by reading the console's request id, not by guessing which check rejected it.
+ 
++### Private evaluation execution traces
++
++`app.core.evaluation_tracing` provides an optional in-memory capture for an
++explicit evaluation caller. It is disabled by default, uses only the Python
++standard library, and has no file, network, logging, or DeepEval dependency:
++
++```python
++from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
++
++with capture_evaluation_trace() as capture:
++    with evaluation_span("sn.request", "agent", input=question,
++                         metadata={"stage": "request"}) as root:
++        response = submit_system_question(question)
++        root.set_output(response.answer)
++trace = capture.to_dict()
++```
++
++The caller owns the request root, artifact access controls, storage and retention.
++This is a **private contentful evaluation artifact**, separate from ordinary
++content-free telemetry: it includes selected questions, explicit observable
++plans/decisions, retrieved passages, actual synthesis context, provider-facing
++messages and returned answer content. It does not serialize clients, repositories,
++settings, credentials, service endpoints, exception text, embeddings, arbitrary
++knowledge payloads, or provider `reasoning_content`/hidden chain-of-thought.
++Plain JSON business values are copied when recorded; unsupported values create a
++capture error without changing or repeating the original operation.
++
++Schema `sn-execution-trace-v1` contains `trace_id`, `closed`, `spans`,
++`capture_errors`, and `duration_ms`. Each span has `span_id`, `parent_id`, `name`,
++`kind` (`agent`, `retriever`, `tool`, or `llm`), `input`, `output`, `metadata`,
++`status`, monotonic `start_time`/`end_time` in seconds, and `duration_ms`.
++Terminal status is `completed`, `error`, or `cancelled`; failures expose only
++`error_type`. A span still running at capture close retains `running` and creates
++`span_open_at_close`; it must not be treated as complete. Entry order is stable,
++but concurrent spans overlap: do not sum nested durations as elapsed wall time.
++Closed captures ignore late writes, nested captures restore their outer scope,
++and existing `copy_context()` workers retain the correct request and parent.
++
++Coverage is the synchronous native Ask call tree: intent preview, Ask dispatch,
++chunk retrieval, reasoning retrieval and its explicit initial plan/reflection,
++native search/graph/document/enumeration actions, chunk/mix/reasoning synthesis,
++and `OpenAICompatibleClient.chat_json`. Stage names are `intent`, `ask`,
++`retrieve`, `plan`, `reflect`, `action`, `synthesis`, and `llm`. Confirmed-intent
++plans are recorded as adopted plans rather than fabricated model calls. LLM spans
++represent a logical call including cache lookup and retries, not individual HTTP
++attempts. Model doubles/custom clients do not automatically produce LLM spans.
++State-mutating actions expose their selected outcome fields; graph payload text
++is captured through the actual synthesis context instead of arbitrary object
++serialization. Plugin actions mark `coverage=call_boundary_only` and
++`downstream_internals_traced=false`; detached work, plugin services, streaming
++transport, and external daemons are not claimed as fully traced. Inline control
++decisions such as outline updates remain observable in reflection outputs, not
++independent action spans. A successful answer does not prove complete capture;
++check coverage, `closed`, unfinished spans, and `capture_errors` separately.
++
+ ### Live production incident capture
+ 
+ On an Ubuntu 24.04 deployment started with `npm run start`, SSH to the host and run the
+diff --git a/docs/operations_zh.md b/docs/operations_zh.md
+index e2a8cf94088b85336f9edd1018df3e9248c64e29..636705da44c7ae02856068bcd7ead235a1bf56ef 100644
+--- a/docs/operations_zh.md
++++ b/docs/operations_zh.md
+@@ -80,6 +80,52 @@ bash scripts/cli.sh extensions services stop
+ 诊断，不代表服务就绪。批量摄取不隐式启动服务，应先显式启动服务或启动完整应用；
+ 管理员插件开关只影响访问。
+ 
++## 私有评测执行轨迹
++
++`app.core.evaluation_tracing` 提供显式调用方启用的内存采集，默认关闭，只依赖
++Python 标准库，不产生文件、网络或日志 I/O，也不依赖 DeepEval：
++
++```python
++from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
++
++with capture_evaluation_trace() as capture:
++    with evaluation_span("sn.request", "agent", input=question,
++                         metadata={"stage": "request"}) as root:
++        response = submit_system_question(question)
++        root.set_output(response.answer)
++trace = capture.to_dict()
++```
++
++请求根节点、产物访问控制、持久化和保留期限由调用方负责。这是与普通无正文
++遥测分开的**含正文私有评测产物**：包括显式选取的问题、可观察的计划与决策、
++召回原文、真正送入合成的上下文、提供给模型的消息和返回答案。不序列化 client、
++repository、settings、凭据、服务地址、异常正文、向量、任意知识对象 payload，
++也不采集 provider 的 `reasoning_content` 或隐藏思维链。只接受调用方明确投影的
++纯 JSON 业务值并在记录时快照；无法记录的值生成采集错误，不改变或重做原操作。
++
++协议 `sn-execution-trace-v1` 含 `trace_id`、`closed`、`spans`、`capture_errors`
++和 `duration_ms`。每个 span 含 `span_id`、`parent_id`、`name`、`kind`
++（`agent` / `retriever` / `tool` / `llm`）、`input`、`output`、`metadata`、
++`status`、以秒计的单调时钟 `start_time` / `end_time` 及 `duration_ms`。
++终态为 `completed` / `error` / `cancelled`；失败仅保留 `error_type`。
++采集关闭时仍未结束的 span 保留 `running` 并产生 `span_open_at_close`，不能视为
++完整轨迹。按进入顺序保存，但并发 span 可重叠，不能将父子耗时相加当墙钟耗时。
++关闭后忽略迟到写入；嵌套采集恢复外层上下文；已有 `copy_context()` 工作线程
++继承正确的请求与父节点。
++
++覆盖范围是同步 native Ask 调用树：意图预览、Ask 派发、chunk 检索、reasoning
++检索及显式初始计划／反思、原生搜索／图／文档／枚举动作、chunk / mix /
++reasoning 合成及 `OpenAICompatibleClient.chat_json`。阶段名为 `intent`、`ask`、
++`retrieve`、`plan`、`reflect`、`action`、`synthesis`、`llm`。已确认意图被记录为
++实际采用的计划，不虚构模型调用。LLM span 是包含缓存与重试的一次逻辑调用，
++不是每次 HTTP 尝试；模型替身和自定义客户端不会自动产生 LLM span。
++原地更新状态的动作仅暴露选定结果字段；图对象正文通过真实合成上下文采集，
++不任意序列化对象。插件动作标注 `coverage=call_boundary_only` 和
++`downstream_internals_traced=false`；脱离请求的工作、插件服务、流式传输、外部
++daemon 不宣称全覆盖。大纲更新等内联控制决策可见于反思输出，不单独伪造动作
++span。回答成功不代表采集完整；应分别检查覆盖范围、`closed`、未结束 span 和
++`capture_errors`。
++
+ ## 可观测性 / 日志
+ 
+ 后端通过统一的 `EventLogger`（`app/core/event_logging.py`）输出结构化日志：每条事件一行 JSONL 写入 `.local/logs/`，并附控制台简要行。写日志是 best-effort，绝不影响它所观测的请求或管线；未配置模型时 LLM 通道为 no-op。
+-- 
+2.43.0
+

@@ -21,7 +21,8 @@ def build_evidence_path_metric(*, model: object | None = None, threshold: float 
     """Build the first product DAG without executing it.
 
     The first three nodes act as gates.  Terminal scores are deliberately
-    coarse and fixed; the judge decides only the final support branch.
+    coarse and fixed. BinaryJudgementNode uses an LLM at every node, including
+    metadata gates; the deterministic observations are supplied by our adapter.
     """
     try:
         from deepeval.metrics import DAGMetric
@@ -50,6 +51,7 @@ def build_evidence_path_metric(*, model: object | None = None, threshold: float 
         evaluation_params=[
             SingleTurnParams.INPUT,
             SingleTurnParams.ACTUAL_OUTPUT,
+            SingleTurnParams.RETRIEVAL_CONTEXT,
             SingleTurnParams.EXPECTED_OUTPUT,
             SingleTurnParams.METADATA,
         ],
