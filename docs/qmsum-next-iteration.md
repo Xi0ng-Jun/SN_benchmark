@@ -37,6 +37,8 @@
 
 后续优先顺序：QMSum BM25 对照 → 其余已批准的 Notebook benchmark → 有完整 trace hook 后启用 Agent/DAG 语义评分。当前的确定性阶段诊断可以直接用历史答卷，不需要重问。
 
+完整的三条 QMSum 路径示例和代码数据流见[QMSum 三路径说明](qmsum-three-paths-walkthrough.md)。
+
 ## 服务器交接
 
 收到代码后按以下顺序推进，不再为旧 QMSum 报告安排重复审计：
