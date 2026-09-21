@@ -1,5 +1,7 @@
 # SN 执行轨迹：采集、离线评分与服务器交接
 
+2026-09-21 服务器后续：meeting18 两模式的真实轨迹已通过验收，reasoning 全轨迹评分遇到 judge 上下文上限。已有结果先按[评分输入离线检查](agent-judge-input-inspection.md)推进，不需要重复本文的首次采集验收，也不必重问 SN。
+
 本阶段给 SN 增加可选的执行观测，并让评测项目读取它。默认不采集；只有新的 Notebook 实验显式传 `--capture-agent-trace` 才启用。评分仍由另一条命令执行。
 
 SN 修改交付在 [Git 补丁包](../integrations/silicon-notebook/README.md)，实现依据见[计划](superpowers/plans/2026-09-21-sn-execution-tracing.md)。这次授权允许修改 SN 的观测代码；原来的“不改 SN”是此前阶段的边界。本次不部署、不启动模型实验、不改运行中的生产配置。
@@ -115,7 +117,7 @@ python scripts/evaluate_agent_traces.py \
 
 输出 `agent-traces.jsonl`（含原始执行数据）、`agent-diagnostics.jsonl`、`agent-summary.json`、`agent-report.md`；默认 `agent-scores.jsonl` 为空。完整性不足时先定位具体缺失 span，不扩大实验规模掩盖问题。
 
-5. 确认真实轨迹可用后，以独立评分目录启动已配置的 judge，无需重问 SN：
+5. 确认真实轨迹可用后，先检查[实际评分输入大小与 judge 限制](agent-judge-input-inspection.md)，避免反复提交已知超限请求。再以独立评分目录启动合适的 judge，无需重问 SN：
 
 ```bash
 python scripts/evaluate_agent_traces.py \

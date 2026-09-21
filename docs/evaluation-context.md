@@ -1,5 +1,7 @@
 # Silicon Notebook 评测上下文
 
+2026-09-21 Agent judge 更新：服务器已取得 meeting18 chunk/reasoning 各 6 份完整轨迹；chunk 12 项评分成功，reasoning 24 项因上下文超限失败。当前先用[评分输入离线检查](agent-judge-input-inspection.md)读取原结果，核对实际静态 prompt 大小与可用 judge 限制，再决定完整轨迹评分或独立组件评测。不重问 SN，不静默压缩/裁剪，不将未知 token 数或评分失败写成零分；不以本机代码回归替代服务器真实测量。
+
 2026-09-21 更新：用户明确授权在 SN 独立分支增加可选执行观测，通过本评测仓库的 Git 补丁包交付服务器。本机只做离线代码验证，不启动模型实验、恢复 baseline/timer 或修改运行中的生产配置。Notebook `--capture-agent-trace` 与 Agent 离线转换/评分的当前契约见 [SN 执行轨迹](sn-execution-tracing.md)。下文历史“不修改 SN”描述不适用于这次已授权的观测补丁。
 
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](notebook-benchmark-experiment-plan.md)。

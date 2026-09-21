@@ -99,6 +99,20 @@ def _metric(name: str, *, model: object | None):
     return classes[name](**kwargs)
 
 
+def trajectory_skip_reason(envelope: AgentTraceEnvelope, name: str) -> str | None:
+    """Shared eligibility for scoring and offline input inspection."""
+    if envelope.completeness != "complete":
+        return f"trace_not_complete:{envelope.completeness_reason}"
+    if not envelope.final_output_available:
+        return "final_output_missing"
+    if envelope.execution_trace is None:
+        return "native_execution_trace_missing"
+    if name in {"plan_quality", "plan_adherence"} and not any(
+            s['type'] == 'plan' and s.get('detail', {}).get('output_present') for s in envelope.steps):
+        return "explicit_plan_missing"
+    return None
+
+
 def evaluate_trajectory(
     test_case: Any,
     envelope: AgentTraceEnvelope,
@@ -111,29 +125,12 @@ def evaluate_trajectory(
     unknown = sorted(set(selected) - set(_METRIC_NAMES))
     if unknown:
         raise ValueError("Unknown Agent metric(s): " + ", ".join(unknown))
-    if envelope.completeness != "complete":
-        return [
-            {
-                "metric": name,
-                "status": "not_applicable",
-                "score": None,
-                "reason": f"trace_not_complete:{envelope.completeness_reason}",
-            }
-            for name in selected
-        ]
-    if not envelope.final_output_available:
-        return [{'metric': name, 'status': 'not_applicable', 'score': None,
-                 'reason': 'final_output_missing'} for name in selected]
     results: list[dict[str, Any]] = []
     for name in selected:
-        if envelope.execution_trace is None:
+        reason = trajectory_skip_reason(envelope, name)
+        if reason:
             results.append({'metric': name, 'status': 'not_applicable', 'score': None,
-                            'reason': 'native_execution_trace_missing'})
-            continue
-        if name in {'plan_quality', 'plan_adherence'} and not any(
-                s['type'] == 'plan' and s.get('detail', {}).get('output_present') for s in envelope.steps):
-            results.append({'metric': name, 'status': 'not_applicable', 'score': None,
-                            'reason': 'explicit_plan_missing'})
+                            'reason': reason})
             continue
         try:
             metric = _metric(name, model=model)

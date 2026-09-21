@@ -1,6 +1,8 @@
 # Silicon Notebook RAG Benchmark + DeepEval
 
-**2026-09-21：新增可选 SN 执行轨迹与服务器补丁包。** Notebook 运行用 `--capture-agent-trace` 保存意图、检索、动作、计划、合成与模型调用；之后单独运行 Agent 诊断/评分，不重复 Ask。SN 默认关闭采集且无需安装 DeepEval。见[采集与评分说明](docs/sn-execution-tracing.md)和[SN 补丁应用指引](integrations/silicon-notebook/README.md)。本机仅做离线验证，服务器真实轨迹验收待执行。
+**2026-09-21：新增 Agent judge 输入离线检查。** 服务器报告 meeting18 两模式均已取得完整轨迹；chunk 12 项 Agent 分评分成功，reasoning 24 项因 judge 上下文超限失败。新增 `scripts/inspect_agent_inputs.py`，复用已保存回答，测量 SDK 轨迹及静态提示词大小、步骤来源和重复内容位置。见[使用说明与下一步](docs/agent-judge-input-inspection.md)。无需重新运行 SN；本地没有启动在线评分。
+
+**2026-09-21：新增可选 SN 执行轨迹与服务器补丁包。** Notebook 运行用 `--capture-agent-trace` 保存意图、检索、动作、计划、合成与模型调用；之后单独运行 Agent 诊断/评分，不重复 Ask。SN 默认关闭采集且无需安装 DeepEval。见[采集与评分说明](docs/sn-execution-tracing.md)和[SN 补丁应用指引](integrations/silicon-notebook/README.md)。本机仅做离线验证，服务器真实验收与评分限制见上方更新。
 
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](docs/notebook-benchmark-experiment-plan.md)。
 

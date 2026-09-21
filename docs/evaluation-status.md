@@ -1,10 +1,18 @@
 # 评测状态
 
+## 2026-09-21：Agent 真实评分反馈与输入检查
+
+据用户转交的服务器报告，meeting18 chunk/reasoning 各 6 题均成功并记录完整原生轨迹。DeepEval 4.2.2 + GLM-5.2-spec 下，chunk 的 TaskCompletion/StepEfficiency 共 12 项成功（分别均为 0.9/0.75）；reasoning 四指标共 24 项因上下文超限失败。网关的 `at least 202752` 不是精确输入 token 数。完整轨迹验收已完成，不再要求服务器重做采集或重问 SN。
+
+本次新增离线入口 `scripts/inspect_agent_inputs.py`：复用原始记录和 SDK span 投影，度量轨迹 JSON、三类可提前确定的原版提示词、步骤自身字符串体积及重复来源。后续动态 prompt 和 provider 包装未测，`context_fit=unknown`；可选字节预算不冒充模型 token 上限，也不会自动拦截现有评分。仅复用指标前提检查，原有评分输入与算法不变。见[方法、命令与推进顺序](agent-judge-input-inspection.md)。
+
+本地新增 3 项定向回归，相关 25 项通过，含真实 SDK + 本地假 judge 验证实际静态 prompt 一致；1 条 SDK 既有 asyncio 弃用警告。未启动 SN/在线 judge、下载数据或改动 SN 补丁。服务器下一步只检查现有 12 题和可用模型限制，再用最长原轨迹检验合适 judge 的可行性；如不具备条件，设计独立组件评测，暂不自定义压缩或扩大实验范围。
+
 ## 2026-09-21：可选 SN 执行轨迹与离线 DeepEval 转换
 
 已实现 SN 标准库采集层、原生调用边界埋点、Notebook 显式开关、完整性检查和 DeepEval 官方 span 树转换。旧输出摘要保留原语义；澄清路径也可完整记录，不把完整度当质量。TaskCompletion/StepEfficiency 使用新树并要求非空答案，PlanQuality/PlanAdherence 还需显式计划；证据 DAG 需答案和上下文。见[使用说明与限制](sn-execution-tracing.md)。
 
-本机已用真实 DeepEval SDK 配合假 judge 验证转换与指标接口，未调用线上模型。[验证记录](sn-execution-tracing-validation.md)：benchmark 83 项通过；SN 标准 gate 前端/契约通过，后端 12754 项通过、1 项既有打包环境失败（未修改基准也复现）。服务器仍需在一个新隔离分区上检查实际轨迹；无需重跑已完成的 QMSum 对照。服务器的 model-config 注入/并发修复需保留，本机未收到其代码，不能宣称已经合并。
+本机已用真实 DeepEval SDK 配合假 judge 验证转换与指标接口，未调用线上模型。[验证记录](sn-execution-tracing-validation.md)：benchmark 83 项通过；SN 标准 gate 前端/契约通过，后端 12754 项通过、1 项既有打包环境失败（未修改基准也复现）。服务器随后已完成 meeting18 实际轨迹验收，见上方反馈；无需重跑已完成的 QMSum 对照。服务器的 model-config 注入/并发修复需保留，本机未收到其代码，不能宣称已经合并。
 
 ## 2026-09-20：QMSum 首轮收口与下一轮代码
 
