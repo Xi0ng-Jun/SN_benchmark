@@ -27,6 +27,10 @@ def main(argv=None):
                         help='SN model-services TOML; default is project/.local/model-services.toml')
     parser.add_argument('--trajectory', action='store_true',
                         help='Also score complete trajectories; requires a judge that fits the full trace')
+    parser.add_argument('--metric', dest='metrics', action='append',
+                        help='Select a metric ID; repeat for several. Whole-trace IDs also require --trajectory')
+    parser.add_argument('--task-timeout', type=float,
+                        help='SDK evaluate task budget (e.g. multi-query samples); native sync iterator uses judge transport limits')
     parser.add_argument('--case-id', dest='case_ids', action='append',
                         help='Run selected case(s) with the entire partition corpus; repeat for several')
     parser.add_argument('--request-revision', choices=('notebook-request-v1', 'notebook-request-v2'),
@@ -45,7 +49,8 @@ def main(argv=None):
         execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
                 mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
                 case_ids=args.case_ids, model_config=args.model_config,
-                agent_config={'judge_config': args.judge_config.resolve(), 'trajectory': args.trajectory})
+                agent_config={'judge_config': args.judge_config.resolve(), 'trajectory': args.trajectory,
+                              'metrics': args.metrics, 'task_timeout': args.task_timeout})
     except KeyboardInterrupt:
         code = 130
     except Exception as exc:

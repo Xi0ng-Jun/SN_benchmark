@@ -162,8 +162,14 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     from .starter_runtime import configure_environment, snapshot_sources, resolve_models, make_adapter
     resolved, models = {}, {}
     if agent_config is not None:
-        if set(agent_config) != {'judge_config', 'trajectory'} or type(agent_config['trajectory']) is not bool:
+        if (not {'judge_config', 'trajectory'} <= set(agent_config)
+                or set(agent_config) - {'judge_config', 'trajectory', 'metrics', 'task_timeout'}
+                or type(agent_config['trajectory']) is not bool):
             raise ValueError('Agent evaluation requires explicit judge configuration and trajectory choice')
+        from .native_metrics import select_metrics
+        from .native_sdk import configure_local_sdk, sdk_timeout_identity
+        agent_metrics = select_metrics(agent_config.get('metrics'), trajectory=agent_config['trajectory'])
+        configure_local_sdk(task_timeout=agent_config.get('task_timeout'))
         resolved, models = resolve_models(Path(agent_config['judge_config']).resolve(), ['judge'])
     if model_config is not None:
         model_config = Path(model_config).resolve()
@@ -196,6 +202,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             identity['notebook_context']['case_ids'] = [case['case_id'] for case in cases]
         if agent_config is not None:
             identity['agent_evaluation'] = {'protocol': tracing.NATIVE_TRACE_VERSION, 'sdk_version': '4.2.2',
+                                            'metrics': list(agent_metrics), 'sdk_timeout': sdk_timeout_identity(),
                                             'trajectory': agent_config['trajectory'], 'judge': models['judge']}
         protocol_id = fingerprint({**identity, 'mode': mode})
         planned = plan_rows(cases, run.name, protocol_id, mode)
@@ -220,7 +227,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                 judge_events = stack.enter_context(EventJournal(run / 'judge-events.jsonl'))
                 judge = make_adapter(resolved['judge'], 'judge', settings, judge_events)
                 agent_evaluation = NativeAgentEvaluation(run / 'agent', judge=judge, judge_identity=models['judge'],
-                                                         enable_whole_trace_metrics=agent_config['trajectory'])
+                                                         enable_whole_trace_metrics=agent_config['trajectory'],
+                                                         metrics=agent_config.get('metrics'))
                 # run_case owns durable summary finalization, including errors
                 # and cancellation. A second ExitStack write could mask those.
             predictions(run, cases, product, mode, repo, outputs, agent_evaluation=agent_evaluation,

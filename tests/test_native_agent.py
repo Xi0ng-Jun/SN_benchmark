@@ -104,6 +104,52 @@ def runner_for(tmp_path, sdk, check, fail=False, **kwargs):
     return runner, judge
 
 
+def test_score_is_durable_before_next_metric_calls_judge(tmp_path, sdk):
+    session = sdk.Session()
+    runner, judge = runner_for(tmp_path, sdk, lambda: None)
+    original = judge.generate
+    def generate(prompt, schema=None):
+        if schema.__module__.startswith('deepeval.metrics.answer_relevancy'):
+            scores = rows(tmp_path / 'native/native-scores.jsonl')
+            assert any(s['metric'] == 'Faithfulness' and s['status'] == 'scored' for s in scores)
+            raise KeyboardInterrupt('stop during second metric')
+        return original(prompt, schema)
+    judge.generate = generate
+    def product():
+        session.emit('sn.synthesis.chunks', 'agent', 'synthesis', {'question': 'Who?'},
+                     {'answer': 'Ada'}, {'question': 'Who?', 'context_block': 'Ada wrote notes.'})
+        return {'status': 'success', 'answer': 'Ada'}
+    with pytest.raises(KeyboardInterrupt):
+        runner.run_case(case_id='durable', mode='chunk', question='Who?', invoke_and_persist=product,
+                        session_factory=session.factory)
+    scores = rows(tmp_path / 'native/native-scores.jsonl')
+    faith = [s for s in scores if s['metric'] == 'Faithfulness']
+    assert len(faith) == 1 and faith[0]['status'] == 'scored'
+    assert faith[0]['elapsed_seconds'] >= 0
+    error = next(s for s in scores if s['metric'] == 'Answer Relevancy')
+    assert error['status'] == 'error' and error['score'] is None
+
+
+def test_metric_selection_uses_native_trace_without_unselected_scores(tmp_path, sdk):
+    runner, judge = runner_for(tmp_path, sdk, lambda: None, enable_whole_trace_metrics=True,
+                               metrics=['step_efficiency'])
+    session = sdk.Session()
+    def product():
+        session.emit('sn.synthesis.chunks', 'agent', 'synthesis', {'question': 'Who?'},
+                     {'answer': 'Ada'}, {'question': 'Who?', 'context_block': 'Ada wrote notes.'})
+        return {'status': 'success', 'answer': 'Ada'}
+    runner.run_case(case_id='selected', mode='chunk', question='Who?', invoke_and_persist=product,
+                    session_factory=session.factory)
+    scores = rows(tmp_path / 'native/native-scores.jsonl')
+    assert [(s['metric'], s['status']) for s in scores] == [('Step Efficiency', 'scored')]
+    assert any('sn.synthesis.chunks' in p for p in judge.prompts)
+    assert len([s for s in rows(tmp_path / 'native/components.jsonl') if s['record_type'] == 'sample']) == 1
+    trace = rows(tmp_path / 'native/native-traces.jsonl')[-1]['trace']
+    synthesis = trace['root_spans'][0]['children'][0]
+    assert synthesis['input'] == 'Who?' and synthesis['output'] == 'Ada'
+    assert synthesis['retrieval_context'] == ['Ada wrote notes.']
+
+
 def test_real_metrics_score_after_durable_answer_and_native_trace(tmp_path, sdk):
     session = sdk.Session()
     answer = tmp_path / "answer.json"
