@@ -1,8 +1,8 @@
 # 评测项目下一步开发讨论稿
 
-## 2026-09-21 当前方向：获得真实 Agent 执行轨迹
+## 2026-09-22 当前方向：原生组件与 Agent 评测
 
-用户已授权 SN 观测修改。当前实施 [SN 同步 Ask 轨迹](sn-execution-tracing.md)：可选采集 → 保存真实树 → 默认离线诊断 → 显式 DeepEval 评分。服务器通过评测仓库里的补丁包更新独立 SN worktree；接下来先验收单分区，再按实际问题选择 Agent 实验范围。Dashboard、更多基线和新增 benchmark 仍按用户要求暂缓；历史 baseline 和 timer 不恢复。以下日期/阶段描述保留为历史，不覆盖当前授权和已实现入口。
+用户已批准[原生 DeepEval 改造](native-agent-evaluation.md)：SN 直接产生 SDK span，运行器先保存回答/组件样本再评分；默认组件，完整轨迹显式开启。删除旧私有回放，不迁移旧 Agent 分。下一步服务器先最大题两模式，再完成 meeting18 六题两模式，随后根据检索、合成与计划指标定位具体问题。普通旧答案/客观分继续可用。Dashboard、DAG、新 benchmark、历史 baseline 与 timer 暂不扩展或恢复；以下阶段保留为历史。
 
 ## 最新方向：先复用 DeepEval 公开评测
 

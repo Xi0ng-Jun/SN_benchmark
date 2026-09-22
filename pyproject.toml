@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-deepeval = ["deepeval>=4.2,<5"]
+deepeval = ["deepeval==4.2.2"]
 dev = ["pytest>=8"]
 notebook = ["rouge-score==0.1.2"]
 

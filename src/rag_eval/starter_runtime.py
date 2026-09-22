@@ -77,7 +77,7 @@ def snapshot_sources(root, project, run):
     return identity
 
 
-def configure_environment(project, run, *, product_track, document_limit=40):
+def configure_environment(project, run, *, product_track, document_limit=40, model_config=None):
     """Process-global setup: caller must use one fresh CLI process per cell."""
     if type(document_limit) is not int or document_limit < 1:
         raise ValueError("Document capacity must be a positive integer")
@@ -100,7 +100,7 @@ def configure_environment(project, run, *, product_track, document_limit=40):
     if product_track:
         # The registry may hot-reload its file. Pin it inside this private runtime.
         service = private / "model-services.toml"
-        source = project / ".local/model-services.toml"
+        source = Path(model_config) if model_config is not None else project / ".local/model-services.toml"
         descriptor = os.open(service, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as target:
             target.write(source.read_bytes())

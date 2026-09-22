@@ -1,5 +1,13 @@
 # 评测状态
 
+## 2026-09-22：原生 DeepEval 改造
+
+当前协议见[SN 原生 DeepEval](native-agent-evaluation.md)。实现 SN 可选原生 span、逐题串行 iterator、组件与可选整轨迹指标、先保存后评分、独立 judge 身份和故障记录。删除旧私有树注入及输入检查脚本；历史诊断命令保留为纯离线检查。SN 补丁在独立 worktree，生产主目录未改。
+
+服务器旧 DeepSeek Agent 批次已完成（chunk 12 项、reasoning 24 项），并非仍在运行；结果归档，不混入新版。QMSum request-v2 两模式 281 题答案与 BM25 客观分仍可继续分析。下一批只重跑最大轨迹题两模式，链路可用后完成 meeting18，不扩到全量。
+
+本次本机验证和补丁身份以[交付验证记录](sn-execution-tracing-validation.md)为准；服务器真实验收尚未执行。以下日期段保留历史，已删除入口不能作为当前命令。
+
 ## 2026-09-21：Agent 真实评分反馈与输入检查
 
 据用户转交的服务器报告，meeting18 chunk/reasoning 各 6 题均成功并记录完整原生轨迹。DeepEval 4.2.2 + GLM-5.2-spec 下，chunk 的 TaskCompletion/StepEfficiency 共 12 项成功（分别均为 0.9/0.75）；reasoning 四指标共 24 项因上下文超限失败。网关的 `at least 202752` 不是精确输入 token 数。完整轨迹验收已完成，不再要求服务器重做采集或重问 SN。

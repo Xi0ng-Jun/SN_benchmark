@@ -1,4 +1,32 @@
-# SN 执行轨迹交付验证（2026-09-21）
+# SN 执行轨迹交付验证
+
+## 2026-09-22：原生 DeepEval 交付
+
+当前实现见[原生评测协议](native-agent-evaluation.md)。SN 提交 `052b7373`，基于旧埋点提交 `1b4eb2b3`；只修改独立 `feat/evaluation-tracing` worktree。主目录 `project` 的 tracked 文件保持干净，既有未跟踪 `.deepeval/` 和 `results/` 未操作。实际开始时间为北京时间 08:56；此前没有建立零点定时任务。
+
+| 检查 | 实际结果 | 范围与限制 |
+| --- | --- | --- |
+| benchmark 全部测试及跨仓库契约检查 | **419 passed，0 skipped，网络尝试 0** | 真实 DeepEval 4.2.2，judge/业务替身；包含普通 Notebook、旧答案报告/评分、组件/整轨迹、逐查询、错误/取消、持久化与身份 |
+| SN 最终定向回归 | **32 passed** | 关闭时不导入 SDK/不改业务次数，真实业务投影，线程/异步上下文，分节/多查询，原始异常和实际流式取消子类；基础 SN 环境无需 DeepEval |
+| SN 标准 gate：contracts | **54 passed** | 架构及契约检查 |
+| SN 标准 gate：backend | **12762 passed，1 failed** | 既有 `test_packaged_migration_helper_runs_with_bundled_python_layout` 缺 dotenv；下方历史记录保留此前未修改基准上的复现证据 |
+| SN 标准 gate：frontend | **Node 2730 passed；组件 1187 passed** | 构建与 TypeScript 检查也通过 |
+| 增量补丁 | SHA256 校验及暂存索引重放通过 | 从 manifest 的 base 应用后 tree 与 `052b7373` tree 完全一致；不表示服务器不同基准没有冲突 |
+| CLI / 静态检查 | help、diff --check 通过 | 不存在旧 `_trace_dict` 写入、手工 SDK 树转换路径 |
+
+标准 gate 后针对审查发现的取消子类分类做了最后一次局部修正，以最终 32 项定向回归验证；未重复跑未改动的前端/契约。后端已有打包环境失败未借本次任务修改。不能把本交付说成“SN 全部测试通过”。
+
+全量 benchmark 命令使用 `PYTHONPATH=.:src`、`SILICON_NOTEBOOK_PROJECT_ROOT=<SN worktree>`，并在进程启动前设置 `DEEPEVAL_TELEMETRY_OPT_OUT=YES`、`DEEPEVAL_DISABLE_DOTENV=1`、`CONFIDENT_TRACE_FLUSH=0`；调用 pytest 前拦截 socket connect/connect_ex/create_connection 并计数。测试目录为 `tests` 和 `integrations/silicon-notebook/test_native_agent_contract.py`，后者还需 `SN_EVALUATION_SOURCE=<SN worktree>`。
+
+跨仓库检查真实加载 SN 的观测模块和真实 SDK，验证带原生父 span 的线程检索、真实上下文字段、回答先持久化、评分失败仍保留成功回答；业务与 judge 是本地替身，**不等于真实 SN 模型实验通过**。
+
+代码审查修正了 SDK 挂接 test case 覆盖检索输出的问题（保留真实候选 ID/内容），以及流式取消被误记 error、外层重复 finish 可能覆盖取消的问题。未扩展混合/KG 检索；原生协议只覆盖所列具名边界，Notebook runtime 禁用 KG overlay。服务器必须先按最大题两模式，再 meeting18 完成真实验收。
+
+未下载数据、启动真实 SN/在线 judge、部署生产、生成 Dashboard 或恢复 timer。旧结果归档/保留规则见当前协议。
+
+## 历史：2026-09-21 旧采集器交付
+
+下列证据只对应旧 `sn-execution-trace-v1`。旧命令已退役，不应用作新版本验收结果。
 
 仅使用离线样本、测试替身和已安装依赖。没有下载 benchmark 数据、调用产品模型/judge、启动 SN 服务或 Dashboard、恢复 timer。
 

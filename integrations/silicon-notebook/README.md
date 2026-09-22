@@ -1,59 +1,52 @@
-# SN 本地执行轨迹补丁包
+# SN 原生 DeepEval 增量补丁
 
-本目录把 SN 的观测改动随评测仓库一起交付，**不需要推送 SN 上游仓库**。补丁只修改追踪模块、具名调用边界、测试与 operations 文档；默认关闭、不引入 DeepEval 生产依赖、不改数据库 schema 和部署配置。
+本目录随评测仓库交付 SN 修改，不向 SN 上游推送，也不覆盖生产目录。当前补丁把之前的自制采集器换成原生 DeepEval；修改观测、业务字段投影、测试和成对 operations 文档。基础生产依赖不变，评测环境增加可选 `deepeval==4.2.2`。
 
-完整功能与运行指令见 [SN 执行轨迹说明](../../docs/sn-execution-tracing.md)。`manifest.json` 记录本机基准/实现提交、补丁 SHA256 和文件清单；`SHA256SUMS` 用于传输校验。补丁是 Git format-patch 邮件格式，包含原文件 blob 身份，比复制整份文件更适合保留服务器的本地修复。
+- 本机增量起点：`1b4eb2b3`（旧 `sn-execution-trace-v1` 已应用）。
+- 本机实现提交：`052b7373`，分支 `feat/evaluation-tracing`。
+- 新协议：`sn-deepeval-native-v1`。准确提交、文件哈希见 `manifest.json`。
+- 服务器此前已在新基准上合并旧补丁，实际提交为 `af03de32...`；不要重复应用旧补丁，不要求提交 SHA 与本机一致。
 
-## 应用到服务器
+## 应用到独立 worktree
 
-先拉取评测代码，核对 SN 的 `git status --short --branch` 和 `git rev-parse HEAD`。本机基准为 `74e9c61e`；服务器不必恰好等于它，但基准不同意味着需要检查补丁上下文与冲突。
-
-以下路径由服务器 Agent 按实际情况填写：
+以下路径由服务器填写。起点应是**已经含旧观测补丁及服务器必要修复的评测分支**，不能直接从不含旧补丁的生产 HEAD 应用此增量。
 
 ```bash
-BENCH_REPO=/path/to/benchmark-deepeval
-SN_REPO=/path/to/existing/silicon-notebook
-SN_EVAL=/path/to/sn-evaluation-tracing
-SN_PYTHON=/path/to/sn-python-environment/bin/python
+BENCH_REPO=/path/to/SN_benchmark
+SN_WITH_OLD_TRACE=/path/to/sn-eval-tracing
+SN_NATIVE=/path/to/sn-native-evaluation
+PATCH="$BENCH_REPO/integrations/silicon-notebook/0001-feat-native-deepeval-evaluation.patch"
 
 cd "$BENCH_REPO/integrations/silicon-notebook"
 sha256sum -c SHA256SUMS
-git -C "$SN_REPO" status --short --branch
-git -C "$SN_REPO" rev-parse HEAD
-git -C "$SN_REPO" worktree add -b feat/benchmark-execution-tracing "$SN_EVAL" HEAD
-git -C "$SN_EVAL" apply --check "$BENCH_REPO/integrations/silicon-notebook/"*.patch
-git -C "$SN_EVAL" am --3way "$BENCH_REPO/integrations/silicon-notebook/"*.patch
-git -C "$SN_EVAL" status --short
-git -C "$SN_EVAL" log -1 --oneline
+git -C "$SN_WITH_OLD_TRACE" status --short --branch
+git -C "$SN_WITH_OLD_TRACE" worktree add -b feat/native-deepeval-evaluation "$SN_NATIVE" HEAD
+git -C "$SN_NATIVE" apply --check "$PATCH"
+git -C "$SN_NATIVE" am --3way "$PATCH"
+git -C "$SN_NATIVE" status --short
+git -C "$SN_NATIVE" log -1 --oneline
 ```
 
-这会在原 SN 当前已提交版本上创建独立 worktree。原生产目录里的未提交修改不会被带过去，也不会被覆盖；如果它们是本轮评测必需修复，先审阅并单独带入评测分支，不要盲目 stash、reset 或覆盖生产文件。评测仓库中服务器已有的 model-config/并发修复同样需要保留。
+`apply --check` 是上下文预检。失败时先查看差异，再在独立 worktree 用 `am --3way`；服务器基准不同可能有合理冲突。保留服务器的模型路由、RetrievalControlError、全局问答和并发修复，按业务签名合并后 `git am --continue`。无法确认正确性则 `git am --abort` 并报告具体冲突。不要用整文件覆盖，不要 reset/stash 用户改动。应用后形成干净提交；运行身份记录服务器实际合并 SHA。
 
-已有目标分支/worktree 时先检查是否已经应用，避免重复 `am`。`apply --check` 失败时检查差异；版本稍有不同但祖先可用时，可以在这个新 worktree 执行 `am --3way`。若发生冲突，由 Agent 按原生方法签名保留两侧改动后 `git am --continue`；无法正确合并就 `git am --abort` 并说明具体冲突，禁止以整文件覆盖绕过。
+新 worktree 不带被忽略的配置和依赖。使用独立评测 Python 环境，具有 SN backend 所需依赖及 DeepEval 4.2.2；不要向生产服务使用的虚拟环境安装新依赖。模型 TOML 用 `--model-config` 注入隔离 runtime，judge JSON 用 `--judge-config`，凭据继续使用服务器已有环境变量。
 
-应用后必须形成干净提交再运行：评测的 `snapshot_sources` 拒绝未提交的 SN tracked 变更，并保存实际 `HEAD` 和源码归档。服务器三方合并后的提交 SHA 可能不同于 manifest 中的本机实现 SHA，这是正常的，实验身份应使用服务器实际提交。
+## 必要检查
 
-新 worktree 不会自动复制被 Git 忽略的 `.env`、`.local/model-services.toml` 和依赖目录。按服务器已采用的模型配置注入方式提供这些只读输入，不把配置、密钥或地址提交到补丁/评测仓库，不重启正在服务的生产 SN。
-
-## 验证与实验顺序
-
-应用后先执行 SN 针对性回归：
+从 benchmark 根目录运行跨仓库离线契约检查，使用真实 SN 观测模块、真实 SDK 和本地替身：
 
 ```bash
-cd "$SN_EVAL"
-SILICON_NOTEBOOK_ENV_FILE='' MODEL_SERVICES_CONFIG='' \
-  PYTHONPATH=backend "$SN_PYTHON" -m pytest \
-  backend/tests/test_evaluation_tracing.py -q
-PYTHON_BIN="$SN_PYTHON" bash scripts/check.sh
+DEEPEVAL_TELEMETRY_OPT_OUT=YES DEEPEVAL_DISABLE_DOTENV=1 CONFIDENT_TRACE_FLUSH=0 \
+  SN_EVALUATION_SOURCE="$SN_NATIVE" PYTHONPATH=.:src \
+  "$EVAL_PYTHON" -m pytest integrations/silicon-notebook/test_native_agent_contract.py -q
 ```
 
-`SN_PYTHON` 由服务器设置为其 SN Python 环境；按 SN 的标准 gate 配置独立前端依赖，不写穿共享 node_modules。补丁应用在不同版本且调整过冲突时，这些验证尤其必要。本机验证证据见 [交付记录](../../docs/sn-execution-tracing-validation.md)，不能替代服务器真实模型接口验收。
+`EVAL_PYTHON` 是服务器独立评测环境 Python。SN 针对性测试为 `backend/tests/test_evaluation_tracing.py` 与 `backend/tests/test_evaluation_tracing_integration.py`；按 SN 仓库约定执行标准 gate，尤其是解决过合并冲突时。已知本机 `dotenv` 打包环境失败见[验证记录](../../docs/sn-execution-tracing-validation.md)，不应以此修改无关业务。
 
-随后只选一个已冻结的 QMSum 分区，两种模式各用新 run-dir，加 `--request-revision notebook-request-v2 --capture-agent-trace`。查看 `product_record.execution_trace` 的父子关系、阶段与 `capture_errors`，再运行默认离线 Agent 报告。先不要整套重跑，也不生成 Dashboard；确认真实轨迹可用后再显式运行 judge。
+这份增量不能直接用于全新、没有旧埋点的 SN。若是全新克隆，应先从评测仓库 Git 历史取得上一版补丁并应用，再应用本补丁；当前服务器已有旧补丁，无需此步骤。本包不维持两套运行实现。
 
-## 回退
+## 实验与回退
 
-- 不需要观测时，去掉 `--capture-agent-trace` 即回到原采集路径，SN 装有补丁也默认关闭。
-- `git am` 冲突过程中用 `git am --abort` 回到应用前状态。
-- 已应用提交的评测分支若需撤销，用 `git revert <服务器实际补丁提交>` 保留历史。原生产目录和生产分支从未切换，运行中的服务不需操作。
-- 已生成的实验产物仍绑定原提交，不回填新版本到历史实验。
+当前命令和工件说明见[原生评测协议](../../docs/native-agent-evaluation.md)，完整[服务器 prompt](../../docs/server-agent-tracing-prompt.md)可直接转交。先最大 QMSum 题两模式，再 meeting18 六题两模式，不自动跑全量或 Dashboard。
+
+不用 Agent 评分时运行普通 Notebook 命令；SN 补丁默认不启用观测。`git am` 冲突可 abort；应用后的评测分支可 revert 服务器实际提交。生产目录和服务不需要切换。旧答案/客观分保留，旧 Agent JSON 归档，不迁移或混入新主结果。

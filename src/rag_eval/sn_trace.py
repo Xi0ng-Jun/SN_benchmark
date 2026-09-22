@@ -1,8 +1,4 @@
-"""SN's opt-in execution protocol and DeepEval's offline trajectory boundary.
-
-No SN or DeepEval imports during ordinary reporting. The SDK conversion does
-not register live traces, enqueue uploads, or run a judge.
-"""
+"""SN execution protocol helpers retained for historical trace diagnostics."""
 from __future__ import annotations
 
 import math
@@ -118,38 +114,3 @@ def execution_steps(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
                                   'span_id': span.get('span_id'), 'parent_id': span.get('parent_id'),
                                   'output_present': span.get('output') is not None, 'citation_keys': citation_keys}))
     return steps
-
-
-def deepeval_tree(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """Use the exact typed span projection used by DeepEval trajectory evaluation.
-
-    create_nested_spans_dict and LLMTestCase._trace_dict are SDK internals. Their
-    compatibility is covered by an actual SDK/fake-judge test, not a hand-written
-    imitation of DeepEval's serialized tree. No @observe/global manager mutation.
-    """
-    from deepeval.tracing import trace_manager
-    from deepeval.tracing.types import AgentSpan, LlmSpan, RetrieverSpan, ToolSpan, TraceSpanStatus
-
-    classes = {'agent': AgentSpan, 'llm': LlmSpan, 'retriever': RetrieverSpan, 'tool': ToolSpan}
-    nodes, root = {}, None
-    for item in raw['spans']:
-        metadata = item.get('metadata', {})
-        kwargs = dict(uuid=item['span_id'], trace_uuid=raw['trace_id'], parent_uuid=item['parent_id'],
-                      name=item['name'], input=item.get('input'), output=item.get('output'),
-                      start_time=item['start_time'], end_time=item['end_time'],
-                      status=TraceSpanStatus.SUCCESS if item['status'] == 'completed' else TraceSpanStatus.ERRORED,
-                      error=item.get('error_type'), metadata=metadata)
-        if item['kind'] == 'llm':
-            model_input = item.get('input')
-            kwargs['model'] = metadata.get('model') or (model_input.get('model') if isinstance(model_input, Mapping) else None)
-        node = classes[item['kind']](**kwargs)
-        nodes[item['span_id']] = node
-        if item['parent_id'] is None:
-            if root is not None:
-                raise ValueError('Execution trace needs one request root')
-            root = node
-        else:
-            nodes[item['parent_id']].children.append(node)
-    if root is None:
-        raise ValueError('Execution trace has no root')
-    return trace_manager.create_nested_spans_dict(root)

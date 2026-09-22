@@ -1,9 +1,9 @@
-"""Read-only orchestration for offline Agent and DAG evaluation artifacts."""
+"""Read-only deterministic diagnostics for saved Agent execution records."""
 from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from .agent_diagnostics import compare_modes, diagnose_execution, diagnose_trace
 from .agent_trace import AgentTraceEnvelope
@@ -54,46 +54,13 @@ def _envelope(row: Mapping[str, Any], case: Mapping[str, Any], output: Mapping[s
     )
 
 
-def _score_dag(test_case: Any, envelope: AgentTraceEnvelope, diagnostics: Mapping[str, Any], *, model: object | None) -> dict[str, Any]:
-    if envelope.completeness != "complete":
-        return {
-            "metric": "evidence_path_dag",
-            "status": "not_applicable",
-            "score": None,
-            "reason": f"trace_not_complete:{envelope.completeness_reason}",
-        }
-    if envelope.execution_trace is None or not envelope.final_output_available or not test_case.retrieval_context:
-        return {'metric': 'evidence_path_dag', 'status': 'not_applicable', 'score': None,
-                'reason': 'native_trace_answer_and_context_required'}
-    from .agent_dag import build_evidence_path_metric, dag_metadata
-
-    metric = build_evidence_path_metric(model=model, threshold=None)
-    test_case.metadata = {**(test_case.metadata or {}), **dag_metadata(diagnostics)}
-    try:
-        metric.measure(test_case)
-        return {
-            "metric": "evidence_path_dag",
-            "status": "scored",
-            "score": float(metric.score),
-            "reason": getattr(metric, "reason", None),
-        }
-    except Exception as exc:
-        return {
-            "metric": "evidence_path_dag",
-            "status": "error",
-            "score": None,
-            "reason": "DAG metric failed",
-            "details": {"error_type": type(exc).__name__, "error": str(exc)},
-        }
-
-
 def _write_report(output: Path, summary: Mapping[str, Any]) -> None:
     def cell(value: object) -> str:
         return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
     lines = [
         "# Agent 执行阶段报告", "",
-        f"记录数：{summary['record_count']}；LLM Judge：{summary['judge_enabled']}。", "",
+        f"记录数：{summary['record_count']}；只读确定性诊断。", "",
         "按已保存的请求、意图预览和响应定位阶段；未知保留 unknown，不推断澄清是否合理。",
         "缺少 reasoning trace 不等于未进入 Ask，也不等于没有答案。阶段统计不是质量分数。", "",
     ]
@@ -106,7 +73,7 @@ def _write_report(output: Path, summary: Mapping[str, Any]) -> None:
             lines.append("| 未记录 | — |")
         lines.append("")
     lines.extend(["逐题实际请求、原题、澄清内容及阶段证据见 [agent-diagnostics.jsonl](agent-diagnostics.jsonl)。",
-        "完整性见 [agent-traces.jsonl](agent-traces.jsonl)。新原生轨迹包含父子 span 与输入输出；旧摘要不会被补造为完整轨迹。",
+        "完整性见 [agent-traces.jsonl](agent-traces.jsonl)。保存的执行轨迹按原样报告；旧摘要不会被补造为完整轨迹。",
         "complete 仅表示已声明的同步 native Ask 范围被完整记录，不代表回答正确；澄清路径也可完整。", ""])
     (output / "agent-report.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -114,13 +81,8 @@ def _write_report(output: Path, summary: Mapping[str, Any]) -> None:
 def evaluate_run(
     run_dir: str | Path,
     output_dir: str | Path,
-    *,
-    judge: bool = False,
-    metrics: Iterable[str] | None = None,
-    dag: bool = False,
-    model: object | None = None,
 ) -> dict[str, Any]:
-    """Evaluate one existing run without mutating it."""
+    """Build historical execution diagnostics without mutating the saved run."""
     run = Path(run_dir).resolve()
     output = Path(output_dir).resolve()
     if not (run / "outputs.jsonl").is_file():
@@ -129,21 +91,8 @@ def evaluate_run(
         raise ValueError("Agent output directory must be separate from the immutable run")
     if output.exists():
         raise FileExistsError(f"Agent output directory already exists: {output}")
-    if dag and not judge:
-        raise ValueError("--dag requires --judge")
-    selected_metrics = tuple(metrics or ())
-    if judge:
-        from .agent_deepeval import available_agent_metrics
-
-        allowed = set(available_agent_metrics())
-        unknown = sorted(set(selected_metrics) - allowed)
-        if unknown:
-            raise ValueError("Unknown Agent metric(s): " + ", ".join(unknown))
-        if not selected_metrics:
-            selected_metrics = available_agent_metrics()
-
     output.mkdir(parents=True, exist_ok=False)
-    traces, diagnostics_rows, scores = [], [], []
+    traces, diagnostics_rows = [], []
     comparison_rows = []
     for row in read_rows(run / "outputs.jsonl"):
         case, observed = _record_parts(row)
@@ -162,57 +111,27 @@ def evaluate_run(
         }
         diagnostics_rows.append(diagnostics_row)
         comparison_rows.append({"case_id": envelope.case_id, "mode": envelope.mode, "diagnostics": diagnostics})
-        if not judge:
-            continue
-        from .agent_deepeval import build_test_case, evaluate_trajectory
-
-        test_case = build_test_case(case, observed, envelope, diagnostics)
-        for score in evaluate_trajectory(test_case, envelope, metrics=selected_metrics, model=model):
-            scores.append({
-                "case_id": envelope.case_id,
-                "sample_id": row.get("sample_id"),
-                "suite": row.get("suite") or case.get("suite"),
-                "task": row.get("task") or case.get("task"),
-                "mode": envelope.mode,
-                **score,
-            })
-        if dag:
-            scores.append({
-                "case_id": envelope.case_id,
-                "sample_id": row.get("sample_id"),
-                "suite": row.get("suite") or case.get("suite"),
-                "task": row.get("task") or case.get("task"),
-                "mode": envelope.mode,
-                **_score_dag(test_case, envelope, diagnostics, model=model),
-            })
-
     save_jsonl(output / "agent-traces.jsonl", traces)
     save_jsonl(output / "agent-diagnostics.jsonl", diagnostics_rows)
-    save_jsonl(output / "agent-scores.jsonl", scores)
     completeness_counts = Counter(row["trace"]["completeness"] for row in traces)
-    score_counts = Counter(row["status"] for row in scores)
     status_counts = Counter(row["diagnostics"]["status"] for row in diagnostics_rows)
     stage_counts = Counter(row["execution"]["termination_phase"] for row in diagnostics_rows)
     clarification_reasons = Counter(reason for row in diagnostics_rows
                                     if row["diagnostics"]["status"] == "clarification"
                                     for reason in row["execution"]["clarification_reasons"])
     summary = {
-        "format": "sn-agent-evaluation-v1",
+        "format": "sn-agent-diagnostics-v1",
         "run_dir": str(run),
         "record_count": len(traces),
-        "judge_enabled": judge,
-        "dag_enabled": dag,
-        "metrics": list(selected_metrics),
         "completeness_counts": {key: completeness_counts.get(key, 0) for key in ("none", "partial", "complete")},
-        "score_status_counts": {key: score_counts.get(key, 0) for key in ("scored", "not_applicable", "error")},
         "output_status_counts": dict(sorted(status_counts.items())),
         "execution_stage_counts": dict(sorted(stage_counts.items())),
         "clarification_reason_counts": dict(sorted(clarification_reasons.items())),
         "mode_comparison": compare_modes(comparison_rows),
         "release_gate": False,
         "notes": [
-            "Agent and DAG scores are advisory and are not merged into benchmark primary scores.",
-            "Incomplete traces are not scored by trajectory metrics.",
+            "This historical report contains deterministic diagnostics only.",
+            "No Agent judge or DAG score is produced by this command.",
         ],
     }
     save_json(output / "agent-summary.json", summary)

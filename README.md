@@ -1,8 +1,6 @@
 # Silicon Notebook RAG Benchmark + DeepEval
 
-**2026-09-21：新增 Agent judge 输入离线检查。** 服务器报告 meeting18 两模式均已取得完整轨迹；chunk 12 项 Agent 分评分成功，reasoning 24 项因 judge 上下文超限失败。新增 `scripts/inspect_agent_inputs.py`，复用已保存回答，测量 SDK 轨迹及静态提示词大小、步骤来源和重复内容位置。见[使用说明与下一步](docs/agent-judge-input-inspection.md)。无需重新运行 SN；本地没有启动在线评分。
-
-**2026-09-21：新增可选 SN 执行轨迹与服务器补丁包。** Notebook 运行用 `--capture-agent-trace` 保存意图、检索、动作、计划、合成与模型调用；之后单独运行 Agent 诊断/评分，不重复 Ask。SN 默认关闭采集且无需安装 DeepEval。见[采集与评分说明](docs/sn-execution-tracing.md)和[SN 补丁应用指引](integrations/silicon-notebook/README.md)。本机仅做离线验证，服务器真实验收与评分限制见上方更新。
+**2026-09-22：Agent 评测改用 SN 原生 DeepEval。** 新 `run_notebook_agent.py` 默认评检索/合成组件，显式 `--trajectory` 评完整 Agent 轨迹；回答和组件先落盘，judge 随后评分。SDK 固定 4.2.2，旧私有树回放和 `--capture-agent-trace` 已移除。见[当前协议与命令](docs/native-agent-evaluation.md)、[SN 增量补丁](integrations/silicon-notebook/README.md)、[服务器 prompt](docs/server-agent-tracing-prompt.md)。旧回答/客观分保留，旧 Agent 分归档；本机只做离线验证。
 
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](docs/notebook-benchmark-experiment-plan.md)。
 
@@ -12,15 +10,7 @@
 
 已新增[Notebook 独立重评分](docs/notebook-rescoring.md)：读取已保存答卷生成新的评分批次，不重新调用 SN Ask 或生成模型，原运行目录保持只读。
 
-已新增可选的 [SN Agent/DAG 离线评测](docs/superpowers/specs/2026-09-19-agent-dag-evaluation-design.md)：默认读取已有 `outputs.jsonl`，输出轨迹完整度、reasoning 动作诊断和 chunk/reasoning 配对信息；只有显式 `--judge` 才调用 DeepEval trajectory metrics，`--dag` 才运行产品证据路径 DAG。该命令不重新启动 SN、不覆盖原评分：
-
-```bash
-python scripts/evaluate_agent_traces.py \
-  --run-dir /path/to/existing-run \
-  --output-dir /path/to/agent-report
-```
-
-完整轨迹的 DeepEval 评分必须显式开启；旧 SN reasoning 摘要通常会被保守标记为 `partial`。应用新补丁并主动采集后，Agent 命令优先使用真实执行树；默认报告仍只做确定性诊断。打开 `agent-report.md` 查看状态、可观察终止阶段与澄清理由计数；`agent-diagnostics.jsonl` 的 `execution` 保存原题、实际提交问题及判断阶段的字段依据，未知阶段保留 `unknown`，不会补造轨迹或判定澄清是否合理。
+历史运行仍可用 `scripts/evaluate_agent_traces.py --run-dir /path/to/existing-run --output-dir /path/to/diagnostics` 做确定性诊断；该命令不再提供 judge/DAG 评分。新原生评测工件在 `run-dir/agent/`，详见当前协议。
 
 **2026-09-17 新增资料型评测接入：** QASPER、MultiHop-RAG、ALCE、QMSum；支持完整资料分区、隔离 SN Ask、独立指标及 Dashboard。见[实现与服务器命令](docs/notebook-benchmarks.md)。本地仅用构造数据验证，尚未下载真实数据或执行新实验。
 

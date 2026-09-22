@@ -45,7 +45,7 @@ def test_sn_reasoning_steps_are_conservatively_partial():
     assert envelope.completeness == "partial"
     assert envelope.steps[0]["type"] == "intent"
     assert envelope.steps[0]["index"] == 0
-    assert envelope.to_deepeval_dict()["steps"][0]["status"] == "completed"
+    assert envelope.to_dict()["steps"][0]["status"] == "completed"
 
 
 def test_explicit_complete_requires_all_execution_fields():

@@ -1,5 +1,7 @@
 # SN 执行轨迹：采集、离线评分与服务器交接
 
+> 历史记录：本页描述的是此前阶段。2026-09-22 起 Agent 采集/评分以[原生 DeepEval 协议](native-agent-evaluation.md)为准；旧 `--capture-agent-trace`、`--judge/--dag` 和 `inspect_agent_inputs.py` 已退役。旧实验结论及原始工件保留，不执行下文的旧命令。
+
 2026-09-21 服务器后续：meeting18 两模式的真实轨迹已通过验收，reasoning 全轨迹评分遇到 judge 上下文上限。已有结果先按[评分输入离线检查](agent-judge-input-inspection.md)推进，不需要重复本文的首次采集验收，也不必重问 SN。
 
 本阶段给 SN 增加可选的执行观测，并让评测项目读取它。默认不采集；只有新的 Notebook 实验显式传 `--capture-agent-trace` 才启用。评分仍由另一条命令执行。

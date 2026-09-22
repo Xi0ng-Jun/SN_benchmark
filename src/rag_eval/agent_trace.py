@@ -1,8 +1,7 @@
-"""Offline normalization and completeness auditing for Silicon Notebook traces.
+"""Offline normalization and completeness auditing for saved SN traces.
 
-The product stores reasoning steps, while DeepEval trajectory metrics expect a
-complete ordered execution trace.  This module keeps that distinction explicit
-and deliberately downgrades uncertain traces instead of inferring completeness.
+The module reports only what historical records contain and deliberately
+downgrades uncertain traces instead of inferring completeness.
 """
 from __future__ import annotations
 
@@ -220,22 +219,4 @@ class AgentTraceEnvelope:
             "context_available": self.context_available,
             "citations_available": self.citations_available,
             **({"execution_trace": self.execution_trace} if self.execution_trace is not None else {}),
-        }
-
-    def to_deepeval_dict(self) -> dict[str, Any]:
-        """Return the SDK trajectory projection, or the historical diagnostic form."""
-        if self.execution_trace is not None:
-            from .sn_trace import deepeval_tree
-            if self.completeness != "complete":
-                return {}
-            return deepeval_tree(self.execution_trace)
-        return {
-            "trace_id": self.trace_id,
-            "mode": self.mode,
-            "status": self.status,
-            "completeness": self.completeness,
-            "steps": self.steps,
-            "final_output_available": self.final_output_available,
-            "context_available": self.context_available,
-            "citations_available": self.citations_available,
         }

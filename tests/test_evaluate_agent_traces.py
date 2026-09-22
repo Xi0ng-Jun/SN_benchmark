@@ -1,4 +1,7 @@
 import json
+from pathlib import Path
+import subprocess
+import sys
 
 from rag_eval.agent_evaluator import evaluate_run
 from rag_eval.artifacts import save_jsonl
@@ -38,12 +41,15 @@ def test_evaluate_run_writes_separate_diagnostic_artifacts_without_judging(tmp_p
 
     summary = evaluate_run(run, output)
 
-    assert summary["format"] == "sn-agent-evaluation-v1"
-    assert summary["judge_enabled"] is False
+    assert summary["format"] == "sn-agent-diagnostics-v1"
+    assert "judge_enabled" not in summary
+    assert "dag_enabled" not in summary
+    assert "metrics" not in summary
+    assert "score_status_counts" not in summary
     assert summary["completeness_counts"] == {"none": 1, "partial": 1, "complete": 0}
     assert len(read_rows(output / "agent-traces.jsonl")) == 2
     assert len(read_rows(output / "agent-diagnostics.jsonl")) == 2
-    assert read_rows(output / "agent-scores.jsonl") == []
+    assert not (output / "agent-scores.jsonl").exists()
     assert summary["mode_comparison"][0]["status"] == "unpaired"
     assert not (run / "agent-scores.jsonl").exists()
     json.loads((output / "agent-summary.json").read_text(encoding="utf-8"))
@@ -88,5 +94,37 @@ def test_saved_intent_preview_is_reported_without_inventing_agent_steps(tmp_path
     assert summary['output_status_counts'] == {'clarification': 1, 'error': 2, 'success': 1}
     assert (output / 'agent-report.md').is_file()
     assert 'Unresolved reference' in (output / 'agent-report.md').read_text()
-    assert read_rows(output / 'agent-scores.jsonl') == []
+    assert not (output / 'agent-scores.jsonl').exists()
     assert (run / 'outputs.jsonl').read_bytes() == before
+
+
+def test_cli_runs_diagnostics_without_optional_packages_or_judge_flags(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    save_jsonl(run / "outputs.jsonl", [
+        {"case_id": "case-1", "mode": "chunk", "status": "success", "prediction": "Answer."},
+    ])
+    output = tmp_path / "report"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "evaluate_agent_traces.py"
+
+    help_result = subprocess.run(
+        [sys.executable, "-S", str(script), "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--judge" not in help_result.stdout
+    assert "--dag" not in help_result.stdout
+    assert "--metrics" not in help_result.stdout
+
+    result = subprocess.run(
+        [sys.executable, "-S", str(script), "--run-dir", str(run), "--output-dir", str(output)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "records=1 complete=0" in result.stdout
+    assert "judge=" not in result.stdout
+    assert (output / "agent-summary.json").is_file()

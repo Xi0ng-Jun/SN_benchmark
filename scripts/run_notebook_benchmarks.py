@@ -19,8 +19,8 @@ def main():
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=LEGACY_REQUEST_REVISION,
                         help='Question instruction revision; v2 avoids adapter-added unresolved pronouns. Default preserves v1.')
-    parser.add_argument('--capture-agent-trace', action='store_true',
-                        help='Save local execution spans using the optional SN patch; no judge or upload')
+    parser.add_argument('--model-config', type=Path, help='SN model-services TOML copied into the isolated runtime')
+    parser.add_argument('--case-id', dest='case_ids', action='append', help='Run this case only; repeat for several cases. Entire corpus retained.')
     args = parser.parse_args()
     from rag_eval.notebook_runner import execute
     from rag_eval.starter_report import write_report
@@ -29,7 +29,7 @@ def main():
     try:
         execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
                 mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
-                capture_agent_trace=args.capture_agent_trace)
+                case_ids=args.case_ids, model_config=args.model_config)
     except KeyboardInterrupt:
         code = 130
     except Exception as exc:

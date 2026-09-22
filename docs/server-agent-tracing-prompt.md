@@ -1,11 +1,19 @@
 # 给服务器 Agent 的执行指令
 
 ```text
-请安全同步 SN_benchmark 的 docs/public-benchmark-agent-expansion 分支，保留服务器已有 model-config、并发和执行账本修改。先阅读 AGENTS.md、docs/sn-execution-tracing.md、docs/sn-execution-tracing-validation.md、integrations/silicon-notebook/README.md 和 manifest.json。
+请同步评测分支 docs/public-benchmark-agent-expansion，保留服务器已有模型配置、并发和执行账本修复。阅读 AGENTS.md、docs/native-agent-evaluation.md、docs/sn-execution-tracing-validation.md，以及 integrations/silicon-notebook/README.md 和 manifest.json。
 
-本轮目标是启用新的 SN Agent 执行轨迹。按补丁包说明核验 SHA256 与 SN 基准，在独立 SN 分支/worktree 用 git am --3way 应用补丁；有冲突时保留两侧必要修改，形成干净提交。不要覆盖生产文件或重启正在运行的 SN，不中断正在进行的实验。复用已有模型配置注入，注意新 worktree 不自带被忽略的配置文件。无需给 SN 安装 DeepEval。
+本轮改用 SN 原生 DeepEval 4.2.2。校验 SHA256，在“已应用旧 tracing 补丁”的服务器 SN 评测提交上新建独立 worktree，应用本包增量 patch（git am --3way）；不要从未打旧补丁的生产 HEAD 直接套用。解决冲突时保留服务器原有必要修复，形成干净提交。使用独立评测 Python 环境同时安装 SN 依赖与固定 SDK，不改生产环境、不重启生产服务。完成相关离线检查和跨仓库契约检查；既有非阻塞环境问题记录后继续，不反复审计历史结果。
 
-完成必要离线检查后，选一个已冻结的 QMSum 分区，chunk/reasoning 各创建新 run-dir，沿用 notebook-request-v2，并加 --capture-agent-trace。先查看 product_record.execution_trace：父子 span、实际输入输出、关闭状态、capture_errors、意图/检索/计划/动作/合成/LLM 阶段。接着用 evaluate_agent_traces.py 默认离线模式出报告，确认澄清、错误与缺计划不会被误计成分数。
+用新的 scripts/run_notebook_agent.py 执行冻结 QMSum meeting18：先选 qmsum:18:specific:3，chunk/reasoning 各用新 run-dir，明确 --request-revision notebook-request-v2 --trajectory；--model-config 提供 SN 模型 TOML，--judge-config 提供独立 judge JSON。沿用已经成功承载最大完整轨迹的 DeepSeek judge 配置，准确记录实际 ID/参数；生成模型与 judge 分开。--case-id 只选题，完整会议资料仍全部导入。
 
-本轮先完成这个单分区真实验收，不扩大到全量、不重新跑旧 QMSum 对照、不跑 Dashboard 或在线 judge、不恢复 timer。遇到与本次无关且不阻塞验收的既有问题如实记为限制，继续推进。汇报实际 SN/benchmark 提交、应用补丁情况、两个 run-dir、成功/澄清/错误数、轨迹完整度及缺失原因、代表轨迹和产物体积；不要只汇报“接口正常”。
+确认最大题两模式都保存原始回答/组件、SDK 原生轨迹及组件和整轨迹分，且没有观测错误。链路通过后完成 meeting18 六题×两模式，不等待下一次批准，也不扩大到其他会议。可以用显式 case-id 选择剩余五题避免重问最大题，保留分批身份。judge 超限、超时或评分错误单独记录，不裁剪/摘要轨迹、不补零、不按低分重试；真正阻塞完整链路时停在具体问题上，不批量重复失败请求。
+
+主要检查 outputs.jsonl、agent/components.jsonl、native-traces.jsonl、native-scores.jsonl、native-diagnostics.jsonl、native-summary.json 及 sdk/ 下报告：检索评分使用实际 query 与该次证据；合成评分使用实际上下文；多查询/分节分别关联；chunk 没计划记 N/A；评分失败不能改变答案状态。回答和组件必须先落盘，再调用 judge。
+
+旧 QMSum request-v2/BM25 答案和客观分保留；旧 Agent 分、GLM 超窗记录归档，不能混入新协议。不要使用已删除的 --capture-agent-trace、离线 --judge/--dag 或 inspect_agent_inputs.py。不要跑 Dashboard、恢复 timer、全量重问旧 benchmark 或扩展 DAG。
+
+完成后交付一份简明报告：实际 benchmark/SN 提交与配置身份；两模式题单覆盖及成功/澄清/错误；逐组件指标与真实查询/合成样本关联；整体 Agent 指标和 N/A/error 原因；产品与 judge 各自的耗时/usage；从低分及对照中选2–3个具体案例说明SN哪一步出了问题。保留全部原始工件，不只报告均分或“接口通过”。本轮任务不需要再生成旧数据审计报告。
 ```
+
+参数完整示例及各文件职责见[原生协议](native-agent-evaluation.md)。该指令授权服务器执行本轮最大题和 meeting18 验收；本机交付只完成离线实现与验证。

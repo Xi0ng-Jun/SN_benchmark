@@ -4,9 +4,20 @@ from __future__ import annotations
 import json
 import re
 import time
+from asyncio import CancelledError
 from uuid import uuid4
 
 from .public_expansion_protocol import TraceEnvelope
+
+
+def is_cancellation(error):
+    """Recognize optional SN cancellation, including streaming subclasses.
+
+    Offline consumers do not import the SN package; the exception's base-class
+    contract is enough to propagate it unchanged at this runtime boundary.
+    """
+    return isinstance(error, (KeyboardInterrupt, SystemExit, CancelledError)) or any(
+        base.__name__ == 'AskCancelled' for base in type(error).__mro__)
 
 
 def submit_system_question(repo, notebook, question, mode):
@@ -51,6 +62,8 @@ def submit_system_question(repo, notebook, question, mode):
         else:
             record.update(status="success", reason=None)
     except Exception as exc:
+        if is_cancellation(exc):
+            raise
         # Preserve already observed response, never print provider error bodies.
         record.update(status="error", reason="native request, intent, Ask or persistence error",
                       error_phase=phase, error_type=type(exc).__name__,
@@ -70,7 +83,7 @@ def behavior_observation(record):
             "method": "text_heuristic" if candidate else "runtime_state", "human_label": None}
 
 
-def run_system_question(repo, notebook, question, mode, mapping, *, capture_agent_trace=False):
+def run_system_question(repo, notebook, question, mode, mapping):
     """Capture the actual product response, final context and citation objects."""
     from app.core.llm_logging import LLMInteractionLogger
     from .benchmark_runtime import evidence_checks
@@ -78,23 +91,8 @@ def run_system_question(repo, notebook, question, mode, mapping, *, capture_agen
     from .usage_capture import capture_usage
 
     started = time.monotonic()
-    execution_trace = None
     with capture_usage(LLMInteractionLogger) as usage, capture_synthesis(repo._runtime.ask_component) as calls:
-        if capture_agent_trace:
-            from .sn_trace import require_capture_api
-            tracing = require_capture_api()
-            with tracing.capture_evaluation_trace() as capture:
-                with tracing.evaluation_span('sn.request', 'agent', input=question['question'],
-                                             metadata={'stage': 'request', 'mode': mode}) as span:
-                    observed = submit_system_question(repo, notebook, question['question'], mode)
-                    response = observed.get('response', {})
-                    span.set_output({'status': observed['status'], 'answer': observed.get('answer', ''),
-                                     'llm_mode': response.get('llm_mode'), 'error_phase': observed.get('error_phase'),
-                                     'citation_keys': [a['key'] for a in response.get('anchors', [])
-                                                       if isinstance(a, dict) and isinstance(a.get('key'), str)]})
-            execution_trace = capture.to_dict()
-        else:
-            observed = submit_system_question(repo, notebook, question["question"], mode)
+        observed = submit_system_question(repo, notebook, question["question"], mode)
     record = {**question, **observed, "mode": mode, "attempt_id": uuid4().hex,
               "captures": calls, "usage": usage, "latency_seconds": time.monotonic() - started}
     try:
@@ -114,7 +112,5 @@ def run_system_question(repo, notebook, question, mode, mapping, *, capture_agen
         envelope = TraceEnvelope(trace_id=record["response"].get("answer_id") or record["attempt_id"],
                                  completeness="partial", spans=trace)
     record["trace"] = envelope.to_dict()
-    if execution_trace is not None:
-        record['execution_trace'] = execution_trace
     record["behavior"] = behavior_observation(record)
     return record

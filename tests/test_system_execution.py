@@ -33,6 +33,21 @@ def test_reasoning_clarification_stops_before_ask(request_types):
     assert row["answer"] == ""
 
 
+def test_streaming_cancellation_is_propagated_unchanged(request_types):
+    from rag_eval.system_runtime import submit_system_question
+    class AskCancelled(Exception):
+        pass
+    class StreamingCancelled(AskCancelled):
+        pass
+    original = StreamingCancelled('private cancellation detail')
+    class Repo:
+        def ask(self, *args):
+            raise original
+    with pytest.raises(StreamingCancelled) as caught:
+        submit_system_question(Repo(), 'notebook', 'Who?', 'chunk')
+    assert caught.value is original
+
+
 def test_reasoning_confirms_exact_preview_and_never_supplies_gold(request_types):
     from rag_eval.system_runtime import submit_system_question
     prompt = "Q\nFinal answer: requested"
