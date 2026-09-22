@@ -1,5 +1,12 @@
 # 评测状态
 
+## 2026-09-22：实验地图 Dashboard
+
+离线 Dashboard 已升级为 `sn-experiment-dashboard-v3`（分支 `feat/dashboard-experiment-map`，提交 `4e8aa82`）。页面由实验地图、单题流程/原生 span 回放和结果分析组成；详情按题目懒加载，重评分来源通过 manifest 与答卷哈希核实，缺失、N/A、error 与有效零分分开。新增一键构造 QMSum 演示，但演示数据不属于 SN 实验结果。
+
+实现只读取已有 run，不启动 SN、judge 或数据下载。完整使用方法、服务器交接 prompt 和边界见[实验地图 Dashboard](experiment-dashboard.md)。本机离线回归为 433 passed、1 skipped；浏览器 smoke 在临时 Chromium 运行库下检查了地图、回放、span 检查器、动态标签和分布图。真实服务器报告仍需使用相同分支重新生成；不要把旧 v2 HTML 与 v3 详情目录混用。
+
+
 ## 2026-09-22：原生 DeepEval 改造
 
 当前协议见[SN 原生 DeepEval](native-agent-evaluation.md)。实现 SN 可选原生 span、逐题串行 iterator、组件与可选整轨迹指标、先保存后评分、独立 judge 身份和故障记录。删除旧私有树注入及输入检查脚本；历史诊断命令保留为纯离线检查。SN 补丁在独立 worktree，生产主目录未改。

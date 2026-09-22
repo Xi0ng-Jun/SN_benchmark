@@ -22,7 +22,9 @@ python scripts/build_experiment_dashboard.py \
   --output /path/to/reports/dashboard
 ```
 
-打开新生成的 `dashboard.html`，可以组合 Benchmark / Task / Track / Mode / Scorer / 状态等标签，联动查看状态图、分数分布和分面均值；点击条目追查题目、SN 回答、上下文、引用与评分依据；保存多个筛选组进行可比结果分析。旧 HTML 需要重新生成才能使用新界面。该命令只读结果文件，不启动 Silicon Notebook、不调用模型、不重新评分。
+打开新生成的 `dashboard.html`，从**实验地图 → 单题流程回放 → 结果分析**查看资料、运行、答卷和重评分的关系。点击步骤/span 追查实际输入、上下文、引用与评分依据，组合标签并比较同题结果和配置。请保留旁边的 `details/` 目录；旧 HTML 需重新生成。该命令只读结果，不启动 SN、调用模型或重新评分。
+
+可先运行 `python scripts/build_dashboard_demo.py --output /path/to/new-demo` 查看明确标注的构造演示（无网络/模型调用，不代表 SN 实验成绩）。
 
 [Dashboard 操作、比较规则与服务器 Agent prompt](docs/experiment-dashboard.md) · [十套 Benchmark 的轨道与指标实现四列表](docs/benchmark-metrics-reference.md)。输出需用运行目录之外的新目录；问答和评分分别计数，缺失分数保留，不混算质量总分。
 

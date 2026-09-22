@@ -1,5 +1,7 @@
 # Silicon Notebook 评测上下文
 
+2026-09-22 新增当前任务：用户已批准重构离线 Dashboard 为实验地图、单题流程/原生 span 检查、可比结果分析。只读现有工件；本机以明确标注的构造 QMSum 数据验证，不触发 SN、judge 或新数据下载。设计见[实验地图](superpowers/specs/2026-09-22-experiment-map-design.md)，用法见[Dashboard](experiment-dashboard.md)。此前原生评测改造已交付，服务器独立推进真实实验。
+
 2026-09-22 当前授权：实施[SN 原生 DeepEval 评测](native-agent-evaluation.md)。可继续修改独立 SN 分支并在服务器重新采集；本机只做离线验证，不部署生产、不运行在线模型。原生 observe + iterator 替代自制采集树/私有回放，默认组件、显式完整轨迹；旧普通答案/客观分保留，旧 Agent 分不迁移。服务器先最大题两模式，再 meeting18 六题两模式。下文按日期保留的旧限制与旧命令不是当前操作入口。
 
 服务器最近报告：DeepSeek judge 已完成旧 meeting18 chunk 12 项、reasoning 24 项 Agent 评分，均已停止运行；GLM 超窗记录仍保留为失败证据。此前“reasoning 尚未完成”状态已过期。数字来自用户转述，本机未读取服务器原始结果。

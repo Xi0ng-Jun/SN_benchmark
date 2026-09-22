@@ -198,15 +198,19 @@ def write_dashboard(run_dirs: list[str | Path], output: str | Path) -> Path:
         raise ValueError("Report directory must be separate from saved runs")
     if output.exists():
         raise FileExistsError("Use a new report directory: " + str(output))
-    data = aggregate_runs(paths)
+    if not paths or len(paths) != len(set(paths)):
+        raise ValueError("Provide distinct run directories")
+    from .explorer_artifacts import write_explorer_data
+    output.mkdir(parents=True, exist_ok=False)
+    data = write_explorer_data(paths, output)
     # Replace static placeholders before inserting data, so an artifact cannot
     # inject asset placeholders. Escape '<' even inside application/json scripts.
     html = (ASSETS / "template.html").read_text(encoding="utf-8")
-    for marker, name in (("__STYLE__", "style.css"), ("__CORE__", "core.js"), ("__APP__", "app.js")):
+    for marker, name in (("__STYLE__", "style.css"), ("__CORE__", "core.js"),
+                         ("__EXPLORER_CORE__", "explorer-core.js"), ("__APP__", "app.js")):
         html = html.replace(marker, (ASSETS / name).read_text(encoding="utf-8"))
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
     html = html.replace("__DATA__", payload)
-    output.mkdir(parents=True, exist_ok=False)
     save_json(output / "dashboard-data.json", data)
     save_json(output / "summary.json", data["summary"])
     save_json(output / "audit.json", {"runs": data["audit"], "limitations": data["limitations"]})
