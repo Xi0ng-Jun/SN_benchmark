@@ -1,5 +1,7 @@
 # SN 原生 DeepEval 评测
 
+服务器验收遇到评分超时后，当前操作顺序见[评分恢复说明](native-scoring-recovery.md)：先对已保存组件逐项补评，再单独处理整轨迹。新增 `--metric` 和 `score_native_components.py`；每个完成的指标立即保存。这覆盖下文“最大题一次运行全部指标后扩大”的初始安排。SN 补丁不变。
+
 2026-09-22 起，新 Agent 实验使用 `sn-deepeval-native-v1`。SN 真实调用直接产生 DeepEval span，运行器在同一隔离进程挂接组件和可选完整轨迹指标。旧 `sn-execution-trace-v1` 仅作历史档案；不重建旧树、不写 SDK 私有 `_trace_dict`。
 
 ## 调用和职责

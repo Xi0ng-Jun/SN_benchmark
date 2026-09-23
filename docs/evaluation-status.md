@@ -17,6 +17,13 @@
 实现只读取已有 run，不启动 SN、judge 或数据下载。完整使用方法、服务器交接 prompt 和边界见[实验地图 Dashboard](experiment-dashboard.md)。本机离线回归为 433 passed、1 skipped；浏览器 smoke 在临时 Chromium 运行库下检查了地图、回放、span 检查器、动态标签和分布图。真实服务器报告仍需使用相同分支重新生成；不要把旧 v2 HTML 与 v3 详情目录混用。
 
 
+
+## 2026-09-22：原生评分超时恢复
+
+服务器反馈最大题 chunk 已得四项分数、两项检索组件超时；reasoning 已保存原始回答/组件/原生轨迹，judge 出现 500/504，评分进程已停。不能从最终分数文件缺失推断所有指标均已尝试；也不能推断模型一定无法完成。详细原因、改动和分批验收见[恢复说明](native-scoring-recovery.md)。
+
+新代码每项完成立即保存；支持按指标选择原生运行，以及从 `components.jsonl` 使用公开 `LLMTestCase/evaluate` 补评单个完整样本。独立批次记录来源、judge、时限和逻辑调用耗时，迟到结果不能回填。SN 补丁和 Dashboard 不变。下一步服务器只补评一个检索样本和一个 reasoning 合成样本，不扩大 meeting18 或全部会议。本机离线验证及边界见恢复说明，不代表真实模型验收完成。
+
 ## 2026-09-22：原生 DeepEval 改造
 
 当前协议见[SN 原生 DeepEval](native-agent-evaluation.md)。实现 SN 可选原生 span、逐题串行 iterator、组件与可选整轨迹指标、先保存后评分、独立 judge 身份和故障记录。删除旧私有树注入及输入检查脚本；历史诊断命令保留为纯离线检查。SN 补丁在独立 worktree，生产主目录未改。

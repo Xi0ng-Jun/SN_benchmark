@@ -1,5 +1,17 @@
 # 给服务器 Agent 的执行指令
 
+## 当前：评分超时恢复
+
+```text
+请同步评测分支 feat/native-scoring-reliability，保留服务器已有模型配置和修复。阅读 AGENTS.md、docs/native-scoring-recovery.md。此次只更新评测框架，不重打 SN 补丁。
+
+先不扩大实验、不生成 Dashboard，保留已有答案/组件/原生轨迹/成功分数。从现有最大题 chunk run 选一个失败检索组件，从 reasoning run 选一个合成组件，记录真实 sample_id。用 score_native_components.py 补评完整原样输入：检索只跑 contextual_relevancy；合成先 answer_relevancy，再单独 faithfulness，各用新 output。沿用明确 judge，独立配置 max_retries=0、显式客户端 timeout（可用190秒），--task-timeout 900；它是 SDK 总预算，不会解除网关180秒限制。
+
+交付一张简表：来源 case/sample、指标、judge、上下文段数、逻辑调用次数、最大单次和总体耗时、HTTP状态、分数或失败原因。持续504或超窗的组合记录一次就停，不批量重试、不裁剪、不补零、不把来源答案状态改成失败。此次先完成这三个组件评分尝试；根据结果决定调整累计时限还是网关/judge，然后再安排原生整轨迹。不要因为旧1.4MB或指标数量直接推断本次每个请求大小/耗时。
+```
+
+## 初始原生验收（历史安排，已被上方恢复步骤替代）
+
 ```text
 请同步评测分支 docs/public-benchmark-agent-expansion，保留服务器已有模型配置、并发和执行账本修复。阅读 AGENTS.md、docs/native-agent-evaluation.md、docs/sn-execution-tracing-validation.md，以及 integrations/silicon-notebook/README.md 和 manifest.json。
 

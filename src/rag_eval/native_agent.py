@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections import Counter
 from enum import Enum
 from importlib import import_module
-from importlib.metadata import version
 import json
 import os
 from pathlib import Path
@@ -24,6 +23,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from .system_runtime import is_cancellation
+from .native_sdk import configure_local_sdk, sdk_timeout_identity
 
 
 NATIVE_TRACE_VERSION = "sn-deepeval-native-v1"
@@ -35,19 +35,7 @@ class _ObservedProductError(Exception):
 
 def require_native_tracing():
     """Validate the paired contract and configure runtime-only local SDK use."""
-    if version("deepeval") != "4.2.2":
-        raise RuntimeError("Native agent evaluation requires deepeval==4.2.2")
-    os.environ.update(DEEPEVAL_TELEMETRY_OPT_OUT="YES", DEEPEVAL_DISABLE_DOTENV="1",
-                      DEEPEVAL_NO_INSPECT_PROMPT="1", CONFIDENT_TRACE_FLUSH="0")
-    os.environ.pop("CONFIDENT_API_KEY", None)
-    from deepeval import get_settings
-    settings = get_settings()
-    # Runtime edit also clears credentials loaded before this helper. Never use
-    # logout/set_confident_api_key: they can edit a user's saved credentials.
-    with settings.edit(persist=False):
-        settings.CONFIDENT_API_KEY = None
-        settings.CONFIDENT_TRACE_FLUSH = False
-        settings.DEEPEVAL_TELEMETRY_OPT_OUT = True
+    configure_local_sdk()
     module = import_module("app.core.evaluation_tracing")
     if getattr(module, "NATIVE_TRACE_VERSION", None) != NATIVE_TRACE_VERSION:
         raise RuntimeError("SN native trace contract mismatch; apply the paired SN patch")
@@ -90,8 +78,9 @@ def _contexts(candidates):
 
 
 class NativeAgentEvaluation:
-    def __init__(self, output_dir, *, judge, judge_identity, enable_whole_trace_metrics=False):
+    def __init__(self, output_dir, *, judge, judge_identity, enable_whole_trace_metrics=False, metrics=None):
         from deepeval.models import DeepEvalBaseLLM
+        from .native_metrics import select_metrics, METRIC_NAMES
         if not isinstance(judge, DeepEvalBaseLLM) or not callable(getattr(judge, "for_case", None)):
             raise ValueError("Supply an explicit DeepEval judge with for_case(case_id, request_id)")
         if not isinstance(judge_identity, dict) or not judge_identity:
@@ -101,6 +90,9 @@ class NativeAgentEvaluation:
         self.judge = judge
         self.judge_identity = json.loads(json.dumps(judge_identity, allow_nan=False))
         self.enable_whole_trace_metrics = enable_whole_trace_metrics
+        self.metric_ids = select_metrics(metrics, trajectory=enable_whole_trace_metrics)
+        self.metric_names = {METRIC_NAMES[key] for key in self.metric_ids}
+        self.explicit_selection = metrics is not None
         self.has_errors = False
         self._counts = Counter()
         self._cases = []
@@ -109,6 +101,8 @@ class NativeAgentEvaluation:
         self._save("native-manifest.json", {
             "schema_version": NATIVE_TRACE_VERSION, "sdk_version": "4.2.2",
             "judge": self.judge_identity, "whole_trace_metrics": enable_whole_trace_metrics,
+            "selected_metrics": self.metric_ids,
+            "sdk_timeout": sdk_timeout_identity(),
             "execution": "one invocation per synchronous SDK iterator; answers saved before scoring",
             "multi_query_grouping": "separate public evaluate cases linked to the genuine aggregate span",
         })
@@ -157,6 +151,7 @@ class NativeAgentEvaluation:
                                       TaskCompletionMetric)
         from deepeval.test_case import LLMTestCase
         from deepeval.tracing import observe, trace, update_current_span, update_current_trace
+        from .native_metrics import CheckpointMetric
 
         if not _text(case_id) or not _text(mode) or not _text(question):
             raise ValueError("Nonempty case_id, mode and question are required")
@@ -181,6 +176,16 @@ class NativeAgentEvaluation:
         product_error = None
         iterator = None
 
+        def tracked_metric(metric_type, link):
+            def completed(metric, record):
+                self._score(common, metric.__name__, **record)
+            metric = CheckpointMetric(metric_type(model=self.judge, async_mode=False), link=link,
+                on_start=lambda record: self._append('native-metric-events.jsonl',
+                                                     {**common, **record, 'event': 'started'}),
+                on_result=completed)
+            metrics_pending.append((metric, link))
+            return metric
+
         def configs(group):
             return {"async_config": AsyncConfig(run_async=False, max_concurrent=1),
                     "cache_config": CacheConfig(write_cache=False, use_cache=False),
@@ -196,21 +201,23 @@ class NativeAgentEvaluation:
             retrieval_only = metric_types == [ContextualRelevancyMetric]
             available = _text(input) and (retrieval_only or _text(output)) and not failed
             sample = {**common, **link, "record_type": "sample", "input": input,
-                      "actual_output": output, "retrieval_context": contexts}
+                      "actual_output": output, "retrieval_context": contexts,
+                      "component_status": "error" if failed else "completed"}
             self._append("components.jsonl", sample)
             eligible = []
             for metric_type in metric_types:
                 name = {ContextualRelevancyMetric: "Contextual Relevancy", FaithfulnessMetric: "Faithfulness",
                         AnswerRelevancyMetric: "Answer Relevancy"}[metric_type]
+                if name not in self.metric_names:
+                    continue
                 needs_context = metric_type != AnswerRelevancyMetric
                 if not available or (needs_context and not contexts):
                     reason = "component failed or cancelled" if failed else "missing question, answer or nonempty context"
                     self._score({**common, **link}, name, status="not_applicable", reason=reason)
                     continue
-                metric = metric_type(model=self.judge, async_mode=False)
+                metric = tracked_metric(metric_type, link)
                 eligible.append(metric)
-                metrics_pending.append((metric, link))
-            if not eligible:
+            if not available:
                 return
             test_case = LLMTestCase(input=input, actual_output=output, retrieval_context=contexts or None,
                                     name=sample_id)
@@ -219,7 +226,7 @@ class NativeAgentEvaluation:
                 # real candidate JSON as retrieval output so whole-trace metrics
                 # retain source IDs/scores as well as retrieval_context text.
                 update_current_span(test_case=test_case, metrics=eligible)
-            else:
+            elif eligible:
                 separate_samples.append((test_case, eligible, sample_id))
 
         def on_span(event):
@@ -249,8 +256,9 @@ class NativeAgentEvaluation:
                     seen["retrieval"] += 1
                     mapping = details.get("per_query")
                     if not isinstance(mapping, list) or not mapping:
-                        self._score(common, "Contextual Relevancy", status="not_applicable",
-                                    reason="individual query/result mapping unavailable", span_name=name)
+                        if 'Contextual Relevancy' in self.metric_names:
+                            self._score(common, "Contextual Relevancy", status="not_applicable",
+                                        reason="individual query/result mapping unavailable", span_name=name)
                     else:
                         for index, item in enumerate(mapping):
                             candidates = item.get("candidates")
@@ -273,6 +281,8 @@ class NativeAgentEvaluation:
             valid_answer = isinstance(result, dict) and _text(result.get("answer"))
             for metric_type, name in [(TaskCompletionMetric, "Task Completion"), (StepEfficiencyMetric, "Step Efficiency"),
                                        (PlanQualityMetric, "Plan Quality"), (PlanAdherenceMetric, "Plan Adherence")]:
+                if self.explicit_selection and name not in self.metric_names:
+                    continue
                 reason = None
                 if not self.enable_whole_trace_metrics:
                     reason = "whole-trace evaluation disabled"
@@ -285,9 +295,8 @@ class NativeAgentEvaluation:
                 if reason:
                     self._score(common, name, status="not_applicable", reason=reason, grouping="whole_trace")
                 else:
-                    metric = metric_type(model=self.judge, async_mode=False)
+                    metric = tracked_metric(metric_type, {"grouping": "whole_trace"})
                     selected.append(metric)
-                    metrics_pending.append((metric, {"grouping": "whole_trace"}))
             if selected:
                 update_current_trace(metrics=selected)
 
@@ -328,7 +337,8 @@ class NativeAgentEvaluation:
                                          ("synthesis", ["Faithfulness", "Answer Relevancy"])):
                     if not seen[category]:
                         for name in names:
-                            self._score(common, name, status="not_applicable", reason=f"no observed {category} component")
+                            if name in self.metric_names:
+                                self._score(common, name, status="not_applicable", reason=f"no observed {category} component")
                 whole_trace()
             snapshot("before_scoring")
             started = perf_counter()
@@ -343,8 +353,12 @@ class NativeAgentEvaluation:
                         state["sdk_report_status"] = "not_applicable"
                         state["sdk_report_reason"] = "SDK has no eligible native metrics; raw trace preserved"
                     for test_case, metrics, sample_id in separate_samples:
-                        evaluate(test_cases=[test_case], metrics=metrics, identifier=sample_id,
-                                 **configs("multi-query-" + sample_id))
+                        try:
+                            evaluate(test_cases=[test_case], metrics=metrics, identifier=sample_id,
+                                     **configs("multi-query-" + sample_id))
+                        finally:
+                            for metric in metrics:
+                                metric.checkpoint()
             finally:
                 state["judge_seconds"] = perf_counter() - started
             state["status"] = "completed"
@@ -373,14 +387,7 @@ class NativeAgentEvaluation:
                     cleanup(iterator.close, "iterator_close")
                 cleanup(lambda: snapshot(state["status"]), "final_snapshot")
                 for metric, link in metrics_pending:
-                    error = getattr(metric, "error", None)
-                    score = getattr(metric, "score", None)
-                    status = "error" if error or score is None else "scored"
-                    reason = str(error) if error else getattr(metric, "reason", None)
-                    if score is None and not error:
-                        reason = "evaluation cancelled or metric did not return a score"
-                    cleanup(lambda: self._score({**common, **link}, metric.__name__, status=status,
-                            score=score if status == "scored" else None, reason=reason), "score_export")
+                    cleanup(metric.checkpoint, "score_export")
 
                 def count_spans(spans):
                     return sum(1 + count_spans(span.children) for span in spans)

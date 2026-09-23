@@ -83,7 +83,8 @@ def test_native_scoring_runs_after_durable_answer_without_changing_corpus(tmp_pa
     monkeypatch.setattr(system_runtime, 'run_system_question', ask)
     arguments = dict(root=Path(__file__).resolve().parents[1], project=tmp_path / 'product',
                      bundle_dir=tmp_path / 'bundle', run=run, mode='chunk', partition_id=partition,
-                     case_ids=['qasper:1'], agent_config={'judge_config': tmp_path / 'judge.json', 'trajectory': True})
+                     case_ids=['qasper:1'], agent_config={'judge_config': tmp_path / 'judge.json', 'trajectory': True,
+                                                        'metrics': ['step_efficiency'], 'task_timeout': 600})
     if cancelled:
         with pytest.raises(StreamingCancelled) as caught:
             execute(**arguments)
@@ -102,6 +103,7 @@ def test_native_scoring_runs_after_durable_answer_without_changing_corpus(tmp_pa
     assert loaded['manifest']['planned_predictions'] == 1
     assert loaded['manifest']['identity']['notebook_context']['case_ids'] == ['qasper:1']
     assert loaded['manifest']['identity']['agent_evaluation']['judge']['model_id'] == 'fake'
+    assert loaded['manifest']['identity']['agent_evaluation']['metrics'] == ['step_efficiency']
     assert len(json.loads((run / 'product-bundle.json').read_text())['questions']) == 2
 
 

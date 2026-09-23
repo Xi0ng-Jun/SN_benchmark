@@ -1,5 +1,7 @@
 # Silicon Notebook RAG Benchmark + DeepEval
 
+**评分超时恢复：** 原生 Agent 评分现支持逐项落盘、`--metric` 选择，以及对已保存组件单独补评。服务器下一步先处理一个检索样本和一个 reasoning 合成样本，见[恢复说明与命令](docs/native-scoring-recovery.md)；SN 补丁无需重打。
+
 **2026-09-22：Agent 评测改用 SN 原生 DeepEval。** 新 `run_notebook_agent.py` 默认评检索/合成组件，显式 `--trajectory` 评完整 Agent 轨迹；回答和组件先落盘，judge 随后评分。SDK 固定 4.2.2，旧私有树回放和 `--capture-agent-trace` 已移除。见[当前协议与命令](docs/native-agent-evaluation.md)、[SN 增量补丁](integrations/silicon-notebook/README.md)、[服务器 prompt](docs/server-agent-tracing-prompt.md)。旧回答/客观分保留，旧 Agent 分归档；本机只做离线验证。
 
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](docs/notebook-benchmark-experiment-plan.md)。
