@@ -1,5 +1,8 @@
 # Public Benchmark Execution Ledger
 
+> 历史实验台账：本页只描述早期公开 benchmark 运行，不作为当前服务器命令或质量结论。
+
+
 Plan: `docs/superpowers/plans/2026-09-09-public-benchmark-evaluation.md`
 
 Started: 2026-09-09. User authorized execution after reviewing the plan.

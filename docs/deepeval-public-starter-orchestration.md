@@ -1,5 +1,8 @@
 # 公开起步方案：执行与报告入口
 
+> 历史实现交接：本页记录早期 N/R 编排，当前 Notebook 和 Agent 命令以 [文档导航](README.md) 为准。
+
+
 **2026-09-16 更新：IFEval 已取消人工正反例审计前置条件，N/R 直接调用 DeepEval 4.2.2 verifier。冻结数据中的 pending/audited 字段仅作来源归档，不阻止问答或评分。新 scorer 与历史记录分开，详见 [IFEval 直接评分与服务器使用说明](ifeval-direct-scoring.md)。下文早期阶段记录中的审计要求已被此决定取代。**
 
 2026-09-13 增补：[SN 系统接入](sn-public-system-adaptation.md)为七套新产品任务增加 `sn-public-system-v1`；默认 R 自动选择，使用 SN 服务配置而非 `--models`，无需原三套的人审文件。`--product-protocol legacy` 保留旧路径。下文描述原五套首批流程，原三套产品审核要求不变；所有新代码仍未执行验证。

@@ -1,5 +1,8 @@
 # 能力评测数据与结果协议（草案 v1）
 
+> 设计草案：本页定义过渡期数据协议，只有代码和具体 run 的实际字段才构成当前契约。
+
+
 2026-09-10。本文件定义下一阶段的协议，**当前 runner 尚未消费新字段**。历史 JSONL 保持原状；新协议以独立 sidecar/导出承载，不就地迁移 baseline。[能力矩阵](product-capability-matrix.md)给出各字段用途，[公开历史样例](examples/drop-smoke-case.json)保留现有真实形状。
 
 ## 四类记录与身份

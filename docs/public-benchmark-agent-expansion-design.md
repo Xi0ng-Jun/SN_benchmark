@@ -1,5 +1,8 @@
 # 公开 Benchmark 与 SN Agent 评测扩展设计
 
+> 历史设计：本页记录公开 benchmark/Agent 扩展阶段；当前实现状态以 [评测状态](evaluation-status.md) 和各专题协议为准。
+
+
 更新时间：2026-09-14
 
 最新选题依据为[十套公开评测任务与选题方案](public-benchmark-selection-plan.md)：不预设每套题数，选定任务和 split 下符合规则的原题全部纳入；MMLU 四个学科、BBH 四类任务各自完整覆盖。题单与分库清单分开，选择器与多分区执行尚待实施。当前仅文档工作，测试与实验暂停。

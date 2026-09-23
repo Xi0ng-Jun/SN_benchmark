@@ -1,6 +1,6 @@
 # QMSum 结果收口与下一步实现
 
-> 历史记录：本页描述的是此前阶段。2026-09-22 起 Agent 采集/评分以[原生 DeepEval 协议](native-agent-evaluation.md)为准；旧 `--capture-agent-trace`、`--judge/--dag` 和 `inspect_agent_inputs.py` 已退役。旧实验结论及原始工件保留，不执行下文的旧命令。
+> 历史记录：本页描述的是此前阶段。2026-09-22 起 Agent 采集/评分以[原生 DeepEval 协议](../../native-agent-evaluation.md)为准；旧 `--capture-agent-trace`、`--judge/--dag` 和 `inspect_agent_inputs.py` 已退役。旧实验结论及原始工件保留，不执行下文的旧命令。
 
 2026-09-20。输入为用户提供的服务器修订审计报告；数字来自服务器，本机没有下载数据或重算真实答卷。本轮接受审计结论，不再要求同一轮反复审计。
 
@@ -39,7 +39,7 @@
 
 后续优先顺序：QMSum BM25 对照 → 其余已批准的 Notebook benchmark → 有完整 trace hook 后启用 Agent/DAG 语义评分。当前的确定性阶段诊断可以直接用历史答卷，不需要重问。
 
-完整的三条 QMSum 路径示例和代码数据流见[QMSum 三路径说明](qmsum-three-paths-walkthrough.md)。
+完整的三条 QMSum 路径示例和代码数据流见[QMSum 三路径说明](../../qmsum-three-paths-walkthrough.md)。
 
 ## 服务器交接
 
@@ -70,7 +70,7 @@ python scripts/evaluate_agent_traces.py \
 
 打开 `agent-report.md`。阶段字段是可观测状态，不是 Agent 能力分数；没有完整 trace 不加 `--judge` 或 `--dag`。
 
-5. 继续已经实现的 [QMSum BM25 对照](qmsum-bm25-baseline.md)，固定同一 bundle、生成模型配置和检索预算；分别与 SN chunk/reasoning 作同题比较。旧 SN 答卷仍可用于明确标注 request-v1 的对照，不以等待新全量为前提。然后推进其余已批准 benchmark。
+5. 继续已经实现的 [QMSum BM25 对照](../../qmsum-bm25-baseline.md)，固定同一 bundle、生成模型配置和检索预算；分别与 SN chunk/reasoning 作同题比较。旧 SN 答卷仍可用于明确标注 request-v1 的对照，不以等待新全量为前提。然后推进其余已批准 benchmark。
 
 后续汇报以新增产物与结果为主：完成哪些运行、新模板下输出状态及共同题分数、BM25 对照结果、阻塞执行的实际错误。模型路由未知、引用语义未评等既有局限继续注明，不要求补齐所有观测才推进。
 

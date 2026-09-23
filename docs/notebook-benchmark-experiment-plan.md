@@ -1,5 +1,8 @@
 # Notebook 公开 Benchmark 实验计划
 
+文档状态：当前实验计划。它规定比较边界和证据要求，不表示服务器已经完成对应实验。
+
+
 本计划已由用户确认；当前可执行范围是现有 SN 主实验、QMSum BM25 对照与评分，向量检索和全文输入对照仍是后续目标。命令和参数以 [服务器使用说明](notebook-benchmarks.md) 为准，数据迁移见 [修正记录](notebook-data-corrections.md)。
 
 ## 目标与结论边界

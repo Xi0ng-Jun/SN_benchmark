@@ -1,5 +1,8 @@
 # Notebook 场景公开评测：实现与服务器使用
 
+文档状态：当前协议与服务器操作说明。真实数据和服务器状态必须按运行产物核实；当前总览见 [评测状态](evaluation-status.md)。
+
+
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](notebook-benchmark-experiment-plan.md)。
 
 服务器真实文件预检后的适配修正与迁移说明见 [数据修正记录](notebook-data-corrections.md)。新 prepare 使用 `adaptation_revision=notebook-data-v2`；旧包缺字段仍按原规则加载，不能手改旧 manifest。
@@ -95,7 +98,7 @@ python scripts/run_notebook_benchmarks.py \
 
 reasoning 用相同 bundle/partition、另一个新 run-dir 和新进程。默认不会遍历其他分区；服务器 Agent 应枚举完整 partitions，显式记录计划和实际执行范围。每次独立导入与建索引；代码没有实现跨 mode 共享已处理 notebook。数据库、上传存储、缓存、日志、模型服务配置快照均位于 run/runtime；禁用 KG、历史记忆、用户 profile 注入和检索经验。模型服务读取服务器 SN 已部署的配置，不要求额外 tested/judge 配置。
 
-2026-09-20 新增 `--request-revision notebook-request-v2`：QMSum 的追加指令改为 `Provide a query-focused summary using only the meeting transcript.`，QASPER 将 `if it is not answerable` 改为 `if the question is not answerable`。避免评测包装本身引入 SN 的指代澄清检查；原题中的指代照常保留，不绕过意图预览。默认 `notebook-request-v1` 完整复现旧模板。无需重新 prepare 数据；v2 仅用于新 run，同一模式对比的两侧必须选择同一请求版本。版本进入 `identity.notebook_context.request_revision` 与 product bundle，Dashboard 和 baseline cohort 不会将 v1/v2 静默混为同配置。动机、已知结果及下一步见 [QMSum 后续工作](qmsum-next-iteration.md)。
+2026-09-20 新增 `--request-revision notebook-request-v2`：QMSum 的追加指令改为 `Provide a query-focused summary using only the meeting transcript.`，QASPER 将 `if it is not answerable` 改为 `if the question is not answerable`。避免评测包装本身引入 SN 的指代澄清检查；原题中的指代照常保留，不绕过意图预览。默认 `notebook-request-v1` 完整复现旧模板。无需重新 prepare 数据；v2 仅用于新 run，同一模式对比的两侧必须选择同一请求版本。版本进入 `identity.notebook_context.request_revision` 与 product bundle，Dashboard 和 baseline cohort 不会将 v1/v2 静默混为同配置。动机、已知结果及下一步见 [QMSum 后续工作](archive/2026-09/qmsum-next-iteration.md)。
 
 chunk 直接原生 Ask；reasoning 先走原生 intent preview，只在无需澄清时确认。不会用 gold 替 SN 填澄清答案。正常、clarification、no_answer、error 单独保存，每题没有历史对话。实际模型服务仍共享算力和服务资源，运行时隔离不等于资源隔离。
 
@@ -191,7 +194,9 @@ python scripts/build_experiment_dashboard.py \
 
 下一步由服务器：核验官方文件和来源 → 离线 prepare 与排除/容量审计 → 检查依赖 → 执行每个分区的两种 mode → 对账保存/澄清/缺评分 → 显式 ALCE 模型补分 → 生成 Dashboard → 核验少量案例和结论。人工核验用于解释评测有效性，不是运行官方规则前的审批门槛。
 
-## 本次离线验证记录（2026-09-17）
+## 历史离线验证记录（2026-09-17）
+
+以下数字是 Notebook 适配阶段的历史本地验证，不能替代合并后主线当前回归；当前回归以[评测状态](evaluation-status.md)中的 447 项 Python 和 34 项 Dashboard JavaScript 检查为准。
 
 - 全量 Python 回归 **319 passed**，无跳过；测试进程 socket/getaddrinfo 阻断，网络尝试 **0**。使用已有 venv 和只读 SN 类型/schema；SN 导入/Ask 与官方模型推断用测试替身，未运行产品实验。
 - Dashboard JavaScript 回归 **18 passed**；三个脚本及 ALCE module 的命令帮助检查通过。

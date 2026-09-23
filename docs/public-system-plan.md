@@ -1,5 +1,8 @@
 # Public System Experiment
 
+> 历史实验记录：本页描述受限候选库实验，不能替代当前 Notebook/Agent 协议或服务器结果。
+
+
 Experimental implementation of the user-approved end-to-end plan.
 
 - [x] Prepare first 50 questions per dataset and union of their labeled documents.

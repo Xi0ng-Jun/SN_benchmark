@@ -1,5 +1,8 @@
 # 评测项目下一步开发讨论稿
 
+> 历史路线记录：本页保留阶段性优先级讨论，当前下一步以 [评测状态](evaluation-status.md) 为准。
+
+
 ## 2026-09-22 当前方向：原生组件与 Agent 评测
 
 用户已批准[原生 DeepEval 改造](native-agent-evaluation.md)：SN 直接产生 SDK span，运行器先保存回答/组件样本再评分；默认组件，完整轨迹显式开启。删除旧私有回放，不迁移旧 Agent 分。下一步服务器先最大题两模式，再完成 meeting18 六题两模式，随后根据检索、合成与计划指标定位具体问题。普通旧答案/客观分继续可用。Dashboard、DAG、新 benchmark、历史 baseline 与 timer 暂不扩展或恢复；以下阶段保留为历史。

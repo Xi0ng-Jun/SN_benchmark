@@ -1,5 +1,8 @@
 # 实验地图与单题回放
 
+文档状态：当前实现说明。只读已保存工件，不启动 SN、judge 或数据下载。当前总览见 [评测状态](evaluation-status.md)。
+
+
 Dashboard v3 从已保存的实验文件生成本地报告，依次回答：做了哪些实验、资料和答卷如何流转、每一步实际拿到什么、分数如何产生、哪些结果可以比较。它只读工件，不调用 SN、judge 或下载数据，不重新计算实验分数。
 
 ## 打开一份真实报告
@@ -127,7 +130,7 @@ node tests/dashboard_map_browser.cjs /absolute/path/to/demo/report/dashboard.htm
 
 ```text
 请只生成新版离线实验地图，不重跑 SN、不调用 judge、不重新评分。
-读取 AGENTS.md 和 docs/experiment-dashboard.md。在独立 checkout/worktree 使用 feat/dashboard-experiment-map 分支（该分支推送后），不要改正在运行实验使用的 checkout。
+读取 AGENTS.md 和 docs/experiment-dashboard.md。在独立 checkout/worktree 使用包含当前 Dashboard 实现的固定提交；当前本地主线已合并该功能，若服务器远程尚未包含该提交，先核对实际提交身份再交付。不要改正在运行实验使用的 checkout。
 显式列出本次 QMSum chunk/reasoning、BM25、重评分和新版原生 DeepEval 的真实 run 目录，用 scripts/build_experiment_dashboard.py 写入一个独立的新报告目录。相互不可比的批次仍应保留其配置与分数身份，不改原工件来凑配对。
 检查地图的生成/重评分关系；各选一题查看资料、实际问题、检索、答卷、评分和已保存的原生 span；检查 BM25/SN 比较的配置差异、共同题和缺分。没有原生轨迹的旧实验应显示未采集，不能伪造。
 给出报告整个目录的获取方式（HTML 加 details/ 等文件必须一起复制），运行数、真正生成的问答数、评分数、文件体积及实际浏览器问题。校验失败时报告原因；不修改实验、不做新模型测试、不公开上传报告。

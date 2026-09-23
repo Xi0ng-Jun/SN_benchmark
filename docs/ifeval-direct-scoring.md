@@ -1,5 +1,8 @@
 # IFEval：直接使用 DeepEval benchmark 评分
 
+文档状态：当前评分协议。固定 DeepEval 4.2.2 verifier；历史 scorer 仍按原运行身份保留。
+
+
 2026-09-16 决定：按照用户要求，取消项目自行增加的人工正反例审计前置条件。Native 和 SN Product 都直接使用固定版本 DeepEval 4.2.2 的 `IFEvalInstructionVerifier.verify_instruction_compliance`；不另造 verifier，不调用 LLM judge，不筛掉 SDK 默认分支。
 
 每题按原始顺序将回答、instruction ID 和对应 kwargs 交给 SDK。所有指令通过为 1，否则为 0；保存每条指令的位置、参数、结果和 SDK 理由。Product 使用 SN 完整正文，包括空白、解释和引用，不提取 `Final answer`。SDK 内部捕获并返回 False 的情况照其原生口径计失败，理由保留；逃逸到适配层的异常按执行错误记录，产品未正常回答单独记录状态。
@@ -28,7 +31,7 @@
 
 ## 公司服务器使用
 
-获取更新后的 `docs/public-benchmark-agent-expansion` 分支；实验仍在运行时使用独立 checkout，不切换正在执行进程使用的源码。复用已冻结的 IFEval bundle 和 partition plan，沿用现有 Native/System 执行命令，省略 `--instruction-audits`，指定新的 run-dir。执行需沿用服务器既有模型配置和隔离规则。
+获取包含当前 IFEval 评分实现的固定评测提交；实验仍在运行时使用独立 checkout，不切换正在执行进程使用的源码。复用已冻结的 IFEval bundle 和 partition plan，沿用现有 Native/System 执行命令，省略 `--instruction-audits`，指定新的 run-dir。执行需沿用服务器既有模型配置和隔离规则，并记录实际提交身份。
 
 旧 N/A 不会通过更新 dashboard 自动变成分数。本次不提供独立的旧输出重评分 CLI，现有 runner 会在新 run 中重新问答并评分；是否补跑由服务器按实验安排执行，不在本地启动。完成后将新 run 交给现有报告/dashboard 命令，查看新 scorer；旧 run 仍按旧口径展示。
 

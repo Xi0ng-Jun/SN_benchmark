@@ -1,5 +1,8 @@
 # SN 原生 DeepEval 评测
 
+文档状态：当前协议。Agent 新运行使用 `sn-deepeval-native-v1`；评分超时后的动作见 [原生评分恢复](native-scoring-recovery.md)。
+
+
 服务器验收遇到评分超时后，当前操作顺序见[评分恢复说明](native-scoring-recovery.md)：先对已保存组件逐项补评，再单独处理整轨迹。新增 `--metric` 和 `score_native_components.py`；每个完成的指标立即保存。这覆盖下文“最大题一次运行全部指标后扩大”的初始安排。SN 补丁不变。
 
 2026-09-22 起，新 Agent 实验使用 `sn-deepeval-native-v1`。SN 真实调用直接产生 DeepEval span，运行器在同一隔离进程挂接组件和可选完整轨迹指标。旧 `sn-execution-trace-v1` 仅作历史档案；不重建旧树、不写 SDK 私有 `_trace_dict`。
@@ -88,7 +91,7 @@ chunk 使用同一题、同一分区和另一个新 run-dir。`--case-id` 只限
 
 保留 QMSum request-v2、BM25 的旧回答及客观分，普通 Notebook 重评分仍可用。旧 Agent 分和超窗记录只作历史，不混入新协议批次；不会因升级而重跑全部问答。
 
-删除 `agent_deepeval.py`、`agent_input_inspection.py`、`inspect_agent_inputs.py` 及手工 SDK 树注入。`evaluate_agent_traces.py` 仅保留历史 JSON 的确定性诊断，不再有 `--judge/--dag`。普通 Notebook 的 `--capture-agent-trace` 被新 Agent 命令替代。不新增旧树迁移层、Dashboard、DAG、新 benchmark 或发布门槛。
+旧的 Agent 输入检查脚本、手工 SDK 树注入和离线判分开关均已退役；`evaluate_agent_traces.py` 仅保留历史 JSON 的确定性诊断。普通 Notebook 的旧轨迹采集开关由新 Agent 命令替代。不新增旧树迁移层、Dashboard、DAG、新 benchmark 或发布门槛。
 
 ## 依据和验证
 

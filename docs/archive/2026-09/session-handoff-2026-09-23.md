@@ -90,11 +90,11 @@ results/domain-goldens-current.rejected.json
 
 ### 公开任务、SN 运行与常规对照
 
-- 早期十套公开评测：SQuAD、DROP、BoolQ、LogiQA、IFEval、MMLU、GSM8K、TruthfulQA、HellaSwag、BBH。数据选择及 Native 模型参照 / SN Product 适配的范围见[选题方案](public-benchmark-selection-plan.md)和[指标实现表](benchmark-metrics-reference.md)。这些轨道不是同一种实验，不能合成一个总成绩。
-- 后续 Notebook 场景重点：QASPER、QMSum、MultiHop-RAG、ALCE（当前主要实验是 ASQA；也有 QAMPARI/ELI5 适配）。它们是独立公开研究数据集，不是四个 DeepEval 内置 Benchmark 类。见[Notebook 协议](notebook-benchmarks.md)。
+- 早期十套公开评测：SQuAD、DROP、BoolQ、LogiQA、IFEval、MMLU、GSM8K、TruthfulQA、HellaSwag、BBH。数据选择及 Native 模型参照 / SN Product 适配的范围见[选题方案](../../public-benchmark-selection-plan.md)和[指标实现表](../../benchmark-metrics-reference.md)。这些轨道不是同一种实验，不能合成一个总成绩。
+- 后续 Notebook 场景重点：QASPER、QMSum、MultiHop-RAG、ALCE（当前主要实验是 ASQA；也有 QAMPARI/ELI5 适配）。它们是独立公开研究数据集，不是四个 DeepEval 内置 Benchmark 类。见[Notebook 协议](../../notebook-benchmarks.md)。
 - 按完整任务资料组织隔离 notebook/runtime，参考答案和证据标注留在评分侧。QASPER 按论文、QMSum 按会议、MultiHop-RAG 用完整 corpus、ALCE 按单题完整候选集；不能用统一文档数上限拆散一道题所需资料。
 - SN chunk/reasoning 使用后端业务接口及隔离运行配置，不是通过生产 UI 逐题点击。问答实际保存的输入、上下文、答案和引用供后续评分、诊断与展示。
-- QMSum 已有 BM25 turn 检索加显式生成模型的对照、同题比较与答案独立重评分。见[三条路径逐步说明](qmsum-three-paths-walkthrough.md)、[BM25](qmsum-bm25-baseline.md)、[答案重评分](notebook-rescoring.md)。不要把 BM25 叫作 SN 的第三种内部模式。
+- QMSum 已有 BM25 turn 检索加显式生成模型的对照、同题比较与答案独立重评分。见[三条路径逐步说明](../../qmsum-three-paths-walkthrough.md)、[BM25](../../qmsum-bm25-baseline.md)、[答案重评分](../../notebook-rescoring.md)。不要把 BM25 叫作 SN 的第三种内部模式。
 
 ### 原生 Agent 评测
 
@@ -109,13 +109,13 @@ results/domain-goldens-current.rejected.json
 
 多查询保留逐查询对应关系，分节合成保留各次输入输出。轨迹是可观察业务调用与模型输入输出，不是模型隐藏思维链。组件分不能替代完整 Agent 分，原生接入也不自动解决超窗、超时或不完整 JSON。
 
-代码入口：SN `backend/app/core/evaluation_tracing.py`、`services/evaluation_trace_projection.py` 及 Ask/检索/reasoning/LLM 埋点；评测 `scripts/run_notebook_agent.py`、`src/rag_eval/native_agent.py`。详细契约见[原生协议](native-agent-evaluation.md)。
+代码入口：SN `backend/app/core/evaluation_tracing.py`、`services/evaluation_trace_projection.py` 及 Ask/检索/reasoning/LLM 埋点；评测 `scripts/run_notebook_agent.py`、`src/rag_eval/native_agent.py`。详细契约见[原生协议](../../native-agent-evaluation.md)。
 
 恢复分支还提供 `scripts/score_native_components.py`、`src/rag_eval/native_component_scoring.py`、`native_metrics.py`：从已保存组件用公开 `LLMTestCase/evaluate` 独立评分，逐项落盘，记录来源哈希、judge 身份和调用事件。恢复说明仅存在于 `feat/native-scoring-reliability` 的 `docs/native-scoring-recovery.md`；不要在本分支误找。完整轨迹不通过私有字段离线回灌。
 
 ### SN 更改如何通过评测仓库交付
 
-[补丁目录](../integrations/silicon-notebook/manifest.json)随评测代码发布，包含 `0001-feat-native-deepeval-evaluation.patch`、manifest、说明和跨仓库检查。
+[补丁目录](../../../integrations/silicon-notebook/manifest.json)随评测代码发布，包含 `0001-feat-native-deepeval-evaluation.patch`、manifest、说明和跨仓库检查。
 
 - SN 实现提交：`052b73734eec606c5e162d840c90219557665c64`。
 - 补丁基准：`1b4eb2b3b0e7db95353c9128bb9f6bfcf37707cb`（旧 tracing 已应用）。它是**增量补丁**，不能直接套到未打旧补丁的生产分支。
@@ -128,7 +128,7 @@ results/domain-goldens-current.rejected.json
 
 最近 `a85fdef` 修复地图无法拖动和裁切，增加鼠标/触摸平移、缩放、显示全部、定位所选、展开及键盘操作；采用白底细线和蓝色选择强调，补充地图含义和节点配置说明。没有修改评分逻辑。
 
-用法见[Dashboard 指南](experiment-dashboard.md)。更新代码后要重新生成报告，旧 HTML 不会自动更新；分享要带整个输出目录及 `details/`。独立组件补评目录是否可被 Dashboard 直接接纳，不能仅凭两个分支各自存在就宣称已支持，应以实际读取协议为准。
+用法见[Dashboard 指南](../../experiment-dashboard.md)。更新代码后要重新生成报告，旧 HTML 不会自动更新；分享要带整个输出目录及 `details/`。独立组件补评目录是否可被 Dashboard 直接接纳，不能仅凭两个分支各自存在就宣称已支持，应以实际读取协议为准。
 
 ## 5. 验证证据：本轮核实与历史验证分开
 
@@ -136,11 +136,11 @@ results/domain-goldens-current.rejected.json
 
 | 历史本地验证 | 当时记录 | 证据与适用边界 |
 | --- | --- | --- |
-| 原生 DeepEval 首次交付 | benchmark/配对检查 419 passed；SN 最终定向 32 passed；网络尝试 0 | [交付记录](sn-execution-tracing-validation.md)；真实 SDK、替身业务/judge，不是模型实验 |
+| 原生 DeepEval 首次交付 | benchmark/配对检查 419 passed；SN 最终定向 32 passed；网络尝试 0 | [交付记录](../../sn-execution-tracing-validation.md)；真实 SDK、替身业务/judge，不是模型实验 |
 | SN 标准 gate | 后端 12762 passed、1 failed；contracts 54 passed；前端 Node 2730、组件 1187 passed | 同一交付记录；已有打包迁移测试的 dotenv 环境失败，不能说 gate 全绿 |
 | 评分恢复 | 432 passed、0 skipped、网络尝试 0 | 恢复分支 `docs/native-scoring-recovery.md`；包含逐项保存、超时后迟到结果与补评，不证明网关可用 |
 | Dashboard v3 重构 | 433 passed、1 skipped；浏览器 smoke | 本分支 `docs/evaluation-status.md`；构造数据，非真实大规模服务器验收 |
-| 最新地图修订 | 28 项 Python、34 项 JS；Chromium 交互与 312 个构造节点，页面错误/HTTP 请求 0 | [Dashboard 指南](experiment-dashboard.md)；此前本地验证，本轮未复跑 |
+| 最新地图修订 | 28 项 Python、34 项 JS；Chromium 交互与 312 个构造节点，页面错误/HTTP 请求 0 | [Dashboard 指南](../../experiment-dashboard.md)；此前本地验证，本轮未复跑 |
 | 可编辑汇报图 | XML 模型/浏览器渲染与人工查看排版 | 恢复 worktree `docs/presentation/README.md`；图解实现，不代表评分成功 |
 
 历史状态页中某些提交号或“服务器尚未验收”是当时记录，不覆盖本文核实的 Git 身份和以下较新的服务器反馈。
@@ -187,7 +187,7 @@ results/domain-goldens-current.rejected.json
 
 ```text
 继续 Silicon Notebook 评测项目。先阅读 ~/.codex/AGENTS.md，以及：
-/home/wabiwabi/silicon-notebook/benchmark-deepeval/.worktrees/dashboard-experiment-map/docs/session-handoff-2026-09-23.md
+/home/wabiwabi/silicon-notebook/benchmark-deepeval/docs/archive/2026-09/session-handoff-2026-09-23.md
 
 按交接记录选择实际 worktree，读取该目录的 AGENTS.md、evaluation-context/status 和任务对应协议，并核实 Git 状态。注意 Dashboard 与原生评分恢复目前是不同分支，汇报图尚未提交；不要把主目录 main 当作最新代码。区分历史本地测试与服务器转述，不重复启动正在交给服务器执行的任务。
 

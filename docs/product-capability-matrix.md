@@ -1,5 +1,8 @@
 # Silicon Notebook 产品能力矩阵
 
+> 背景参考：本页是早期能力矩阵，不代表当前每项能力已有真实实验覆盖。
+
+
 核对日期：2026-09-10。这是第一阶段评测设计，不是已完成的质量验收。总方案见[详细方案](product-capability-evaluation-plan.md)，字段见[数据协议](evaluation-data-contract.md)，实物见[一题到底](evaluation-case-walkthrough.md)。
 
 ## 产品入口与观测事实

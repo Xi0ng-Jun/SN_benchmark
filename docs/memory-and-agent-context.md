@@ -106,7 +106,7 @@ flowchart TD
 - [产品 Memory 与 Agent MCP](../../project/docs/product-and-api_zh.md#memory-与-agent-mcp)、[AI 对这个库的理解](../../project/docs/product-and-api_zh.md#ai-对这个库的理解)、[检索策略经验](../../project/docs/product-and-api_zh.md#检索策略经验)、[我的回答偏好](../../project/docs/product-and-api_zh.md#我的回答偏好用户检索回答风格-profile)。
 - [AskService](../../project/backend/app/services/ask_service.py)：`_memory_hits`、`_answer_chunks`、`_answer_reasoning`、`_prepare_reasoning_stage`、`_search_profile_style_block`。
 - [ReasoningRetriever](../../project/backend/app/services/reasoning_retrieval.py)：`consult_memory_active`、`plan`、`_reflect_v2_context` 及反思循环。
-- [reasoning_context.py](../../project/backend/app/services/reasoning_context.py)：证据卡选择/裁剪、可见证据与候选池区分。
+- [evidence_context.py](../../project/backend/app/services/evidence_context.py)：证据卡选择/裁剪、可见证据与候选池区分。
 - [SQLite 历史投影](../../project/backend/app/repositories/sqlite/ask_state_store.py)、[PostgreSQL 历史投影](../../project/backend/app/repositories/postgres/ask_state_store.py)：`_conversation_histories`。
 - [source_scope.py](../../project/backend/app/services/source_scope.py)：`scoped_conversation_history`；[prompts.py](../../project/backend/app/services/prompts.py)：`answer_prompt`。
 - [benchmark 观测](../src/rag_eval/system_capture.py)与[隔离配置](../src/rag_eval/benchmark_runtime.py)。产品源码链接需要同级 project checkout。

@@ -1,6 +1,6 @@
 # Agent 评分输入过长：现状、检查与推进顺序
 
-> 历史记录：本页描述的是此前阶段。2026-09-22 起 Agent 采集/评分以[原生 DeepEval 协议](native-agent-evaluation.md)为准；旧 `--capture-agent-trace`、`--judge/--dag` 和 `inspect_agent_inputs.py` 已退役。旧实验结论及原始工件保留，不执行下文的旧命令。
+> 历史记录：本页描述的是此前阶段。2026-09-22 起 Agent 采集/评分以[原生 DeepEval 协议](../../native-agent-evaluation.md)为准；旧 `--capture-agent-trace`、`--judge/--dag` 和 `inspect_agent_inputs.py` 已退役。旧实验结论及原始工件保留，不执行下文的旧命令。
 
 2026-09-21。目标是复用已保存的 QMSum meeting18 轨迹，继续推进 Agent 评测。当前先量清评分输入，再选择能承载完整轨迹的 judge；暂不实现轨迹压缩，不重跑 SN。
 

@@ -1,5 +1,8 @@
 # Silicon Notebook 能力广度扩展计划 v1
 
+> 历史设计：本页是产品能力广度方案，当前没有由它自动启动的运行；实际入口见 [评测状态](evaluation-status.md)。
+
+
 > **优先级更新：先复用公开评测，再构造本文业务场景。** 最新入口为[DeepEval 公开评测起步方案](deepeval-public-starter-plan.md)。本文八套件及 112 次 Ask 是后续候选预算，不与公开起步预算累加为当前执行清单。
 
 日期：2026-09-10。**当前任务是制定计划，尚未开始新增评测实现或在线调用。** 本文记录业务广度设计；[原详细方案](product-capability-evaluation-plan.md)保留为已有能力的深度建设参考，[原离线实施计划](superpowers/plans/2026-09-10-product-capability-evaluation.md)不再作为所有广度套件的统一前置。

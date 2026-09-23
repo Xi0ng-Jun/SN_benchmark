@@ -1,5 +1,8 @@
 # DeepEval 公开评测起步方案 v1
 
+> 历史设计：本页的起步题量和旧执行边界已被当前选题、Notebook 和原生 Agent 文档替代；保留用于回溯。
+
+
 **2026-09-16 更新：IFEval 已取消人工正反例审计前置条件，N/R 直接调用 DeepEval 4.2.2 verifier。冻结数据中的 pending/audited 字段仅作来源归档，不阻止问答或评分。新 scorer 与历史记录分开，详见 [IFEval 直接评分与服务器使用说明](ifeval-direct-scoring.md)。下文早期阶段记录中的审计要求已被此决定取代。**
 
 > 历史方案。2026-09-14 用户明确选题规模不设预先上限，具体范围以[十套公开评测任务与选题方案](public-benchmark-selection-plan.md)为准。本页每套 20 题、每类前 10 题和 DROP 首个满足题量要求 section 的安排已被新设计替代；已有冻结 bundle 保留原身份，选择器尚未按新设计修改。最新系统接入与离线回归进度见[状态文档](evaluation-status.md)。当前测试与实验暂停。
