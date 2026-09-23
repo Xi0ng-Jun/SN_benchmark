@@ -207,7 +207,8 @@ def write_dashboard(run_dirs: list[str | Path], output: str | Path) -> Path:
     # inject asset placeholders. Escape '<' even inside application/json scripts.
     html = (ASSETS / "template.html").read_text(encoding="utf-8")
     for marker, name in (("__STYLE__", "style.css"), ("__CORE__", "core.js"),
-                         ("__EXPLORER_CORE__", "explorer-core.js"), ("__APP__", "app.js")):
+                         ("__EXPLORER_CORE__", "explorer-core.js"), ("__MAP_VIEW__", "map-view.js"),
+                         ("__APP__", "app.js")):
         html = html.replace(marker, (ASSETS / name).read_text(encoding="utf-8"))
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
     html = html.replace("__DATA__", payload)

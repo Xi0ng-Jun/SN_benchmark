@@ -23,8 +23,20 @@
     </aside>
     <main class="main">
       <section class="view" data-panel="map">
-        <div class="page-head"><div><span class="eyebrow">数据关系 · 可分享场景</span><h2>哪些实验已经完成？</h2><p>沿来源、运行、答卷和评分批次追踪身份；点击节点进入对应题目。</p></div><div class="head-counts" id="map-counts"></div></div>
-        <div class="map-layout"><div class="canvas-wrap"><svg id="experiment-map" class="experiment-map" role="img" aria-label="实验关系图"></svg><div class="canvas-key"><span><i class="node-swatch source"></i>资料</span><span><i class="node-swatch run"></i>运行</span><span><i class="node-swatch answers"></i>答卷</span><span><i class="node-swatch scores"></i>评分</span></div></div><aside class="map-inspector panel" id="map-inspector"></aside></div>
+        <div class="page-head map-page-head"><div><h2>实验关系</h2><p>用了哪些资料，运行了哪些配置，每份答卷又经过了哪些评分。</p></div><div class="head-counts" id="map-counts"></div></div>
+        <details class="map-reading"><summary>如何读这张图</summary><p>从左向右读：资料来源 → 生成运行 → 保存的答卷 → 评分结果。chunk、reasoning、BM25 分别生成答卷；重评分从已有答卷分支，不会再问一次 SN。点击节点查看配置和来源，进入「单题回放」看具体怎么测，进入「结果分析」比较分数。</p><p>每个节点代表一批实验数据，不是 SN 内部的一步调用。地图只展示本报告纳入的实验，连线表示来源关系，不代表质量高低或执行耗时。</p></details>
+        <div class="map-layout">
+          <div class="canvas-wrap" id="map-canvas">
+            <div class="map-toolbar" role="toolbar" aria-label="地图操作">
+              <span class="map-toolbar-title">资料与结果的流向</span>
+              <div class="map-zoom"><button id="map-zoom-out" type="button" aria-label="缩小地图">−</button><output id="map-zoom-level" aria-label="地图缩放比例">100%</output><button id="map-zoom-in" type="button" aria-label="放大地图">＋</button></div>
+              <button id="map-fit" type="button">显示全部</button><button id="map-actual" type="button">100%</button><button id="map-locate" type="button">定位所选</button><button id="map-expand" type="button" aria-pressed="false">展开画布</button>
+            </div>
+            <svg id="experiment-map" class="experiment-map" role="group" tabindex="0" aria-label="实验关系图，可拖动平移，滚轮缩放，方向键移动" aria-describedby="map-help"></svg>
+            <div class="map-footer"><span id="map-help">拖动平移 · 滚轮缩放 · 方向键移动</span><span class="map-edge-key"><i></i>数据来源<i class="reuse"></i>复用答卷</span></div>
+          </div>
+          <aside class="map-inspector panel" id="map-inspector" aria-label="所选节点详情"></aside>
+        </div>
       </section>
       <section class="view" data-panel="replay" hidden>
         <div class="page-head replay-head"><div><span class="eyebrow">单题流程 · <span id="replay-kicker">未选择</span></span><h2 id="replay-title">选择一题开始回放</h2><p id="replay-subtitle">步骤选择只改变当前焦点；原生时间和父子身份来自真实 trace。</p></div><div class="player"><button class="icon-button" id="reset-step" type="button" title="重置步骤" aria-label="重置步骤">↺</button><button class="icon-button" id="prev-step" type="button" title="上一步" aria-label="上一步">‹</button><button class="play-button" id="play-step" type="button" aria-label="播放步骤">▶</button><button class="icon-button" id="next-step" type="button" title="下一步" aria-label="下一步">›</button></div></div>
@@ -45,6 +57,7 @@
   <script type="application/json" id="dashboard-data">__DATA__</script>
   <script>__CORE__</script>
   <script>__EXPLORER_CORE__</script>
+  <script>__MAP_VIEW__</script>
   <script>window.SNExplorer = window.SNExplorer || {};</script>
   <script>__APP__</script>
 </body>
