@@ -5,7 +5,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 
 from .artifacts import digest
-from .public_expansion_scoring import score_expansion
+from .public_expansion_protocol import EXPANSION_SUITES
 from .starter_protocol import SDK_VERSION, fingerprint, make_case
 
 
@@ -14,6 +14,10 @@ def check_sdk(manifest):
     if dist.version != SDK_VERSION or manifest["deepeval_version"] != SDK_VERSION:
         raise ValueError("DeepEval version changed; freeze a new protocol")
     root = Path(dist.locate_file("deepeval"))
+    if manifest.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_native import validate_sdk_snapshot
+        validate_sdk_snapshot(root, manifest)
+        return root
     expected = manifest.get("sdk_source_hashes")
     if not expected:
         raise ValueError("Frozen SDK hashes required")
@@ -26,6 +30,9 @@ def check_sdk(manifest):
 
 def build_request(case, manifest):
     """Return serializable request plus Pydantic schema, using native templates."""
+    if case.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_native import build_request as build_expansion_request
+        return build_expansion_request(case, manifest)
     check_sdk(manifest)
     from deepeval.benchmarks import schema as schemas
 
@@ -77,55 +84,19 @@ def build_request(case, manifest):
     return request, schema
 
 
-def audit_instruction(instruction_id, kwargs, positive, negative, manifest):
-    """Explicit OFFLINE execution for a later verification phase; never auto-run.
-
-    This checks one parameterized rule with human-supplied positive/negative
-    fixtures. It is implementation evidence, not benchmark or quality calibration.
-    """
-    root = check_sdk(manifest)
-    if not all(isinstance(t, str) and t for t in (positive, negative)) or positive == negative:
-        raise ValueError("Distinct nonempty positive/negative fixtures required")
-    from deepeval.benchmarks.ifeval.ifeval import IFEvalInstructionVerifier as verifier
-    yes, yes_reason = verifier.verify_instruction_compliance(positive, instruction_id, kwargs)
-    no, no_reason = verifier.verify_instruction_compliance(negative, instruction_id, kwargs)
-    return {"instruction_id": instruction_id, "kwargs": kwargs,
-            "positive": positive, "negative": negative,
-            "positive_result": yes, "negative_result": no,
-            "reasons": [yes_reason, no_reason],
-            "verifier_sha256": digest(root / "benchmarks/ifeval/ifeval.py"),
-            "status": "passed" if yes is True and no is False else "failed"}
-
-
 def score_prediction(case, request, prediction, manifest, *, judge=None, instruction_audits=()):
     """Score a saved prediction. SQuAD calls the explicitly supplied judge.
 
     This is an execution API for later use, not part of the preparation command.
-    Errors propagate to the result writer; they are never converted into zero.
+    Errors escaping the SDK propagate to the result writer, never becoming zero.
+    SDK-returned failure verdicts retain the benchmark's own scoring semantics.
+    instruction_audits is an ignored compatibility argument; IFEval uses the SDK directly.
     """
     if not isinstance(prediction, str):
         raise ValueError("Prediction must be the schema-parsed answer as text")
-    # Expansion requests are prepared by the expansion source adapter.  Keep
-    # their deterministic answer checks independent from the legacy starter
-    # request reconstruction until those suites receive frozen SDK templates.
-    if case.get("suite") in {"mmlu", "gsm8k", "truthfulqa"}:
-        suite = case["suite"]
-        if not isinstance(request, dict) or request.get("suite") != suite or request.get("case_id") != case.get("case_id"):
-            raise ValueError("Prediction request does not match the expansion case")
-        expected = case.get("references")
-        if not isinstance(expected, list) or not expected:
-            raise ValueError("Expansion case has no frozen references")
-        # Requests are untrusted serialized inputs.  Their expected output must
-        # equal the canonical representation derived from the frozen case, and
-        # the scorer always receives the case references below.
-        canonical_expected = expected if suite == "truthfulqa" else expected[0]
-        if "expected_output" in case and case["expected_output"] != canonical_expected:
-            raise ValueError("Expansion case expected output differs from frozen references")
-        if request.get("expected_output") != canonical_expected:
-            raise ValueError("Expansion request expected output differs from frozen case")
-        return score_expansion(suite, prediction, expected,
-                               behavior_label=request.get("behavior_label"),
-                               evidence=request.get("evidence"))
+    if case.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_native import score_prediction as score_expansion_prediction
+        return score_expansion_prediction(case, request, prediction, manifest)
     root = check_sdk(manifest)
     rebuilt, _ = build_request(case, manifest)
     if request != rebuilt:
@@ -133,27 +104,18 @@ def score_prediction(case, request, prediction, manifest, *, judge=None, instruc
     suite = case["suite"]
     if suite == "ifeval":
         from deepeval.benchmarks.ifeval.ifeval import IFEvalInstructionVerifier as verifier
-        verifier_hash = digest(root / "benchmarks/ifeval/ifeval.py")
+        from .ifeval_protocol import DIRECT_POLICY
         details = []
+        # The frozen row requires aligned, nonempty instruction/kwargs lists.
+        # Match IFEval.predict's all-instructions conjunction, including SDK
+        # default branches. Keep positions so duplicate IDs retain each result.
         for position, (instruction, kwargs) in enumerate(zip(case["raw_row"]["instruction_id_list"], case["raw_row"]["kwargs"])):
-            evidence = next((a for a in instruction_audits
-                             if a.get("instruction_id") == instruction and a.get("kwargs") == kwargs
-                             and a.get("verifier_sha256") == verifier_hash and a.get("status") == "passed"
-                             and a.get("positive_result") is True and a.get("negative_result") is False), None)
-            if evidence is None:
-                details.append({"position": position, "instruction_id": instruction,
-                                "status": "not_applicable", "reason": "missing matching positive/negative audit"})
-            else:
-                # Recheck supplied audit evidence, rather than trusting an editable status flag.
-                checked = audit_instruction(instruction, kwargs, evidence["positive"], evidence["negative"], manifest)
-                if checked["status"] != "passed":
-                    raise ValueError("Instruction audit no longer reproduces")
-                passed, reason = verifier.verify_instruction_compliance(prediction, instruction, kwargs)
-                details.append({"position": position, "instruction_id": instruction,
-                                "status": "scored", "score": int(passed), "reason": reason})
-        if not details or any(d["status"] != "scored" for d in details):
-            return {"status": "not_applicable", "score": None, "reason": "not all instruction instances audited", "details": details}
-        return {"status": "scored", "score": float(all(d["score"] for d in details)), "details": details}
+            passed, reason = verifier.verify_instruction_compliance(prediction, instruction, kwargs)
+            details.append({"position": position, "instruction_id": instruction, "kwargs": kwargs,
+                            "status": "scored", "score": int(passed), "reason": reason})
+        return {"status": "scored", "score": float(all(d["score"] for d in details)), "details": details,
+                "scoring_policy": DIRECT_POLICY, "deepeval_version": SDK_VERSION,
+                "verifier_sha256": digest(root / "benchmarks/ifeval/ifeval.py")}
 
     from deepeval.scorer import Scorer
     scorer = Scorer()

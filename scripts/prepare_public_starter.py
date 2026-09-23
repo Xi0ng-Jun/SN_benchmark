@@ -16,10 +16,19 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from rag_eval.artifacts import digest, save_json, save_jsonl
 from rag_eval.starter_protocol import SDK_VERSION, SUITES, VERSION, select_cases
+from rag_eval.public_expansion_protocol import EXPANSION_SUITES
+from rag_eval.public_expansion_sources import (
+    expansion_manifest_fields, select_expansion_cases, validate_expansion_source,
+)
+from rag_eval.public_expansion_native import sdk_source_files, validate_sdk_snapshot, validate_sdk_tasks
+
+ALL_SUITES = {**SUITES, **EXPANSION_SUITES}
 
 
 def validate_source(source, suite, raw_path):
-    info = SUITES[suite]
+    if suite in EXPANSION_SUITES:
+        return validate_expansion_source(source, suite, raw_path)
+    info = ALL_SUITES[suite]
     for field in ("dataset", "split", "revision", "source_url", "license", "license_url", "conversion"):
         if not isinstance(source.get(field), str) or not source[field].strip():
             raise ValueError(f"source.{field} is required")
@@ -42,8 +51,7 @@ def sdk_files():
     if dist.version != SDK_VERSION:
         raise ValueError(f"Starter protocol requires DeepEval {SDK_VERSION}, found {dist.version}")
     root = Path(dist.locate_file("deepeval"))
-    files = (list((root / "benchmarks").rglob("*.py"))
-             + list((root / "scorer").rglob("*.py")) + [root / "utils.py"])
+    files = sdk_source_files(root)
     if not files:
         raise ValueError("DeepEval benchmark/scorer source files unavailable")
     return root, sorted(files)
@@ -70,20 +78,36 @@ def instruction_inventory(cases, verifier_path):
     ]
 
 
-def prepare(suite, raw_path, source_path, output):
+def prepare(suite, raw_path, source_path, output, *, selection_protocol="legacy"):
+    if selection_protocol == "public-selection-v1":
+        from rag_eval.selection_bundle import prepare_selection
+        return prepare_selection(suite, raw_path, source_path, output)
+    if selection_protocol != "legacy":
+        raise ValueError("Unsupported selection protocol")
     raw_path, source_path, output = Path(raw_path), Path(source_path), Path(output)
     source = json.loads(source_path.read_text(encoding="utf-8"))
     validate_source(source, suite, raw_path)
     # Blank lines are rejected so source_row_index always identifies a physical line.
-    rows = [json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines()]
-    cases, selection = select_cases(suite, rows)
     sdk_root, files = sdk_files()
-    inventory = instruction_inventory(cases, sdk_root / "benchmarks/ifeval/ifeval.py") if suite == "ifeval" else []
+    if suite in EXPANSION_SUITES:
+        cases, selection = select_expansion_cases(suite, raw_path, revision=source["revision"])
+        validate_sdk_tasks(cases, sdk_root)
+        inventory = []
+    else:
+        rows = [json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines()]
+        cases, selection = select_cases(suite, rows)
+        inventory = instruction_inventory(cases, sdk_root / "benchmarks/ifeval/ifeval.py") if suite == "ifeval" else []
     # A failed preparation remains visibly incomplete; never overwrite or reuse it.
     output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(raw_path, output / "raw.jsonl")
     if digest(output / "raw.jsonl") != source["export_sha256"]:
         raise ValueError("Source changed during preparation")
+    if suite in EXPANSION_SUITES:
+        frozen_cases, frozen_selection = select_expansion_cases(
+            suite, output / "raw.jsonl", revision=source["revision"],
+        )
+        if cases != frozen_cases or selection != frozen_selection:
+            raise ValueError("Source changed between selection and freezing")
     source_hashes = {}
     for path in files:
         relative = path.relative_to(sdk_root)
@@ -101,26 +125,32 @@ def prepare(suite, raw_path, source_path, output):
                       "限制：" + "; ".join(case["limitations"])])
     (output / "cards.md").write_text("\n\n".join(cards) + "\n", encoding="utf-8")
     # The manifest is written last: its absence means the bundle is incomplete.
-    save_json(output / "manifest.json", {
+    manifest = {
         "protocol_version": VERSION, "status": "prepared_not_validated", "suite": suite,
         "source": source, "source_provenance_status": "operator_declared; export hash checked",
         "selection": selection, "n_shots": None if suite == "ifeval" else 0,
-        "scorer": SUITES[suite]["scorer"], "deepeval_version": SDK_VERSION,
+        "scorer": ALL_SUITES[suite]["scorer"], "deepeval_version": SDK_VERSION,
         "sdk_source_hashes": source_hashes,
         "artifacts": {name: digest(output / name) for name in ("raw.jsonl", "cases.jsonl", "instruction-audit.jsonl", "cards.md")},
         "model_predictions": 0, "human_review": "pending", "verifier_audit": "pending" if suite == "ifeval" else "not_applicable",
         "release_gate": False,
-    })
+        **(expansion_manifest_fields(suite, cases) if suite in EXPANSION_SUITES else {}),
+    }
+    if suite in EXPANSION_SUITES:
+        validate_sdk_snapshot(output / "sdk-source", manifest, cases)
+    save_json(output / "manifest.json", manifest)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=SUITES, required=True)
+    parser.add_argument("--suite", choices=ALL_SUITES, required=True)
     parser.add_argument("--raw-jsonl", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True, help="Operator-provided source provenance JSON")
     parser.add_argument("--output", type=Path, required=True, help="New directory; existing directories rejected")
+    parser.add_argument("--selection-protocol", choices=("public-selection-v1", "legacy"),
+                        default="public-selection-v1", help="Versioned full-scope selection (default), or legacy prefixes")
     args = parser.parse_args()
-    prepare(args.suite, args.raw_jsonl, args.source, args.output)
+    prepare(args.suite, args.raw_jsonl, args.source, args.output, selection_protocol=args.selection_protocol)
 
 
 if __name__ == "__main__":

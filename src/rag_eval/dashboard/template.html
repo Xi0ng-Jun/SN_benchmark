@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>实验地图 · Silicon Notebook</title>
+  <style>__STYLE__</style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#view=map" aria-label="实验地图首页"><span class="brand-mark">SN</span><span><strong>实验地图</strong><small>离线工件审阅</small></span></a>
+    <nav class="view-tabs" aria-label="视图"><button data-view="map" type="button" aria-selected="true">地图</button><button data-view="replay" type="button" aria-selected="false">单题回放</button><button data-view="analysis" type="button" aria-selected="false">结果分析</button></nav>
+    <div class="top-actions"><span class="mode-pill" id="current-run-label">未选择 run</span><button class="icon-button" id="share-button" type="button" title="复制当前链接" aria-label="复制当前链接">↗</button><button class="icon-button" id="export-button" type="button" title="导出当前选择" aria-label="导出当前选择">⇩</button></div>
+  </header>
+  <div class="shell">
+    <aside class="rail" aria-label="实验选择">
+      <div class="rail-head"><span class="eyebrow">当前实验</span><h1 id="suite-title">实验记录</h1><p id="suite-meta">读取离线索引…</p></div>
+      <label class="select-label" for="run-select">运行</label><select id="run-select"></select>
+      <div class="rail-stats" id="rail-stats"></div>
+      <div class="rail-section"><div class="section-title"><span>题目</span><span id="case-count">0</span></div><label class="search"><span class="sr-only">搜索题目</span><input id="case-search" type="search" placeholder="搜索 case / 题目" autocomplete="off"></label><div id="case-list" class="case-list"></div></div>
+      <div class="rail-section rail-notes"><span class="eyebrow">状态说明</span><p><i class="legend-dot observed"></i>observed 有实际输出</p><p><i class="legend-dot recorded"></i>recorded 静态工件</p><p><i class="legend-dot missing"></i>missing 未保存</p></div>
+    </aside>
+    <main class="main">
+      <section class="view" data-panel="map">
+        <div class="page-head map-page-head"><div><h2>实验关系</h2><p>用了哪些资料，运行了哪些配置，每份答卷又经过了哪些评分。</p></div><div class="head-counts" id="map-counts"></div></div>
+        <details class="map-reading"><summary>如何读这张图</summary><p>从左向右读：资料来源 → 生成运行 → 保存的答卷 → 评分结果。chunk、reasoning、BM25 分别生成答卷；重评分从已有答卷分支，不会再问一次 SN。点击节点查看配置和来源，进入「单题回放」看具体怎么测，进入「结果分析」比较分数。</p><p>每个节点代表一批实验数据，不是 SN 内部的一步调用。地图只展示本报告纳入的实验，连线表示来源关系，不代表质量高低或执行耗时。</p></details>
+        <div class="map-layout">
+          <div class="canvas-wrap" id="map-canvas">
+            <div class="map-toolbar" role="toolbar" aria-label="地图操作">
+              <span class="map-toolbar-title">资料与结果的流向</span>
+              <div class="map-zoom"><button id="map-zoom-out" type="button" aria-label="缩小地图">−</button><output id="map-zoom-level" aria-label="地图缩放比例">100%</output><button id="map-zoom-in" type="button" aria-label="放大地图">＋</button></div>
+              <button id="map-fit" type="button">显示全部</button><button id="map-actual" type="button">100%</button><button id="map-locate" type="button">定位所选</button><button id="map-expand" type="button" aria-pressed="false">展开画布</button>
+            </div>
+            <svg id="experiment-map" class="experiment-map" role="group" tabindex="0" aria-label="实验关系图，可拖动平移，滚轮缩放，方向键移动" aria-describedby="map-help"></svg>
+            <div class="map-footer"><span id="map-help">拖动平移 · 滚轮缩放 · 方向键移动</span><span class="map-edge-key"><i></i>数据来源<i class="reuse"></i>复用答卷</span></div>
+          </div>
+          <aside class="map-inspector panel" id="map-inspector" aria-label="所选节点详情"></aside>
+        </div>
+      </section>
+      <section class="view" data-panel="replay" hidden>
+        <div class="page-head replay-head"><div><span class="eyebrow">单题流程 · <span id="replay-kicker">未选择</span></span><h2 id="replay-title">选择一题开始回放</h2><p id="replay-subtitle">步骤选择只改变当前焦点；原生时间和父子身份来自真实 trace。</p></div><div class="player"><button class="icon-button" id="reset-step" type="button" title="重置步骤" aria-label="重置步骤">↺</button><button class="icon-button" id="prev-step" type="button" title="上一步" aria-label="上一步">‹</button><button class="play-button" id="play-step" type="button" aria-label="播放步骤">▶</button><button class="icon-button" id="next-step" type="button" title="下一步" aria-label="下一步">›</button></div></div>
+        <div id="stage-flow" class="stage-flow" role="list"></div>
+        <div class="replay-grid"><article class="panel detail-panel"><div class="panel-title"><span class="eyebrow">当前阶段</span><h3 id="step-title">未选择</h3><span id="step-status" class="status-badge">—</span></div><div id="step-detail" class="step-detail"></div></article><article class="panel detail-panel"><div class="panel-title"><span class="eyebrow">原生调用</span><h3>Trace tree</h3><span id="trace-count" class="muted">未采集</span></div><div id="trace-tree" class="trace-tree"></div></article><aside class="panel inspector-panel"><div class="panel-title"><span class="eyebrow">证据检查器</span><h3 id="inspector-title">选择一个节点</h3></div><div class="inspector-tabs" id="inspector-tabs" role="tablist"><button type="button" data-inspect="input" aria-selected="true">输入</button><button type="button" data-inspect="output" aria-selected="false">输出</button><button type="button" data-inspect="schema" aria-selected="false">字段</button><button type="button" data-inspect="artifact" aria-selected="false">产物 / 代码</button></div><div id="inspector-content" class="inspector-content"></div></aside></div>
+      </section>
+      <section class="view" data-panel="analysis" hidden>
+        <div class="page-head"><div><span class="eyebrow">结果分析 · 不填零</span><h2>同题比较与指标分布</h2><p>组合筛选会保留计划分母；失败、N/A、missing 和 0 分各自表达。</p></div><button class="button" id="save-group-button" type="button">＋ 保存比较组</button></div>
+        <div class="analysis-toolbar panel"><label class="search analysis-search"><span class="sr-only">搜索条目</span><input id="analysis-search" type="search" placeholder="搜索题目、回答或原因" autocomplete="off"></label><button class="button ghost" id="clear-filters" type="button">清除筛选</button><div id="active-filters" class="chips"></div></div>
+        <div id="facet-bar" class="facet-bar"></div>
+        <div id="analysis-summary" class="summary-grid"></div>
+        <div class="analysis-columns"><article class="panel"><div class="panel-title"><span class="eyebrow">同口径</span><h3>组合均值</h3></div><div id="group-results" class="group-results"></div></article><article class="panel"><div class="panel-title"><span class="eyebrow">保存视图</span><h3>比较组</h3></div><div id="saved-groups" class="saved-groups"></div></article></div>
+        <article class="panel analysis-table-panel"><div class="panel-title"><span class="eyebrow">逐条追溯</span><h3>评分条目</h3><span id="analysis-count" class="muted"></span></div><div class="table-scroll"><table><thead><tr><th>题目</th><th>模式 / 指标</th><th>输出</th><th>状态</th><th>分数</th><th></th></tr></thead><tbody id="analysis-rows"></tbody></table></div></article>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="application/json" id="dashboard-data">__DATA__</script>
+  <script>__CORE__</script>
+  <script>__EXPLORER_CORE__</script>
+  <script>__MAP_VIEW__</script>
+  <script>window.SNExplorer = window.SNExplorer || {};</script>
+  <script>__APP__</script>
+</body>
+</html>

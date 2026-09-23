@@ -11,6 +11,10 @@ from .artifacts import digest
 
 VERSION = "public-starter-v1"
 SDK_VERSION = "4.2.2"
+# Expansion contracts remain separate so frozen starter bundles keep their
+# existing suite definitions and protocol version.
+from .public_expansion_protocol import EXPANSION_SUITES, TraceEnvelope
+
 SUITES = {
     "squad": {"dataset": "rajpurkar/squad", "split": "validation",
               "scorer": "deepeval.squad_score.binary_judge", "product": True},
@@ -20,6 +24,7 @@ SUITES = {
               "scorer": "deepeval.exact_match_score.YesNo", "product": True},
     "logiqa": {"dataset": "csitfun/LogiQA2.0/logiqa/DATA/LOGIQA/test.txt",
                "split": "test", "scorer": "deepeval.exact_match_score.ABCD", "product": False},
+    # Frozen v1 source label; current execution uses ifeval_protocol.py.
     "ifeval": {"dataset": "google/IFEval", "split": "train",
                "scorer": "deepeval.ifeval.audited_all_instructions", "product": False},
 }
@@ -84,6 +89,8 @@ def make_case(suite: str, row: dict, row_index: int, task: str) -> dict:
         if not isinstance(kwargs, list) or len(ids) != len(kwargs) or not all(isinstance(k, dict) for k in kwargs):
             raise ValueError("IFEval instruction/kwargs alignment is required")
         answer_type = "instructions"
+        # Archived v1 text retained for byte-for-byte bundle reconstruction.
+        # It is superseded by the run identity policy, not an execution gate.
         notes.append("all instruction instances require verifier audit before scoring")
     public_id = row.get("id", row.get("query_id", row.get("key")))
     sample_id = f"{suite}-{public_id}" if public_id is not None else f"{suite}-{fingerprint(row)}"
@@ -148,6 +155,13 @@ def load_bundle(directory):
     """Read a complete local bundle and check recorded bytes; never acquire data."""
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("protocol_version") == "public-selection-v1":
+        from .selection_bundle import load_selection_bundle
+        bundle = load_selection_bundle(directory)
+        return bundle["native_source"], bundle["cases"]
+    if manifest.get("suite") in EXPANSION_SUITES:
+        from .public_expansion_sources import load_expansion_bundle
+        return load_expansion_bundle(directory)
     if manifest.get("protocol_version") != VERSION or manifest.get("suite") not in SUITES:
         raise ValueError("Unsupported starter manifest")
     artifacts = manifest.get("artifacts", {})

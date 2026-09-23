@@ -1,15 +1,21 @@
 import sys
+import os
 from pathlib import Path
 import pytest
 
 
-PROJECT_BACKEND = Path(__file__).resolve().parents[2] / "project" / "backend"
+PROJECT_ROOT = Path(os.environ.get(
+    "SILICON_NOTEBOOK_PROJECT_ROOT", Path(__file__).resolve().parents[2] / "project"
+)).resolve()
+PROJECT_BACKEND = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(PROJECT_BACKEND))
 
 
 def test_deepeval_schema_is_converted_to_product_schema_hint():
     if not (PROJECT_BACKEND / "app/core/model_json.py").is_file():
-        pytest.skip("Native judge contract requires the sibling Silicon Notebook project/backend checkout")
+        if "SILICON_NOTEBOOK_PROJECT_ROOT" in os.environ:
+            pytest.fail("SILICON_NOTEBOOK_PROJECT_ROOT must contain backend/app/core/model_json.py")
+        pytest.skip("Native judge contract requires sibling project/backend or SILICON_NOTEBOOK_PROJECT_ROOT")
     pytest.importorskip("deepeval", reason="Native judge contract requires the deepeval optional dependency")
     from app.core.model_json import validate_model_json_shape
     from deepeval.metrics.g_eval.schema import ReasonScore

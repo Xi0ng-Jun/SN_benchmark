@@ -1,6 +1,8 @@
 # 公开 Benchmark 与 SN Agent 评测扩展设计
 
-更新时间：2026-09-11
+更新时间：2026-09-14
+
+最新选题依据为[十套公开评测任务与选题方案](public-benchmark-selection-plan.md)：不预设每套题数，选定任务和 split 下符合规则的原题全部纳入；MMLU 四个学科、BBH 四类任务各自完整覆盖。题单与分库清单分开，选择器与多分区执行尚待实施。当前仅文档工作，测试与实验暂停。
 
 ## 目标
 
@@ -8,19 +10,33 @@
 
 ## 第一批范围
 
-| Suite | 主要能力 | Native | SN Product | 说明 |
+| Suite | 主要能力 | Native 代码 | 当前 SN Product | 说明 |
 |---|---|---:|---:|---|
-| MMLU | 多领域知识与选择题 | 是 | 是 | 按领域分 task；产品路径需固定资料范围 |
-| GSM8K | 多步数学推理 | 是 | 是 | 最终数值为主判据，过程作诊断 |
-| TruthfulQA | 错误前提识别、事实诚实性 | 是 | 是 | 需要人工核验纠正和拒答行为 |
-| HellaSwag | 语境理解与常识推断 | 是 | 暂不 | 与 notebook 检索链路关联较弱 |
-| BIG-Bench Hard | 复杂推理子任务 | 是 | 暂不 | 先选文本推理子任务 |
+| MMLU | 多领域知识与选择题 | 离线检查通过 | 已适配，真实 SN 待验证 | 导入不含正确标签的原题与选项 |
+| GSM8K | 多步数学推理 | 离线检查通过 | 已适配，真实 SN 待验证 | 原题面作为待分析资料，不导入解题过程 |
+| TruthfulQA | 含常见误解问题的答案选择 | MC1 离线检查通过 | 已适配，真实 SN 待验证 | MC1 题面与候选项；不宣称开放式诚实性 |
+| HellaSwag | 语境理解与常识推断 | 离线检查通过 | 已适配，真实 SN 待验证 | 情境与候选续写；候选不作为已发生事实 |
+| BIG-Bench Hard | 复杂推理子任务 | 离线检查通过 | 已适配，真实 SN 待验证 | 原始 input，按 task 标明资料性质与输出域 |
 
 HumanEval、KG、重排、PDF/OCR、交互可靠性和资料更新一致性不在本阶段范围内。
 
 ## 两条评测路径
 
 Native track 使用 DeepEval 官方 benchmark 的题目模板和 scorer，衡量被测模型完成通用任务的能力。Product track 将题目所需材料导入隔离 notebook，通过 SN Ask 保存最终答案、实际上下文、引用和状态，再使用适用的 DeepEval 指标及确定性检查。两类分数不合并、不相减。
+
+最新接入见[SN 系统适配方案](sn-public-system-adaptation.md)：新增五套及 LogiQA/IFEval 的 R 默认 `sn-public-system-v1`；冻结数据中的 product=False 保留历史含义，当前执行能力从独立 registry 读取。LogiQA 导入配套文章，IFEval 原始指令不加统一答案格式，其余导入白名单原题面。系统请求不携带答案标签，题面不是正确答案的证据。
+
+显式 `--product-protocol legacy` 才对这些套件保存旧 N/A 记录（不创建 notebook）；原 SQuAD/DROP/BoolQ 产品路径仍按原审核方案执行。新系统路径正常预览 reasoning 意图并保留澄清，不补造澄清答案；其答案提取和评分单独版本化。已有代码完成[205 项离线回归](offline-regression-2026-09-14.md)，使用合成数据和模拟 SN 响应，未运行正式公开题实验。
+
+## Native 协议与结果解释
+
+新增协议为 `public-expansion-v2`。准备阶段读取本地原始 JSONL，保留原始字节 hash 与规范化记录 fingerprint，按固定映射重建 case，同时冻结 DeepEval 4.2.2 的模板、schema、scorer 和相关提示词资源。加载时重新从 raw 构建题目与标签，不能仅凭重新填写 cases hash 接受被改过的标准答案。旧扩展 v1 bundle 缺少这些身份信息，需另行重新准备，不改写历史产物；原五套 `public-starter-v1` 不作这次协议迁移。
+
+MMLU/GSM8K/HellaSwag/BBH 固定零样本，GSM8K/BBH 不启用 CoT；TruthfulQA 固定 MC1，使用官方种子 42 的选项顺序、数字答案 schema 和模板内置示例。各套使用对应官方请求模板、答案 schema 和 exact-match scorer。结构化回答原样交给 scorer；抽取字母、数值等归一化结果仅供排查。例如 GSM8K 参考字符串中的逗号不由本地归一化偷偷移除，TruthfulQA 也不以自由文本命中某个候选字符串充当 MC1 得分。
+
+被测模型通过 SN 模型适配器请求，仍受其结构化输出系统提示等行为影响。这里是冻结协议下的模型参照，不声称与外部排行榜设置完全等价；Native 不经过 notebook 检索或 SN Ask，不能据此推断产品引用、拒答或 Agent 工具能力。
+
+离线检查对 bundle 做原始数据重建，对 run 做计划身份、输出和评分台账校验；普通 JSON/JSONL 仅检查可识别的 trace 字段，不能代替完整 bundle/run 审计。哈希证明工件内部一致性，不代替对上游 revision 和许可证的人工来源核验。
 
 ## Agent 评测预留
 
@@ -34,6 +50,8 @@ Native track 使用 DeepEval 官方 benchmark 的题目模板和 scorer，衡量
 
 轨迹完整后再接入 `TaskCompletionMetric`、`StepEfficiencyMetric`、`ToolCorrectnessMetric` 和 `ArgumentCorrectnessMetric`；只有存在可观察正式计划时才考虑 `PlanAdherenceMetric`、`PlanQualityMetric`。
 
+当前只校验 trace envelope 并汇总完整度，尚无 Agent metric 执行器。即使输入标记为 complete，报告仍显示 Agent 指标未接入；不能将完整度当作任务完成或工具正确性分数。
+
 ## DAG 的位置
 
 `DAGMetric` 是 DeepEval 的自定义决策树指标，用于把“是否有引用 → 引用对象是否属于当前 notebook → 是否支持主要断言”等条件拆成判断节点，并为终点分支指定分数。它不是 Agent 执行轨迹，也不替代公开 benchmark scorer。待引用、澄清和拒答规则完成人工校准后，再选择一两个场景试用；在此之前只保留设计，不设置门禁阈值。
@@ -43,7 +61,7 @@ Native track 使用 DeepEval 官方 benchmark 的题目模板和 scorer，衡量
 1. 扩展 suite、数据 manifest、Native/Product 适用性和离线重建检查。
 2. 扩展 runner、结果协议和报告，保持失败、澄清、拒答和不适用可区分。
 3. 定义最小 trace/span schema，并用已有 captures 离线构造 `none/partial` 轨迹。
-4. 在用户明确恢复在线评测后，选择小样本验证新增 suite；不恢复旧 baseline 或 weekly timer。
+4. 按新选题方案完整定义 task/split 范围并设计执行分库；在用户恢复相关工作后实施、准备数据，恢复在线后按固定执行计划验证新增 suite，不把尚未执行分区从整体题单中删除；不恢复旧 baseline 或 weekly timer。
 5. 根据真实观测和人工校准决定 Agent metrics、DAG 指标及后续最小观测改动。
 
 ## 验收标准

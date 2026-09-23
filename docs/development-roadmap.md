@@ -1,12 +1,22 @@
 # 评测项目下一步开发讨论稿
 
+## 2026-09-22 当前方向：原生组件与 Agent 评测
+
+用户已批准[原生 DeepEval 改造](native-agent-evaluation.md)：SN 直接产生 SDK span，运行器先保存回答/组件样本再评分；默认组件，完整轨迹显式开启。删除旧私有回放，不迁移旧 Agent 分。下一步服务器先最大题两模式，再完成 meeting18 六题两模式，随后根据检索、合成与计划指标定位具体问题。普通旧答案/客观分继续可用。Dashboard、DAG、新 benchmark、历史 baseline 与 timer 暂不扩展或恢复；以下阶段保留为历史。
+
 ## 最新方向：先复用 DeepEval 公开评测
 
-当前入口为[公开评测起步方案](deepeval-public-starter-plan.md)。顺序调整为：公开数据与 scorer 冻结 → 最小离线适配 → 恢复在线授权后的五类模型参照、三类产品适配 → 根据结果选择业务场景。模型参照和产品成绩独立报告。P0/P1 基础及 N/R 执行、离线报告代码已写入，见[代码交接](deepeval-public-starter-implementation.md)和[执行与报告说明](deepeval-public-starter-orchestration.md)；按用户要求，本轮不运行和测试。接下来先验证新接口和冻结数据，再安排在线评测，旧 baseline 不续跑。
+最新工作为[十套公开评测任务与选题方案](public-benchmark-selection-plan.md)：用户明确不预设题数上限，按能力确定 task/split，选定范围内符合规则的原题全部纳入。本轮只沉淀文档，测试与实验暂停。现有前缀选择器和单库容量约束尚未调整，不能把新设计当成已实现功能。
+
+已有[SN 系统接入](sn-public-system-adaptation.md)为七套新任务编写了正常 Ask 与独立产品评分协议，原三套产品路径保留；主目标是 SN，Native 保留为模型参照。[离线回归](offline-regression-2026-09-14.md)已完成 205 项检查，真实 SN 运行尚未验证。[起步方案](deepeval-public-starter-plan.md)中的小样本数量与任务前缀规则保留为历史记录，不再作为当前选题目标。旧 baseline 不续跑。
 
 ## 当前阶段：公开 Benchmark 与 Agent 评测扩展
 
-阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](public-benchmark-agent-expansion-design.md)。第一批增加 MMLU、GSM8K、TruthfulQA，并先以 Native 形式纳入 HellaSwag 与 BIG-Bench Hard；同时在统一结果协议中预留 SN trace。当前仍不修改生产代码、不恢复在线评测或 timer。DAG 作为后续产品专属条件指标，待人工规则校准后再实现。
+阶段设计见[公开 Benchmark 与 SN Agent 评测扩展设计](public-benchmark-agent-expansion-design.md)。新增 MMLU、GSM8K、TruthfulQA、HellaSwag 与 BIG-Bench Hard 的 Native 参照和系统适配，统一结果协议预留 SN trace。当前仍不修改生产代码、不恢复在线评测或 timer。DAG 作为后续产品专属条件指标，待人工规则校准后再实现。
+
+2026-09-13 前一轮按[代码补齐计划](superpowers/plans/2026-09-13-expansion-code-completion.md)补上五套 Native、SDK 身份、原始数据重建、Product N/A 和旧报告兼容。该轮的 Product N/A 现保留为 legacy；最新系统适配在其上增加独立执行协议，不改 Native 的诊断归一化语义。Agent/DAG 指标仍未实现。
+
+后续顺序：明确任务选择、来源与完整覆盖清单 → 设计并实施保持旧 bundle 兼容的选择器与分库/整体报告 → 在用户恢复相关工作后准备正式数据并核验规则 → 恢复在线后按固定计划验证 SN，并列保留 Native 参照 → 有真实轨迹和人工核验后实施 Agent 指标。每个执行分区的容量不限制整体选题规模。各步单独记录验收证据；旧 baseline 和 timer 不随之恢复。
 
 ## 后续方向：扩大业务覆盖
 

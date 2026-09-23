@@ -1,0 +1,42 @@
+{
+  "format": "sn-evaluation-patch-v2",
+  "upstream": "https://github.com/huyangc/silicon-notebook",
+  "base_commit": "1b4eb2b3b0e7db95353c9128bb9f6bfcf37707cb",
+  "implementation_commit": "052b73734eec606c5e162d840c90219557665c64",
+  "implementation_tree": "f128f9ed84390bc347f4bc8a5ca15491ef3b73b4",
+  "branch": "feat/evaluation-tracing",
+  "capture_schema": "sn-deepeval-native-v1",
+  "sdk_version": "4.2.2",
+  "patch_kind": "incremental-over-previous-tracing",
+  "requires_previous_capture_schema": "sn-execution-trace-v1",
+  "patch": "0001-feat-native-deepeval-evaluation.patch",
+  "patch_sha256": "b2baf1beea74ec77c4d84fb3cd814b2f2033bd0d17fd48ed722cc7d6bebb6f25",
+  "files": {
+    "backend/app/core/evaluation_tracing.py": "aa9ef8c7625dcace739e29fa7a61a331aa0915009be9dec41003d5cfc2702485",
+    "backend/app/services/ask_service.py": "ab599eb057cdc0f8e07190d505ab02960639e9b7f3b704c99b3f1e8be5e6d6a0",
+    "backend/app/services/evaluation_trace_projection.py": "b3f11131941a97ba84dae8b284aff2777cc6eddfa4aa267707eb308ecf1d4ff0",
+    "backend/app/services/retrieval_service.py": "04790b555cc19f6bc0b5290d0917e354cf039d4463f99150bd3c23c727adb1fe",
+    "backend/requirements-evaluation.txt": "e0fe03b8783e04cc71324e98093c658b5041b41f39075cfd778998796e04b926",
+    "backend/tests/evaluation_sdk_testkit.py": "f108778620e25578aabdf774f672cf635cb5659d3b0ebf5ea712c905def985ce",
+    "backend/tests/test_evaluation_tracing.py": "6dee29c5b20d5e7d7eccf213a6bf62650ef9894b797e5c113988ea218a146bb3",
+    "backend/tests/test_evaluation_tracing_integration.py": "ea6c16732d6e95b06b9cd292f6231a3d4cf896e22da512463780a7a04338705f",
+    "docs/operations.md": "763111d4391a6d0011c0326d299dbd7b79b6d3bf8ca1ff07e5a85f98077dc35a",
+    "docs/operations_zh.md": "4e83caa092519855080a6b3a58e7e633129b4ef3c602812fb1f7ecc4a181f0d4"
+  },
+  "production_dependency_added": false,
+  "optional_dependency_file": "backend/requirements-evaluation.txt",
+  "default_enabled": false,
+  "validation": {
+    "benchmark_and_paired_tests_passed": 419,
+    "network_attempts": 0,
+    "sn_focused_passed": 32,
+    "sn_standard_backend_passed": 12762,
+    "sn_standard_backend_failed": 1,
+    "sn_contracts_passed": 54,
+    "sn_frontend_node_passed": 2730,
+    "sn_frontend_component_passed": 1187,
+    "known_gate_failure": "test_packaged_migration_helper_runs_with_bundled_python_layout: dotenv missing in symlinked child interpreter; reproduced on unchanged base in previous delivery",
+    "gate_scope": "Standard gate then final cancellation classifier focused regression; no frontend behavior change",
+    "real_model_run": false
+  }
+}

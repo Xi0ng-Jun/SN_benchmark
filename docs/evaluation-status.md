@@ -1,10 +1,131 @@
 # 评测状态
 
-更新时间：2026-09-11
+## 2026-09-23：对话切换交接
+
+当前工作目录、分支/提交、未提交文件、已完成实现、历史本地验证与服务器最新转述，集中记录在[对话交接](session-handoff-2026-09-23.md)。Dashboard 与原生评分恢复分支尚未合并，汇报图仍在恢复 worktree 未跟踪目录中；不要把本页下方各阶段的“下一步”直接当作当前执行指令。本次仅核实状态和整理文档，没有开发、测试或实验。
+
+## 2026-09-23：地图可浏览性与信息说明
+
+用户反馈地图不能拖动，结果较多时显示不全。已复现原 SVG 没有平移缩放处理、固定高度裁切、列间距小于节点宽度的问题。现改为独立布局和可操作视口，支持拖动、触摸、缩放、全图适配、定位、展开及键盘；修正点击后选中状态被运行选择清除的问题。首页解释资料、生成运行、答卷、重评分、评分的对应关系，使用克制的白底细线，并保留原始关系与配置供查看。
+
+28 项 Python、34 项 JavaScript 相关回归通过，真实 Chromium 验证 312 个构造节点、窄屏和交互；无页面错误或 HTTP 请求。不改评分算法或实验工件，不重跑 SN/judge。操作与复现见 [Dashboard 指南](experiment-dashboard.md)。
+
+## 2026-09-22：实验地图 Dashboard
+
+离线 Dashboard 已升级为 `sn-experiment-dashboard-v3`（分支 `feat/dashboard-experiment-map`，提交 `4e8aa82`）。页面由实验地图、单题流程/原生 span 回放和结果分析组成；详情按题目懒加载，重评分来源通过 manifest 与答卷哈希核实，缺失、N/A、error 与有效零分分开。新增一键构造 QMSum 演示，但演示数据不属于 SN 实验结果。
+
+实现只读取已有 run，不启动 SN、judge 或数据下载。完整使用方法、服务器交接 prompt 和边界见[实验地图 Dashboard](experiment-dashboard.md)。本机离线回归为 433 passed、1 skipped；浏览器 smoke 在临时 Chromium 运行库下检查了地图、回放、span 检查器、动态标签和分布图。真实服务器报告仍需使用相同分支重新生成；不要把旧 v2 HTML 与 v3 详情目录混用。
+
+
+## 2026-09-22：原生 DeepEval 改造
+
+当前协议见[SN 原生 DeepEval](native-agent-evaluation.md)。实现 SN 可选原生 span、逐题串行 iterator、组件与可选整轨迹指标、先保存后评分、独立 judge 身份和故障记录。删除旧私有树注入及输入检查脚本；历史诊断命令保留为纯离线检查。SN 补丁在独立 worktree，生产主目录未改。
+
+服务器旧 DeepSeek Agent 批次已完成（chunk 12 项、reasoning 24 项），并非仍在运行；结果归档，不混入新版。QMSum request-v2 两模式 281 题答案与 BM25 客观分仍可继续分析。下一批只重跑最大轨迹题两模式，链路可用后完成 meeting18，不扩到全量。
+
+本次本机验证和补丁身份以[交付验证记录](sn-execution-tracing-validation.md)为准；服务器真实验收尚未执行。以下日期段保留历史，已删除入口不能作为当前命令。
+
+## 2026-09-21：Agent 真实评分反馈与输入检查
+
+据用户转交的服务器报告，meeting18 chunk/reasoning 各 6 题均成功并记录完整原生轨迹。DeepEval 4.2.2 + GLM-5.2-spec 下，chunk 的 TaskCompletion/StepEfficiency 共 12 项成功（分别均为 0.9/0.75）；reasoning 四指标共 24 项因上下文超限失败。网关的 `at least 202752` 不是精确输入 token 数。完整轨迹验收已完成，不再要求服务器重做采集或重问 SN。
+
+本次新增离线入口 `scripts/inspect_agent_inputs.py`：复用原始记录和 SDK span 投影，度量轨迹 JSON、三类可提前确定的原版提示词、步骤自身字符串体积及重复来源。后续动态 prompt 和 provider 包装未测，`context_fit=unknown`；可选字节预算不冒充模型 token 上限，也不会自动拦截现有评分。仅复用指标前提检查，原有评分输入与算法不变。见[方法、命令与推进顺序](agent-judge-input-inspection.md)。
+
+本地新增 3 项定向回归，相关 25 项通过，含真实 SDK + 本地假 judge 验证实际静态 prompt 一致；1 条 SDK 既有 asyncio 弃用警告。未启动 SN/在线 judge、下载数据或改动 SN 补丁。服务器下一步只检查现有 12 题和可用模型限制，再用最长原轨迹检验合适 judge 的可行性；如不具备条件，设计独立组件评测，暂不自定义压缩或扩大实验范围。
+
+## 2026-09-21：可选 SN 执行轨迹与离线 DeepEval 转换
+
+已实现 SN 标准库采集层、原生调用边界埋点、Notebook 显式开关、完整性检查和 DeepEval 官方 span 树转换。旧输出摘要保留原语义；澄清路径也可完整记录，不把完整度当质量。TaskCompletion/StepEfficiency 使用新树并要求非空答案，PlanQuality/PlanAdherence 还需显式计划；证据 DAG 需答案和上下文。见[使用说明与限制](sn-execution-tracing.md)。
+
+本机已用真实 DeepEval SDK 配合假 judge 验证转换与指标接口，未调用线上模型。[验证记录](sn-execution-tracing-validation.md)：benchmark 83 项通过；SN 标准 gate 前端/契约通过，后端 12754 项通过、1 项既有打包环境失败（未修改基准也复现）。服务器随后已完成 meeting18 实际轨迹验收，见上方反馈；无需重跑已完成的 QMSum 对照。服务器的 model-config 注入/并发修复需保留，本机未收到其代码，不能宣称已经合并。
+
+## 2026-09-20：QMSum 首轮收口与下一轮代码
+
+已收到用户提供的服务器修订审计：QMSum 35 场会议、281 题，chunk 281 success；reasoning 132 success、148 clarification、1 error。共同 132 题 ROUGE-1 为 0.2506 / 0.2427（chunk / reasoning），会议等权差 +0.0006。旧 0.246 / 0.235 基于不同题集，停止作为配对结论使用。真实数字来源是服务器报告，本机没有下载或重新评分。引用统计中的 299/281 分母冲突只记为报告限制，不阻塞开发。
+
+已完成两个局部改动：显式版本化的 Notebook 提问模板，以及 Agent 意图预览/终止阶段诊断。新 `--request-revision notebook-request-v2` 移除 QMSum 追加指令的 `this query` 与 QASPER 追加指令的 `if it is`，原题/资料/gold 不变；新版本写入运行及比较配置身份，旧 run 和默认命令保持 v1。基于服务器 SN commit 的纯函数检查确认旧包装新增了指代规则命中，但实际线上澄清下降幅度未知，不将全部 148 次澄清归因于模板。
+
+Agent 命令默认离线生成 `agent-report.md`，展示保存的 intent_preview、Ask 是否进入和终止阶段；缺少观测使用 unknown/null，不伪造完整 Agent trace。已用 67 项相关离线回归验证新版/旧版重建、历史评分挂接、baseline、Agent 诊断等路径，未运行真实 SN 或模型。推进顺序和服务器交接见 [QMSum 后续工作](qmsum-next-iteration.md)。服务器已有 `--model-config` 和并发修复补丁尚未收到，交接时需要保留并整合。
+
+## 已确认的 Notebook 实验计划
+
+用户确认先执行四套资料型 benchmark 的 SN chunk/reasoning 主实验，并加入 QMSum BM25 对照。见 [实验计划](notebook-benchmark-experiment-plan.md)。本地仅整理代码、文档与同步数据修正；服务器负责真实数据重新准备、运行与评分。向量检索和全文输入基线仍待实现，论文数字须区分参考值、同子集重算和同协议重跑。
+
+2026-09-18：已实现 QMSum BM25 turn 检索 + 显式 tested 生成模型，保存为 `mode=bm25`，复用冻结资料、ROUGE 和上下文诊断；支持 Dashboard 查看及独立同题 JSON/Markdown 比较。执行前固定计划与数据，逐项保存回答/分数；报告重建核验输入、prompt/context，缺失与错误不补 0。详见 [方法、服务器命令与比较边界](qmsum-bm25-baseline.md)。
+
+本地 **362 项 Python 离线回归通过（含 29 项新增 baseline/比较/重评分测试），网络尝试 0；18 项 Dashboard JavaScript 回归通过**，两条新 CLI 帮助与补丁空白检查通过。独立审阅发现的报告输出目录隔离、单项分数中断落盘及缺失原因展示已修复并复核。数据全部为合成 fixture；使用真实模型适配器但替换网络传输，本机无 rouge-score，尚未验证真实 ROUGE 或真实模型请求。未下载数据、未启动 SN 或修改生产/timer。
+
+新增 `scripts/rescore_notebook_run.py` 和 [独立重评分说明](notebook-rescoring.md)：原 run 的回答、上下文和模型事件只读复制，新的评分批次记录来源文件哈希、指标/题目选择和评分身份；默认只补算缺失、错误或未评分项，`--all` 才会重算成功项。重评分不创建 notebook、不导入资料、不检索、不调用 SN Ask；LLM Judge 若被选择仍会产生 Judge 调用。原实验不被覆盖，评分批次也不会被当作新的问答实验。
+
+服务器应对齐 SN 最终回答角色的实际模型与采样设置，先做一个 QMSum 会议分区验收再决定全量安排。报告不会自动证明两侧生成模型一致，SN 内部提示与 BM25 提示也不同；这是端到端系统对照，不能把差值仅归因于检索，更不是论文榜单复现。原严格 chunk/reasoning 配对保持原规则，新代码不要求服务器重跑正在进行的 SN 实验。
+
+## 服务器真实文件预检后的适配修正
+
+用户提供的服务器汇报（版本 525633f）确认目前四套均仅 prepare，未导入/Ask。发现 QASPER 139 条段落映射排除中 138 条为空白差异；QMSum 原始 17 条空/空白 turn 被临时填占位；QAMPARI 有 5 处空字符串 alias，ELI5 实际可直接适配 1000 cases。真实数量与哈希来自服务器汇报，本机未下载或复算。
+
+本地已修正适配器：QASPER 空白归一化定位但保留原证据/原文，QMSum 原样保留空发言和位置，QAMPARI 原样保留空 alias 与答案组分母。新 prepare 标记 notebook-data-v2，缺版本字段的旧包继续按原规则重建；QASPER/QMSum 证据诊断分别使用新 scorer，主答案指标不变。服务器应在新目录重建 QASPER 和原始 QMSum，QAMPARI/ELI5 可新增准备，MultiHop/ASQA 原包可保留。详见[修正与服务器交接](notebook-data-corrections.md)。
+
+本次 **333 项 Python 离线回归通过，网络尝试 0**，含旧版冻结 fixture、空值/空白映射、分数与分母检查；未下载、未运行 SN/模型、未修改生产。本轮将修正与实验计划一并交接；服务器必须核对拉取版本已含 notebook-data-v2，不能仅凭旧 525633f 判断已获得修复。
+
+## 2026-09-17：Notebook 场景四套接入
+
+新增 QASPER、MultiHop-RAG、ALCE、QMSum 的本地原始文件适配、gold/资料分离、不可拆分资料分区、SN Product R 执行、评分与 Dashboard。独立协议 `sn-notebook-benchmarks-v1`，旧十套保持原解释。详见[服务器使用与指标表](notebook-benchmarks.md)及[实施计划](superpowers/plans/2026-09-17-notebook-benchmarks.md)。
+
+QASPER 按论文、QMSum 按会议；MultiHop 使用完整 corpus；ALCE 每题完整候选，不按 gold 缩小检索范围。容量可显式声明并仅写入隔离进程，不能据容量删题或拆散单题资料。新增连续主指标独立解释，澄清/缺评分不补 0。ALCE 引用通过真实 SN anchor/对象映射到官方编号，官方模型分显式执行、保存来源后挂接到新 run，不覆盖原始实验。
+
+**验证：319 项 Python 离线回归通过，无跳过，测试进程网络尝试 0；18 项 Dashboard JavaScript 回归通过。** 独立审阅的上下文前导说明映射、Dashboard 分区标签两项问题已修复并复核。当前机器未安装 rouge-score，缺依赖分支已验证；真实 ROUGE、ALCE 模型推断、官方完整文件与服务器 SN 验收未执行。不下载数据/权重、不改生产、不恢复 timer，不推断服务器正在进行的实验成绩。
+
+2026-09-17 同步：上述代码与文档已提交并推送到远程开发分支 `docs/public-benchmark-agent-expansion`（未合并 `main`）。推送内容仅为本机实现与离线回归，不改变上面的验收状态：真实数据适配、依赖安装、服务器 SN 端到端执行与 ALCE 模型评分仍需服务器完成。
+
+## 2026-09-16：IFEval 直接评分
+
+按用户要求取消项目自加的人工正反例审核门槛：Native 正常生成回答，Native/SN Product 均直接调用固定版本 DeepEval verifier，按所有指令是否通过评分。SN 完整正文及引用原样参与检查。新运行记录独立策略和 scorer；已有数据包、分区计划和旧报告保持兼容，不改历史 N/A。详见 [实施决定与服务器使用](ifeval-direct-scoring.md)。本地全量离线回归 **281 passed，联网尝试 0**，含本地合成样本与真实 SDK；独立代码审阅未发现阻断问题。未启动模型实验或改动 SN；服务器实验进度仍以服务器记录为准。
+
+更新时间：2026-09-16
+
+## 2026-09-19：Agent/DAG 离线评测第一阶段
+
+已新增独立的 `sn-agent-trace-v1` 轨迹适配器、完整性审计、确定性 Agent 诊断、DeepEval trajectory 适配和首个证据路径 DAGMetric。入口为 `scripts/evaluate_agent_traces.py`，默认只读取已有运行目录并生成独立的 `agent-traces.jsonl`、`agent-diagnostics.jsonl`、`agent-scores.jsonl` 与 `agent-summary.json`；`--judge` 和 `--dag` 均为显式选项。
+
+当前实现不会把 SN 的 reasoning step 自动宣称为完整 Agent trace：缺少模型调用、工具参数/结果或终止信息时标记为 `partial`，trajectory metrics 和 DAG 分数为 `not_applicable`。本阶段没有修改 SN 生产代码、下载数据、启动在线评测或设置质量阈值。ToolCorrectness/ArgumentCorrectness、底层模型 span、memory/plugin handoff 仍待完整 trace hook 后再纳入。
+
+## 当前离线报告开发
+
+已将旧表格 Dashboard 扩展为结果探索器：组合标签筛选、状态/分数图、分面均值、保存比较组及共同题配对图、条目详情和原始记录查看。数据以 planned ledger 为基表，问答按 run×case 去重，缺评分条目仍保留；没有跨指标总分。相同资料/配置/评分口径且配对身份一致的 chunk/reasoning 可计算共同有效题差值；不同轨道或模型不强行配对。
+
+[四列指标表](benchmark-metrics-reference.md)按代码列出十套 Benchmark 的 Native/Product 默认 scorer、输入和公式/步骤，纠正把通用 RAG 指标当作全部默认指标、把 DROP Product 描述为自动数字匹配的说法。使用与服务器执行步骤见[Dashboard 指南](experiment-dashboard.md)。
+
+本次验证仅使用离线合成记录，不构成 Benchmark 成绩。公司服务器真实实验由用户另行执行，未在本地重新运行；SN、旧 baseline 和 timer 未改动。下方此前“未实现分区”“测试暂停”等描述是各日期的历史状态，不代表当前代码或服务器进度。
+
+验证结果：26 项 Python 报告回归、13 项 JavaScript 筛选/统计/配对回归通过；Chromium 实际打开合成报告，验证组合筛选、图表、保存比较组、六类详情、导出、搜索、Native/judge 展示、文本注入隔离及 390px 窄屏，无页面脚本错误或 HTTP 请求。Python wheel 构建成功并包含四个前端静态资源；不需要在服务器安装浏览器依赖来生成报告。
+
+同日后续修正：侧栏标签与数量按其他已选条件和搜索词动态联动，隐藏无匹配的未选项，保留已选零结果条件和同组多选。新增 3 项回归先复现旧行为失败，修正后 16 项 JavaScript 回归与 10 项 Dashboard Python 回归通过；Chromium 验证标签联动、零结果恢复、搜索、清除/移除/恢复比较组、焦点与节点保留及窄屏，无页面错误或 HTTP 请求。
+
+## 最新选题设计
+
+用户明确规模不设预先上限，重点确定怎么选、选哪些。已沉淀[十套公开 Benchmark 任务与选题方案](public-benchmark-selection-plan.md)：按能力确定 task/split，纳入选定范围内全部符合条件的原题，替代每套 20 题及每类前 5/10 题的预算建议。MMLU 四个学科、BBH 四类推理任务仍是当前建议范围。
+
+完整题单与 notebook 分库分别设计，现有评测侧 40 篇单库限制不作为选题配额；选择器调整、多分区执行与整体覆盖报告尚未实施。当前只更新文档，测试与实验暂停，未下载或冻结数据，未新增代码改动。下方 205 项为此前完成的离线回归，不验证本次新选题/分库设计。
+
+## 最新离线回归
+
+用户已授权执行离线回归。当前分支 `docs/public-benchmark-agent-expansion` 的全量测试结果为 **205 passed**，无失败、跳过或警告，网络请求尝试为 0。新增真实 SDK 的七套系统评分衔接与三套 legacy 适配检查；SN 执行使用测试替身，未启动服务或调用模型。详见[2026-09-14 回归记录](offline-regression-2026-09-14.md)。
+
+上一阶段代码已以 `63214c7` 提交并推送到对应远程分支，未合并 main。本轮修正测试目录定位与正则警告、补充回归用例并更新文档；尚未提交。新公开样本仍未正式冻结，SN 在线验收和人工校准仍待开展；下列“未运行”描述保留为此前阶段的历史事实。
 
 ## 公开 Benchmark 与 Agent 扩展设计
 
-已形成[阶段设计](public-benchmark-agent-expansion-design.md)：拟增加 MMLU、GSM8K、TruthfulQA，并先以 Native 形式覆盖 HellaSwag、BIG-Bench Hard；结果协议预留 `trace`，未来用于 DeepEval trajectory/component metrics。当前仅完成设计，新增数据、代码、在线 Ask 和 Agent 轨迹均未运行或验证。
+此前已完成[公开题的 SN 系统接入](sn-public-system-adaptation.md)代码与独立静态审阅，实施入口为[系统适配计划](superpowers/plans/2026-09-13-sn-public-system.md)。2026-09-13 仅执行补丁空白检查；2026-09-14 已完成上述离线回归并实际调用客观 SDK scorer/verifier，SN 和在线模型调用仍未执行。
+
+此前将 Task 1–5 全部勾选为完成不准确：新增 Native 请求尚未接通，Product 不适用分支也不能完整落盘。本轮按[代码补齐计划](superpowers/plans/2026-09-13-expansion-code-completion.md)修正这些缺口；代码和回归用例仅作静态审阅，未运行测试或应用，不代表验收通过。
+
+新增 MMLU、GSM8K、TruthfulQA MC1、HellaSwag、BIG-Bench Hard 的 Native 请求与官方 scorer 分派，使用 `public-expansion-v2` 冻结原始数据、答案映射和 SDK 源码/资源身份。旧扩展 v1 bundle 不自动迁移，需要以后重新准备；原五套 `public-starter-v1` 保留兼容路径。归一化结果只供诊断，不能替换官方 scorer 的原始答案输入。
+
+此前新增五套 Product 的 N/A 记录现在保留在显式 legacy 路径。新 `sn-public-system-v1` 为 LogiQA/GSM8K/BBH/MMLU/TruthfulQA MC1/HellaSwag/IFEval 增加正常 SN Ask：LogiQA 使用配套文章，其余导入原题面和候选项，不导入解答或正确标签。无需自行配教材或填写虚构的人审意见。新系统适配由独立 registry 声明，冻结 Native manifest 的 product=False 不修改。
+
+新路径保存原生澄清、无答案、错误、答案正文与引用；文本拒答只作待核验候选。主指标为适配后的官方客观 scorer/IFEval verifier，诊断引用和资料覆盖分开，不默认加 Faithfulness。此前 IFEval 缺少规则审核时为 N/A；2026-09-16 已取消此前置条件，当前直接调用 SDK 评分。Agent 和 DAG 指标未接入；当前读取到的 reasoning_trace 至多标记 partial，完整度不是 Agent 分数。离线审计入口为 `scripts/check_public_expansion_offline.py`。
+
+新增数据尚未冻结，Native/Product/Agent 实验均未执行；生产、旧 baseline 和 timer 保持原状态。阶段边界见[扩展设计](public-benchmark-agent-expansion-design.md)。
 
 此前已完成 DeepEval 调研与环境链路验证。SQuAD / DROP 两模式持续评测曾获授权执行，现已暂停；当前授权工作已推进到公开起步方案的代码与逻辑实现，用户要求本轮不运行和测试。既有实验不充当质量基线。
 
@@ -76,7 +197,7 @@
 
 ## 当前开发重点
 
-具体在线评分任务继续暂停。当前先冻结 DeepEval 公开 benchmark 的题目与评分协议，设计最小离线适配，再在用户恢复在线任务后建立模型参照及产品评测。SQuAD/DROP 复用既有基础，BoolQ 为首个新增产品题型；LogiQA/IFEval 先作模型参照。之后再设计真实业务人工核验集。公开成绩不作为产品领域质量的唯一依据。
+具体在线评分任务继续暂停。当前已为七套公开题编写 SN 系统适配，SQuAD/DROP/BoolQ 沿用已有产品路径；此前 LogiQA/IFEval 仅作模型参照的安排已由新系统协议扩展。下一步在允许执行后先做离线回归，再冻结小样本，在恢复在线任务后建立模型参照及产品评测。之后再设计真实业务人工核验集。公开成绩不作为产品领域质量的唯一依据。
 
 ## 历史候选试运行与限时更正
 

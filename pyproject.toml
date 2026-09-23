@@ -10,8 +10,9 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-deepeval = ["deepeval>=4.2,<5"]
+deepeval = ["deepeval==4.2.2"]
 dev = ["pytest>=8"]
+notebook = ["rouge-score==0.1.2"]
 
 [project.scripts]
 rag-eval = "rag_eval.cli:main"
@@ -20,3 +21,6 @@ rag-eval-deepeval = "rag_eval.deepeval_cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.setuptools.package-data]
+rag_eval = ["dashboard/*.html", "dashboard/*.css", "dashboard/*.js"]

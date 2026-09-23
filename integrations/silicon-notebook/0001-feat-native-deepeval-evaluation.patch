@@ -1,0 +1,1389 @@
+From 052b73734eec606c5e162d840c90219557665c64 Mon Sep 17 00:00:00 2001
+From: Xi0ng-Jun <Xi0ng-Jun@users.noreply.github.com>
+Date: Tue, 22 Sep 2026 09:25:02 +0800
+Subject: [PATCH] feat: emit native DeepEval spans for isolated evaluations
+
+---
+ backend/app/core/evaluation_tracing.py        | 303 ++++++++-------
+ backend/app/services/ask_service.py           |  10 +-
+ .../services/evaluation_trace_projection.py   |   9 +
+ backend/app/services/retrieval_service.py     |   3 +-
+ backend/requirements-evaluation.txt           |   2 +
+ backend/tests/evaluation_sdk_testkit.py       |  61 +++
+ backend/tests/test_evaluation_tracing.py      | 351 ++++++++++--------
+ .../test_evaluation_tracing_integration.py    | 137 +++++--
+ docs/operations.md                            |  80 ++--
+ docs/operations_zh.md                         |  70 ++--
+ 10 files changed, 633 insertions(+), 393 deletions(-)
+ create mode 100644 backend/requirements-evaluation.txt
+ create mode 100644 backend/tests/evaluation_sdk_testkit.py
+
+diff --git a/backend/app/core/evaluation_tracing.py b/backend/app/core/evaluation_tracing.py
+index d060ecab..00471b47 100644
+--- a/backend/app/core/evaluation_tracing.py
++++ b/backend/app/core/evaluation_tracing.py
+@@ -1,29 +1,29 @@
+-"""Opt-in, in-memory business traces for private evaluation artifacts.
++"""Opt-in native DeepEval spans with explicitly selected business values.
+ 
+-This module uses only the standard library and performs no I/O. Callers own
+-export/storage and must explicitly select JSON business values: never pass a
+-client, repository, settings object, credentials, or hidden model reasoning.
+-Times are monotonic seconds; nested durations must not be summed as wall time.
++Importing this module needs only stdlib. The evaluation caller owns SDK setup,
++metrics, export, and private artifact retention; the SDK alone owns the span tree.
+ """
+ from __future__ import annotations
+ 
++from asyncio import CancelledError
+ from contextlib import contextmanager
+ from contextvars import ContextVar
+ from functools import wraps
+ from inspect import signature
++import json
+ import math
+ from threading import RLock
+-from time import perf_counter
+-from uuid import uuid4
+ 
++from app.domain.cancellation import AskCancelled
+ 
+-CAPTURE_SCHEMA_VERSION = "sn-execution-trace-v1"
+-_capture: ContextVar[EvaluationCapture | None] = ContextVar("evaluation_capture", default=None)
+-_span: ContextVar[EvaluationSpan | None] = ContextVar("evaluation_span", default=None)
++
++NATIVE_TRACE_VERSION = "sn-deepeval-native-v1"
++_session: ContextVar[EvaluationSession | None] = ContextVar("evaluation_session", default=None)
++_invocation: ContextVar[dict | None] = ContextVar("evaluation_invocation", default=None)
+ 
+ 
+ def _snapshot(value):
+-    """Copy only plain JSON values; never introspect/serialize arbitrary objects."""
++    """Copy plain JSON values only; never inspect arbitrary runtime objects."""
+     if value is None or type(value) in (str, bool, int):
+         return value
+     if type(value) is float and math.isfinite(value):
+@@ -35,178 +35,177 @@ def _snapshot(value):
+     raise TypeError("evaluation values must be explicitly projected JSON")
+ 
+ 
+-class EvaluationCapture:
+-    def __init__(self):
+-        self.trace_id = uuid4().hex
+-        self._lock = RLock()
+-        self._spans = []
+-        self._errors = []
+-        self._start = perf_counter()
+-        self._end = None
+-        self.closed = False
++def _sdk_value(value):
++    # update_current_span in 4.2.2 ignores falsy values. JSON preserves genuine
++    # empty results; ordinary nonempty model text remains readable as text.
++    return value if isinstance(value, str) and value else json.dumps(value, ensure_ascii=False)
+ 
+-    def _error(self, code, span_id=None):
+-        with self._lock:
+-            if not self.closed:
+-                self._errors.append({"code": code, "span_id": span_id})
+ 
+-    def _close(self):
+-        with self._lock:
+-            self._end = perf_counter()
+-            for entry in self._spans:
+-                if entry["end_time"] is None:
+-                    self._error("span_open_at_close", entry["span_id"])
+-            self.closed = True
+-
+-    def to_dict(self):
+-        """Return a detached snapshot, including lifecycle/capture completeness."""
+-        with self._lock:
+-            return _snapshot({
+-                "schema_version": CAPTURE_SCHEMA_VERSION,
+-                "trace_id": self.trace_id,
+-                "closed": self.closed,
+-                "spans": self._spans,
+-                "capture_errors": self._errors,
+-                "duration_ms": ((self._end or perf_counter()) - self._start) * 1000,
+-            })
+-
+-
+-class EvaluationSpan:
+-    def __init__(self, capture=None, entry=None):
+-        self._capture = capture
+-        self._entry = entry
+-
+-    def _set(self, key, value):
+-        capture = self._capture
+-        if capture is None or capture.closed:
+-            return
+-        try:
+-            value = _snapshot(value)
+-            with capture._lock:
+-                if not capture.closed and self._entry["end_time"] is None:
+-                    if key == "metadata":
+-                        self._entry[key].update(value)
+-                    else:
+-                        self._entry[key] = value
+-        except Exception:
+-            capture._error("invalid_" + key, self._entry["span_id"])
+-
+-    def set_output(self, value):
+-        self._set("output", value)
++class EvaluationSession:
++    """Request-local callback and completeness errors, never a second trace tree."""
+ 
+-    def set_metadata(self, **fields):
+-        self._set("metadata", fields)
++    def __init__(self, on_span, observe, update_current_span, current_span_context):
++        self.on_span = on_span
++        self.observe = observe
++        self.update_current_span = update_current_span
++        self.current_span_context = current_span_context
++        self.errors = []
++        self.closed = False
++        self._active = 0
++        self._lock = RLock()
+ 
+-    def _projection_error(self, field):
+-        if self._capture is not None:
+-            self._capture._error("projection_" + field, self._entry["span_id"])
++    def _error(self, code, name=None):
++        with self._lock:
++            self.errors.append({"code": code, "name": name})
+ 
+ 
+-_NOOP_SPAN = EvaluationSpan()
++@contextmanager
++def evaluation_session(on_span=None):
++    """Enable SDK observation in this context and joined copy_context workers.
+ 
++    Missing optional dependencies fail at explicit setup, before business work.
++    The callback runs inside each native span after projections are published,
++    and may attach benchmark-owned test cases/metrics with public SDK APIs.
++    """
++    from deepeval.tracing import observe, update_current_span, current_span_context
+ 
+-@contextmanager
+-def capture_evaluation_trace():
+-    """Capture the current context; copy_context propagates it to joined workers."""
+-    capture = EvaluationCapture()
+-    capture_token = _capture.set(capture)
+-    span_token = _span.set(None)
++    session = EvaluationSession(on_span, observe, update_current_span, current_span_context)
++    token = _session.set(session)
++    invocation_token = _invocation.set(None)
+     try:
+-        yield capture
++        yield session
+     finally:
+-        capture._close()
+-        _span.reset(span_token)
+-        _capture.reset(capture_token)
++        with session._lock:
++            session.closed = True
++            if session._active:
++                session._error("span_open_at_close")
++        _invocation.reset(invocation_token)
++        _session.reset(token)
+ 
+ 
+-@contextmanager
+-def evaluation_span(name: str, kind: str, *, input: object = None, metadata: dict | None = None):
+-    capture = _capture.get()
+-    if capture is None or capture.closed:
+-        yield _NOOP_SPAN
++def set_evaluation_metadata(**fields):
++    """Set selected metadata on this invocation; never mutate a parent's map."""
++    session, sample = _session.get(), _invocation.get()
++    if session is None or session.closed or sample is None:
+         return
+-    with capture._lock:
+-        if capture.closed:
+-            handle = _NOOP_SPAN
+-        else:
+-            parent = _span.get()
+-            entry = {
+-                "span_id": uuid4().hex,
+-                "parent_id": parent._entry["span_id"] if parent and parent._capture is capture else None,
+-                "name": name,
+-                "kind": kind,
+-                "input": None,
+-                "output": None,
+-                "metadata": {},
+-                "status": "running",
+-                "start_time": perf_counter(),
+-                "end_time": None,
+-                "duration_ms": None,
+-            }
+-            capture._spans.append(entry)
+-            handle = EvaluationSpan(capture, entry)
+-    handle._set("input", input)
+-    handle._set("metadata", metadata or {})
+-    token = _span.set(handle)
+-    status, error_type = "completed", None
+     try:
+-        yield handle
+-    except BaseException as error:
+-        error_type = type(error).__name__
+-        status = "cancelled" if error_type in {"AskCancelled", "CancelledError"} else "error"
+-        raise
+-    finally:
+-        _span.reset(token)
+-        with capture._lock:
+-            if not capture.closed and handle._entry is not None:
+-                end = perf_counter()
+-                handle._entry.update(status=status, end_time=end,
+-                                     duration_ms=(end - handle._entry["start_time"]) * 1000)
+-                if error_type:
+-                    handle._entry["error_type"] = error_type
++        sample["metadata"].update(_snapshot(fields))
++    except BaseException:
++        session._error("projection_metadata", sample["name"])
+ 
+ 
+-def set_evaluation_metadata(**fields):
+-    """Attach explicitly selected business values to the active native span."""
+-    handle = _span.get()
+-    if handle is not None:
+-        handle.set_metadata(**fields)
++class _ObservedBusinessError(Exception):
++    """Only the business exception's type name is exposed to SDK serialization."""
++
++
++def _publish(session, sample):
++    if session.closed:
++        return
++    try:
++        span = session.current_span_context.get()
++        if span is None:
++            session._error("sdk_missing_span", sample["name"])
++            return
++        sample["span_id"] = span.uuid
++        session.update_current_span(
++            input=_sdk_value(sample["input"]), output=_sdk_value(sample["output"]),
++            metadata=_snapshot(sample["metadata"]),
++        )
++    except BaseException:
++        session._error("sdk_update", sample["name"])
++        return
++    if session.on_span is not None:
++        try:
++            session.on_span(_snapshot(sample))
++        except BaseException:
++            session._error("callback", sample["name"])
+ 
+ 
+ def traced_evaluation(name, kind, *, stage=None, input_selector=None,
+-                      output_selector=None, output_arguments_selector=None, metadata=None):
+-    """Trace synchronous seams without changing their signatures or outcomes.
++                      output_selector=None, output_arguments_selector=None,
++                      output_metadata_selector=None, metadata=None):
++    """Observe synchronous business seams without exposing their actual objects.
+ 
+-    Selectors run only during capture, on bound arguments / the original result.
+-    Capture failures never execute the business operation a second time.
++    The SDK decorates a zero-argument closure returning None. Neither automatic
++    argument serialization nor automatic return serialization sees repositories,
++    clients, vectors, or the original business result. Failures cannot retry work.
+     """
+     def decorate(function):
+         parameters = signature(function)
+ 
+         @wraps(function)
+         def wrapped(*args, **kwargs):
+-            capture = _capture.get()
+-            if capture is None or capture.closed:
++            session = _session.get()
++            if session is None or session.closed:
+                 return function(*args, **kwargs)
+-            with evaluation_span(name, kind, metadata={**(metadata or {}), **({"stage": stage} if stage else {})}) as handle:
++            entered = False
++            result = error = traceback = None
++
++            def invoke():
++                nonlocal entered, result, error, traceback
++                entered = True
++                sample = {"name": name, "kind": kind, "stage": stage,
++                          "input": None, "output": None,
++                          "metadata": {"native_trace_version": NATIVE_TRACE_VERSION, "stage": stage}}
++                token = _invocation.set(sample)
+                 bound = None
+-                if input_selector is not None or output_arguments_selector is not None:
+-                    try:
+-                        bound = parameters.bind(*args, **kwargs)
+-                        bound.apply_defaults()
+-                        if input_selector is not None:
+-                            handle._set("input", input_selector(bound.arguments))
+-                    except Exception:
+-                        handle._projection_error("input")
+-                result = function(*args, **kwargs)
+                 try:
+-                    if output_arguments_selector is not None:
+-                        handle.set_output(output_arguments_selector(bound.arguments))
++                    set_evaluation_metadata(**(metadata or {}))
++                    if (input_selector is not None or output_arguments_selector is not None
++                            or output_metadata_selector is not None):
++                        try:
++                            bound = parameters.bind(*args, **kwargs)
++                            bound.apply_defaults()
++                            if input_selector is not None:
++                                sample["input"] = _snapshot(input_selector(bound.arguments))
++                        except BaseException:
++                            session._error("projection_input", name)
++                    try:
++                        result = function(*args, **kwargs)
++                    except BaseException as caught:
++                        error, traceback = caught, caught.__traceback__
++                        sample["metadata"].update(
++                            status="cancelled" if isinstance(
++                                caught, (AskCancelled, CancelledError, KeyboardInterrupt, SystemExit)
++                            ) else "error",
++                            error_type=type(caught).__name__,
++                        )
+                     else:
+-                        handle.set_output(output_selector(result) if output_selector else result)
+-                except Exception:
+-                    handle._projection_error("output")
++                        sample["metadata"]["status"] = "completed"
++                        try:
++                            output = (output_arguments_selector(bound.arguments)
++                                      if output_arguments_selector is not None
++                                      else output_selector(result) if output_selector else result)
++                            sample["output"] = _snapshot(output)
++                        except BaseException:
++                            session._error("projection_output", name)
++                        if output_metadata_selector is not None:
++                            try:
++                                set_evaluation_metadata(**output_metadata_selector(result, bound.arguments))
++                            except BaseException:
++                                session._error("projection_metadata", name)
++                    _publish(session, sample)
++                finally:
++                    _invocation.reset(token)
++                if error is not None:
++                    raise _ObservedBusinessError(type(error).__name__)
++
++            with session._lock:
++                session._active += 1
++            try:
++                try:
++                    session.observe(name=name, type=kind)(invoke)()
++                except BaseException as caught:
++                    if not isinstance(caught, _ObservedBusinessError):
++                        session._error("sdk_observe", name)
++                if not entered:
++                    return function(*args, **kwargs)
++                if error is not None:
++                    raise error.with_traceback(traceback) from None
+                 return result
++            finally:
++                with session._lock:
++                    session._active -= 1
+ 
+         return wrapped
+     return decorate
+diff --git a/backend/app/services/ask_service.py b/backend/app/services/ask_service.py
+index 036d734f..a411d4c1 100644
+--- a/backend/app/services/ask_service.py
++++ b/backend/app/services/ask_service.py
+@@ -2305,7 +2305,7 @@ class AskService:
+                 "ordered_handles": tuple(id_map),
+                 "budget_chars": self.settings.chunk_answer_budget_chars,
+             })
+-        set_evaluation_metadata(context_block=context_block)
++        set_evaluation_metadata(question=question, context_block=context_block)
+         llm_client = llm_client or self.model_clients.chat("ask_answer")
+         raw = llm_client.chat_json(
+             [{"role": "user", "content": answer_prompt(
+@@ -2367,7 +2367,7 @@ class AskService:
+                 "ordered_handles": tuple(id_map),
+                 "budget_chars": len(context_block),
+             })
+-        set_evaluation_metadata(context_block=context_block)
++        set_evaluation_metadata(question=question, context_block=context_block)
+         llm_client = llm_client or self.model_clients.chat("ask_answer")
+         raw = llm_client.chat_json(
+             [{"role": "user", "content": answer_prompt(
+@@ -2890,7 +2890,11 @@ class AskService:
+                     baseline_admission.get("ambiguous_truncations") or 0
+                 ),
+             })
+-        set_evaluation_metadata(context_block=context_block, evidence_counts=counts)
++        set_evaluation_metadata(
++            question=question, context_block=context_block, evidence_counts=counts,
++            sectioned=sectioned, section_title=section_title,
++            section_index=section_index, section_total=section_total,
++        )
+         raw = answer_client.chat_json(
+             [{"role": "user", "content": answer_prompt(
+                 question, context_block, history,
+diff --git a/backend/app/services/evaluation_trace_projection.py b/backend/app/services/evaluation_trace_projection.py
+index 6bbcd7a6..78577c1d 100644
+--- a/backend/app/services/evaluation_trace_projection.py
++++ b/backend/app/services/evaluation_trace_projection.py
+@@ -36,6 +36,15 @@ def chunks_output(values):
+                           "text", "score", "relevance")) for item in values]
+ 
+ 
++def multi_query_metadata(result, bound):
++    # This is the actual admitted per-query return, including empty results.
++    # Never infer per-query evidence from the aggregate candidate union.
++    return {"per_query": [
++        {"query": query, "candidates": chunks_output(rows.values())}
++        for query, rows in zip(bound["queries"], result[1], strict=True)
++    ]}
++
++
+ def knowledge_output(values):
+     # The full evidence text sent to synthesis is captured at the synthesis seam.
+     # Knowledge payload schemas are extension-defined and are not serialized here.
+diff --git a/backend/app/services/retrieval_service.py b/backend/app/services/retrieval_service.py
+index c5303dac..4091119d 100644
+--- a/backend/app/services/retrieval_service.py
++++ b/backend/app/services/retrieval_service.py
+@@ -5,7 +5,7 @@ from dataclasses import replace
+ from typing import Any
+ 
+ from app.core.evaluation_tracing import traced_evaluation
+-from app.services.evaluation_trace_projection import arguments, chunks_output
++from app.services.evaluation_trace_projection import arguments, chunks_output, multi_query_metadata
+ from app.services.retrieval import NeighborExpansion
+ from app.services.source_scope import filter_retrieval_items
+ 
+@@ -244,6 +244,7 @@ class RetrievalService:
+ 
+     @traced_evaluation("sn.retrieve.chunks_multi", "retriever", stage="retrieve",
+                        input_selector=arguments("queries"),
++                       output_metadata_selector=multi_query_metadata,
+                        output_selector=lambda result: chunks_output(result[0].values()))
+     def retrieve_chunk_candidates_multi(self, notebook_id, queries):
+         collected, per_query, ids, matrix = self.candidates._retrieve_chunks_multi(
+diff --git a/backend/requirements-evaluation.txt b/backend/requirements-evaluation.txt
+new file mode 100644
+index 00000000..c0fee1d3
+--- /dev/null
++++ b/backend/requirements-evaluation.txt
+@@ -0,0 +1,2 @@
++# Optional native evaluation instrumentation; never required by the server.
++deepeval==4.2.2
+diff --git a/backend/tests/evaluation_sdk_testkit.py b/backend/tests/evaluation_sdk_testkit.py
+new file mode 100644
+index 00000000..8258fc2e
+--- /dev/null
++++ b/backend/tests/evaluation_sdk_testkit.py
+@@ -0,0 +1,61 @@
++"""Public DeepEval SDK double for hermetic base-dependency tests."""
++from contextvars import ContextVar
++from functools import wraps
++from inspect import signature
++import sys
++from types import ModuleType, SimpleNamespace
++from uuid import uuid4
++
++import pytest
++
++
++@pytest.fixture
++def native_sdk(monkeypatch):
++    sdk = ModuleType("deepeval.tracing")
++    sdk.current_span_context = ContextVar("fake_sdk_span", default=None)
++    sdk.spans = []
++    sdk.fail_enter = False
++    sdk.fail_exit = False
++
++    def update_current_span(**fields):
++        span = sdk.current_span_context.get()
++        if span is not None:
++            for key, value in fields.items():
++                # SDK 4.2.2 uses truthiness for input/output/metadata updates.
++                if value:
++                    setattr(span, key, value)
++
++    def observe(*, name, type):
++        def decorate(function):
++            @wraps(function)
++            def wrapped(*args, **kwargs):
++                if sdk.fail_enter:
++                    raise RuntimeError("SDK entry failed")
++                parent = sdk.current_span_context.get()
++                span = SimpleNamespace(uuid=uuid4().hex, name=name, type=type,
++                    parent_uuid=parent.uuid if parent else None, input=None,
++                    output=None, metadata={}, end_time=None, status="success", error=None,
++                    function_arguments=signature(function).bind(*args, **kwargs).arguments,
++                    automatic_result=None)
++                sdk.spans.append(span)
++                token = sdk.current_span_context.set(span)
++                try:
++                    span.automatic_result = function(*args, **kwargs)
++                    return span.automatic_result
++                except BaseException as error:
++                    span.status = "errored"
++                    span.error = str(error)
++                    raise
++                finally:
++                    span.end_time = 1
++                    sdk.current_span_context.reset(token)
++                    if sdk.fail_exit:
++                        raise RuntimeError("SDK exit failed")
++            return wrapped
++        return decorate
++
++    sdk.observe = observe
++    sdk.update_current_span = update_current_span
++    monkeypatch.setitem(sys.modules, "deepeval", ModuleType("deepeval"))
++    monkeypatch.setitem(sys.modules, "deepeval.tracing", sdk)
++    return sdk
+diff --git a/backend/tests/test_evaluation_tracing.py b/backend/tests/test_evaluation_tracing.py
+index 0eaa6cc0..3c65d8a7 100644
+--- a/backend/tests/test_evaluation_tracing.py
++++ b/backend/tests/test_evaluation_tracing.py
+@@ -1,4 +1,4 @@
+-"""Private evaluation traces preserve request behavior and context boundaries."""
++"""Native SDK lifecycle and business behavior isolation."""
+ import asyncio
+ from concurrent.futures import ThreadPoolExecutor
+ from contextvars import copy_context
+@@ -10,180 +10,237 @@ import threading
+ 
+ import pytest
+ 
+-from app.core.evaluation_tracing import (
+-    CAPTURE_SCHEMA_VERSION,
+-    capture_evaluation_trace,
+-    evaluation_span,
+-    traced_evaluation,
+-)
++from app.core import evaluation_tracing as tracing
++from tests.evaluation_sdk_testkit import native_sdk  # noqa: F401
+ 
+ 
+-def test_nested_snapshots_parentage_and_disabled_selector():
+-    calls = []
++def test_disabled_wrapper_imports_no_sdk_and_runs_no_selectors():
++    backend = Path(__file__).resolve().parents[1]
++    script = """
++import sys
++sys.path.insert(0, sys.argv[1])
++from app.core.evaluation_tracing import traced_evaluation
++def forbidden(*args):
++    raise AssertionError('disabled selector executed')
++@traced_evaluation('work', 'tool', input_selector=forbidden,
++                   output_selector=forbidden, output_metadata_selector=forbidden)
++def work(value):
++    return value
++value = object()
++assert work(value) is value
++assert not any(name.startswith(('deepeval', 'pydantic', 'openai')) for name in sys.modules)
++"""
++    subprocess.run([sys.executable, "-I", "-c", script, str(backend)], check=True, capture_output=True, text=True)
+ 
+-    @traced_evaluation("child", "tool", input_selector=lambda args: calls.append(1) or args["value"])
+-    def operation(value):
+-        return value
+ 
++def test_callback_runs_inside_sdk_span_and_only_selected_values_reach_sdk(native_sdk):
++    samples = []
+     value = {"text": ["original"]}
+-    assert operation(value) is value
+-    assert calls == []
+-    with capture_evaluation_trace() as capture:
+-        with evaluation_span("root", "agent", input="question") as root:
+-            assert operation(value) is value
+-            root.set_output("answer")
+-        value["text"].append("later")
+-    trace = capture.to_dict()
+-    assert trace["schema_version"] == CAPTURE_SCHEMA_VERSION
+-    assert trace["closed"] is True
+-    assert trace["capture_errors"] == []
+-    parent, child = trace["spans"]
+-    assert child["parent_id"] == parent["span_id"]
+-    assert parent["parent_id"] is None
+-    assert child["input"] == child["output"] == {"text": ["original"]}
+-    assert parent["output"] == "answer"
+-    assert child["start_time"] <= child["end_time"] <= parent["end_time"]
+-    assert all(s["status"] == "completed" for s in trace["spans"])
+-    trace["spans"].clear()
+-    assert len(capture.to_dict()["spans"]) == 2
+-
+-
+-@pytest.mark.parametrize("error", [ValueError("private exception"), asyncio.CancelledError("secret")])
+-def test_business_errors_are_reraised_unchanged_and_never_leak_text(error):
+-    with capture_evaluation_trace() as capture:
++
++    def callback(sample):
++        span = native_sdk.current_span_context.get()
++        assert span.uuid == sample["span_id"]
++        assert span.output == (json.dumps(sample["output"], ensure_ascii=False) if isinstance(sample["output"], dict) else sample["output"])
++        native_sdk.update_current_span(metrics=["benchmark metric"])
++        samples.append(sample)
++
++    @tracing.traced_evaluation("child", "tool", stage="action", input_selector=lambda bound: bound["value"])
++    def child(value, repository):
++        tracing.set_evaluation_metadata(selected="business")
++        return value
++
++    @tracing.traced_evaluation("root", "agent", output_selector=lambda value: "answer")
++    def root(repository):
++        return child(value, repository)
++
++    with tracing.evaluation_session(on_span=callback) as session:
++        assert root(object()) is value
++    value["text"].append("later")
++    assert session.errors == []
++    assert session.closed
++    assert tracing.NATIVE_TRACE_VERSION == "sn-deepeval-native-v1"
++    root_span, child_span = native_sdk.spans
++    assert child_span.parent_uuid == root_span.uuid
++    assert child_span.metadata["selected"] == "business"
++    assert child_span.metrics == ["benchmark metric"]
++    assert samples[0]["output"] == {"text": ["original"]}
++    assert all(span.function_arguments == {} for span in native_sdk.spans)
++    assert all(span.automatic_result is None for span in native_sdk.spans)
++    assert all(span.end_time is not None for span in native_sdk.spans)
++    assert native_sdk.current_span_context.get() is None
++
++
++@pytest.mark.parametrize("value", [[], {}, "", False, 0, None])
++def test_empty_native_outputs_are_observed_without_inventing_answer(native_sdk, value):
++    @tracing.traced_evaluation("empty", "retriever")
++    def work():
++        return value
++
++    samples = []
++    with tracing.evaluation_session(on_span=samples.append) as session:
++        assert work() is value
++    assert samples[0]["output"] == value
++    assert json.loads(native_sdk.spans[0].output) == value
++    assert session.errors == []
++
++
++@pytest.mark.parametrize("error", [
++    ValueError("private exception"), asyncio.CancelledError("secret"),
++    KeyboardInterrupt("secret"), SystemExit("secret"),
++])
++def test_original_error_survives_callback_failure(native_sdk, error):
++    calls = []
++
++    def fail_callback(sample):
++        raise RuntimeError("callback secret")
++
++    @tracing.traced_evaluation("failing", "tool")
++    def work():
++        calls.append(1)
++        raise error
++
++    with tracing.evaluation_session(on_span=fail_callback) as session:
+         with pytest.raises(type(error)) as raised:
+-            with evaluation_span("failing", "tool"):
+-                raise error
++            work()
+     assert raised.value is error
+-    trace = capture.to_dict()
+-    assert trace["spans"][0]["status"] == ("cancelled" if isinstance(error, asyncio.CancelledError) else "error")
+-    assert trace["spans"][0]["error_type"] == type(error).__name__
+-    assert "private exception" not in json.dumps(trace)
+-    assert "secret" not in json.dumps(trace)
++    assert calls == [1]
++    assert session.errors[0]["code"] == "callback"
++    span, = native_sdk.spans
++    assert span.end_time is not None
++    assert span.status == "errored"
++    assert span.metadata["status"] == ("error" if isinstance(error, ValueError) else "cancelled")
++    assert span.metadata["error_type"] == type(error).__name__
++    assert "private exception" not in str(span.error)
++    assert "secret" not in json.dumps(session.errors)
+ 
+ 
+-def test_projection_failures_do_not_erase_result_or_repeat_business_work():
++def test_projection_and_sdk_exit_failures_do_not_repeat_or_erase_result(native_sdk):
+     calls = []
+ 
+     def bad_selector(*args):
+-        raise ValueError("secret selector text")
++        raise ValueError("secret")
++
++    @tracing.traced_evaluation("work", "tool", input_selector=bad_selector, output_selector=bad_selector)
++    def work():
++        calls.append(1)
++        return "result"
++
++    native_sdk.fail_exit = True
++    with tracing.evaluation_session() as session:
++        assert work() == "result"
++    assert calls == [1]
++    assert {row["code"] for row in session.errors} == {"projection_input", "projection_output", "sdk_observe"}
++
+ 
+-    @traced_evaluation("work", "tool", input_selector=bad_selector, output_selector=bad_selector)
+-    def operation():
++def test_sdk_entry_failure_runs_business_once_and_discloses_missing_span(native_sdk):
++    native_sdk.fail_enter = True
++    calls = []
++
++    @tracing.traced_evaluation("work", "tool")
++    def work():
+         calls.append(1)
+         return "result"
+ 
+-    with capture_evaluation_trace() as capture:
+-        assert operation() == "result"
+-        with evaluation_span("unsafe", "tool", input=object()) as span:
+-            span.set_metadata(unsafe=object())
+-    trace = capture.to_dict()
++    with tracing.evaluation_session() as session:
++        assert work() == "result"
+     assert calls == [1]
+-    assert len(trace["capture_errors"]) == 4
+-    assert "secret selector text" not in json.dumps(trace)
++    assert session.errors[0]["code"] == "sdk_observe"
+ 
+ 
+-def test_concurrent_requests_and_copy_context_threads_keep_parents():
++def test_copy_context_workers_keep_request_parent_and_local_metadata(native_sdk):
+     barrier = threading.Barrier(2)
+ 
++    @tracing.traced_evaluation("child", "tool")
++    def child(question):
++        tracing.set_evaluation_metadata(question=question)
++        return question
++
++    @tracing.traced_evaluation("root", "agent")
++    def root(question):
++        barrier.wait(timeout=5)
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            futures = [pool.submit(copy_context().run, child, question + str(i)) for i in range(2)]
++            return [future.result(timeout=5) for future in futures]
++
+     def request(question):
+-        with capture_evaluation_trace() as capture:
+-            with evaluation_span("request", "agent", input=question):
+-                barrier.wait(timeout=5)
+-                with ThreadPoolExecutor(max_workers=1) as pool:
+-                    def work():
+-                        with evaluation_span("tool", "tool", input=question):
+-                            pass
+-                    pool.submit(copy_context().run, work).result(timeout=5)
+-        return capture.to_dict()
++        samples = []
++        with tracing.evaluation_session(on_span=samples.append) as session:
++            root(question)
++        assert session.errors == []
++        return samples
+ 
+     with ThreadPoolExecutor(max_workers=2) as pool:
+-        a, b = list(pool.map(request, ["a", "b"]))
+-    assert a["trace_id"] != b["trace_id"]
+-    for trace in (a, b):
+-        root, child = trace["spans"]
+-        assert child["parent_id"] == root["span_id"]
+-        assert root["input"] == child["input"]
+-
+-
+-def test_nested_capture_restores_outer_and_closed_copy_cannot_write():
+-    with capture_evaluation_trace() as outer:
+-        with evaluation_span("outer", "agent"):
+-            late = copy_context()
+-            with capture_evaluation_trace() as inner:
+-                with evaluation_span("inner", "agent"):
+-                    pass
+-            with evaluation_span("outer-child", "tool"):
+-                pass
+-    original = outer.to_dict()
+-    with capture_evaluation_trace() as next_capture:
+-        def late_work():
+-            with evaluation_span("late", "tool"):
+-                pass
+-        late.run(late_work)
+-    assert outer.to_dict() == original
+-    assert next_capture.to_dict()["spans"] == []
+-    assert inner.to_dict()["spans"][0]["parent_id"] is None
+-    assert original["spans"][1]["parent_id"] == original["spans"][0]["span_id"]
+-
+-
+-def test_unfinished_child_is_disclosed_at_capture_close():
+-    with capture_evaluation_trace() as capture:
+-        manager = evaluation_span("unfinished", "tool")
+-        manager.__enter__()
+-    before = capture.to_dict()
+-    manager.__exit__(None, None, None)
+-    assert capture.to_dict() == before
+-    assert before["capture_errors"][0]["code"] == "span_open_at_close"
+-
+-
+-def test_async_tasks_are_isolated_even_when_their_scopes_interleave():
+-    async def run():
+-        entered = asyncio.Event()
+-        release = asyncio.Event()
++        first, second = list(pool.map(request, ["a", "b"]))
++    for question, samples in zip(("a", "b"), (first, second)):
++        root_sample = next(sample for sample in samples if sample["name"] == "root")
++        children = [sample for sample in samples if sample["name"] == "child"]
++        assert {sample["metadata"]["question"] for sample in children} == {question + "0", question + "1"}
++        assert all(span.parent_uuid == root_sample["span_id"] for span in native_sdk.spans
++                   if span.uuid in {sample["span_id"] for sample in children})
++
++
++def test_nested_sessions_restore_callbacks_and_closed_copies_do_not_observe(native_sdk):
++    @tracing.traced_evaluation("work", "tool")
++    def work():
++        return "result"
+ 
+-        async def request(name):
+-            with capture_evaluation_trace() as capture:
+-                with evaluation_span(name, "agent"):
+-                    if name == "first":
+-                        entered.set()
+-                        await release.wait()
+-                    else:
+-                        await entered.wait()
+-                        release.set()
+-                    with evaluation_span(name + "-child", "tool"):
+-                        pass
+-            return capture.to_dict()
++    outer, inner = [], []
++    with tracing.evaluation_session(on_span=outer.append):
++        late = copy_context()
++        work()
++        with tracing.evaluation_session(on_span=inner.append):
++            work()
++        work()
++    late.run(work)
++    assert len(outer) == 2
++    assert len(inner) == 1
++    assert len(native_sdk.spans) == 3
++
++
++def test_session_discloses_unjoined_work_and_suppresses_late_callback(native_sdk):
++    entered, release = threading.Event(), threading.Event()
++    samples = []
++
++    @tracing.traced_evaluation("unjoined", "tool")
++    def work():
++        entered.set()
++        assert release.wait(timeout=5)
++        return "result"
+ 
+-        return await asyncio.gather(request("first"), request("second"))
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        with tracing.evaluation_session(on_span=samples.append) as session:
++            future = pool.submit(copy_context().run, work)
++            assert entered.wait(timeout=5)
++        release.set()
++        assert future.result(timeout=5) == "result"
++    assert session.errors == [{"code": "span_open_at_close", "name": None}]
++    assert samples == []
++    assert native_sdk.spans[0].end_time is not None
+ 
+-    first, second = asyncio.run(run())
+-    assert [span["name"] for span in first["spans"]] == ["first", "first-child"]
+-    assert [span["name"] for span in second["spans"]] == ["second", "second-child"]
+ 
++def test_interleaved_async_request_contexts_keep_callbacks_isolated(native_sdk):
++    @tracing.traced_evaluation("work", "tool")
++    def work(name):
++        return name
+ 
+-def test_closed_span_handle_cannot_change_its_completed_snapshot():
+-    with capture_evaluation_trace() as capture:
+-        with evaluation_span("complete", "tool") as span:
+-            span.set_output("original")
+-        span.set_output("late")
+-    assert capture.to_dict()["spans"][0]["output"] == "original"
++    async def run():
++        entered, release = asyncio.Event(), asyncio.Event()
+ 
++        async def request(name):
++            samples = []
++            with tracing.evaluation_session(on_span=samples.append) as session:
++                if name == "first":
++                    entered.set()
++                    await release.wait()
++                else:
++                    await entered.wait()
++                    release.set()
++                work(name)
++            assert session.errors == []
++            return samples
+ 
+-def test_standalone_recorder_needs_no_optional_dependencies_and_performs_no_io():
+-    backend = Path(__file__).resolve().parents[1]
+-    script = """
+-import builtins, socket, sys
+-sys.path.insert(0, sys.argv[1])
+-from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
+-def forbidden(*args, **kwargs):
+-    raise AssertionError('capture attempted I/O')
+-builtins.open = forbidden
+-socket.socket = forbidden
+-with capture_evaluation_trace() as capture:
+-    with evaluation_span('root', 'agent', input='question') as span:
+-        span.set_output('answer')
+-assert capture.to_dict()['capture_errors'] == []
+-assert not any(name.startswith(('deepeval', 'pydantic', 'openai')) for name in sys.modules)
+-"""
+-    subprocess.run([sys.executable, "-I", "-c", script, str(backend)], check=True, capture_output=True, text=True)
++        return await asyncio.gather(request("first"), request("second"))
++
++    first, second = asyncio.run(run())
++    assert [sample["output"] for sample in first] == ["first"]
++    assert [sample["output"] for sample in second] == ["second"]
+diff --git a/backend/tests/test_evaluation_tracing_integration.py b/backend/tests/test_evaluation_tracing_integration.py
+index 9fe87ad0..05c7fe56 100644
+--- a/backend/tests/test_evaluation_tracing_integration.py
++++ b/backend/tests/test_evaluation_tracing_integration.py
+@@ -1,11 +1,13 @@
+ """Native seams use real domain values and preserve their original outcomes."""
+ import json
++from contextlib import contextmanager
+ from types import SimpleNamespace
+ 
+ import pytest
+ 
+-from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
+-from app.core.llm import provider_messages
++from app.core.evaluation_tracing import evaluation_session, traced_evaluation
++from tests.evaluation_sdk_testkit import native_sdk  # noqa: F401
++from app.core.llm import _StreamingAskCancelled, provider_messages
+ from app.domain.retrieval import RetrievedChunk
+ from app.domain.cancellation import AskCancelled
+ from app.models.ask import AskRequest, AskResponse
+@@ -23,6 +25,15 @@ from tests.test_reasoning_document_read_synthesis import (
+     repo,  # noqa: F401 — source/document fixture with native enumeration enabled
+ )
+ 
++pytestmark = pytest.mark.usefixtures("native_sdk")
++
++
++@contextmanager
++def collect_native():
++    samples = []
++    with evaluation_session(on_span=samples.append) as session:
++        yield SimpleNamespace(samples=samples, errors=session.errors)
++
+ 
+ def _chunk():
+     return RetrievedChunk("chunk-1", "source-1", "Manual", "Gain", "gain is 4", score=0.8, relevance=0.9)
+@@ -34,15 +45,14 @@ def test_llm_captures_provider_messages_and_logical_result_without_client_secret
+     create = _FakeCreate([response])
+     client = _make(monkeypatch, create, model="public-model")
+     messages = [{"role": "user", "content": "business question"}]
+-    with capture_evaluation_trace() as capture:
++    with collect_native() as capture:
+         result = client.chat_json(messages, "answer schema")
+-    trace = capture.to_dict()
+-    span, = trace["spans"]
++    span, = capture.samples
+     assert span["input"] == {"messages": provider_messages(messages, "answer schema"), "model": "public-model"}
+     assert span["output"] == result == '{"answer":"visible answer"}'
+     assert span["metadata"]["call_boundary"] == "logical"
+-    assert trace["capture_errors"] == []
+-    encoded = json.dumps(trace)
++    assert capture.errors == []
++    encoded = json.dumps(capture.samples)
+     assert "https://x" not in encoded
+     assert "api_key" not in encoded
+     assert "hidden reasoning" not in encoded
+@@ -57,26 +67,26 @@ def test_chunk_retrieval_projects_returned_evidence_without_vectors():
+         candidates=SimpleNamespace(_retrieve_chunks=lambda *args: original),
+         graph=None, community_queries=None,
+     )
+-    with capture_evaluation_trace() as capture:
++    with collect_native() as capture:
+         result = service.retrieve_chunk_candidates("notebook", "gain")
+     assert result[2] is matrix
+-    span, = capture.to_dict()["spans"]
++    span, = capture.samples
+     assert span["input"] == {"query": "gain"}
+     assert span["output"][0]["text"] == chunk.text
+     assert span["output"][0]["chunk_id"] == chunk.chunk_id
+-    assert capture.to_dict()["capture_errors"] == []
++    assert capture.errors == []
+ 
+ 
+ def test_llm_cache_hit_is_one_logical_span_without_transport(monkeypatch):
+     create = _FakeCreate([AssertionError("transport must not be used")])
+     client = _make(monkeypatch, create)
+     client._cache = SimpleNamespace(get=lambda key: '{"cached":true}')
+-    with capture_evaluation_trace() as capture:
++    with collect_native() as capture:
+         result = client.chat_json([], "{}", response_validator=lambda value: True)
+     assert result == '{"cached":true}'
+     assert create.calls == []
+-    assert len(capture.to_dict()["spans"]) == 1
+-    assert capture.to_dict()["spans"][0]["output"] == result
++    assert len(capture.samples) == 1
++    assert capture.samples[0]["output"] == result
+ 
+ 
+ def test_native_cancel_retains_identity_and_stops_before_transport(monkeypatch):
+@@ -86,11 +96,28 @@ def test_native_cancel_retains_identity_and_stops_before_transport(monkeypatch):
+     client = _make(monkeypatch, create)
+     event = threading.Event()
+     event.set()
+-    with capture_evaluation_trace() as capture:
++    with collect_native() as capture:
+         with pytest.raises(AskCancelled):
+             client.chat_json([], "{}", cancel_event=event)
+     assert create.calls == []
+-    assert capture.to_dict()["spans"][0]["status"] == "cancelled"
++    assert capture.samples[0]["metadata"]["status"] == "cancelled"
++
++
++def test_streaming_cancel_subclass_is_cancelled_and_retains_usage_and_identity():
++    error = _StreamingAskCancelled({"prompt_tokens": 7})
++
++    @traced_evaluation("streaming_call", "llm")
++    def operation():
++        raise error
++
++    with collect_native() as capture:
++        with pytest.raises(_StreamingAskCancelled) as raised:
++            operation()
++    assert raised.value is error
++    assert raised.value.usage == {"prompt_tokens": 7}
++    assert capture.samples[0]["metadata"]["status"] == "cancelled"
++    assert capture.samples[0]["metadata"]["error_type"] == "_StreamingAskCancelled"
++    assert capture.errors == []
+ 
+ 
+ @pytest.mark.parametrize("mode", ["chunks", "reasoning", "mix"])
+@@ -109,17 +136,17 @@ def test_synthesis_records_actual_context_and_preserves_response(rrepo, mode):
+         return service._answer_reasoning(nb.id, "gain?", [], [], chunks=[_chunk()], baseline_sink=sink)
+ 
+     expected = run()
+-    with capture_evaluation_trace() as capture:
++    with collect_native() as capture:
+         actual = run()
+     assert actual == expected
+-    span, = capture.to_dict()["spans"]
++    span, = capture.samples
+     assert span["metadata"]["context_block"] == sink["context_block"]
+     assert "gain is 4" in span["metadata"]["context_block"]
+     assert span["output"] == {"answer": actual[0], "grounded": actual[1]}
+-    assert capture.to_dict()["capture_errors"] == []
++    assert capture.errors == []
+ 
+ 
+-def test_intent_and_ask_share_benchmark_root_and_do_not_serialize_service(rrepo, monkeypatch):
++def test_intent_and_ask_share_benchmark_root_and_do_not_serialize_service(rrepo, monkeypatch, native_sdk):
+     nb = _seed_two_nodes(rrepo)
+     service = rrepo._runtime.ask_service()
+     monkeypatch.setattr("app.services.query_intent.plan_query_intent", lambda *args, **kwargs: {
+@@ -127,17 +154,21 @@ def test_intent_and_ask_share_benchmark_root_and_do_not_serialize_service(rrepo,
+     })
+     response = AskResponse(conclusion="answer", answer="gain is 4", mode="chunk")
+     monkeypatch.setattr(service, "ask_chunk", lambda *args, **kwargs: response)
+-    with capture_evaluation_trace() as capture:
+-        with evaluation_span("sn.request", "agent", input="gain?"):
+-            intent = service.preview_reasoning_intent(nb.id, "gain?")
+-            actual = service.ask(nb.id, AskRequest(question="gain?"), user_id="user")
++    @traced_evaluation("sn.request", "agent", output_selector=lambda result: "answer")
++    def request():
++        return (service.preview_reasoning_intent(nb.id, "gain?"),
++                service.ask(nb.id, AskRequest(question="gain?"), user_id="user"))
++
++    with collect_native() as capture:
++        intent, actual = request()
+     assert actual is response
+     assert intent.needs_clarification
+-    root, intent_span, ask_span = capture.to_dict()["spans"]
+-    assert intent_span["parent_id"] == ask_span["parent_id"] == root["span_id"]
++    intent_span, ask_span, root = capture.samples
++    assert all(span.parent_uuid == root["span_id"] for span in native_sdk.spans
++               if span.name in {"sn.intent", "sn.ask"})
+     assert intent_span["output"]["needs_clarification"] is True
+     assert ask_span["output"]["answer"] == "gain is 4"
+-    assert capture.to_dict()["capture_errors"] == []
++    assert capture.errors == []
+ 
+ 
+ @pytest.mark.parametrize("confirmed", [False, True])
+@@ -148,13 +179,11 @@ def test_reasoning_real_plan_tools_reflect_and_confirmed_plan_are_observable(rre
+         reflects=[{"next_action": "answer", "sufficient": True, "reason": "enough evidence"}],
+     ))
+     retriever = ReasoningRetriever.from_repository(rrepo, rrepo.settings)
+-    with capture_evaluation_trace() as capture:
+-        with evaluation_span("sn.request", "agent"):
+-            result = retriever.run(nb.id, "RTL到GDSII流程", intent_queries=["RTL到GDSII流程"] if confirmed else None)
+-    trace = capture.to_dict()
++    with collect_native() as capture:
++        result = retriever.run(nb.id, "RTL到GDSII流程", intent_queries=["RTL到GDSII流程"] if confirmed else None)
+     assert result.top_hits
+-    assert trace["capture_errors"] == []
+-    by_name = {span["name"]: span for span in trace["spans"]}
++    assert capture.errors == []
++    by_name = {span["name"]: span for span in capture.samples}
+     assert by_name["sn.reasoning.initial_plan"]["output"]["origin"] == ("confirmed_intent" if confirmed else "planner")
+     assert by_name["sn.reasoning.initial_plan"]["output"]["subqueries"][0]["query"] == "RTL到GDSII流程"
+     assert by_name["sn.action.search"]["output"]
+@@ -165,17 +194,53 @@ def test_reasoning_real_plan_tools_reflect_and_confirmed_plan_are_observable(rre
+ def test_native_document_actions_capture_admitted_results_and_synthesis_context(repo):
+     notebook = _notebook_with_documents(repo)
+     client = _AnswerClient()
+-    with capture_evaluation_trace() as capture:
++    with collect_native() as capture:
+         response, _ = _ask(repo, notebook.id, [
+             _enumerate_sources_action(), _read_action("无摘要文档"), ANSWER,
+         ], answer_client=client)
+-    trace = capture.to_dict()
+     assert response.answer
+-    assert trace["capture_errors"] == []
+-    by_name = {span["name"]: span for span in trace["spans"]}
++    assert capture.errors == []
++    by_name = {span["name"]: span for span in capture.samples}
+     assert by_name["sn.action.enumerate"]["output"]["step_type"] == "enumerate"
+     read = by_name["sn.action.read_document"]
+     assert read["input"]["read_document_source"] == "无摘要文档"
+     assert read["output"]["step_type"] == "read_document"
+     assert read["output"]["result"]["result_ids"]
+     assert "末尾结论" in by_name["sn.synthesis.reasoning"]["metadata"]["context_block"]
++
++
++def test_multi_query_retrieval_preserves_actual_per_query_candidates_and_empty_results():
++    chunk = _chunk()
++    matrix = object()
++    service = RetrievalService(candidates=SimpleNamespace(_retrieve_chunks_multi=lambda *args:
++        ({chunk.chunk_id: chunk}, [{chunk.chunk_id: chunk}, {}], [chunk.chunk_id], matrix)),
++        graph=None, community_queries=None)
++    with collect_native() as capture:
++        result = service.retrieve_chunk_candidates_multi("notebook", ["gain", "absent"])
++    assert result[3] is matrix
++    span, = capture.samples
++    assert span["input"] == {"queries": ["gain", "absent"]}
++    first, second = span["metadata"]["per_query"]
++    assert first["query"] == "gain"
++    assert first["candidates"][0]["text"] == "gain is 4"
++    assert second == {"query": "absent", "candidates": []}
++    assert capture.errors == []
++
++
++def test_synthesis_sections_keep_question_and_each_context_separate(rrepo):
++    nb = _seed_two_nodes(rrepo)
++    bind_chat_client(rrepo, "ask_answer", _AnswerRecordingLLM())
++    service = rrepo._runtime.ask_service()
++    with collect_native() as capture:
++        for index, title in enumerate(("first", "second"), start=1):
++            service._answer_reasoning(nb.id, "gain?", [], [], chunks=[_chunk()],
++                sectioned=True, section_title=title, section_index=index, section_total=2,
++                key_offset=(index - 1) * 10000)
++    first, second = capture.samples
++    assert first["metadata"]["question"] == second["metadata"]["question"] == "gain?"
++    assert first["metadata"]["section_title"] == "first"
++    assert second["metadata"]["section_title"] == "second"
++    assert first["metadata"]["section_index"] == 1
++    assert second["metadata"]["section_index"] == 2
++    assert first["metadata"]["context_block"] != second["metadata"]["context_block"]
++    assert capture.errors == []
+diff --git a/docs/operations.md b/docs/operations.md
+index 40362ae5..53dbb45e 100644
+--- a/docs/operations.md
++++ b/docs/operations.md
+@@ -124,22 +124,24 @@ What a developer or an MCP agent sees is unchanged: backend `detail` stays as-is
+ 
+ ### Private evaluation execution traces
+ 
+-`app.core.evaluation_tracing` provides an optional in-memory capture for an
+-explicit evaluation caller. It is disabled by default, uses only the Python
+-standard library, and has no file, network, logging, or DeepEval dependency:
++`app.core.evaluation_tracing` provides opt-in **native DeepEval spans**. The
++server's base requirements do not include DeepEval, and disabled instrumentation
++imports no SDK and runs no selectors. Evaluation environments install the
++separate `backend/requirements-evaluation.txt` (DeepEval `4.2.2`). The benchmark
++caller configures the SDK's offline/export policy before enabling a session:
+ 
+ ```python
+-from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
+-
+-with capture_evaluation_trace() as capture:
+-    with evaluation_span("sn.request", "agent", input=question,
+-                         metadata={"stage": "request"}) as root:
+-        response = submit_system_question(question)
+-        root.set_output(response.answer)
+-trace = capture.to_dict()
++from app.core.evaluation_tracing import evaluation_session
++
++# Invoke this inside the benchmark's SDK-observed request root.
++with evaluation_session(on_span=record_component_and_attach_metrics) as session:
++    response = submit_system_question(question)
++assert session.closed
++capture_errors = session.errors
+ ```
+ 
+-The caller owns the request root, artifact access controls, storage and retention.
++The caller owns the SDK request root, metrics, judges, reference answers, artifact
++access controls, export, storage and retention. SN owns none of the scoring logic.
+ This is a **private contentful evaluation artifact**, separate from ordinary
+ content-free telemetry: it includes selected questions, explicit observable
+ plans/decisions, retrieved passages, actual synthesis context, provider-facing
+@@ -147,27 +149,49 @@ messages and returned answer content. It does not serialize clients, repositorie
+ settings, credentials, service endpoints, exception text, embeddings, arbitrary
+ knowledge payloads, or provider `reasoning_content`/hidden chain-of-thought.
+ Plain JSON business values are copied when recorded; unsupported values create a
+-capture error without changing or repeating the original operation.
+-
+-Schema `sn-execution-trace-v1` contains `trace_id`, `closed`, `spans`,
+-`capture_errors`, and `duration_ms`. Each span has `span_id`, `parent_id`, `name`,
+-`kind` (`agent`, `retriever`, `tool`, or `llm`), `input`, `output`, `metadata`,
+-`status`, monotonic `start_time`/`end_time` in seconds, and `duration_ms`.
+-Terminal status is `completed`, `error`, or `cancelled`; failures expose only
+-`error_type`. A span still running at capture close retains `running` and creates
+-`span_open_at_close`; it must not be treated as complete. Entry order is stable,
+-but concurrent spans overlap: do not sum nested durations as elapsed wall time.
+-Closed captures ignore late writes, nested captures restore their outer scope,
+-and existing `copy_context()` workers retain the correct request and parent.
+-
+-Coverage is the synchronous native Ask call tree: intent preview, Ask dispatch,
+-chunk retrieval, reasoning retrieval and its explicit initial plan/reflection,
++session error without changing or repeating the original operation. SDK
++`observe` wraps a zero-argument closure returning `None`, so its automatic
++serialization never sees the business arguments or result. Public
++`update_current_span` receives only selected values. Nonempty text stays text;
++structured and empty values are JSON strings because SDK 4.2.2 ignores falsy
++input/output updates. Empty retrieval/no-answer results are real observations.
++
++Contract `NATIVE_TRACE_VERSION = "sn-deepeval-native-v1"` uses the SDK's span
++tree, identifiers, parentage, timing and closure directly; there is no SN trace
++tree or legacy `capture_evaluation_trace` export. The optional `on_span` callback
++runs inside the current SDK span after output/metadata updates. It receives a
++detached JSON mapping with `name`, `kind` (`agent`, `retriever`, `tool`, `llm`),
++`stage`, `input`, `output`, `metadata`, and the SDK's public `span_id`.
++Callback input/output retain their JSON types, independent of the SDK's string
++representation. The callback may attach metrics/test cases through public
++`update_current_span` before that span closes.
++
++Metadata includes `native_trace_version`, `stage` and `status`
++(`completed`, `error`, `cancelled`); failures include only `error_type`. A sanitized
++exception closes the SDK span as errored, then the identical original application
++exception or cancellation is rethrown. Projection, SDK and callback failures are
++recorded as content-free codes in `session.errors`; completed business work is
++never retried. `session.closed` and `span_open_at_close` disclose session closure
++with unjoined work. Nested sessions restore their outer callback; closed contexts
++ignore late observations. Joined `copy_context()` workers retain the SDK parent,
++with separate invocation metadata. Detached work is outside this contract.
++
++Coverage consists of selected synchronous native Ask boundaries: intent preview,
++Ask dispatch, single/multi-query chunk candidate retrieval, reasoning retrieval and its explicit initial plan/reflection,
+ native search/graph/document/enumeration actions, chunk/mix/reasoning synthesis,
+ and `OpenAICompatibleClient.chat_json`. Stage names are `intent`, `ask`,
+ `retrieve`, `plan`, `reflect`, `action`, `synthesis`, and `llm`. Confirmed-intent
+ plans are recorded as adopted plans rather than fabricated model calls. LLM spans
+ represent a logical call including cache lookup and retries, not individual HTTP
+ attempts. Model doubles/custom clients do not automatically produce LLM spans.
++Mixed retrieval and keyword/exact-match candidate subpaths do not have complete
++retrieval-span coverage; enclosing actions and synthesis may still be observed.
++Multi-query chunk retrieval is one actual invocation: aggregate output contains
++admitted candidates and metadata `per_query` contains aligned
++`{"query": ..., "candidates": [...]}` rows from the actual per-query return,
++including empty rows. No child retrieval calls are fabricated. Each synthesis
++invocation records its `question` and actual `context_block`; reasoning section
++calls also record `sectioned`, `section_title`, `section_index`, `section_total`.
+ State-mutating actions expose their selected outcome fields; graph payload text
+ is captured through the actual synthesis context instead of arbitrary object
+ serialization. Plugin actions mark `coverage=call_boundary_only` and
+@@ -175,7 +199,7 @@ serialization. Plugin actions mark `coverage=call_boundary_only` and
+ transport, and external daemons are not claimed as fully traced. Inline control
+ decisions such as outline updates remain observable in reflection outputs, not
+ independent action spans. A successful answer does not prove complete capture;
+-check coverage, `closed`, unfinished spans, and `capture_errors` separately.
++check coverage, SDK span closure, `session.closed`, and `session.errors` separately.
+ 
+ ### Live production incident capture
+ 
+diff --git a/docs/operations_zh.md b/docs/operations_zh.md
+index 636705da..6cb5ea3a 100644
+--- a/docs/operations_zh.md
++++ b/docs/operations_zh.md
+@@ -82,49 +82,67 @@ bash scripts/cli.sh extensions services stop
+ 
+ ## 私有评测执行轨迹
+ 
+-`app.core.evaluation_tracing` 提供显式调用方启用的内存采集，默认关闭，只依赖
+-Python 标准库，不产生文件、网络或日志 I/O，也不依赖 DeepEval：
++`app.core.evaluation_tracing` 提供显式启用的 **DeepEval 原生 span**。服务端基础
++依赖不含 DeepEval；关闭时不导入 SDK，也不运行投影 selector。评测环境单独安装
++`backend/requirements-evaluation.txt`（DeepEval `4.2.2`）。benchmark 调用方先配置
++SDK 的离线／导出策略，再启用会话：
+ 
+ ```python
+-from app.core.evaluation_tracing import capture_evaluation_trace, evaluation_span
+-
+-with capture_evaluation_trace() as capture:
+-    with evaluation_span("sn.request", "agent", input=question,
+-                         metadata={"stage": "request"}) as root:
+-        response = submit_system_question(question)
+-        root.set_output(response.answer)
+-trace = capture.to_dict()
++from app.core.evaluation_tracing import evaluation_session
++
++# 在 benchmark 已由 SDK 观测的请求根节点内调用。
++with evaluation_session(on_span=record_component_and_attach_metrics) as session:
++    response = submit_system_question(question)
++assert session.closed
++capture_errors = session.errors
+ ```
+ 
+-请求根节点、产物访问控制、持久化和保留期限由调用方负责。这是与普通无正文
++SDK 请求根节点、指标、judge、参考答案、产物访问控制、导出、持久化和保留期限由
++调用方负责，SN 不持有评分逻辑。这是与普通无正文
+ 遥测分开的**含正文私有评测产物**：包括显式选取的问题、可观察的计划与决策、
+ 召回原文、真正送入合成的上下文、提供给模型的消息和返回答案。不序列化 client、
+ repository、settings、凭据、服务地址、异常正文、向量、任意知识对象 payload，
+ 也不采集 provider 的 `reasoning_content` 或隐藏思维链。只接受调用方明确投影的
+-纯 JSON 业务值并在记录时快照；无法记录的值生成采集错误，不改变或重做原操作。
+-
+-协议 `sn-execution-trace-v1` 含 `trace_id`、`closed`、`spans`、`capture_errors`
+-和 `duration_ms`。每个 span 含 `span_id`、`parent_id`、`name`、`kind`
+-（`agent` / `retriever` / `tool` / `llm`）、`input`、`output`、`metadata`、
+-`status`、以秒计的单调时钟 `start_time` / `end_time` 及 `duration_ms`。
+-终态为 `completed` / `error` / `cancelled`；失败仅保留 `error_type`。
+-采集关闭时仍未结束的 span 保留 `running` 并产生 `span_open_at_close`，不能视为
+-完整轨迹。按进入顺序保存，但并发 span 可重叠，不能将父子耗时相加当墙钟耗时。
+-关闭后忽略迟到写入；嵌套采集恢复外层上下文；已有 `copy_context()` 工作线程
+-继承正确的请求与父节点。
+-
+-覆盖范围是同步 native Ask 调用树：意图预览、Ask 派发、chunk 检索、reasoning
++纯 JSON 业务值并在记录时快照；无法记录的值生成会话错误，不改变或重做原操作。
++SDK `observe` 包装的是无参数、返回 `None` 的闭包，因此自动序列化不会看到实际
++业务参数或返回对象。公开 `update_current_span` 仅接收选定值。非空正文保持文本；
++结构化值和空值编码为 JSON 字符串，因为 SDK 4.2.2 会忽略假值 input/output 更新。
++空召回和无答案结果照实观测。
++
++协议 `NATIVE_TRACE_VERSION = "sn-deepeval-native-v1"` 直接采用 SDK 的 span 树、
++标识符、父子关系、计时和关闭行为；不再维护 SN 自定义树或导出旧
++`capture_evaluation_trace`。可选的 `on_span` 回调在当前 SDK span 内、完成正文与
++metadata 更新后执行，收到独立 JSON 映射：`name`、`kind`
++（`agent` / `retriever` / `tool` / `llm`）、`stage`、`input`、`output`、
++`metadata` 和 SDK 公开的 `span_id`。回调的输入输出仍保留 JSON 类型，不受 SDK
++字符串表示影响；可在 span 关闭前通过公开 `update_current_span` 附加指标或 test case。
++
++metadata 包含 `native_trace_version`、`stage`、`status`
++（`completed` / `error` / `cancelled`）；失败仅保留 `error_type`。脱敏异常使 SDK
++span 以 errored 关闭，然后重新抛出同一个原始应用异常或取消对象。投影、SDK 和
++回调故障以无正文错误码写入 `session.errors`，不重试已完成的业务操作。
++`session.closed` 和 `span_open_at_close` 披露会话关闭时是否仍有未 join 的调用。
++嵌套会话恢复外层回调；关闭的上下文忽略迟到观测。已 join 的 `copy_context()`
++工作线程继承 SDK 父节点，每次调用的 metadata 独立；脱离请求的工作不在合同内。
++
++覆盖的是同步 native Ask 的选定调用边界：意图预览、Ask 派发、单／多查询 chunk 候选检索、reasoning
+ 检索及显式初始计划／反思、原生搜索／图／文档／枚举动作、chunk / mix /
+ reasoning 合成及 `OpenAICompatibleClient.chat_json`。阶段名为 `intent`、`ask`、
+ `retrieve`、`plan`、`reflect`、`action`、`synthesis`、`llm`。已确认意图被记录为
+ 实际采用的计划，不虚构模型调用。LLM span 是包含缓存与重试的一次逻辑调用，
+ 不是每次 HTTP 尝试；模型替身和自定义客户端不会自动产生 LLM span。
++混合检索以及关键词／精确匹配候选子路径不具备完整的 retrieval span 覆盖；其外层
++动作和合成仍可能被观测。
++多查询 chunk 检索对应一次真实调用：output 是获准候选并集，metadata 的 `per_query`
++按照真实逐查询返回值保存对齐的 `{"query": ..., "candidates": [...]}`，包括空行；
++不虚构子检索调用。每次合成记录自己的 `question` 与真实 `context_block`；reasoning
++分节调用还记录 `sectioned`、`section_title`、`section_index`、`section_total`。
+ 原地更新状态的动作仅暴露选定结果字段；图对象正文通过真实合成上下文采集，
+ 不任意序列化对象。插件动作标注 `coverage=call_boundary_only` 和
+ `downstream_internals_traced=false`；脱离请求的工作、插件服务、流式传输、外部
+ daemon 不宣称全覆盖。大纲更新等内联控制决策可见于反思输出，不单独伪造动作
+-span。回答成功不代表采集完整；应分别检查覆盖范围、`closed`、未结束 span 和
+-`capture_errors`。
++span。回答成功不代表采集完整；应分别检查覆盖范围、SDK span 关闭状态、
++`session.closed` 和 `session.errors`。
+ 
+ ## 可观测性 / 日志
+ 
