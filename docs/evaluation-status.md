@@ -6,7 +6,7 @@
 
 - 本地 `benchmark-deepeval/main` 已合并 Dashboard、原生评分恢复及文档整理，HEAD 为 `e022c60`。
 - 本地 `main` 相对已保存的 `origin/main` ahead 59；本轮没有 fetch/push，不能把本地跟踪引用称为刚核实的远程现状。
-- 当前实现位于 `.worktrees/benchmark-protocol-correctness`，分支 `feat/benchmark-protocol-correctness`，起点 `e022c60`；改动尚未提交、合并或推送。
+- 当前实现位于 `.worktrees/benchmark-protocol-correctness`，分支 `feat/benchmark-protocol-correctness`，已提交为 `128246c` 并推送到 `origin/feat/benchmark-protocol-correctness`；尚未合并到本地 `main`。
 - Dashboard 合并提交为 `e4c5333`，原生评分恢复合并提交为 `03ca577`。
 - 旧远程开发分支信息见归档，本轮未重新查询远程。
 - 主线原有未提交文档已复制到实现worktree继续整理，主线原文件保留。产品checkout没有新增受管理改动；原有 `.deepeval/`、`results/` 未清理。

@@ -27,7 +27,7 @@ Full: existing explicit `SILICON_NOTEBOOK_PROJECT_ROOT`, `QMSUM_ROUGE_HOME`, `PE
 
 ## Evidence log — 2026-09-24
 
-Implementation complete in the existing uncommitted linked worktree. No product edits, generated model calls, commit, merge, push, dependency installation or deployment. Product tracked files remain unchanged; original `.deepeval/` and `results/` remain present.
+Implementation was completed in the linked worktree and committed as `128246c`, then pushed to `origin/feat/benchmark-protocol-correctness`. No product edits, generated model calls, dependency installation or deployment occurred. Product tracked files remain unchanged; original `.deepeval/` and `results/` remain present. The branch is not merged into local `main`.
 
 Policy implementation SHA256: `057d74e54306f60f2ee49d10399619fb658c66c9dfe462c6691cfbb661160df6`. The source hash is part of method configuration; all QASPER scores also record the mapper dependency equally, so SN/reference share scorer identity.
 

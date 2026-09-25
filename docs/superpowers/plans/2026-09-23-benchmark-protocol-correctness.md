@@ -166,7 +166,7 @@ The following download failures describe the earlier attempt. The user subsequen
 
 ### Delivery state
 
-Changes remain in `.worktrees/benchmark-protocol-correctness` on `feat/benchmark-protocol-correctness`, based on `e022c60`. No task commit, merge, push, production change or timer change was made. Main's existing uncommitted documentation was preserved. The product checkout has no tracked changes; existing `.deepeval/` and `results/` directories remain. Local `main` is 59 commits ahead of the saved `origin/main`; no fresh remote query was made during this protocol task.
+Changes remain in `.worktrees/benchmark-protocol-correctness` on `feat/benchmark-protocol-correctness`, based on `e022c60`, committed as `128246c` and pushed to `origin/feat/benchmark-protocol-correctness`. The branch is not merged into local `main`; no production change or timer change was made. Main's existing uncommitted documentation was preserved. The product checkout has no tracked changes; existing `.deepeval/` and `results/` directories remain. Local `main` is 59 commits ahead of the saved `origin/main`; the feature branch remote was queried after push.
 
 ### Proxy retry and complete-file acceptance — 2026-09-24
 
