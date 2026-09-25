@@ -8,6 +8,7 @@ from .starter_protocol import fingerprint, require_text
 VERSION = 'sn-notebook-benchmarks-v1'
 LEGACY_ADAPTATION = 'notebook-data-v1'
 ADAPTATION_REVISION = 'notebook-data-v2'
+OFFICIAL_ADAPTATION_REVISION = 'notebook-data-v3'
 SUITES = {name: {'product': True} for name in ('qasper', 'multihop_rag', 'alce', 'qmsum')}
 
 
@@ -22,9 +23,11 @@ def _list(value, name, *, nonempty=True):
     return value
 
 
-def _document(suite, key, title, text):
+def _document(suite, key, title, text, *, source_units=None):
     _text(text, 'document text')
     doc = {'id': suite + '-doc-' + fingerprint(key), 'title': title, 'text': text}
+    if source_units is not None:
+        doc['source_units'] = source_units
     from hashlib import sha256
     return {**doc, 'text_sha256': sha256(text.encode()).hexdigest(), 'document_sha256': fingerprint(doc)}
 
@@ -58,11 +61,14 @@ def _qasper(raw, revision):
     cases, documents, decisions = [], [], []
     for paper_id, paper in raw.items():
         paragraphs, pieces = [], [_text(paper['title'], 'paper title')]
+        source_units = [] if revision == OFFICIAL_ADAPTATION_REVISION else None
         abstract = paper.get('abstract', '')
         if abstract:
             _text(abstract, 'abstract')
             pieces += ['Abstract', abstract]
             paragraphs.append({'id': 'abstract', 'text': abstract})
+            if source_units is not None:
+                source_units.append(dict(id='abstract', text=abstract, kind='abstract'))
         for section_no, section in enumerate(_list(paper['full_text'], 'full_text')):
             heading = section.get('section_name') or ''
             if heading:
@@ -70,12 +76,25 @@ def _qasper(raw, revision):
             for number, paragraph in enumerate(_list(section['paragraphs'], 'paragraphs', nonempty=False)):
                 if not isinstance(paragraph, str):
                     raise ValueError('paragraph must be text')
+                if source_units is not None:
+                    source_units.append(dict(id=f'{section_no}:{number}', text=paragraph, kind='paragraph'))
                 if paragraph.strip():
                     paragraphs.append({'id': f'{section_no}:{number}', 'text': paragraph})
                     pieces.append(paragraph)
+        if revision == OFFICIAL_ADAPTATION_REVISION:
+            # Consume the original v0.3 objects, not HF's columnar Sequence export.
+            for number, figure in enumerate(_list(paper.get('figures_and_tables', []),
+                                                 'figures_and_tables', nonempty=False)):
+                if not isinstance(figure, dict) or not isinstance(figure.get('caption'), str):
+                    raise ValueError('figure/table caption must be text')
+                caption = figure['caption']
+                source_units.append(dict(id=f'figure_or_table:{number}', text=caption, kind='caption'))
+                if caption.strip():
+                    paragraphs.append({'id': f'figure_or_table:{number}', 'text': caption})
+                    pieces.append(caption)
         if not paragraphs:
             raise ValueError('Paper has no textual paragraphs')
-        doc = _document('qasper', paper_id, paper['title'], '\n\n'.join(pieces))
+        doc = _document('qasper', paper_id, paper['title'], '\n\n'.join(pieces), source_units=source_units)
         documents.append(doc)
         paragraph_index = {}
         for paragraph in paragraphs:
@@ -89,12 +108,14 @@ def _qasper(raw, revision):
                 evidence = _list(answer.get('evidence', []), 'evidence', nonempty=False)
                 if any(not isinstance(e, str) for e in evidence):
                     raise ValueError('evidence must contain text')
-                if any('FLOAT SELECTED' in e for e in evidence):
+                if revision != OFFICIAL_ADAPTATION_REVISION and any('FLOAT SELECTED' in e for e in evidence):
                     exclusion = 'figure_or_table_evidence_outside_text_scope'
                 if type(answer['unanswerable']) is not bool:
                     raise ValueError('unanswerable must be boolean')
                 if answer['unanswerable']:
-                    value, kind, evidence = 'Unanswerable', 'none', []
+                    value, kind = 'Unanswerable', 'none'
+                    if revision != OFFICIAL_ADAPTATION_REVISION:
+                        evidence = []
                 elif answer.get('extractive_spans'):
                     spans = _list(answer['extractive_spans'], 'extractive_spans')
                     value, kind = ', '.join(_text(s, 'span') for s in spans), 'extractive'
@@ -112,7 +133,7 @@ def _qasper(raw, revision):
                     mapping = []
                     for index, text in enumerate(evidence):
                         matches = paragraph_index.get(whitespace_key(text), [])
-                        if not matches:
+                        if not matches and revision != OFFICIAL_ADAPTATION_REVISION:
                             exclusion = exclusion or 'evidence_not_mappable_to_imported_text'
                         mapping.append(dict(evidence_index=index, paragraph_ids=[p['id'] for p in matches],
                                             match_method=('exact' if any(p['text'] == text for p in matches) else
@@ -120,25 +141,56 @@ def _qasper(raw, revision):
                     annotation['evidence_mapping'] = mapping
                 annotations.append(annotation)
             decision = dict(case_id='qasper:' + sample, sample_id=sample,
-                            status='excluded' if exclusion else 'selected', reason=exclusion or 'text evidence available')
+                            status='excluded' if exclusion else 'selected',
+                            reason=('complete public paper text and captions' if revision == OFFICIAL_ADAPTATION_REVISION
+                                    else exclusion or 'text evidence available'))
             decisions.append(decision)
             if exclusion:
                 continue
             kinds = {a['type'] for a in annotations}
-            cases.append(_case('qasper', sample, next(iter(kinds)) if len(kinds) == 1 else 'mixed',
+            task = next(iter(kinds)) if len(kinds) == 1 else 'mixed'
+            gold = dict(annotations=annotations, paragraphs=paragraphs)
+            if revision == OFFICIAL_ADAPTATION_REVISION:
+                task = 'qa'
+                gold['raw_annotations'] = deepcopy(qa['answers'])
+            cases.append(_case('qasper', sample, task,
                                question, [doc['id']], [a['answer'] for a in annotations],
-                               dict(annotations=annotations, paragraphs=paragraphs),
+                               gold,
                                [doc['id']] if any(a['evidence'] for a in annotations) else [], paper_id))
     return cases, documents, decisions
 
 
-def _multihop(raw, corpus):
+def _multihop(raw, corpus, revision):
     docs, urls, titles = [], {}, {}
     for row in _list(corpus, 'corpus'):
         url, title = _text(row['url'], 'url'), _text(row['title'], 'title')
         if url in urls:
             raise ValueError('Duplicate corpus URL')
-        doc = _document('multihop_rag', url, title, _text(row['body'], 'body'))
+        body = _text(row['body'], 'body')
+        text, missing, source_units = body, {}, None
+        if revision == OFFICIAL_ADAPTATION_REVISION:
+            lines = ['Title: ' + title, 'URL: ' + url]
+            # These are the public fields in the released corpus. Missing values
+            # remain observations; fabricated dates/sources never enter materials.
+            for field in ('source', 'published_at', 'author', 'category'):
+                value = row.get(field)
+                if value is not None and not isinstance(value, str):
+                    raise ValueError('MultiHop ' + field + ' must be text or null')
+                if field not in row:
+                    missing[field] = 'absent'
+                elif value is None:
+                    missing[field] = 'null'
+                elif not value.strip():
+                    missing[field] = 'empty'
+                else:
+                    lines.append(field + ': ' + value)
+            header = '\n'.join(lines)
+            text = header + '\n\n' + body
+            source_units = [dict(id='metadata', kind='metadata', text=header),
+                            dict(id='body', kind='body', text=body)]
+        doc = _document('multihop_rag', url, title, text, source_units=source_units)
+        if revision == OFFICIAL_ADAPTATION_REVISION:
+            doc['data_observations'] = {'missing_metadata': missing}
         docs.append(doc)
         urls[url] = doc
         titles.setdefault(title, []).append(doc)
@@ -219,7 +271,12 @@ def _qmsum(raw, revision):
                 raise ValueError('turn content must be text')
             turns.append(dict(id=index, speaker=speaker, content=content))
             lines.append(f'[turn {index}] {speaker}: {content}')
-        doc = _document('qmsum', str(meeting_no), f'Meeting {meeting_no}', '\n\n'.join(lines))
+        source_units = None
+        if revision == OFFICIAL_ADAPTATION_REVISION:
+            source_units = [dict(id=f'turn:{turn["id"]}', text=line, kind='turn',
+                                 is_empty=not turn['content'].strip()) for turn, line in zip(turns, lines)]
+        doc = _document('qmsum', str(meeting_no), f'Meeting {meeting_no}', '\n\n'.join(lines),
+                        source_units=source_units)
         docs.append(doc)
         for kind in ('general', 'specific'):
             for index, query in enumerate(_list(meeting[kind + '_query_list'], kind + ' queries', nonempty=False)):
@@ -246,7 +303,7 @@ def _qmsum(raw, revision):
 
 
 def adapt(suite, raw, *, corpus=None, task=None, adaptation_revision=ADAPTATION_REVISION):
-    if adaptation_revision not in {LEGACY_ADAPTATION, ADAPTATION_REVISION}:
+    if adaptation_revision not in {LEGACY_ADAPTATION, ADAPTATION_REVISION, OFFICIAL_ADAPTATION_REVISION}:
         raise ValueError('Unsupported notebook adaptation revision')
     if suite not in SUITES:
         raise ValueError('Unknown notebook benchmark')
@@ -257,7 +314,7 @@ def adapt(suite, raw, *, corpus=None, task=None, adaptation_revision=ADAPTATION_
     if suite == 'qasper':
         cases, docs, decisions = _qasper(raw, adaptation_revision)
     elif suite == 'multihop_rag':
-        cases, docs, decisions = _multihop(raw, corpus)
+        cases, docs, decisions = _multihop(raw, corpus, adaptation_revision)
     elif suite == 'alce':
         cases, docs, decisions = _alce(raw, task, adaptation_revision)
     else:

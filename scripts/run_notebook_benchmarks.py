@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 
 def main():
-    from rag_eval.notebook_bundle import LEGACY_REQUEST_REVISION, REQUEST_REVISIONS
+    from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, required=True)
@@ -17,8 +17,8 @@ def main():
     parser.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--project-root', type=Path, required=True)
-    parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=LEGACY_REQUEST_REVISION,
-                        help='Question instruction revision; v2 avoids adapter-added unresolved pronouns. Default preserves v1.')
+    parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
+                        help='Generation request contract (default: v3 without gold fields); explicit v1/v2 preserve historical requests.')
     parser.add_argument('--model-config', type=Path, help='SN model-services TOML copied into the isolated runtime')
     parser.add_argument('--case-id', dest='case_ids', action='append', help='Run this case only; repeat for several cases. Entire corpus retained.')
     args = parser.parse_args()

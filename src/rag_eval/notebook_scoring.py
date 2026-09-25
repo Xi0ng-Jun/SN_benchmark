@@ -20,7 +20,7 @@ import importlib.metadata
 import re
 import string
 
-from .notebook_data import ADAPTATION_REVISION, LEGACY_ADAPTATION, whitespace_key
+from .notebook_data import ADAPTATION_REVISION, LEGACY_ADAPTATION, OFFICIAL_ADAPTATION_REVISION, whitespace_key
 
 PREFIX = 'product.notebook.'
 SN_MARKER = re.compile(r'\[k[1-9]\d*\]')
@@ -49,9 +49,11 @@ def metric_specs(case):
     """Declare independent metrics, with no total score across these columns."""
     suite, task = case['suite'], case.get('task')
     revision = case.get('adaptation_revision', LEGACY_ADAPTATION)
-    if revision not in {LEGACY_ADAPTATION, ADAPTATION_REVISION}:
+    if revision not in {LEGACY_ADAPTATION, ADAPTATION_REVISION, OFFICIAL_ADAPTATION_REVISION}:
         raise ValueError('Unsupported notebook adaptation revision')
-    current = revision == ADAPTATION_REVISION
+    # v3 changes the complete source scope, not these SN diagnostic formulas.
+    # Original benchmark scoring is a separate explicit submission boundary.
+    current = revision != LEGACY_ADAPTATION
     specs = []
     def add(name, role='primary', kind='continuous'):
         specs.append({'scorer': PREFIX + name, 'metric_role': role, 'score_kind': kind})

@@ -58,9 +58,10 @@ def _anchor_documents(repo, record, mapping):
     return resolved, errors
 
 
-def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None):
+def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
+                qasper_catalogues=None):
     from .benchmark_runtime import prepare_notebook
-    from .system_runtime import is_cancellation, run_system_question
+    from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
     from .usage_capture import capture_usage
     from app.core.llm_logging import LLMInteractionLogger
     cell = run / 'product-artifacts'
@@ -72,11 +73,13 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
             notebook, mapping = prepare_notebook(repo, cell, product['documents'], product['manifest']['suite'])
     finally:
         save_json(run / 'preparation-usage.json', usage)
-    selected = {case['case_id'] for case in cases}
+    selected = {case['case_id']: case for case in cases}
+    documents = {document['id']: document for document in product['documents']}
     with EventJournal(cell / 'attempts.jsonl') as attempts:
         for question in product['questions']:
             if question['case_id'] not in selected:
                 continue
+            case = selected[question['case_id']]
             update_state(run, 'asking', case_id=question['case_id'])
             attempts(dict(event='started', case_id=question['case_id'], mode=mode))
 
@@ -88,13 +91,27 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                         raise
                     record = dict(question, status='error', answer='', response={},
                                   reason='native invocation/capture failed', error_type=type(exc).__name__)
+                if qasper_catalogues is not None:
+                    from .qasper_evidence import capture_evidence
+                    did, = question['material_document_ids']
+                    captured = capture_evidence(repo, record, documents[did], qasper_catalogues[did], mapping)
+                    record['qasper_evidence'] = captured
+                    if captured['status'] == 'complete':
+                        record['predicted_evidence'] = captured['projection']['predicted_evidence']
+                # The model has finished. Recover scoring strata from the frozen
+                # case; v3's public task intentionally hides answer-type labels.
+                record['task'] = case['task']
+                if 'adaptation_revision' in case:
+                    record['adaptation_revision'] = case['adaptation_revision']
+                if 'gold_document_ids' not in question:
+                    complete_evidence_checks(repo, record, mapping, gold_document_ids=case['gold_document_ids'])
                 record['source_to_document'] = {v['source_id']: key for key, v in mapping.items()}
                 try:
                     record['anchor_documents'], record['anchor_mapping_errors'] = _anchor_documents(repo, record, mapping)
                 except Exception as exc:
                     record.update(anchor_documents={}, anchor_mapping_errors=[{'reason': 'mapping_failed', 'error_type': type(exc).__name__}])
                 outputs(dict(case_id=question['case_id'], sample_id=question['sample_id'], suite=question['suite'],
-                             task=question['task'], product_protocol=VERSION, material_role='source_documents',
+                             task=case['task'], product_protocol=VERSION, material_role='source_documents',
                              status=record['status'], output_available=bool(record.get('answer', '').strip()),
                              prediction=record.get('answer', ''), product_record=record,
                              reason=record.get('reason'), behavior=record.get('behavior'), trace=record.get('trace')))
@@ -107,7 +124,7 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                 agent_evaluation.run_case(
                     case_id=question['case_id'], mode=mode, question=question['question'],
                     invoke_and_persist=invoke_and_persist, session_factory=session_factory,
-                    metadata={key: question[key] for key in ('suite', 'task', 'sample_id')})
+                    metadata={key: case[key] for key in ('suite', 'task', 'sample_id')})
 
 
 def selected_cases(bundle, product, case_ids=None):
@@ -135,8 +152,12 @@ def score_outputs(run, cases, planned, sink):
         else:
             try:
                 record = output['product_record']
-                value = (_product_score(record, CITATIONS, None, plan['result_id']) if plan['scorer'] == CITATIONS
-                         else score_case(cases[plan['case_id']], record, plan['scorer']))
+                if plan['scorer'] == CITATIONS and record.get('evidence_check_status') == 'error':
+                    value = dict(status='error', score=None, reason='citation object checks failed after generation',
+                                 details={'error_type': record.get('evidence_check_error')})
+                else:
+                    value = (_product_score(record, CITATIONS, None, plan['result_id']) if plan['scorer'] == CITATIONS
+                             else score_case(cases[plan['case_id']], record, plan['scorer']))
             except Exception as exc:
                 value = dict(status='error', score=None, reason='scorer failed', details={'error_type': type(exc).__name__})
         sink(result_record(plan, status=value['status'], score=value.get('score'), reason=value.get('reason'),
@@ -146,6 +167,11 @@ def score_outputs(run, cases, planned, sink):
 
 def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
             agent_config=None, case_ids=None, model_config=None):
+    """Execute an explicit request revision; the API default preserves old callers.
+
+    Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
+    request revision, and their historical scoring plans remain unchanged.
+    """
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Explicit chunk/reasoning mode required')
     root, project, bundle_dir, run = [Path(p).resolve() for p in (root, project, bundle_dir, run)]
@@ -195,9 +221,13 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         notebook_context=dict(partition_id=partition_id, selected_cases=bundle['manifest']['selected_cases'],
                                               partition_count=bundle['manifest']['partition_count']))
         # Comparison cohorts drop per-partition product_bundle; keep the request
-        # revision in notebook_context as well, so v1/v2 cannot silently mix.
+        # revision in notebook_context as well, so request versions cannot mix.
         if request_revision != LEGACY_REQUEST_REVISION:
             identity['notebook_context']['request_revision'] = request_revision
+        qasper_catalogues = bundle.get('qasper_evidence_catalogues') if request_revision == 'notebook-request-v3' else None
+        if qasper_catalogues is not None:
+            from .qasper_evidence import identity as evidence_identity
+            identity['qasper_evidence'] = evidence_identity()
         if case_ids is not None:
             identity['notebook_context']['case_ids'] = [case['case_id'] for case in cases]
         if agent_config is not None:
@@ -232,10 +262,13 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                 # run_case owns durable summary finalization, including errors
                 # and cancellation. A second ExitStack write could mask those.
             predictions(run, cases, product, mode, repo, outputs, agent_evaluation=agent_evaluation,
-                        session_factory=tracing.evaluation_session if tracing is not None else None)
+                        session_factory=tracing.evaluation_session if tracing is not None else None,
+                        qasper_catalogues=qasper_catalogues)
             score_outputs(run, cases, planned, scores)
         errors = any(row['status'] == 'error' for name in ('outputs.jsonl', 'scores.jsonl') for row in read_rows(run / name))
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)
+        errors = errors or any(row.get('product_record', {}).get('qasper_evidence', {}).get('status') == 'error'
+                               for row in read_rows(run / 'outputs.jsonl'))
         update_state(run, 'finished_with_errors' if errors else 'finished')
     except BaseException as exc:
         from .system_runtime import is_cancellation
@@ -272,6 +305,24 @@ def validate_saved_run(run, manifest, planned, outputs):
         validate_attachment(run, manifest, planned)
     elif 'scoring_attachment' in manifest:
         raise ValueError('Scoring attachment has no official scoring identity')
+    evidence_policy = manifest['identity'].get('qasper_evidence')
+    documents = {d['id']: d for d in product['documents']}
+    by_case = {c['case_id']: c for c in cases}
     for row in outputs:
         if row.get('product_protocol') != VERSION or row.get('material_role') != 'source_documents':
             raise ValueError('Notebook output adaptation identity changed')
+        if evidence_policy is not None:
+            from .qasper_evidence import verify_evidence
+            record = row.get('product_record', {})
+            saved = record.get('qasper_evidence', {})
+            if {k: saved.get(k) for k in evidence_policy} != evidence_policy:
+                raise ValueError('QASPER evidence snapshot differs from run identity')
+            if row.get('status') != record.get('status') or row.get('prediction') != record.get('answer'):
+                raise ValueError('QASPER evidence answer differs from saved output')
+            if saved.get('status') == 'complete':
+                did, = by_case[row['case_id']]['material_document_ids']
+                prediction = verify_evidence(record, documents[did], frozen['qasper_evidence_catalogues'][did])
+                if record.get('predicted_evidence') != prediction:
+                    raise ValueError('QASPER evidence differs from saved projection')
+            elif saved.get('status') != 'error' or 'predicted_evidence' in record:
+                raise ValueError('QASPER evidence capture is incomplete or carries partial evidence')

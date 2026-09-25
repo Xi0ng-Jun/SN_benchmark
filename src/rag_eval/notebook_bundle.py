@@ -11,7 +11,8 @@ from .starter_protocol import fingerprint, require_text
 
 
 LEGACY_REQUEST_REVISION = 'notebook-request-v1'
-REQUEST_REVISIONS = (LEGACY_REQUEST_REVISION, 'notebook-request-v2')
+OFFICIAL_REQUEST_REVISION = 'notebook-request-v3'
+REQUEST_REVISIONS = (LEGACY_REQUEST_REVISION, 'notebook-request-v2', OFFICIAL_REQUEST_REVISION)
 
 
 def _read_data(path, suite):
@@ -47,10 +48,14 @@ def _build(suite, raw, corpus, source, cap, adaptation_revision=ADAPTATION_REVIS
         if len(group['document_ids']) > cap:
             raise ValueError('Complete material set exceeds document capacity; raise capacity explicitly, never split or truncate it')
     data['partitions'] = list(groups.values())
+    if suite == 'qasper' and adaptation_revision == 'notebook-data-v3':
+        from .qasper_evidence import public_catalogues
+        data['qasper_evidence_catalogues'] = public_catalogues(raw, data['documents'])
     return data
 
 
-def prepare(suite, raw_path, source_path, output, *, corpus_path=None, max_documents=40):
+def prepare(suite, raw_path, source_path, output, *, corpus_path=None, max_documents=40,
+            adaptation_revision=ADAPTATION_REVISION):
     if suite not in SUITES:
         raise ValueError('Unknown notebook benchmark')
     output = Path(output).resolve()
@@ -59,7 +64,8 @@ def prepare(suite, raw_path, source_path, output, *, corpus_path=None, max_docum
     source = json.loads(Path(source_path).read_text(encoding='utf-8'))
     # Validate before creating output; never write a partial apparently usable bundle.
     data = _build(suite, _read_data(raw_path, suite),
-                  _read_data(corpus_path, 'multihop_rag') if corpus_path else None, source, max_documents)
+                  _read_data(corpus_path, 'multihop_rag') if corpus_path else None, source, max_documents,
+                  adaptation_revision)
     output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(raw_path, output / 'raw-data')
     if corpus_path:
@@ -67,7 +73,8 @@ def prepare(suite, raw_path, source_path, output, *, corpus_path=None, max_docum
     save_json(output / 'source.json', source)
     # Reconstruct from copied bytes to catch source changes while preparing.
     copied = _build(suite, _read_data(output / 'raw-data', suite),
-                    _read_data(output / 'raw-corpus', 'multihop_rag') if corpus_path else None, source, max_documents)
+                    _read_data(output / 'raw-corpus', 'multihop_rag') if corpus_path else None, source, max_documents,
+                    adaptation_revision)
     if copied != data:
         raise ValueError('Source changed during copying')
     for field in ('cases', 'documents', 'decisions', 'partitions'):
@@ -75,7 +82,7 @@ def prepare(suite, raw_path, source_path, output, *, corpus_path=None, max_docum
     files = ['raw-data', 'source.json', 'cases.jsonl', 'documents.jsonl', 'decisions.jsonl', 'partitions.jsonl']
     if corpus_path:
         files.append('raw-corpus')
-    manifest = dict(format=VERSION, protocol_version=VERSION, suite=suite, source=source, adaptation_revision=ADAPTATION_REVISION,
+    manifest = dict(format=VERSION, protocol_version=VERSION, suite=suite, source=source, adaptation_revision=adaptation_revision,
                     max_documents=max_documents, files={name: digest(output / name) for name in files},
                     selected_cases=len(data['cases']), excluded_cases=sum(d['status'] == 'excluded' for d in data['decisions']),
                     partition_count=len(data['partitions']), release_gate=False,
@@ -114,6 +121,47 @@ def load_bundle(directory):
     return dict(rebuilt, manifest=manifest)
 
 
+def request_question(case, *, request_revision=LEGACY_REQUEST_REVISION):
+    """Construct the versioned generation input; v3 excludes scoring labels."""
+    if request_revision not in REQUEST_REVISIONS:
+        raise ValueError('Unknown notebook request revision')
+    instruction = {
+        'qasper': 'Answer using the paper. Give a concise answer; if it is not answerable from the paper, answer Unanswerable.',
+        'multihop_rag': 'Answer using the notebook articles. Give a concise answer; say if the sources are insufficient.',
+        'qmsum': 'Summarize the meeting with respect to this query. Use only the meeting transcript.',
+        'alce': ('Answer with a comma-separated list of answers, citing the notebook sources.' if case['task'] == 'qampari'
+                 else 'Answer using the notebook sources and cite the supporting sources.'),
+    }[case['suite']]
+    if request_revision == 'notebook-request-v2':
+        instruction = {
+            'qmsum': 'Provide a query-focused summary using only the meeting transcript.',
+            'qasper': 'Answer using the paper. Give a concise answer; if the question is not answerable from the paper, answer Unanswerable.',
+        }.get(case['suite'], instruction)
+    elif request_revision == OFFICIAL_REQUEST_REVISION:
+        instruction = {
+            'qasper': 'Answer using the paper. Give only a short answer; if the question is not answerable from the paper, answer Unanswerable.',
+            'multihop_rag': 'Answer using the notebook articles. Give a concise answer; state when the sources provide insufficient information.',
+            'qmsum': 'Provide a query-focused summary using only the meeting transcript.',
+            'alce': ('Answer with a comma-separated list of answers, citing the supporting notebook sources.'
+                     if case['task'] == 'qampari' else
+                     'Answer in one paragraph on a single line, citing the supporting notebook sources.'),
+        }[case['suite']]
+    fields = ('case_id', 'sample_id', 'suite', 'task', 'dataset', 'split',
+              'material_document_ids', 'material_role', 'product_protocol')
+    question = {**{key: case[key] for key in fields}, 'id': case['case_id'],
+                'question': case['question'] + '\n\n' + instruction, 'original_question': case['question']}
+    if request_revision == OFFICIAL_REQUEST_REVISION:
+        # Answer type and null_query reveal private annotation labels.
+        if case['suite'] in {'qasper', 'multihop_rag'}:
+            question['task'] = 'qa'
+    else:
+        question.update(references=case['references'], gold_document_ids=case['gold_document_ids'],
+                        expected_answer=case['references'][0] if case['references'] else '')
+    if request_revision != LEGACY_REQUEST_REVISION:
+        question['request_revision'] = request_revision
+    return question
+
+
 def partition_bundle(bundle, partition_id, *, request_revision=LEGACY_REQUEST_REVISION):
     if request_revision not in REQUEST_REVISIONS:
         raise ValueError('Unknown notebook request revision')
@@ -126,25 +174,7 @@ def partition_bundle(bundle, partition_id, *, request_revision=LEGACY_REQUEST_RE
     questions = []
     for cid in part['case_ids']:
         case = cases[cid]
-        # Question-side task instructions never contain annotations or gold evidence locations.
-        instruction = {
-            'qasper': 'Answer using the paper. Give a concise answer; if it is not answerable from the paper, answer Unanswerable.',
-            'multihop_rag': 'Answer using the notebook articles. Give a concise answer; say if the sources are insufficient.',
-            'qmsum': 'Summarize the meeting with respect to this query. Use only the meeting transcript.',
-            'alce': ('Answer with a comma-separated list of answers, citing the notebook sources.' if case['task'] == 'qampari'
-                     else 'Answer using the notebook sources and cite the supporting sources.'),
-        }[case['suite']]
-        if request_revision == 'notebook-request-v2':
-            instruction = {
-                'qmsum': 'Provide a query-focused summary using only the meeting transcript.',
-                'qasper': 'Answer using the paper. Give a concise answer; if the question is not answerable from the paper, answer Unanswerable.',
-            }.get(case['suite'], instruction)
-        questions.append({**{k: case[k] for k in ('case_id', 'sample_id', 'suite', 'task', 'dataset', 'split',
-                         'references', 'gold_document_ids', 'material_document_ids', 'material_role', 'product_protocol')},
-                          'id': cid, 'question': case['question'] + '\n\n' + instruction,
-                          'original_question': case['question'], 'expected_answer': case['references'][0] if case['references'] else ''})
-        if request_revision != LEGACY_REQUEST_REVISION:
-            questions[-1]['request_revision'] = request_revision
+        questions.append(request_question(case, request_revision=request_revision))
     result = dict(questions=questions, documents=[documents[d] for d in part['document_ids']],
                   decisions=[d for d in bundle['decisions'] if d['case_id'] in part['case_ids']])
     result['manifest'] = dict(protocol_version=VERSION, product_protocol=VERSION, suite=bundle['manifest']['suite'],

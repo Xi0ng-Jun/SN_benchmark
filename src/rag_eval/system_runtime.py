@@ -83,10 +83,35 @@ def behavior_observation(record):
             "method": "text_heuristic" if candidate else "runtime_state", "human_label": None}
 
 
+def complete_evidence_checks(repo, record, mapping, *, gold_document_ids=None):
+    """Join scoring-only document labels after generation, without retaining them.
+
+    Legacy requests already contain the labels and retain their old behavior.
+    A public request defers this check until its caller supplies frozen labels.
+    """
+    from .benchmark_runtime import evidence_checks
+
+    if gold_document_ids is None:
+        if 'gold_document_ids' not in record:
+            record['evidence_check_status'] = 'deferred'
+            return
+        gold_document_ids = record['gold_document_ids']
+    checked = {**record, 'gold_document_ids': gold_document_ids}
+    try:
+        evidence_checks(repo, checked, mapping)
+        record.update(retrieved_document_ids=checked['retrieved_document_ids'],
+                      deterministic=checked['deterministic'], evidence_check_status='completed')
+        record.pop('evidence_check_error', None)
+    except Exception as exc:
+        # A diagnostic failure cannot erase an answer or preserve stale success.
+        record.pop('retrieved_document_ids', None)
+        record.pop('deterministic', None)
+        record.update(evidence_check_status='error', evidence_check_error=type(exc).__name__)
+
+
 def run_system_question(repo, notebook, question, mode, mapping):
     """Capture the actual product response, final context and citation objects."""
     from app.core.llm_logging import LLMInteractionLogger
-    from .benchmark_runtime import evidence_checks
     from .system_capture import capture_synthesis, final_context
     from .usage_capture import capture_usage
 
@@ -101,11 +126,7 @@ def run_system_question(repo, notebook, question, mode, mapping):
         record.update(context_supported=False, retrieval_context=[], source_ids=[],
                       retrieved_ids=[], context_block="", handles=[],
                       context_unavailable_reason="context_capture_error", context_capture_error=type(exc).__name__)
-    try:
-        evidence_checks(repo, record, mapping)
-    except Exception as exc:
-        # Capture failure cannot erase a saved answer or imply a passing citation check.
-        record["evidence_check_error"] = type(exc).__name__
+    complete_evidence_checks(repo, record, mapping)
     trace = record.get("response", {}).get("reasoning_trace") or []
     envelope = TraceEnvelope.missing()
     if isinstance(trace, list) and trace and all(isinstance(step, dict) for step in trace):

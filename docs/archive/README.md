@@ -16,6 +16,7 @@
 `2026-09/` 保存以下退役快照：
 
 - `session-handoff-2026-09-23.md`：对话切换时的 worktree、分支和服务器交接快照。
+- `notebook-benchmark-experiment-plan-pre-v3.md`：v3协议修正前的实验计划；要求先取得旧服务器结果及禁止本机新实验的阶段限制已经被用户后续授权替代。
 - `agent-judge-input-inspection.md`：旧 Agent judge 输入体积检查，已由原生 Agent/组件评分协议替代。
 - `sn-execution-tracing.md`：旧 SN 执行轨迹采集方案，已由 `native-agent-evaluation.md` 替代。
 - `qmsum-next-iteration.md`：QMSum 首轮结果收口记录，新的服务器动作以 Notebook 和评分恢复说明为准。

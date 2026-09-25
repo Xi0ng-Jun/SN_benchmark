@@ -2,25 +2,26 @@
 
 文档状态：当前协议与服务器操作说明。真实数据和服务器状态必须按运行产物核实；当前总览见 [评测状态](evaluation-status.md)。
 
+论文、作者仓库、Hugging Face 发布、榜单状态及原始任务说明见 [四套 Benchmark 官方资料](notebook-benchmark-official-resources.md)。
 
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](notebook-benchmark-experiment-plan.md)。
 
-服务器真实文件预检后的适配修正与迁移说明见 [数据修正记录](notebook-data-corrections.md)。新 prepare 使用 `adaptation_revision=notebook-data-v2`；旧包缺字段仍按原规则加载，不能手改旧 manifest。
+新 prepare CLI 默认 `notebook-data-v3`，SN/Agent CLI 默认不含 gold 字段的 `notebook-request-v3`。旧 v1/v2 包与显式请求仍可读取，不能手改 manifest。v2 历史修正见[数据修正记录](notebook-data-corrections.md)；新的答卷、官方评分与比较入口见[当前实验计划](notebook-benchmark-experiment-plan.md)。
 
 本阶段新增 **QASPER、MultiHop-RAG、ALCE、QMSum** 四套资料型评测，协议为 `sn-notebook-benchmarks-v1`。这些是独立公开数据集，不是四个新增 DeepEval 内置 Benchmark 类。它们复用本项目 SN 隔离执行、观测、结果账本与 Dashboard；确定性指标按各数据集方法实现，ALCE 的模型指标显式调用固定版本官方评分代码。没有默认新增 GEval 或 DeepEval LLM judge，也不把 Agent trace 完整度当作 Agent 得分。
 
-旧十套的数据协议、资料上限和历史成绩不自动迁移。本轮只开发代码，用构造样本验证，没有下载真实数据、运行 SN、调用模型或恢复 timer。公开来源与许可见[可用性核验](notebook-benchmark-data-availability.md)，开发拆分见[实施计划](superpowers/plans/2026-09-17-notebook-benchmarks.md)。
+旧十套的数据协议、资料上限和历史成绩不自动迁移。2026-09-23 已验证完整真实 QASPER/QMSum 数据、Perl评分校准，并完成一题真实 SN/BM25 链路；MultiHop/ALCE 完整下载及 ALCE 模型评分尚未完成。公开来源见[官方资料](notebook-benchmark-official-resources.md)，实现计划见[协议修正计划](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md)。
 
 ## 能力、选择、资料范围
 
 | Benchmark | SN 能力 | 选择方式 | 导入 notebook 的资料 | 保留在评测侧的标注 |
 | --- | --- | --- | --- | --- |
-| QASPER | 论文问答、证据定位、不可回答识别 | 指定官方 v0.3 JSON 文件全部题；有 `FLOAT SELECTED` 或合并空白后仍无法映射到已导入正文段落的证据时逐题排除并说明 | 一篇论文的 title、abstract、全部 full_text；一篇论文一个分区 | 所有备选答案、answer type、证据段落；不把 qas 导入 |
+| QASPER | 论文问答、证据定位、不可回答识别 | v3 保留官方 v0.3 文件全部题；FLOAT/unmapped只记录 | title、abstract、全部 full_text、公开caption；每篇一个分区 | 全部原始答案/类型/证据，不把 qas 导入 |
 | MultiHop-RAG | 多文档比较、时间/推理题、无答案题 | 指定官方 queries 全部有效题，四类 question_type 单独展示；发布 split=train 不冒称独立 test | **整个 corpus**，包含 gold 之外文章；一个完整 corpus 分区 | answer、evidence_list.fact、证据文章映射 |
 | ALCE | 长答案/列表回答、回答覆盖、引用支持 | 明确 asqa/qampari/eli5、retriever、普通/oracle variant；文件内全部有效题 | 每题原文件中的**全部候选片段**；保留顺序，同候选集合可共用分区 | qa_pairs、答案别名、claims、长答案等 |
 | QMSum | 面向问题的会议摘要 | 官方 JSONL 中全部 general/specific 查询 | 一场会议的全部发言（含原样空发言），保留 speaker 与 `[turn N]`；一场会议一个分区 | 人工摘要、specific 的全部 relevant_text_span |
 
-QASPER 排除规则依据已发布 evidence 字段；不能据此保证所有剩余题都语义上不依赖图表。QMSum general 没有局部证据金标准，不计算 specific 的 turn 诊断。MultiHop 证据 URL 优先匹配；无 URL 时要求唯一标题；冲突、丢失或 fact 无法在文章中定位时直接报错，不静默删题。
+QASPER v3不按标注删题，仅使用公共文字材料，不能保证每题都可单靠文字回答；v2筛选只为读取历史包保留。QMSum general无局部证据金标准，不算specific turn诊断。MultiHop保留公开来源/日期等元数据；证据URL优先匹配，无URL需唯一标题；冲突、丢失或fact无法定位时报错，不静默删题。
 
 **一道题的资料不会分散到多个分区。** 如果资料总数超过准备时声明的容量，准备失败，要求显式调整容量；不会删掉候选或 gold 文章。默认 40 只是新命令的容量默认值，不是题量配额。MultiHop 当前发布 corpus 为 609 篇，应按实际文件记录数设足容量；ALCE top-100 候选一般需至少 100。新路径把容量写入隔离 SN 进程的 settings 与实验身份，不修改生产配置；旧十套仍按旧规则执行。
 
@@ -49,7 +50,7 @@ QASPER 的匹配只合并连续空白并去首尾空白，原文与原始证据�
 
 ## 本地文件准备
 
-所有命令以仓库根目录为工作目录。`python` 指服务器已具备 SN 依赖的解释器，本文命令没有在本机执行实验。
+所有命令以仓库根目录为工作目录。`python` 指具备 SN 依赖的解释器；下面路径是部署示例，真实本机验收位置见当前实验计划。
 
 来源文件最小示例（值必须由服务器实际核对后填写）：
 
@@ -98,7 +99,7 @@ python scripts/run_notebook_benchmarks.py \
 
 reasoning 用相同 bundle/partition、另一个新 run-dir 和新进程。默认不会遍历其他分区；服务器 Agent 应枚举完整 partitions，显式记录计划和实际执行范围。每次独立导入与建索引；代码没有实现跨 mode 共享已处理 notebook。数据库、上传存储、缓存、日志、模型服务配置快照均位于 run/runtime；禁用 KG、历史记忆、用户 profile 注入和检索经验。模型服务读取服务器 SN 已部署的配置，不要求额外 tested/judge 配置。
 
-2026-09-20 新增 `--request-revision notebook-request-v2`：QMSum 的追加指令改为 `Provide a query-focused summary using only the meeting transcript.`，QASPER 将 `if it is not answerable` 改为 `if the question is not answerable`。避免评测包装本身引入 SN 的指代澄清检查；原题中的指代照常保留，不绕过意图预览。默认 `notebook-request-v1` 完整复现旧模板。无需重新 prepare 数据；v2 仅用于新 run，同一模式对比的两侧必须选择同一请求版本。版本进入 `identity.notebook_context.request_revision` 与 product bundle，Dashboard 和 baseline cohort 不会将 v1/v2 静默混为同配置。动机、已知结果及下一步见 [QMSum 后续工作](archive/2026-09/qmsum-next-iteration.md)。
+CLI当前默认request-v3：请求中不携带references/expected_answer/gold_document_ids；QASPER/MultiHop任务统一为qa，题型留在评分侧；ALCE要求单段或逗号列表。v3沿用v2明确的QMSum指令，避免模板引入额外指代。旧v1/v2须显式选择，程序化execute默认v1仅为历史调用兼容；官方答卷导出必须v3。请求版本进入实验身份，不静默混比。历史v2动机见[归档](archive/2026-09/qmsum-next-iteration.md)。
 
 chunk 直接原生 Ask；reasoning 先走原生 intent preview，只在无需澄清时确认。不会用 gold 替 SN 填澄清答案。正常、clarification、no_answer、error 单独保存，每题没有历史对话。实际模型服务仍共享算力和服务资源，运行时隔离不等于资源隔离。
 
@@ -124,6 +125,10 @@ python scripts/run_notebook_baseline.py \
 
 
 ## 指标与适用条件
+
+下表是原 Notebook run 的 SN 诊断指标，保留用于 Dashboard。新正式比较通过 `benchmark_protocol.py score`：QMSum使用作者确认的Perl、ALCE遵循CLI预处理/批量评分，QASPER evidence须显式预测。不能用下表诊断均值冒充新的官方分数；完整口径见[实验计划](notebook-benchmark-experiment-plan.md)。
+
+QASPER新v3 SN运行已自动冻结“最终引用→原始段落”证据快照，官方评分重放校验后输出Evidence F1。无引用是显式空列表；缺来源/歧义是映射错误，不静默丢题或借用上下文。旧无快照run只在 `export-sn --qasper-evidence` 时只读恢复到新submission。该政策属于方法适配，规则与验收范围见[标准文档§3.5](notebook-benchmark-standards-and-conformance.md#35-2026-09-24-已实现的最终引用投影与特殊情况)。
 
 以下为新适配版本的指标；旧包仍使用 v1 的 QASPER 精确段落与 QMSum 原分母诊断，不回写历史分。所有新 scorer 以 `product.notebook.` 开头；源码及公式也出现在 Dashboard 指标详情。
 
@@ -167,7 +172,7 @@ PYTHONPATH=src python -m rag_eval.notebook_alce score \
 
 ELI5 用 `--metrics citations claims`；可选 `qa` 仅 ASQA 并需另传 `--qa-model`，其附加指标当前仅保存独立结果，**不在默认 Dashboard 回填计划中**。官方 scorer 可能需要独立虚拟环境，使用 `--python-executable /path/to/python` 指定。
 
-结果目录保存 input、invocation、官方 Python 源码、模型文件哈希、stdout/stderr、execution 和逐题 scores。使用本地模型与 HF offline 环境；仍会真实消耗服务器算力。不要把 `--allow-model-inference` 用在本机当前开发验证中。
+结果目录保存 input、invocation、官方 Python 源码、模型文件哈希、stdout/stderr、execution 和逐题 scores。此旧入口保留SN适配的多行正文口径，适合诊断；新官方CLI口径使用 `benchmark_protocol.py score --alce-full`，不能混合比较。两者都会真实消耗模型算力。
 
 第三步离线挂接到**新** run 目录：
 
@@ -192,7 +197,7 @@ python scripts/build_experiment_dashboard.py \
 
 单个 run 的 Markdown 显示全题单与分区数量；当前 Dashboard 发现的是**已保存运行**，未启动分区尚无 planned ledger，不会凭空出现在覆盖率分母。服务器必须用 bundle/partitions.jsonl 对账全部预期分区 × mode，再解释全套完成度；现有十套 public-selection 报告器不接受新协议。
 
-下一步由服务器：核验官方文件和来源 → 离线 prepare 与排除/容量审计 → 检查依赖 → 执行每个分区的两种 mode → 对账保存/澄清/缺评分 → 显式 ALCE 模型补分 → 生成 Dashboard → 核验少量案例和结论。人工核验用于解释评测有效性，不是运行官方规则前的审批门槛。
+当前新实验顺序以[实验计划](notebook-benchmark-experiment-plan.md)为准，不依赖历史服务器答卷。人工核验用于解释有效性，不是运行官方规则前的审批门槛。
 
 ## 历史离线验证记录（2026-09-17）
 
@@ -201,7 +206,7 @@ python scripts/build_experiment_dashboard.py \
 - 全量 Python 回归 **319 passed**，无跳过；测试进程 socket/getaddrinfo 阻断，网络尝试 **0**。使用已有 venv 和只读 SN 类型/schema；SN 导入/Ask 与官方模型推断用测试替身，未运行产品实验。
 - Dashboard JavaScript 回归 **18 passed**；三个脚本及 ALCE module 的命令帮助检查通过。
 - 两项独立审阅发现已修复并复核：真实 reasoning 上下文前导说明的来源分段，以及 Dashboard 分区标签传递。
-- 本地没有 rouge-score，验证了缺依赖错误和调用协议，**没有声称运行了真实 ROUGE**；ALCE 真实模型分、公开完整文件适配与服务器 SN 端到端验收仍待执行。
+- 上述早期验证不含真实ROUGE；2026-09-23已经独立完成真实Perl校准、QASPER/QMSum全量文件适配和一题SN端到端验证。ALCE模型分与MultiHop/ALCE完整文件仍未验收，详见当前实验计划。
 
 复现测试（不会安装依赖）：
 

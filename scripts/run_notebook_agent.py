@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 
 def main(argv=None):
+    from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--partition-id', required=True)
@@ -33,8 +35,8 @@ def main(argv=None):
                         help='SDK evaluate task budget (e.g. multi-query samples); native sync iterator uses judge transport limits')
     parser.add_argument('--case-id', dest='case_ids', action='append',
                         help='Run selected case(s) with the entire partition corpus; repeat for several')
-    parser.add_argument('--request-revision', choices=('notebook-request-v1', 'notebook-request-v2'),
-                        default='notebook-request-v2')
+    parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
+                        help='Generation request contract (default: v3 without gold fields); explicit v1/v2 preserve historical requests.')
     args = parser.parse_args(argv)
     # Set before any optional SDK import. The judge uses its explicit own credentials.
     os.environ.update(DEEPEVAL_TELEMETRY_OPT_OUT='YES', DEEPEVAL_DISABLE_DOTENV='1',

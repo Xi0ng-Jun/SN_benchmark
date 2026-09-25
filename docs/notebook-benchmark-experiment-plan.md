@@ -1,125 +1,141 @@
-# Notebook 公开 Benchmark 实验计划
+# Notebook Benchmark：正确评测与比较
 
-文档状态：当前实验计划。它规定比较边界和证据要求，不表示服务器已经完成对应实验。
+更新：2026-09-24。当前开发分支为 `feat/benchmark-protocol-correctness`，起点 `e022c60`。本页是新实验入口；[先前计划](archive/2026-09/notebook-benchmark-experiment-plan-pre-v3.md)保留历史背景。用户已授权必要修改与重跑，历史服务器结果不再是前置条件。正式模型实验在服务器执行；本机后续单独获授权下载MultiHop/ALCE并验收数据与评分实现。生产部署、定时任务和远程发布不在本轮范围。
 
+## 目标与流程
 
-本计划已由用户确认；当前可执行范围是现有 SN 主实验、QMSum BM25 对照与评分，向量检索和全文输入对照仍是后续目标。命令和参数以 [服务器使用说明](notebook-benchmarks.md) 为准，数据迁移见 [修正记录](notebook-data-corrections.md)。
+在预先固定的数据、输入权限、回答要求和评分规则下，运行 Silicon Notebook（SN）及对照方法，保存可检查的答卷，得到可解释的比较。完整系统允许模型不同，但必须披露；模型、提示、预算未控制时不能归因于单一检索器。
 
-## 目标与结论边界
+核实原始数据 → 冻结 v3 bundle → 无 gold 请求 → 保存答卷及失败状态 → 官方评分 → 校验比较身份 → 核验案例与统计不确定性 → 扩大实验。小样本先检查链路；正式比较固定全题或预先声明的子集，不按测试分数挑题、重试或调参，不生成跨套件总分。
 
-本轮实验回答两个问题：
+## 四套具体协议
 
-1. Silicon Notebook（SN）在公开的论文问答、多文档推理、带引用回答和会议摘要任务上表现如何。
-2. 在相同题目、资料和评分协议下，SN 的 chunk 与 reasoning 模式，以及后续加入的常规 RAG 对照，有什么差异。
+规则的逐项依据、精确公式、实现入口和符合程度见[Benchmark 标准与实现符合性](notebook-benchmark-standards-and-conformance.md)。本页提供执行摘要与命令；官方评分一致性、原论文复现和受控比较分别验收。
 
-公开 benchmark 定义了任务、数据和评分方式，但不要求所有系统采用相同的内部检索实现。因此“导入资料到 notebook，再使用 SN Ask”是有效的系统适配方式；它不自动等于论文原实验的完全复现。任何比较都必须同时记录数据版本、题目 ID、可访问资料、回答格式、评分代码和聚合方式。
-
-论文中公布的数字分为参考资料，除非上述条件完全一致，不直接当作排行榜或 SN 的同条件基线。实验报告使用三种标签：`published-reference`（论文原值，条件不同）、`recomputed-subset`（同题目子集重新评分）和 `controlled-rerun`（同一协议重新运行）。
-
-## 已冻结的 SN 主实验
-
-协议名为 `sn-notebook-benchmarks-v1`。每个分区 × 模式使用独立进程、独立 notebook 和独立 runtime；问题之间 `conversation_id=None`，不共享历史。chunk 与 reasoning 使用同一题目、资料、模型服务配置和 scorer 身份。reasoning 的澄清请求不填入标准答案，记录为 clarification 并从质量分数中保持未评分。
-
-| 套件 | 资料条件 | 模式 | 主要问题 |
-| --- | --- | --- | --- |
-| QASPER | 一篇论文的完整正文；按论文分区 | chunk、reasoning | 论文问答和证据利用是否受模式影响 |
-| MultiHop-RAG | 完整 609 篇 corpus；一个完整 corpus 分区 | chunk、reasoning | 多文档检索、推理和 null query 处理 |
-| ALCE-ASQA | 每题官方候选资料全集，保留顺序 | chunk、reasoning | 长答案覆盖与真实引用支持 |
-| QMSum | 一场会议的全部发言，保留 speaker 和空 turn | chunk、reasoning | 面向 query 的长会议定位与摘要 |
-| ALCE-QAMPARI / ELI5 | 按各自 bundle 的完整候选资料 | chunk、reasoning | 列表答案或 claim 支持；按准备状态加入 |
-
-正式运行使用冻结规则下全部符合条件的 case，不设置题目数量上限。QASPER 的文本可适配筛选、QMSum 的数据版本差异和空值修正必须在 manifest 中保留，不能事后为匹配论文数量删题。
-
-## 运行阶段
-
-### 1. 数据与协议验收
-
-服务器 agent 先核对来源文件、SHA256、split、case 数、排除决定和 partition 数；按 `docs/notebook-data-corrections.md` 重新准备 QASPER/QMSum，复用仍有效的 MultiHop/ASQA bundle。先运行一个分区的 chunk 和 reasoning，核对导入资料、题目、回答正文、最终上下文、引用对象和状态账本，再开始全量。
-
-### 2. SN 全量主实验
-
-枚举 `partitions.jsonl × {chunk, reasoning}`，每个组合写入独立 run 目录。保留 planned、outputs、scores、manifest、state 和源代码/配置身份。统计计划数、完成数、正常回答、clarification、no-answer、error、缺评分和覆盖率；失败和缺评分不能用 0 替代，也不能从分母中静默删除。
-
-### 3. 离线评分与引用补分
-
-先使用确定性 scorer 生成主结果。ALCE 的 AutoAIS/claims 等模型评分单独导出，在固定 ALCE commit 和本地模型上运行，再挂接为派生 run；原始 SN run 保留。Dashboard 选择派生 run 时，不把父 run 和派生 run 计为两次尝试。
-
-### 4. 对照实验
-
-当前代码已支持 SN 两种模式，并已加入第一条可执行的 QMSum BM25 生成基线。向量检索和全文输入仍是后续新增的生成基线。基线与 SN 使用相同冻结资料、题目和评分器，并尽量对齐实际生成模型与采样设置。常规基线之间固定生成提示；SN 保留内部原生提示，因此目前比较的是端到端系统，不是只改变检索器的消融：
-
-| 对照 | 作用 | 约束 |
+| 套件 | 新实验输入 | 官方评分口径及限制 |
 | --- | --- | --- |
-| BM25 + 同一生成模型 | 透明的关键词检索参照（不保证是下界） | QMSum 已支持；固定 turn、top-k 和字符上下文预算 |
-| Dense retrieval + 同一生成模型 | 常规语义 RAG 参照 | 固定 embedding、top-k、分块和上下文预算 |
-| Full-context（可行时） | 小资料集的全文输入参照（不保证是上限） | 资料必须完整放入上下文；截断要单独报告 |
-| Gold-evidence（诊断） | 诊断给定标准证据时的生成/推理 | 与自行检索结果分组，不能混作主结果 |
+| QASPER | v0.3全题；每篇标题、摘要、章节正文及公开caption；FLOAT/unmapped只记录，不删题 | 固定作者evaluator，Answer F1多参考最大值；text_evidence_only只过滤gold的FLOAT证据项；Evidence F1须方法明确预测原始段落，不能用上下文覆盖冒充 |
+| MultiHop-RAG | queries与完整corpus；保留标题、URL、来源、日期、作者、类别及正文 | 固定作者QA弱词匹配；真实BM25排名可评作者Hits/MAP/MRR，null不进检索分母；SN无同义排名输出，保持pending |
+| ALCE | ASQA/QAMPARI/ELI5分开；ordinary候选全集保留顺序，实际模型选用资料另记 | 固定CLI首行截断、去结束标记、每单元最多3引用；真实citation映射；模型指标显式批评分，MAUVE不可逐题平均 |
+| QMSum | 全会议、全查询、speaker与原turn，不注入gold span | 作者确认Perl ROUGE-1.5.5，参数 `-c 95 -r 1000 -n 2 -m -a`；明确使用HMNet regex分句；保留批量Average_F |
 
-QMSum BM25 使用 `scripts/run_notebook_baseline.py`，只支持一个完整会议分区一次运行；它按 turn 做 BM25，恢复原会议顺序，在预算内构造 prompt，再调用显式 `tested` 生成模型。回答和检索 turn、分数、模型事件保存为 `mode=bm25` 的现有 run 格式，Dashboard 可与 SN run 分面查看。基线代码、模型和运行身份必须写入新的实验协议；不通过复制论文数字替代运行基线。
+QASPER作者reader对FLOAT只统计、不实际删题，其full_text轨道仅章节标题与段落；本项目加入摘要/caption是公开输入变体，不宣称复现LED论文表。QMSum原论文未完整规定分句与文件编号，也不宣称完全复现历史数字。出处见[官方资料手册](notebook-benchmark-official-resources.md)。
 
-示例（会实际调用配置的模型，先用一个分区验收）：
+## 实际验证与未完成项
+
+2026-09-24最新代码回归为697项Python测试全部通过、无跳过；此前Dashboard JavaScript为34项通过，本次无前端改动未重复运行。具体命令、审查修复见[协议实施记录](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md)与[QASPER证据接入记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)。测试通过不替代下表的真实数据、模型和外部方法验收。
+
+| 验证 | 实际结果 | 结论范围 |
+| --- | --- | --- |
+| QASPER完整适配 | 416篇、1451题、0排除；全题gold变更不影响公共资料/请求；1451份答案、类型、证据与官方raw parser一致 | 验证数据分母、公共输入、gold隔离及参考答案 |
+| QMSum完整适配 | 35场、281题、20718 turns（17空turn）、0排除；全题gold变更不影响请求 | 当前文件完整性；不是论文279题 |
+| QMSum HMNet公开答卷校准 | 同序同分句时，当前SPL与独立pyrouge SEE均36.464/11.374/31.558 | 两种封装调用同一Perl一致；未严格复现README 36.51/11.41/31.60 |
+| QASPER一题新实验 | SN chunk与BM25真实生成、答卷导出、官方评分、比较CLI成功 | 链路smoke，不支持方法排名 |
+| QASPER最终引用证据 | 已保存一题只读恢复 `4:0`，原CLI与框架Evidence F1=1、Answer F1=2/3；416篇11,065块/81,316截短验收通过，8个人工评分反例校准 | 新快照与旧显式导出可用；无新生成，不代表全量或所有reasoning路径 |
+| QMSum一题新实验 | SN chunk与BM25真实生成、Perl评分、比较CLI成功；SN原Python ROUGE诊断缺包error，未覆盖此错误 | 验证答卷独立于旧诊断保存，可单独重评分；不是正式全量实验 |
+| MultiHop完整适配与评分 | 固定官方下载校验成功；2556题/609文章/6084证据，0排除；独立BM25排名、全题正负QA校准和官方完整检索/QA CLI对齐 | 真实完整数据、输入隔离与评分桥接验收；无新SN生成 |
+| ALCE完整数据与文本评分 | 包SHA256匹配；ASQA948、QAMPARI1000、ELI51000；5个普通候选文件完整适配，原始CLI文本指标与预处理对齐 | 实际候选数/重复/空别名保留；具体输入隔离及oracle核验见[验收记录](notebook-benchmark-real-data-validation.md) |
+| ALCE模型指标 | 真实NLTK和官方AutoAIS控制流的参与题目对齐；尚未运行真实模型批评分 | 无AutoAIS/QA/MAUVE真实成绩；控制流探针不提供语义分数 |
+| 外部方法正式对照 | 已建立候选与重评分入口，完整答卷获取及复现尚未完成 | 不宣称已经比较SOTA |
+
+HMNet公开答卷为 **gold-input、279份**；273份可唯一匹配当前test，6份不匹配，当前有8题未匹配。它用于评分校准，不能作为281题端到端对照。Perl的bootstrap总分受文件编号顺序影响，固定题目顺序且不重算逐题均值。
+
+实际工件在本工作树被Git忽略的 `var/benchmark-protocol-validation/`：全量数据报告、`smoke-qasper-sn/`、`smoke-qasper-reference-validated-20260924/`、`smoke-qmsum-{sn,reference}-validated-20260924/`、`comparison-{qasper,qmsum}-validated-20260924/`。Perl校准在 `var/qmsum-official-calibration/verified-calibration/`。这些本机工件不随Git自动分发。
+
+## 准备与生成
+
+以下 `python` 指具备本项目及SN依赖的解释器，本机为 `.venv/bin/python`。输出必须新目录；source.json填写实际dataset/revision/split/URL/许可，prepare冻结本地文件而不代替来源认证。
 
 ```bash
-python scripts/run_notebook_baseline.py \
-  --bundle /eval/bundles/qmsum \
-  --partition-id '<partitions.jsonl 中的 ID>' \
-  --project-root /path/to/silicon-notebook/project \
-  --model-config /eval/configs/qmsum-baseline-models.json \
-  --run-dir /eval/runs/qmsum-partition-bm25 \
-  --top-k 8 --max-context-chars 12000
+python scripts/prepare_notebook_benchmarks.py \
+  --suite qasper --raw /data/qasper-test-v0.3.json \
+  --source /data/qasper-source.json --output /eval/bundles/qasper-v3 \
+  --adaptation-revision notebook-data-v3
+
+python scripts/run_notebook_benchmarks.py \
+  --bundle /eval/bundles/qasper-v3 --partition-id '<partition-id>' \
+  --mode chunk --request-revision notebook-request-v3 \
+  --project-root /path/to/project --model-config /private/model-services.toml \
+  --run-dir /eval/runs/qasper-partition-chunk
+
+python scripts/run_benchmark_reference.py \
+  --bundle /eval/bundles/qasper-v3 --strategy bm25 \
+  --project-root /path/to/project --model-config /private/reference-model.json \
+  --top-k 10 --max-context-chars 16000 --chunk-window 256 --chunk-overlap 32 \
+  --run-dir /eval/runs/qasper-bm25
 ```
 
-`--model-config` 使用 `tested` 角色的显式 endpoint 环境变量；不把 SN 的内部检索结果或 gold span 注入 baseline。当前实现不下载数据、不自动安装依赖，也不恢复或修改 SN 服务。
+SN一次一个资料分区，遍历全部分区形成全量；两类生成CLI均可重复 `--case-id` 声明小样本，完整资料不变。reference默认全bundle。`full-context`预算不足记录错误并拒绝推理，不静默截断；ALCE的`candidate-topk`是控制组，不能称官方VANILLA提示复现。BM25保留实际排名、上下文及预算排除。
 
-## 指标与比较
+参考模型配置引用环境变量，不写地址/密钥：
 
-每个 suite 单独报告主指标，不生成跨 benchmark 综合分数：
+```json
+{"tested":{"model_id":"<actual-model>","base_url_env":"BENCH_MODEL_URL","api_key_env":"BENCH_MODEL_KEY","parameters":{"temperature":0,"top_p":1,"max_tokens":1024,"max_retries":0,"timeout":60}}}
+```
 
-- QASPER：答案 token F1 为主；上下文段落 F1 为诊断，不能称为官方 evidence F1。
-- MultiHop-RAG：固定版本的答案 scorer 为主；fact coverage 为诊断。当前 SN 结果没有检索排序，因此不能与 Hits@K/MAP/MRR 直接比较。
-- ALCE：ASQA/QAMPARI 的官方字符串指标，以及显式运行的引用/claim 模型指标。
-- QMSum：ROUGE-1/2/L F1；specific query 的 turn coverage 仅作诊断，并明确当前实现不是论文完全复现声明。
+## 答卷、评分与比较
 
-所有结果同时展示质量、覆盖率、澄清/失败率、延迟、调用次数和可获得的 token/成本。chunk 与 reasoning 以共同 case 的配对差异为主要比较；按 question type、资料规模和模式配置分层，避免只看总体均值。
+```bash
+python scripts/benchmark_protocol.py fetch-sources --output /eval/scorers
+python scripts/benchmark_protocol.py export-sn \
+  --bundle /eval/bundles/qasper-v3 --runs /eval/runs/qasper-partition-chunk \
+  --output /eval/submissions/sn-qasper
+python scripts/benchmark_protocol.py score \
+  --bundle /eval/bundles/qasper-v3 --submission /eval/submissions/sn-qasper/submission.json \
+  --sources /eval/scorers --output /eval/scores/sn-qasper
+python scripts/benchmark_protocol.py score \
+  --bundle /eval/bundles/qasper-v3 --submission /eval/runs/qasper-bm25/submission.json \
+  --sources /eval/scorers --output /eval/scores/bm25-qasper
+python scripts/compare_benchmark_submissions.py \
+  --bundle /eval/bundles/qasper-v3 \
+  --entry /eval/submissions/sn-qasper/submission.json /eval/scores/sn-qasper/scores.json \
+  --entry /eval/runs/qasper-bm25/submission.json /eval/scores/bm25-qasper/scores.json \
+  --output /eval/comparisons/qasper
+```
 
-## 与论文和其他方法比较的规则
+全量SN导出须提供全部分区run，否则未提供的题保持missing，正式比较拒绝。子集导出显式用 `--case-ids '<id>' ...`，不能把成功题自动当完整范围。重复case/混用配置拒绝，事前指定哪次尝试有效。已有公开答卷可通过 `import-predictions` 导入显式method及prediction JSON，调用 `--help` 查看参数。
 
-只有以下条件全部匹配时，才可称为同条件分数：split 和 case ID、输入资料范围、是否 gold evidence、回答格式、预处理、官方 scorer 版本、聚合方式。完整系统比较允许模型、算法不同，但要披露；若归因到模式或流程，需控制基础模型等变量。否则使用“参考值”措辞并列出差异。
+QASPER新v3运行会自动保存最终引用证据快照，以上普通导出即可同时准备答案和证据。旧无快照运行只有显式加 `--qasper-evidence` 才尝试恢复，例如：
 
-对于 QMSum，论文同时展示自行定位和 gold span 输入，不能把 SN 自行检索结果与 gold span 结果放在同一主表。对于 MultiHop-RAG，论文也分别报告 retrieved chunk 与 ground-truth evidence；两者应是两个实验条件。对于 ALCE，配置中的 top-100 候选和实际送入生成模型的 ndoc=5 是不同概念，报告必须记录实际资料预算。
+```bash
+python scripts/benchmark_protocol.py export-sn \
+  --bundle /eval/bundles/qasper-v3 --runs /eval/runs/old-qasper-partition-chunk \
+  --qasper-evidence --output /eval/submissions/sn-qasper-recovered
+```
 
-若要说明“SN reasoning 流程优于 chunk”，应控制基础模型、资料、题目和 scorer；若要比较完整系统，则允许检索和模型不同，但结论只能描述完整系统表现差异。论文分数只作背景，最可信的外部比较是取得逐题预测后用同一 scorer 重算，或在本机同协议重跑。
+旧run须保留 `product-artifacts/document-map.json`、只读runtime数据库、实际导入源文件及成功合成观测；恢复仅写新submission。缺失/歧义保留mapping error，不猜测或覆盖旧答案。若任一题映射失败，该声明范围不报部分Evidence F1，仍可评答案。新快照评分不需要live数据库；同批不得混入不同投影政策/实现/恢复方式。完整处理表见[标准文档§3.5](notebook-benchmark-standards-and-conformance.md#35-2026-09-24-已实现的最终引用投影与特殊情况)。
 
-## 服务器验收产物
+QMSum评分加 `--rouge-home /deps/ROUGE-1.5.5`，必要时设置 `PERL5LIB`。Perl源码、数据、本地库内容及版本进入身份，路径不同不影响比较；依赖放隔离目录，不写共享.venv。本机完整校准重跑：`python var/qmsum-official-calibration/reproduce_calibration.py --output-dir <fresh-dir>`。
 
-每套 suite 至少提交：冻结 manifest、partition 对账、两种模式的 run 目录、逐题 outputs/scores、异常与澄清清单、配置快照、评分器身份、引用转换记录、Dashboard、以及一份比较表。比较表必须标注 `published-reference`、`recomputed-subset` 或 `controlled-rerun`，并列出未对齐条件。
+ALCE默认只算无模型字符串指标，完整批评分显式添加：
 
-实验完成只表示运行和审计完成，不表示形成发布门槛。阈值、综合质量分和产品结论仍需人工抽样核验后再讨论。
+```bash
+python scripts/benchmark_protocol.py score \
+  --bundle /eval/bundles/alce-asqa-v3 --submission /eval/submissions/alce/submission.json \
+  --sources /eval/scorers --output /eval/scores/alce-full \
+  --alce-full --alce-python /deps/alce/bin/python \
+  --alce-hf-cache /deps/hf/hub --alce-nltk-data /deps/nltk_data --alce-timeout 3600
+```
 
-## 边界
+预先准备AutoAIS `google/t5_xxl_true_nli_mixture`；ASQA另需 `gaotianyu1350/roberta-large-squad` 与 `gpt2-large`；ELI5另需 `gpt2-large`。环境需要作者脚本要求的torch、transformers、numpy、nltk、rouge-score、mauve、tqdm及模型依赖。保存resolved commit、模型文件哈希、包版本、NLTK资源与随机种子；强制离线，不自动下载权重。NLTK仅搜索显式指定的目录，并在评分前实际分句预检，禁止使用未记录的用户/系统资源。模型缺失或CLI失败不会生成完整成绩。
 
-本阶段不恢复 weekly timer，不修改 SN 生产代码，不下载或执行本机开发环境中的数据/模型，不扩展 KG、重排、PDF/OCR，也不把不完整的 reasoning trace 当作 Agent 得分。QMSum BM25 已实现代码与离线验证，真实模型验收由服务器安排；dense、全文输入和其他数据集的基线仍属于后续代码工作。不会因更新代码自动启动任何新实验。
+## 结果解释
 
+比较器重建bundle、submission和官方输入，核对评分身份、范围、逐题状态与每项指标实际参与的case IDs。相同分母数量但题目不同仍拒绝比较；ALCE空答题的引用分母按官方规则单列。missing/error阻止正式比较；clarification/no_answer仍保留状态，按官方空答卷规则处理。旧SN诊断null和官方分母下的零分分别保存，不互相覆盖。
 
-## 执行约定与检查清单
+只比较共同指标，披露pending、独有指标、模型、输入策略及预算。批量总分直接读取官方结果；有逐题分数时给配对差与论文/会议group。当前不自动进行置信区间、显著性检验或排名；正式统计分析应按论文/会议聚类，不能把同会议各题视为独立样本。
 
-- [ ] 记录 Git commit、SN commit、实际模型配置与依赖；保留已有未提交文件和历史运行，不执行 reset/clean。
-- [ ] 新建本轮 campaign 目录，保存 `experiment-manifest.json`、`execution-plan.jsonl`、`execution-status.jsonl`、`summary.md`；这些是服务器维护的交接产物，不是已有 CLI 自动生成的文件。
-- [ ] execution-plan 每行记录 suite/task/bundle 哈希/partition_id/mode/run_dir；正式题量来自 bundle，不从 Dashboard 已发现的 run 数推断。
-- [ ] 验收选择覆盖正常回答、无答案和代表性数据边界的分区，执行真实导入及两种模式，检查资料不含 gold、上下文映射和引用。选择及失败均记录；验收不是人为限量正式集合。
-- [ ] 本轮默认保留已有 runner 的原问题、任务提示和正文评分，不临时修改提示/抽取答案。需要改变时创建新协议并单列，不能混入本轮。
-- [ ] 冻结后每个组合首次执行一次；不得因低分重试。技术失败保留原尝试，在新目录记录重试原因与父运行，主结果预先约定使用首个技术有效尝试，并报告全部失败。诊断重复运行单列，不挑最高分。
-- [ ] 从串行执行开始，确认共享模型服务资源后再调整并发。无需人为给实验设置总时限；保留产品已有超时设置及异常。不得停止线上服务。
-- [ ] ALCE 所需官方代码/模型/依赖缺失时记录缺口，可在服务器按许可获取并记录版本；模型评分未完成就保持 unscored，不阻塞其他套件。
-- [ ] Dashboard 对账全部预期分区；只展示共同成功题的配对差异时，同时展示固定题单上的完成与缺分情况。当前无官方全题失败补零视图，不自行改写 null。
-- [ ] 本轮没有在测试集上调参。后续参数选择使用 train/dev；MultiHop 发布集合不得伪称独立 test，如需调参先固定独立留出方案。
-- [ ] 最终给出完成/部分完成及具体缺口，不把 ALCE 原 run 与补分派生 run 算作重复；不宣称未核对的论文可比性。
+比较报告汇总实测延迟及覆盖题数，SN provider日志的调用数/已返回token按兼容观测口径分组汇总，原始usage仍保留。reference缺token观测时明确unavailable；没有价格/币种则不估算货币成本。不同计时边界不能作单一检索器速度因果结论。Dashboard仍读原Notebook run；新增submission/scores/comparison单独输出JSON/Markdown，尚未接入Dashboard。
 
-成本字段仅报告可观测值，缺失用 unavailable；均值差异不自动解释成显著提升。若进一步统计置信区间，应保留同题配对，并考虑 QASPER 同论文、QMSum 同会议内样本相关性。QMSum BM25 的逐题对照、覆盖率和配对均值差已由独立比较命令实现，见 [BM25 使用与边界](qmsum-bm25-baseline.md)；按会议聚类的置信区间、显著性和完整成本分析尚未实现。
+## 外部方法候选
 
-## 官方依据
+| 套件 | 优先候选 | 比较路径与边界 |
+| --- | --- | --- |
+| QASPER | [作者LED](https://github.com/allenai/qasper-led-baseline)，BM25/full-context控制组 | 获取同split逐题输出或重跑检查点后重评；摘要/caption输入差异须单列，本地控制组不是LED复现 |
+| MultiHop | [作者检索+QA](https://github.com/yixuantt/MultiHop-RAG)，[Multi-Meta-RAG](https://github.com/mxpoliakov/Multi-Meta-RAG) | 固定历史版本公开输出，核query/gold/范围与非oracle条件；公开GPT4/Voyage文件下载未完成，不以部分输出算成绩 |
+| ALCE | [官方VANILLA/RERANK](https://github.com/princeton-nlp/ALCE)，[Self-RAG ASQA](https://github.com/AkariAsai/self-rag) | 固定retriever、ordinary候选、prompt、ndoc、模型；RERANK多候选和AutoAIS选择成本必须计入 |
+| QMSum | [SegEnc](https://github.com/salesforce/query-focused-sum)，[SummN](https://github.com/psunlpgroup/Summ-N) | 优先非gold span完整会议方法；检查点/答卷尚需对齐；SegEnc仓库已归档；HMNet gold-input仅评分校准 |
 
-- [QASPER evaluator](https://github.com/allenai/qasper-led-baseline/blob/afd0fb96bf78ce8cd8157639c6f6a6995e4f9089/scripts/evaluator.py)：text_evidence_only 不等同于删除图表相关问题；本项目子集不能冒称完整官方测试集。
-- [MultiHop-RAG 论文 v1](https://arxiv.org/html/2401.15391v1)：区分检索、检索后生成和标准证据生成；复现特定论文版本前须重新核对其设置。
-- [ALCE 官方配置](https://github.com/princeton-nlp/ALCE/blob/246c476a4edfc564266b7346b6e29ef4861ae937/configs/asqa_turbo_shot2_ndoc5_gtr_default.yaml) 与 [评分代码](https://github.com/princeton-nlp/ALCE/blob/246c476a4edfc564266b7346b6e29ef4861ae937/eval.py)：本项目保留完整多行正文、at_most_citations=None，与 CLI 默认首行/最多三引用处理不同。
-- [QMSum 论文](https://aclanthology.org/2021.naacl-main.472.pdf)：区分定位片段与标准片段输入；表 1 的 test 为 279，服务器文件报告 281，应核对版本和 ID，不为凑数删题。
+标签：`published-reference`为条件不同的论文值；`recomputed-subset`为题目对齐后的公开答卷重评分；`controlled-rerun`为本协议重新运行。论文或代码链接不能代替实际执行结果。
+
+下一步在服务器按固定官方文件准备运行环境、补齐ALCE评分模型，并扩大事前冻结的SN chunk/reasoning/BM25/full-context实验及核对外部答卷。MultiHop/ALCE下载阻塞已解除，本次真实数据证据见[验收记录](notebook-benchmark-real-data-validation.md)。四套正式全量和外部方法结论尚未产出；不要求用户找回旧run或代替开发者选择技术实现。
