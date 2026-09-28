@@ -1,6 +1,6 @@
 # 五套 Benchmark 的标准、实现对应与验收边界
 
-核实日期：2026-09-28。适用于 `feat/benchmark-protocol-correctness` 工作树中的实现；基线提交为 `6423475`；本工作树含 HotpotQA 实现与文档的未提交改动，尚未合并到本地 `main` 或部署到服务器。本文中的“当前实现”不等于主线或服务器已经部署的版本。
+核实日期：2026-09-28。适用于 `feat/benchmark-protocol-correctness` 工作树中的实现；基线提交为 `ba19831`；HotpotQA 实现与文档已提交并推送，尚未合并到本地 `main` 或部署到服务器。本文中的“当前实现”不等于主线或服务器已经部署的版本。
 
 本页回答三个问题：**标准具体规定什么、框架在哪一层落实这些规定、现有证据能支持多强的结论。** 官方资源全集见[官方资料手册](notebook-benchmark-official-resources.md)，运行命令见[实验计划](notebook-benchmark-experiment-plan.md)，MultiHop/ALCE 的完整本地验收见[真实数据记录](notebook-benchmark-real-data-validation.md)。
 

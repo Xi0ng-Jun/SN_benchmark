@@ -37,7 +37,7 @@
 
 ## Global Constraints
 
-- 当前实现基线为 `feat/benchmark-protocol-correctness` 提交 `6423475`；服务器必须记录实际部署的评测提交和 SN 提交，不得用本地 SHA 代替服务器事实。
+- 当前实现基线为 `feat/benchmark-protocol-correctness` 提交 `ba19831`；服务器必须记录实际部署的评测提交和 SN 提交，不得用本地 SHA 代替服务器事实。
 - 论文、数据、代码和 scorer 必须保存固定 URL/revision/SHA256；论文数字只有在条件完全对齐时才可进入同条件表。
 - 每个 benchmark 单独报告；不制作五套 benchmark 的综合分或总排名。
 - 生成端不得收到 answer、evidence、claims、gold span、null 标签或答案类型；gold 只在评分和独立诊断侧使用。

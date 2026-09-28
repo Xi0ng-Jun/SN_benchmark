@@ -21,7 +21,7 @@ ${CAMPAIGN_ROOT}/
   comparisons/
 ```
 
-先复制候选登记、campaign 范围和执行题单三个模板，再补写实际值：bundle `manifest.json` 的 SHA256、公开数据 URL/revision、官方 scorer commit、Python/依赖 lock、SN checkout SHA、模型和 tokenizer 快照、模型服务身份、采样参数、重试规则，以及每个运行的 `run_dir`。提交冻结前必须能从 manifest 找到每个计划行的输入、方法和输出目录；不从 shell 历史推断。当前工作树以 `6423475` 为基础但含未提交修改，服务器必须记录最终 checkout 或完整 patch digest。
+先复制候选登记、campaign 范围和执行题单三个模板，再补写实际值：bundle `manifest.json` 的 SHA256、公开数据 URL/revision、官方 scorer commit、Python/依赖 lock、SN checkout SHA、模型和 tokenizer 快照、模型服务身份、采样参数、重试规则，以及每个运行的 `run_dir`。提交冻结前必须能从 manifest 找到每个计划行的输入、方法和输出目录；不从 shell 历史推断。本 campaign 的评测协议已推送为 `ba198311aed53020558280ac1ce34a5a4701b930`；服务器仍必须在 `experiment-manifest.json` 记录实际 checkout SHA。
 
 启动模型前先执行 campaign 预检。它只检查登记表、执行计划、scope 和 smoke 题单；提供 `--bundle SUITE=PATH` 时还会核对题单确实存在于 frozen bundle：
 

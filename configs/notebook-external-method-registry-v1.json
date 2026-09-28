@@ -1116,8 +1116,8 @@
       "candidate_category": "controlled-rerun",
       "source": {
         "repository_url": "local Silicon Notebook evaluator integration",
-        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
-        "working_tree_patch_required": true
+        "code_revision": "ba198311aed53020558280ac1ce34a5a4701b930",
+        "working_tree_patch_required": false
       },
       "conditions": {
         "model": "actual server model identity and snapshot required",
@@ -1153,8 +1153,8 @@
       "candidate_category": "controlled-rerun",
       "source": {
         "repository_url": "local Silicon Notebook evaluator integration",
-        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
-        "working_tree_patch_required": true
+        "code_revision": "ba198311aed53020558280ac1ce34a5a4701b930",
+        "working_tree_patch_required": false
       },
       "conditions": {
         "model": "actual server model identity and snapshot required",
@@ -1191,8 +1191,8 @@
       "candidate_category": "controlled-rerun",
       "source": {
         "repository_url": "local Silicon Notebook evaluator integration",
-        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
-        "working_tree_patch_required": true
+        "code_revision": "ba198311aed53020558280ac1ce34a5a4701b930",
+        "working_tree_patch_required": false
       },
       "conditions": {
         "model": "actual server model identity and snapshot required",
@@ -1227,8 +1227,8 @@
       "candidate_category": "controlled-rerun",
       "source": {
         "repository_url": "local Silicon Notebook evaluator integration",
-        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
-        "working_tree_patch_required": true
+        "code_revision": "ba198311aed53020558280ac1ce34a5a4701b930",
+        "working_tree_patch_required": false
       },
       "conditions": {
         "model": "actual server model identity and snapshot required",
@@ -1263,8 +1263,8 @@
       "candidate_category": "controlled-rerun",
       "source": {
         "repository_url": "local Silicon Notebook evaluator integration",
-        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
-        "working_tree_patch_required": true
+        "code_revision": "ba198311aed53020558280ac1ce34a5a4701b930",
+        "working_tree_patch_required": false
       },
       "conditions": {
         "model": "actual server model identity and snapshot required",
@@ -1299,8 +1299,8 @@
       "candidate_category": "controlled-rerun",
       "source": {
         "repository_url": "local Silicon Notebook evaluator integration",
-        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
-        "working_tree_patch_required": true
+        "code_revision": "ba198311aed53020558280ac1ce34a5a4701b930",
+        "working_tree_patch_required": false
       },
       "conditions": {
         "model": "actual server model identity and snapshot required",

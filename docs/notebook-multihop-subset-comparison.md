@@ -36,7 +36,7 @@ scope.json        输入文件 SHA256、bundle 身份、范围和结果解释限
 
 代码内的[输入锁定表](../configs/comparison-scopes/multimeta-e77e4638-146.json)应与包内 `scope.json` 完全一致。不要手写 `0..145` 来替代已审计的映射；以后若取得完整作者文件，应创建新的 scope，不覆盖这份来源记录。
 
-服务器需要包含本轮 `--case-id-file` 改动的评测 checkout，及已具备 SN 依赖的 Python 和隔离 SN checkout。本轮工作树尚未提交，不能把旧 HEAD `6423475` 当作包含这些改动。同步代码时保留服务器自有修复；固定用于实际生成的代码与配置，运行器会保存源码快照和配置身份。
+服务器需要包含本轮 `--case-id-file` 改动的评测 checkout，及已具备 SN 依赖的 Python 和隔离 SN checkout。评测改动已固定在 `feat/benchmark-protocol-correctness` 的 `ba19831`；服务器仍需记录实际 checkout，不得用本地 SHA 代替服务器事实。同步代码时保留服务器自有修复；固定用于实际生成的代码与配置，运行器会保存源码快照和配置身份。
 
 以下命令从该评测 checkout 根目录执行。将变量改成服务器实际路径；`PAIR_OUTPUT` 必须是本次专用的新目录，且与 `PAIR_INPUT`、SN checkout、模型配置分离。SN 的 TOML 和 reference 的 JSON 是不同配置接口。
 
