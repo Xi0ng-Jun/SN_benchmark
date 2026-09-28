@@ -23,6 +23,14 @@ ${CAMPAIGN_ROOT}/
 
 先复制候选登记、campaign 范围和执行题单三个模板，再补写实际值：bundle `manifest.json` 的 SHA256、公开数据 URL/revision、官方 scorer commit、Python/依赖 lock、SN checkout SHA、模型和 tokenizer 快照、模型服务身份、采样参数、重试规则，以及每个运行的 `run_dir`。提交冻结前必须能从 manifest 找到每个计划行的输入、方法和输出目录；不从 shell 历史推断。本 campaign 的评测协议已推送为 `ba198311aed53020558280ac1ce34a5a4701b930`；服务器仍必须在 `experiment-manifest.json` 记录实际 checkout SHA。
 
+### 模型服务与比较轨道
+
+每个方法的 manifest 必须分别记录 `answer_generation`、`retrieval_components` 和 `evaluation_models`。前者是产生最终答案的模型/服务，后者包括 embedding、reranker、意图模型等方法组件，最后一类是官方评分器调用的模型。评分模型必须按 benchmark scorer 固定，不能把它当作某个方法的生成模型。
+
+SN 与项目 BM25/full-context 的 primary controlled comparison 使用相同的解析后 `answer_generation` 身份：模型或服务版本、tokenizer、request revision、temperature/top-p/max-tokens、超时、重试和随机性规则都要一致。`SN_MODEL_CONFIG` 和 `REFERENCE_MODEL_CONFIG` 只是两个 CLI 配置入口；它们可以分开存放，但 manifest 必须保存解析后的身份和配置哈希，并通过 `model_alignment=verified`。SN 自己的额外模型组件仍然照实记录；若回答模型或关键预算不一致，必须写成 `mixed-model-end-to-end`，不得解释为单独的 retrieval advantage。
+
+作者方法的受控重跑保留作者要求的模型/embedding/reranker；替换模型或改提示后只能登记为 `adapted`/`controlled`。已发布答卷保留原始模型身份，不能替换成服务器上的 SN 模型，也不能与同模型受控结果混成一条成绩。当前登记表中的已知身份包括：Multi-Meta-RAG 使用 `gpt-4-0613` 或 Vertex `text-bison@001`，检索组件为 Voyage-02 与 `BAAI/bge-reranker-large`；ALCE human sample 使用 `gpt-35-turbo` 或 `vicuna-13b`；QMSum Socratic 关联 BART-large；QASPER LAB 使用 `lmsys/longchat-7b-v1.5-32k`；HotpotQA KG2RAG 计划使用 Llama3:8b、`mxbai-embed-large` 和 BGE reranker。精确 checkpoint、运行参数缺失的条目继续标记为 unknown，不能补猜。
+
 启动模型前先执行 campaign 预检。它只检查登记表、执行计划、scope 和 smoke 题单；提供 `--bundle SUITE=PATH` 时还会核对题单确实存在于 frozen bundle：
 
 ```bash

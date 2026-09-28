@@ -6,7 +6,11 @@
 
 2026-09-28 外部方法代码补齐进展：QASPER LAB、HotpotQA KG2RAG 和 ALCE VANILLA 均已有受控运行入口及完整无 gold 输入准备；ALCE 三任务 2,948 题的提示与所见文档已对作者 main 校准，可在新生成时保存完整引用映射。公开 MultiHop/QMSum 答卷的重评分已完成。Hotpot SN supporting-fact 已接通最终引用投影与离线重放，服务器真实观测仍待验收。正式 SN 配对及新增方法的真实模型执行仍未完成，入口和差异以[外部结果](notebook-external-results-2026-09-28.md)为准。
 
-在预先固定的数据、输入权限、回答要求和评分规则下，运行 Silicon Notebook（SN）及对照方法，保存可检查的答卷，得到可解释的比较。完整系统允许模型不同，但必须披露；模型、提示、预算未控制时不能归因于单一检索器。服务器阶段的候选、smoke/full 顺序和回传工件见[外部比较 campaign 手册](notebook-external-campaign-runbook.md)；模板只冻结计划结构，实际环境身份仍须在服务器生成 `experiment-manifest.json` 后才能开始 full。
+在预先固定的数据、输入权限、回答要求和评分规则下，运行 Silicon Notebook（SN）及对照方法，保存可检查的答卷，得到可解释的比较。这里要把模型服务分成三层记录：回答生成模型、检索/重排等方法组件、以及 AutoAIS/QA/MAUVE 等评分模型。评分模型由官方 scorer 固定，不属于被比较方法的模型优势。
+
+主比较（SN chunk/reasoning 与项目 BM25 或 full-context control）要求两边解析后的 `answer_generation` 身份一致：同一模型或服务版本、tokenizer、请求提示版本、temperature/top-p/max-tokens、超时、重试和随机性规则。`SN_MODEL_CONFIG` 与 `REFERENCE_MODEL_CONFIG` 可以是不同文件以适配两套 CLI，但提交前必须在 `experiment-manifest.json` 中证明解析后的身份相同。SN 额外使用的意图、embedding 或 reranker 仍要单独记录；只要回答模型或这些关键预算不一致，比较就标记为 `mixed-model-end-to-end`，不能把差值归因于检索器。
+
+作者方法复现遵循作者要求的模型和组件，不能为了表面公平替换成 SN 模型；若替换或改写提示/预算，方法名必须带 `adapted`/`controlled`，只能作端到端或适配比较。已经发布的逐题答卷保留原始模型身份，只能作 `recomputed-subset` 或 `published-reference` 的描述性比较。服务器阶段的候选、smoke/full 顺序和回传工件见[外部比较 campaign 手册](notebook-external-campaign-runbook.md)；模板只冻结计划结构，实际环境身份仍须在服务器生成 `experiment-manifest.json` 后才能开始 full。
 
 核实原始数据 → 冻结 v3 bundle → 无 gold 请求 → 保存答卷及失败状态 → 官方评分 → 校验比较身份 → 核验案例与统计不确定性 → 扩大实验。小样本先检查链路；正式比较固定全题或预先声明的子集，不按测试分数挑题、重试或调参，不生成跨套件总分。
 
