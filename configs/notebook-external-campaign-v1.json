@@ -62,6 +62,7 @@
   },
   "candidates": [
     {"method_id": "sn.qasper.chunk", "suite": "qasper", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "chunk"},
+    {"method_id": "qasper.bm25.full_text.control", "suite": "qasper", "category": "controlled-rerun", "phase": "server-smoke-and-full", "command": "run_benchmark_reference", "strategy": "bm25"},
     {"method_id": "qasper.lab.longchat.citation.control", "suite": "qasper", "category": "controlled-rerun", "phase": "server-acceptance", "command": "run_lab_qasper", "requires": ["longchat_model_snapshot", "nltk_snapshot"]},
     {"method_id": "sn.multihop_rag.chunk", "suite": "multihop_rag", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "chunk", "retrieval_contract": "sn-multihop-chunk-selected-passages-v1"},
     {"method_id": "sn.multihop_rag.reasoning", "suite": "multihop_rag", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "reasoning", "retrieval_metrics": "pending_no_single_ranking"},
