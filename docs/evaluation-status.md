@@ -5,8 +5,7 @@
 ## 当前代码与 Git
 
 - 本地 `benchmark-deepeval/main` 已合并 Dashboard、原生评分恢复及文档整理，HEAD 为 `e022c60`。
-- 本地 `main` 相对已保存的 `origin/main` ahead 59；本轮没有 fetch/push，不能把本地跟踪引用称为刚核实的远程现状。
-- 当前实现位于 `.worktrees/benchmark-protocol-correctness`，分支 `feat/benchmark-protocol-correctness`，远程基线 HEAD 为 `ba19831`；HotpotQA、外部方法比较、文件题单及文档改动已提交并推送，尚未合并到本地 `main`。
+- 当前实现位于 `.worktrees/benchmark-protocol-correctness`，分支 `feat/benchmark-protocol-correctness`，远程 HEAD 为 `3f194e6`；HotpotQA、外部方法比较、文件题单及文档改动已提交并推送，尚未合并到本地 `main`。
 - Dashboard 合并提交为 `e4c5333`，原生评分恢复合并提交为 `03ca577`。
 - 旧远程开发分支信息见归档，本轮未重新查询远程。
 - 主线原有未提交文档已复制到实现worktree继续整理，主线原文件保留。产品checkout没有新增受管理改动；原有 `.deepeval/`、`results/` 未清理。
@@ -71,7 +70,7 @@ Multi-Meta-RAG 固定提交的 GPT-4/PaLM 完整答卷及实际排名均已取�
 
 ALCE 固定仓库的 `human_eval` 包含真实生成答案，与先前 ordinary/oracle 候选资料不同。ASQA、ELI5 各四配置/100题已导入，原问题 ID 通过问题原文唯一映射；聚合行不当作题目，空答案不删除。ASQA 四配置的官方 str_em 为 0.353/0.382/0.3655/0.264667，配对报告已生成；ELI5 仅完成输入/预处理，模型指标 pending。原文件没有完整 shown-doc 列表和生成设置，统一限定为文本重评分，完整引用评分被显式阻止。详情及全部命令见[外部结果入口](notebook-external-results-2026-09-28.md)。
 
-历史 146 题前缀仍保留：QA=97/146，[子集执行文档](notebook-multihop-subset-comparison.md)与 `var/external-comparison/multimeta-146-inputs-20260928.tar.gz` 供回放。当前 MultiHop 主范围已升级为完整 2,556 题，输入锁见 `configs/comparison-scopes/multimeta-e77e4638-full.json`。SN、reference、export/import 支持共享 `--case-id-file`。本次没有本机生成模型调用或服务器操作，未提交/推送工作树。
+历史 146 题前缀仍保留：QA=97/146，[子集执行文档](notebook-multihop-subset-comparison.md)与 `var/external-comparison/multimeta-146-inputs-20260928.tar.gz` 供回放。当前 MultiHop 主范围已升级为完整 2,556 题，输入锁见 `configs/comparison-scopes/multimeta-e77e4638-full.json`。SN、reference、export/import 支持共享 `--case-id-file`。这段记录对应历史准备快照；当前协议已提交并推送，服务器真实实验仍待执行。
 
 ## 服务器实验边界
 

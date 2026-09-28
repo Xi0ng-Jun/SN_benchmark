@@ -1,6 +1,6 @@
 # 外部方法比较：公开答卷重评分与受控运行入口
 
-核实日期：2026-09-28。本页记录真实公开答卷在本项目固定评分协议下的结果与复现入口。本轮另完成了服务器上的 QASPER SN smoke、同题 BM25 对照，以及 MultiHop smoke 的成本与外部内容过滤诊断；这些 smoke 结果不代表完整 benchmark 成绩。
+核实日期：2026-09-28。本页记录真实公开答卷在本项目固定评分协议下的结果与复现入口。已有一份 5 题 QASPER SN/BM25 smoke 配对工件，以及 MultiHop smoke 的成本与外部内容过滤诊断；这些历史 smoke 结果不代表完整 benchmark 成绩，也不等同于当前服务器 full run。
 
 **当前已有两份完整 MultiHop 答卷、八份 ALCE 样本答卷、一份完整 QMSum Socratic SegEnc 答卷，以及 MultiHop 两方法和 ASQA 四方法的同题比较报告。QASPER 已有 5 题 SN/BM25 smoke 比较；其它 benchmark 的 SN 全量比较仍未完成。**
 
