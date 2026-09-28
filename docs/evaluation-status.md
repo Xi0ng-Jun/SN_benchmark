@@ -5,7 +5,7 @@
 ## 当前代码与 Git
 
 - 本地 `benchmark-deepeval/main` 已合并 Dashboard、原生评分恢复及文档整理，HEAD 为 `e022c60`。
-- 当前实现位于 `.worktrees/benchmark-protocol-correctness`，分支 `feat/benchmark-protocol-correctness`，远程 HEAD 为 `3f194e6`；HotpotQA、外部方法比较、文件题单及文档改动已提交并推送，尚未合并到本地 `main`。
+- 当前实现位于 `.worktrees/benchmark-protocol-correctness`，分支 `feat/benchmark-protocol-correctness`；HotpotQA、外部方法比较、文件题单及文档改动已提交并推送，尚未合并到本地 `main`。服务器执行时必须记录实际 checkout SHA。
 - Dashboard 合并提交为 `e4c5333`，原生评分恢复合并提交为 `03ca577`。
 - 旧远程开发分支信息见归档，本轮未重新查询远程。
 - 主线原有未提交文档已复制到实现worktree继续整理，主线原文件保留。产品checkout没有新增受管理改动；原有 `.deepeval/`、`results/` 未清理。

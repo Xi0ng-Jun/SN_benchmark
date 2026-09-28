@@ -1,6 +1,6 @@
 # Notebook Benchmark：正确评测与比较
 
-更新：2026-09-28。当前开发分支为 `feat/benchmark-protocol-correctness`，远程提交 `3f194e6`。本页是新实验入口；[先前计划](archive/2026-09/notebook-benchmark-experiment-plan-pre-v3.md)保留历史背景。历史服务器结果不再是前置条件。正式模型实验只在服务器执行；本机已完成数据与评分适配核对，不再启动模型调用。生产部署、定时任务和远程发布不在本轮范围。
+更新：2026-09-28。当前开发分支为 `feat/benchmark-protocol-correctness`，已推送远程。服务器执行时以实际 checkout SHA 为准。本页是新实验入口；[先前计划](archive/2026-09/notebook-benchmark-experiment-plan-pre-v3.md)保留历史背景。历史服务器结果不再是前置条件。正式模型实验只在服务器执行；本机已完成数据与评分适配核对，不再启动模型调用。生产部署、定时任务和远程发布不在本轮范围。
 
 ## 目标与流程
 
