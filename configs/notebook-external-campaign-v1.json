@@ -3,8 +3,8 @@
   "campaign_id": "2026-09-25-external-comparison-v1",
   "status": "server-preparation",
   "generated_at": "2026-09-28",
-  "evaluator_base_commit": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
-  "evaluator_revision_status": "base commit plus current worktree changes; final server commit or patch digest must be recorded before execution",
+  "evaluator_base_commit": "2e1fa92336233a525929cb40fb6142161434cc64",
+  "evaluator_revision_status": "protocol commit pinned; server must record the actual checkout SHA in experiment-manifest.json",
   "request_revision": "notebook-request-v3",
   "data_revision": "notebook-data-v3",
   "execution_boundary": {
