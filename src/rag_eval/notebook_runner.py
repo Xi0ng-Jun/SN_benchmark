@@ -14,6 +14,22 @@ from .starter_results import EventJournal, planned_result, result_record
 from .starter_runner import CITATIONS, _product_score, read_rows, update_state
 
 
+def load_case_ids_file(path):
+    """Read one frozen case ID per line for reproducible subset runs."""
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except OSError as exc:
+        raise ValueError(f'Unable to read case ID file: {path}') from exc
+    if not lines:
+        raise ValueError('Case ID file must contain at least one case ID')
+    if any(not line or any(character.isspace() for character in line) for line in lines):
+        raise ValueError('Case ID file contains a blank or whitespace-containing case ID')
+    if len(set(lines)) != len(lines):
+        raise ValueError('Case ID file contains a duplicate case ID')
+    return lines
+
+
 def metric_specs(case):
     from .notebook_scoring import metric_specs as notebook_specs
     return [*notebook_specs(case), dict(scorer=CITATIONS, metric_role='diagnostic', score_kind='continuous')]
@@ -59,7 +75,7 @@ def _anchor_documents(repo, record, mapping):
 
 
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
-                qasper_catalogues=None):
+                qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False):
     from .benchmark_runtime import prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
     from .usage_capture import capture_usage
@@ -84,13 +100,21 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
             attempts(dict(event='started', case_id=question['case_id'], mode=mode))
 
             def invoke_and_persist():
-                try:
-                    record = run_system_question(repo, notebook, question, mode, mapping)
-                except Exception as exc:
-                    if is_cancellation(exc):
-                        raise
-                    record = dict(question, status='error', answer='', response={},
-                                  reason='native invocation/capture failed', error_type=type(exc).__name__)
+                with ExitStack() as observation_stack:
+                    if multihop_retrieval:
+                        from .sn_retrieval import capture_chunk_ranking
+                        ranking = observation_stack.enter_context(capture_chunk_ranking(
+                            repo, notebook, question,
+                            [documents[did] for did in question['material_document_ids']], mapping))
+                    try:
+                        record = run_system_question(repo, notebook, question, mode, mapping)
+                    except Exception as exc:
+                        if is_cancellation(exc):
+                            raise
+                        record = dict(question, status='error', answer='', response={},
+                                      reason='native invocation/capture failed', error_type=type(exc).__name__)
+                if multihop_retrieval:
+                    record['retrieval'] = ranking
                 if qasper_catalogues is not None:
                     from .qasper_evidence import capture_evidence
                     did, = question['material_document_ids']
@@ -98,6 +122,13 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                     record['qasper_evidence'] = captured
                     if captured['status'] == 'complete':
                         record['predicted_evidence'] = captured['projection']['predicted_evidence']
+                if hotpot_evidence:
+                    from .hotpot_evidence import capture_evidence
+                    public_documents = [documents[did] for did in question['material_document_ids']]
+                    captured = capture_evidence(repo, record, public_documents, mapping)
+                    record['hotpot_evidence'] = captured
+                    if captured['status'] == 'complete':
+                        record['predicted_supporting_facts'] = captured['projection']['predicted_supporting_facts']
                 # The model has finished. Recover scoring strata from the frozen
                 # case; v3's public task intentionally hides answer-type labels.
                 record['task'] = case['task']
@@ -228,6 +259,15 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         if qasper_catalogues is not None:
             from .qasper_evidence import identity as evidence_identity
             identity['qasper_evidence'] = evidence_identity()
+        hotpot_evidence = bundle['manifest']['suite'] == 'hotpotqa' and request_revision == 'notebook-request-v3'
+        if hotpot_evidence:
+            from .hotpot_evidence import identity as hotpot_identity
+            identity['hotpot_evidence'] = hotpot_identity()
+        multihop_retrieval = (bundle['manifest']['suite'] == 'multihop_rag'
+                             and request_revision == 'notebook-request-v3' and mode == 'chunk')
+        if multihop_retrieval:
+            from .sn_retrieval import identity as ranking_identity
+            identity['multihop_retrieval'] = ranking_identity()
         if case_ids is not None:
             identity['notebook_context']['case_ids'] = [case['case_id'] for case in cases]
         if agent_config is not None:
@@ -263,11 +303,16 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                 # and cancellation. A second ExitStack write could mask those.
             predictions(run, cases, product, mode, repo, outputs, agent_evaluation=agent_evaluation,
                         session_factory=tracing.evaluation_session if tracing is not None else None,
-                        qasper_catalogues=qasper_catalogues)
+                        qasper_catalogues=qasper_catalogues, hotpot_evidence=hotpot_evidence,
+                        multihop_retrieval=multihop_retrieval)
             score_outputs(run, cases, planned, scores)
         errors = any(row['status'] == 'error' for name in ('outputs.jsonl', 'scores.jsonl') for row in read_rows(run / name))
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)
         errors = errors or any(row.get('product_record', {}).get('qasper_evidence', {}).get('status') == 'error'
+                               for row in read_rows(run / 'outputs.jsonl'))
+        errors = errors or any(row.get('product_record', {}).get('hotpot_evidence', {}).get('status') == 'error'
+                               for row in read_rows(run / 'outputs.jsonl'))
+        errors = errors or any(row.get('product_record', {}).get('retrieval', {}).get('status') == 'error'
                                for row in read_rows(run / 'outputs.jsonl'))
         update_state(run, 'finished_with_errors' if errors else 'finished')
     except BaseException as exc:
@@ -306,11 +351,26 @@ def validate_saved_run(run, manifest, planned, outputs):
     elif 'scoring_attachment' in manifest:
         raise ValueError('Scoring attachment has no official scoring identity')
     evidence_policy = manifest['identity'].get('qasper_evidence')
+    hotpot_policy = manifest['identity'].get('hotpot_evidence')
+    retrieval_policy = manifest['identity'].get('multihop_retrieval')
     documents = {d['id']: d for d in product['documents']}
     by_case = {c['case_id']: c for c in cases}
+    public_questions = {q['case_id']: q for q in product['questions']}
     for row in outputs:
         if row.get('product_protocol') != VERSION or row.get('material_role') != 'source_documents':
             raise ValueError('Notebook output adaptation identity changed')
+        if retrieval_policy is not None:
+            from .sn_retrieval import validate_capture
+            if manifest['mode'] != 'chunk' or frozen['manifest']['suite'] != 'multihop_rag':
+                raise ValueError('Native ranking observation requires a MultiHop chunk run')
+            case = by_case[row['case_id']]
+            validate_capture(row.get('product_record', {}).get('retrieval'), public_questions[row['case_id']],
+                             [documents[did] for did in case['material_document_ids']], retrieval_policy)
+        if hotpot_policy is not None:
+            from .hotpot_evidence import validate_prediction
+            validate_prediction(row.get('product_record', {}),
+                                [documents[did] for did in by_case[row['case_id']]['material_document_ids']],
+                                hotpot_policy, row['status'], row['prediction'])
         if evidence_policy is not None:
             from .qasper_evidence import verify_evidence
             record = row.get('product_record', {})

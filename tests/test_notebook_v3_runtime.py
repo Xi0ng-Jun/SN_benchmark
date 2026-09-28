@@ -138,6 +138,33 @@ def news_bundle(tmp_path):
     return freeze(tmp_path, 'multihop_rag', raw, corpus=corpus)
 
 
+def test_cli_file_selection_runs_and_exports_only_selected_case_with_full_corpus(tmp_path, native_boundary, monkeypatch):
+    raw, corpus = news_raw()
+    raw.append({**deepcopy(raw[0]), 'query': 'Which fact is in the second question?'})
+    bundle = freeze(tmp_path / 'input', 'multihop_rag', raw, corpus=corpus)
+    case_file = tmp_path / 'scope.txt'
+    case_file.write_text('multihop_rag:1\n')
+    monkeypatch.syspath_prepend(str(ROOT))
+    from scripts.run_notebook_benchmarks import main
+    from scripts.benchmark_protocol import main as protocol
+    run = tmp_path / 'run'
+    monkeypatch.setattr(sys, 'argv', ['run_notebook_benchmarks.py',
+        '--bundle', str(tmp_path / 'input/bundle'), '--partition-id', bundle['partitions'][0]['partition_id'],
+        '--mode', 'chunk', '--project-root', str(tmp_path / 'product'), '--run-dir', str(run),
+        '--case-id-file', str(case_file)])
+    assert main() == 0
+    observed = load_run(run)
+    assert [row['case_id'] for row in observed['outputs']] == ['multihop_rag:1']
+    assert len(native_boundary.observed_requests) == 1
+    assert len(json.loads((run / 'product-bundle.json').read_text())['documents']) == 2
+    protocol(['export-sn', '--bundle', str(tmp_path / 'input/bundle'), '--runs', str(run),
+              '--case-id-file', str(case_file), '--output', str(tmp_path / 'submission')])
+    submission = json.loads((tmp_path / 'submission/submission.json').read_text())
+    assert submission['case_ids'] == ['multihop_rag:1']
+    assert submission['scope'] == 'subset'
+    assert submission['coverage']['planned'] == submission['coverage']['success'] == 1
+
+
 def test_gold_free_runtime_defers_label_checks_until_scoring_boundary(tmp_path, native_boundary):
     from rag_eval.system_runtime import run_system_question
     bundle = news_bundle(tmp_path / 'input')

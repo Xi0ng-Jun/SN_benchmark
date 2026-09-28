@@ -399,9 +399,10 @@ def test_cli_runs_actual_adapter_with_only_external_client_replaced(tmp_path, mo
             overrides={'DATABASE_URL': str(destination/'private')})
     monkeypatch.setattr(starter_runtime, 'configure_environment', configure)
     client_response = {'value': {'answer': 'apple [2]'}}
+    prompt_marker = {'value': '[2]'}
     class Client:
         def chat_json(self, messages, schema_hint, **kwargs):
-            assert '[2]' in messages[0]['content'] and 'GOLD_SECRET' not in messages[0]['content']
+            assert prompt_marker['value'] in messages[0]['content'] and 'GOLD_SECRET' not in messages[0]['content']
             assert kwargs['max_tokens'] == 100 and kwargs['bypass_cache'] is True
             return client_response['value']
     monkeypatch.setattr(starter_runtime, 'make_adapter', lambda spec, role, settings, sink:
@@ -424,6 +425,19 @@ def test_cli_runs_actual_adapter_with_only_external_client_replaced(tmp_path, mo
     assert implementation['identity']['sources'] == json.loads((run/'source-identity.json').read_text())
     assert implementation['identity']['runtime']['comparable_settings_sha256'] == 'c'*64
     assert str(tmp_path) not in json.dumps(implementation)
+    # Reuse the real adapter with a two-question bundle to catch a CLI falling
+    # back to the whole bundle when a subset file was supplied.
+    frozen(tmp_path/'subset-data', questions=2)
+    case_file = tmp_path/'scope.txt'
+    case_file.write_text('qmsum:0:general:1\n')
+    prompt_marker['value'] = 'apple'
+    selected_run = main(['--bundle', str(tmp_path/'subset-data/bundle'),
+                        '--run-dir', str(tmp_path/'selected-run'), '--model-config', str(config),
+                        '--project-root', str(product), '--case-id-file', str(case_file)])
+    selected = json.loads((selected_run/'submission.json').read_text())
+    assert selected['case_ids'] == ['qmsum:0:general:1']
+    assert selected['coverage']['planned'] == selected['coverage']['success'] == 1
+    prompt_marker['value'] = '[2]'
     method_ids = [submission['method_id']]
     for number in (2, 3, 4):
         if number == 3:

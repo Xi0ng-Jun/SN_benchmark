@@ -49,6 +49,26 @@ def test_multihop_matches_official_whitespace_tokens_and_answer_extraction():
     assert score_case(item, record('blue whale. The answer to the question is "green"'), scorer)['score'] == 0
 
 
+def test_hotpot_answer_product_scorers_match_pinned_official_normalization():
+    item = case('hotpotqa', 'comparison', answer='The Blue Whale')
+    specs = metric_specs(item)
+    assert [spec['scorer'] for spec in specs] == [
+        'product.notebook.hotpot_answer_em_official_v1',
+        'product.notebook.hotpot_answer_f1_official_v1',
+        'product.notebook.hotpot_answer_precision_official_v1',
+        'product.notebook.hotpot_answer_recall_official_v1',
+    ]
+    observation = record('blue whale extra')
+    expected = {
+        'hotpot_answer_em_official_v1': 0.0,
+        'hotpot_answer_f1_official_v1': pytest.approx(4 / 5),
+        'hotpot_answer_precision_official_v1': pytest.approx(2 / 3),
+        'hotpot_answer_recall_official_v1': 1.0,
+    }
+    for suffix, value in expected.items():
+        assert score_case(item, observation, 'product.notebook.' + suffix)['score'] == value
+
+
 def test_context_paragraphs_require_whole_text_and_reliable_source_mapping():
     item = case('qasper', annotations=[{'answer': 'yes', 'evidence': ['Entire first paragraph.', 'Second paragraph.']}],
                 paragraphs=[{'id': 'p1', 'text': 'Entire first paragraph.'}, {'id': 'p2', 'text': 'Second paragraph.'}, {'id': 'p3', 'text': 'Distractor.'}])

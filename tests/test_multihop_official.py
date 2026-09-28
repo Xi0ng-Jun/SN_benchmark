@@ -126,6 +126,39 @@ def test_explicit_empty_retrieval_is_an_observation_with_zero_scores(source_dir)
     assert result['status'] == 'complete' and set(result['metrics'].values()) == {0}
 
 
+def test_published_rankings_use_observed_order_and_frozen_gold(tmp_path, source_dir):
+    bundle = frozen(tmp_path)
+    original = submission(bundle)
+    original['method']['configuration'] = {
+        'retrieval_contract': 'multihop-published-ranking-v1',
+        'retrieval_source_sha256': 'a' * 64,
+    }
+    rows = original['predictions']
+    for i, prediction in enumerate(rows):
+        prediction.pop('retrieval')
+        prediction['record'] = {'retrieval': {
+            'stage': 'multihop-published-ranking-v1',
+            'source_sha256': 'a' * 64, 'source_row': i,
+            'query': bundle['cases'][i]['question'],
+            'ranked': ([{'text': 'no match', 'score': .9}, {'text': 'apple pear', 'score': .8}]
+                       if i == 0 else []),
+        }}
+    saved = build_submission(bundle, method=original['method'], predictions=rows)
+    result = api().score_multihop_retrieval(bundle, saved, source_directory=source_dir)
+    assert result['status'] == 'complete'
+    assert result['coverage']['scored'] == 2
+    assert result['coverage']['excluded_null'] == 1
+    observed = [row for row in result['audit'] if row['status'] == 'observed']
+    assert observed and all(row['ranked_count'] == row['contributing_ranked_count'] for row in observed)
+    assert sorted(row['ranked_count'] for row in observed) == [0, 2]
+    assert result['metrics'] == pytest.approx(dict(upstream_hits_at_10=.5, upstream_hits_at_4=.5,
+                                                 upstream_map_at_10=.25, upstream_mrr_at_10=.25))
+    rows[0]['record']['retrieval']['source_sha256'] = 'b' * 64
+    mismatched = build_submission(bundle, method=original['method'], predictions=rows)
+    with pytest.raises(ValueError, match='source'):
+        api().score_multihop_retrieval(bundle, mismatched, source_directory=source_dir)
+
+
 def test_published_rows_without_case_ids_keep_original_record_indices(source_dir):
     records = [row([], [], question_type='null_query'), row(['fact'], ['fact'])]
     for record in records:

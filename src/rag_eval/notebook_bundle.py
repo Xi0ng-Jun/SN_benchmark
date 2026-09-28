@@ -32,6 +32,9 @@ def _source(source, suite):
             require_text(source.get(field), field)
     if suite == 'multihop_rag' and source['split'] != 'train':
         raise ValueError('MultiHop-RAG publishes train only, not an independent test split')
+    if suite == 'hotpotqa':
+        if source.get('setting') != 'distractor':
+            raise ValueError('HotpotQA preparation currently requires the official distractor setting')
 
 
 def _build(suite, raw, corpus, source, cap, adaptation_revision=ADAPTATION_REVISION):
@@ -82,11 +85,14 @@ def prepare(suite, raw_path, source_path, output, *, corpus_path=None, max_docum
     files = ['raw-data', 'source.json', 'cases.jsonl', 'documents.jsonl', 'decisions.jsonl', 'partitions.jsonl']
     if corpus_path:
         files.append('raw-corpus')
+    scope = ('complete corpus' if suite == 'multihop_rag'
+             else 'per question distractor context' if suite == 'hotpotqa'
+             else 'per paper/meeting/candidate set')
     manifest = dict(format=VERSION, protocol_version=VERSION, suite=suite, source=source, adaptation_revision=adaptation_revision,
                     max_documents=max_documents, files={name: digest(output / name) for name in files},
                     selected_cases=len(data['cases']), excluded_cases=sum(d['status'] == 'excluded' for d in data['decisions']),
                     partition_count=len(data['partitions']), release_gate=False,
-                    scope='complete corpus' if suite == 'multihop_rag' else 'per paper/meeting/candidate set')
+                    scope=scope)
     save_json(output / 'manifest.json', manifest)
     return dict(data, manifest=manifest)
 
@@ -129,6 +135,7 @@ def request_question(case, *, request_revision=LEGACY_REQUEST_REVISION):
         'qasper': 'Answer using the paper. Give a concise answer; if it is not answerable from the paper, answer Unanswerable.',
         'multihop_rag': 'Answer using the notebook articles. Give a concise answer; say if the sources are insufficient.',
         'qmsum': 'Summarize the meeting with respect to this query. Use only the meeting transcript.',
+        'hotpotqa': 'Answer using the supplied Wikipedia paragraphs. Give only the answer.',
         'alce': ('Answer with a comma-separated list of answers, citing the notebook sources.' if case['task'] == 'qampari'
                  else 'Answer using the notebook sources and cite the supporting sources.'),
     }[case['suite']]
@@ -142,6 +149,7 @@ def request_question(case, *, request_revision=LEGACY_REQUEST_REVISION):
             'qasper': 'Answer using the paper. Give only a short answer; if the question is not answerable from the paper, answer Unanswerable.',
             'multihop_rag': 'Answer using the notebook articles. Give a concise answer; state when the sources provide insufficient information.',
             'qmsum': 'Provide a query-focused summary using only the meeting transcript.',
+            'hotpotqa': 'Answer using the supplied Wikipedia paragraphs. Give only the answer.',
             'alce': ('Answer with a comma-separated list of answers, citing the supporting notebook sources.'
                      if case['task'] == 'qampari' else
                      'Answer in one paragraph on a single line, citing the supporting notebook sources.'),
@@ -152,7 +160,7 @@ def request_question(case, *, request_revision=LEGACY_REQUEST_REVISION):
                 'question': case['question'] + '\n\n' + instruction, 'original_question': case['question']}
     if request_revision == OFFICIAL_REQUEST_REVISION:
         # Answer type and null_query reveal private annotation labels.
-        if case['suite'] in {'qasper', 'multihop_rag'}:
+        if case['suite'] in {'qasper', 'multihop_rag', 'hotpotqa'}:
             question['task'] = 'qa'
     else:
         question.update(references=case['references'], gold_document_ids=case['gold_document_ids'],

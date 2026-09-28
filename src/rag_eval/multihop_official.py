@@ -5,9 +5,10 @@ spaces/newlines. Its MAP uses newly found facts/rank, including duplicate-gold
 denominator quirks; it is not conventional average precision. A loop reads eleven
 hits, but only ranks <= 10 contribute. No metric formula is reimplemented here.
 
-The bundle bridge currently accepts the reference runner's recorded BM25 ranking.
-SN has no equivalent observed-ranking contract yet; whole-context document order
-and context coverage cannot stand in for retrieval. Published upstream-format
+The bundle bridge accepts the reference runner's recorded BM25 ranking, an
+explicitly declared source-hashed author ranking, and SN's observed native chunk
+selection before synthesis. Reasoning mode has no single passage-ranking contract;
+whole-context order and context coverage cannot stand in for retrieval. Published upstream-format
 files may use ``score_ranked_rows`` after their dataset/scope is separately audited.
 There are no automatic downloads, model imports or calls.
 """
@@ -34,11 +35,14 @@ PROFILE = 'multihop-c1c1287-upstream-retrieval-v1'
 METRICS = {'Hits@10': 'upstream_hits_at_10', 'Hits@4': 'upstream_hits_at_4',
            'MAP@10': 'upstream_map_at_10', 'MRR@10': 'upstream_mrr_at_10'}
 QUESTION_TYPES = {'inference_query', 'comparison_query', 'temporal_query', 'null_query'}
+PUBLISHED_RANKING_CONTRACT = 'multihop-published-ranking-v1'
 
 
 def _dependencies():
+    from .sn_retrieval import identity as ranking_identity
     return dict(source_name=SOURCE_NAME, source=deepcopy(SOURCE), revision=REVISION,
                 bridge_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                sn_ranking_capture=ranking_identity(),
                 python=sys.version.split()[0],
                 matching='case-sensitive containment; delete ASCII space and newline only',
                 loop_limit=11, contributing_rank_limit=10,
@@ -182,6 +186,23 @@ def _reference_passages(retrieval, case, documents, cache, configuration):
     return passages
 
 
+def _published_passages(retrieval, case, configuration):
+    """Keep author order/text and check declared file identity, not corpus identity."""
+    source = configuration.get('retrieval_source_sha256')
+    if (not isinstance(source, str) or not re.fullmatch('[0-9a-f]{64}', source)
+            or retrieval.get('source_sha256') != source):
+        raise ValueError('Published ranking source differs from the declared file hash')
+    if (retrieval.get('stage') != PUBLISHED_RANKING_CONTRACT
+            or retrieval.get('query') != case['question']
+            or type(retrieval.get('source_row')) is not int or retrieval['source_row'] < 0):
+        raise ValueError('Published ranking observation has an invalid stage, query or source row')
+    ranked = retrieval.get('ranked')
+    if not isinstance(ranked, list) or any(not isinstance(hit, dict)
+            or not isinstance(hit.get('text'), str) for hit in ranked):
+        raise ValueError('Published ranking must contain ordered passage text strings')
+    return deepcopy(ranked)
+
+
 def prepare_ranked_inputs(bundle, submission):
     """Validate observed ranking and prove passage identity without reading gold to repair it."""
     submission = validate_submission(bundle, submission)
@@ -191,7 +212,14 @@ def prepare_ranked_inputs(bundle, submission):
     cases = {case['case_id']: case for case in bundle['cases']}
     documents = {document['id']: document for document in bundle['documents']}
     method = submission['method']
-    supported = method['kind'] == 'reference' and method['configuration'].get('strategy') == 'bm25'
+    from .sn_retrieval import POLICY as SN_RANKING_CONTRACT, validate_capture
+    native = (method['kind'] == 'sn'
+              and method['configuration'].get('retrieval_contract') == SN_RANKING_CONTRACT)
+    if native and method['configuration'].get('mode') != 'chunk':
+        raise ValueError('Native SN passage ranking requires chunk mode')
+    published = (method['kind'] == 'reference'
+                 and method['configuration'].get('retrieval_contract') == PUBLISHED_RANKING_CONTRACT)
+    supported = native or published or (method['kind'] == 'reference' and method['configuration'].get('strategy') == 'bm25')
     data, audit, cache, eligible, excluded = [], [], {}, 0, 0
     for row in submission['predictions']:
         case = cases[row['case_id']]
@@ -205,18 +233,32 @@ def prepare_ranked_inputs(bundle, submission):
         eligible += 1
         evidence = case['gold']['evidence']
         _gold(evidence)
-        retrieval = row.get('retrieval')
+        retrieval = row.get('record', {}).get('retrieval') if published or native else row.get('retrieval')
         if not supported or retrieval is None:
             audit.append(dict(case_id=row['case_id'], status='pending',
                               reason='unsupported_observed_ranking_contract' if not supported else 'missing_ranking'))
             continue
         if not isinstance(retrieval, dict):
             raise ValueError('Malformed observed retrieval')
-        passages = _reference_passages(retrieval, case, documents, cache, method['configuration'])
+        if native:
+            from .notebook_bundle import request_question
+            passages = validate_capture(retrieval, request_question(case, request_revision='notebook-request-v3'),
+                                        [documents[did] for did in case['material_document_ids']],
+                                        method['configuration'].get('multihop_retrieval'))
+            if passages is None:
+                audit.append(dict(case_id=row['case_id'], status='pending', reason=retrieval['reason']))
+                continue
+        else:
+            passages = (_published_passages(retrieval, case, method['configuration']) if published else
+                        _reference_passages(retrieval, case, documents, cache, method['configuration']))
         data.append(dict(case_id=row['case_id'], query=case['question'], question_type=question_type,
                          retrieval_list=passages, gold_list=deepcopy(evidence)))
         audit.append(dict(case_id=row['case_id'], status='observed', ranked_count=len(passages),
-                          stage=retrieval['stage'], passage_mapping='verified-public-metadata-and-body-spans'))
+                          contributing_ranked_count=min(10, len(passages)),
+                          stage=retrieval['stage'], passage_mapping=(
+                              'observed-native-chunk-order-and-sqlite-text; frozen-public-source-binding' if native else
+                              'declared-author-ordered-text; corpus-version-not-proven' if published else
+                              'verified-public-metadata-and-body-spans')))
     return dict(profile=PROFILE, scope=submission['scope'], case_ids=submission['case_ids'], data=data, audit=audit,
                 coverage=dict(planned=len(submission['predictions']), eligible=eligible, excluded_null=excluded,
                               scored=len(data), missing_ranking=eligible-len(data), complete=bool(eligible) and len(data)==eligible))

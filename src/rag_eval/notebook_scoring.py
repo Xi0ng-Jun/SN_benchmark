@@ -81,6 +81,9 @@ def metric_specs(case):
             add(f'qmsum_rouge{metric}_f1_body_v1')
         if task == 'specific':
             add('qmsum_context_nonempty_turn_recall_v2' if current else 'qmsum_context_turn_recall_v1', 'diagnostic')
+    elif suite == 'hotpotqa':
+        for metric in ('em', 'f1', 'precision', 'recall'):
+            add(f'hotpot_answer_{metric}_official_v1')
     else:
         raise ValueError(f'Unknown notebook suite: {suite}')
     return specs
@@ -219,6 +222,13 @@ def score_case(case, record, scorer):
             overlap = set(prediction.lower().split()) & set(gold['answer'].lower().split())
             return _result(float(bool(overlap)), **details, matched_tokens=sorted(overlap), extracted_answer=prediction,
                            source_revision='c1c1287aa60a94acf9c4d20c891c9cd611a0f6e8', formula='nonempty intersection of lowercase whitespace-token sets')
+        if name.startswith('hotpot_answer_') and name.endswith('_official_v1'):
+            from .hotpot_official import answer_scores
+            score = answer_scores(body, gold['answer'])
+            metric = name.removeprefix('hotpot_answer_').removesuffix('_official_v1')
+            key = {'em': 'em', 'f1': 'f1', 'precision': 'prec', 'recall': 'recall'}[metric]
+            return _result(score[key], **details, exact_match=score['em'], precision=score['prec'],
+                           recall=score['recall'], source_revision='hotpot_evaluate_v1.py@fa3a36370899e1d85822de61e58c85ea19993154')
         if name.startswith('alce_asqa_'):
             hits = [any(_normalize(a) in _normalize(body) for a in pair['short_answers']) for pair in gold['qa_pairs']]
             em = sum(hits) / len(hits)
@@ -262,6 +272,10 @@ METRIC_DESCRIPTIONS = {
     PREFIX + 'qasper_context_paragraph_f1_whitespace_v2': _description('QASPER 空白归一化整段 F1', '段落、gold evidence 和上下文仅合并连续空白、去首尾空白；同论文完整段落集合与 gold 计算 F1，取最大值；不跨 chunk 拼接，不忽略大小写/标点。', context=True),
     PREFIX + 'multihop_official_weak_match_body_v1': _description('MultiHop 官方弱匹配', '先按官方模式提取 The answer to the question is "..."（如存在）；小写、按空白分词，词集合有任意交集 → 1，否则 0。不去标点。', source='MultiHop-RAG c1c1287 qa_evaluate.py；SN 正文仅去 [kN]。'),
     PREFIX + 'multihop_context_fact_recall_v1': _description('MultiHop 最终上下文 fact 覆盖', '在正确文档上下文中完整出现的 gold fact 数 / gold fact 数；null_query 无检索 gold 为 N/A。', context=True),
+    PREFIX + 'hotpot_answer_em_official_v1': _description('HotpotQA 答案 EM', '按官方 HotpotQA normalize_answer 去小写、标点、冠词和空格；规范化答案完全相等为 1，否则为 0。Supporting Fact 和 Joint 指标在官方答卷评分轨道单独计算。', source='HotpotQA hotpot_evaluate_v1.py@fa3a36370899e1d85822de61e58c85ea19993154；SN 正文仅去 [kN]。'),
+    PREFIX + 'hotpot_answer_f1_official_v1': _description('HotpotQA 答案 F1', '按官方 HotpotQA normalize_answer 去小写、标点、冠词和空格；答案 token F1。Supporting Fact 和 Joint 指标在官方答卷评分轨道单独计算。', source='HotpotQA hotpot_evaluate_v1.py@fa3a36370899e1d85822de61e58c85ea19993154；SN 正文仅去 [kN]。'),
+    PREFIX + 'hotpot_answer_precision_official_v1': _description('HotpotQA 答案 Precision', '按官方 HotpotQA normalize_answer 后计算预测 token 与 gold token 多重集交集 / 预测 token 数。Supporting Fact 和 Joint 指标在官方答卷评分轨道单独计算。', source='HotpotQA hotpot_evaluate_v1.py@fa3a36370899e1d85822de61e58c85ea19993154；SN 正文仅去 [kN]。'),
+    PREFIX + 'hotpot_answer_recall_official_v1': _description('HotpotQA 答案 Recall', '按官方 HotpotQA normalize_answer 后计算预测 token 与 gold token 多重集交集 / gold token 数。Supporting Fact 和 Joint 指标在官方答卷评分轨道单独计算。', source='HotpotQA hotpot_evaluate_v1.py@fa3a36370899e1d85822de61e58c85ea19993154；SN 正文仅去 [kN]。'),
     PREFIX + 'alce_asqa_str_em_body_v1': _description('ALCE ASQA STR-EM', '每个 qa_pair 的任一归一化 short_answer 是归一化正文子串即命中；取 qa_pair 命中比例。'),
     PREFIX + 'alce_asqa_str_hit_body_v1': _description('ALCE ASQA STR-HIT', '全部 qa_pair 均命中 → 1，否则 0。'),
     PREFIX + 'alce_eli5_claims_official_v1': _description('ALCE ELI5 claims NLI', '官方 AutoAIS 判断回答是否蕴含每个 gold claim；取支持比例。', model=True),

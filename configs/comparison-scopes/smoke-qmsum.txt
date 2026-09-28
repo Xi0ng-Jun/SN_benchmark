@@ -1,0 +1,4 @@
+qmsum:0:general:0
+qmsum:0:specific:0
+qmsum:6:specific:5
+qmsum:13:specific:2

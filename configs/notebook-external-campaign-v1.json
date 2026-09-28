@@ -1,0 +1,88 @@
+{
+  "format": "sn-external-comparison-campaign-v1",
+  "campaign_id": "2026-09-25-external-comparison-v1",
+  "status": "server-preparation",
+  "generated_at": "2026-09-28",
+  "evaluator_base_commit": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
+  "evaluator_revision_status": "base commit plus current worktree changes; final server commit or patch digest must be recorded before execution",
+  "request_revision": "notebook-request-v3",
+  "data_revision": "notebook-data-v3",
+  "execution_boundary": {
+    "host": "server",
+    "run_dir_root": "<campaign-root>/runs",
+    "model_calls_allowed": true,
+    "production_data_mutation": false,
+    "gold_in_generation": false,
+    "retry_policy": "new-attempt-only-with-parent-and-reason"
+  },
+  "scopes": {
+    "qasper": {
+      "bundle_name": "qasper-v3",
+      "split": "test",
+      "expected_cases": 1451,
+      "primary_metrics": ["answer_f1", "evidence_f1_when_explicit_projection_is_complete"],
+      "diagnostics": ["context_coverage", "status_counts"],
+      "smoke_case_file": "configs/comparison-scopes/smoke-qasper.txt"
+    },
+    "multihop_rag": {
+      "bundle_name": "multihop-rag-full-v3",
+      "split": "frozen-public-collection",
+      "expected_cases": 2556,
+      "retrieval_denominator": 2255,
+      "primary_metrics": ["qa_weak_match_accuracy", "hits_at_4", "hits_at_10", "map_at_10", "mrr_at_10"],
+      "diagnostics": ["question_type", "ranked_count", "contributing_ranked_count", "status_counts"],
+      "smoke_case_file": "configs/comparison-scopes/smoke-multihop.txt"
+    },
+    "alce": {
+      "bundle_names": ["alce-asqa-v3", "alce-qampari-v3", "alce-eli5-v3"],
+      "split": "eval",
+      "expected_cases": {"asqa": 948, "qampari": 1000, "eli5": 1000},
+      "primary_metrics": ["task_native_text_metrics"],
+      "conditional_metrics": ["autoais", "claims_qa_nli", "mauve", "rouge_lsum"],
+      "diagnostics": ["citation_mapping_status", "status_counts"],
+      "smoke_case_file": "configs/comparison-scopes/smoke-alce.txt"
+    },
+    "qmsum": {
+      "bundle_name": "qmsum-v3",
+      "split": "test",
+      "expected_cases": 281,
+      "primary_metrics": ["rouge_1_f1", "rouge_2_f1", "rouge_l_f1"],
+      "diagnostics": ["query_type", "meeting_group", "status_counts"],
+      "smoke_case_file": "configs/comparison-scopes/smoke-qmsum.txt"
+    },
+    "hotpotqa": {
+      "bundle_name": "hotpotqa-distractor-validation-v3",
+      "split": "validation",
+      "expected_cases": 7405,
+      "primary_metrics": ["answer_em", "answer_f1", "answer_precision", "answer_recall"],
+      "conditional_metrics": ["supporting_fact_em", "joint_em"],
+      "diagnostics": ["context_coverage", "question_type", "level", "status_counts"],
+      "smoke_case_file": "configs/comparison-scopes/smoke-hotpotqa.txt"
+    }
+  },
+  "candidates": [
+    {"method_id": "sn.qasper.chunk", "suite": "qasper", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "chunk"},
+    {"method_id": "qasper.lab.longchat.citation.control", "suite": "qasper", "category": "controlled-rerun", "phase": "server-acceptance", "command": "run_lab_qasper", "requires": ["longchat_model_snapshot", "nltk_snapshot"]},
+    {"method_id": "sn.multihop_rag.chunk", "suite": "multihop_rag", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "chunk", "retrieval_contract": "sn-multihop-chunk-selected-passages-v1"},
+    {"method_id": "sn.multihop_rag.reasoning", "suite": "multihop_rag", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "reasoning", "retrieval_metrics": "pending_no_single_ranking"},
+    {"method_id": "multihop.author_bm25.qa", "suite": "multihop_rag", "category": "controlled-rerun", "phase": "server-smoke-and-full", "command": "run_benchmark_reference", "strategy": "bm25"},
+    {"method_id": "multihop.multimeta.gpt4_voyage02", "suite": "multihop_rag", "category": "recomputed-subset", "phase": "already-imported", "command": "import_multimeta_predictions", "source_status": "complete-full-scope"},
+    {"method_id": "multihop.multimeta.palm_voyage02", "suite": "multihop_rag", "category": "recomputed-subset", "phase": "already-imported", "command": "import_multimeta_predictions", "source_status": "complete-full-scope"},
+    {"method_id": "alce.vanilla.ordinary", "suite": "alce", "category": "controlled-rerun", "phase": "server-acceptance", "command": "run_alce_vanilla", "requires": ["llama_model_snapshot"]},
+    {"method_id": "sn.alce.chunk", "suite": "alce", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "chunk"},
+    {"method_id": "qmsum.bm25.control", "suite": "qmsum", "category": "controlled-rerun", "phase": "server-smoke-and-full", "command": "run_benchmark_reference", "strategy": "bm25", "requires": ["perl_rouge_1_5_5"]},
+    {"method_id": "qmsum.socratic.segenc.author_test", "suite": "qmsum", "category": "recomputed-subset", "phase": "already-imported", "command": "import_qmsum_socratic_predictions", "source_status": "complete-full-scope"},
+    {"method_id": "sn.qmsum.chunk", "suite": "qmsum", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "chunk"},
+    {"method_id": "hotpotqa.bm25.distractor_control", "suite": "hotpotqa", "category": "controlled-rerun", "phase": "server-smoke-and-full", "command": "run_benchmark_reference", "strategy": "bm25"},
+    {"method_id": "hotpotqa.kg2rag.adapted.control", "suite": "hotpotqa", "category": "controlled-rerun", "phase": "server-acceptance", "command": "run_kg2rag", "requires": ["kg2rag_checkout", "embedding_model", "reranker"]},
+    {"method_id": "sn.hotpotqa.chunk", "suite": "hotpotqa", "category": "controlled-rerun", "phase": "server-full", "command": "run_notebook_benchmarks", "mode": "chunk", "supporting_fact_projection": "hotpot-final-citation-to-supporting-fact-v1"}
+  ],
+  "acceptance_gates": [
+    "bundle hash, case count and source revision are recorded before generation",
+    "smoke output contains one normal, one multi-evidence, one long-context or large-input, and one error/no-answer case where the suite supports it",
+    "request payload contains no answer, evidence, citation, type, level or null gold fields",
+    "all statuses remain success/no_answer/clarification/error/missing without zero imputation",
+    "official scorer identity and metric-specific denominators are present",
+    "full expansion is blocked by any ID mismatch, gold leakage, unexplained missing row, or scorer identity mismatch"
+  ]
+}

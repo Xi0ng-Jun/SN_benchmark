@@ -80,6 +80,46 @@ def test_alce_numeric_reference_citations_keep_original_candidate_indices():
     assert len(p['data'][0]['docs']) == 1
 
 
+def test_alce_text_only_external_source_cannot_synthesize_citation_scores(tmp_path):
+    b, m, rows = fixture('alce', 'asqa', answer='Falcon [4].\nOwl.')
+    m.update(kind='reference', citation_style='numeric',
+             configuration={'citation_mapping_status': 'unavailable'})
+    submitted = build_submission(b, method=m, predictions=rows)
+    prepared = official.prepare_inputs(b, submitted)
+    assert prepared['data'][0]['output'] == 'Falcon [4].\nOwl.'
+    assert prepared['data'][0]['docs'] == []
+    assert prepared['citation_mapping_supported'] is False
+    with pytest.raises(ValueError, match='citation mapping'):
+        official.score_prepared(b, submitted, prepared, source_directory=tmp_path,
+                                 output_dir=tmp_path / 'scores', alce_runtime={})
+    assert not (tmp_path / 'scores').exists()
+
+
+def test_alce_answer_only_scores_keep_citations_pending(tmp_path, monkeypatch):
+    b, m, rows = fixture('alce', 'asqa', answer='Falcon [4].')
+    m.update(kind='reference', citation_style='numeric',
+             configuration={'citation_mapping_status': 'unavailable'})
+    submission = build_submission(b, method=m, predictions=rows)
+    prepared = official.prepare_inputs(b, submission)
+    monkeypatch.setattr(official, '_alce_text',
+                        lambda *args: ({'str_em': .5, 'str_hit': 0.}, [{'str_em': .5, 'str_hit': 0.}], []))
+    def model_batch(prepared, **runtime):
+        assert runtime['scoring_mode'] == 'answer-only'
+        assert prepared['data'][0]['docs'] == []
+        values = {'str_em': .5, 'str_hit': 0., 'QA-EM': .5, 'QA-F1': .6,
+                  'QA-Hit': 0., 'mauve': .7, 'rougeLsum': .4}
+        return {'metrics': values, 'metric_case_ids': {k: ['alce:q1'] for k in values},
+                'dependencies': {'scoring_mode': 'answer-only'}}
+    monkeypatch.setattr('rag_eval.alce_official_cli.score_alce_batch', model_batch)
+    result = official.score_prepared(b, submission, prepared, source_directory=tmp_path,
+                                     output_dir=tmp_path / 'scores',
+                                     alce_runtime={'scoring_mode': 'answer-only'})
+    assert result['metrics']['QA-F1'] == .6
+    assert result['pending_metrics'] == ['citation_rec', 'citation_prec']
+    assert 'citation_rec' not in result['metric_denominators']
+    assert result['batch_only_metrics'] == ['QA-EM', 'QA-F1', 'QA-Hit', 'mauve', 'rougeLsum']
+
+
 @pytest.mark.parametrize('answer', ['Claim [0', 'Claim [1', 'Claim [1,2]'])
 def test_alce_malformed_numeric_prefix_cannot_cite_unseen_or_negative_document(answer):
     b, m, rows = fixture('alce', 'asqa', answer=answer)
@@ -144,3 +184,42 @@ def test_scorer_identity_uses_rouge_content_and_library_order_not_absolute_paths
     assert official.scorer_identity('profile', dependencies) == official.scorer_identity('profile', copied)
     copied['rouge']['perl5lib']['/copy/lib']['Module.pm']['sha256'] = 'changed'
     assert official.scorer_identity('profile', dependencies) != official.scorer_identity('profile', copied)
+
+
+def test_multihop_score_artifact_retains_retrieval_metrics_per_case(tmp_path, monkeypatch):
+    from rag_eval import multihop_official
+
+    case = {'case_id': 'multihop_rag:q1', 'sample_id': 'q1', 'suite': 'multihop_rag',
+            'task': 'qa', 'question': 'What?', 'group_id': 'g1',
+            'gold': {'answer': 'yes', 'question_type': 'inference_query',
+                     'evidence': [{'title': 'Doc', 'fact': 'fact'}]},
+            'candidate_documents': []}
+    bundle = {'manifest': {'suite': 'multihop_rag', 'adaptation_revision': 'notebook-data-v3'},
+              'cases': [case]}
+    method = {'name': 'reference', 'kind': 'reference', 'citation_style': 'none',
+              'model_identity': {'model': 'fixture'}, 'input_policy': 'frozen-source-documents',
+              'configuration': {'comparison_category': 'controlled-rerun'}}
+    submission = build_submission(bundle, method=method, predictions=[
+        {'case_id': case['case_id'], 'status': 'success', 'prediction': 'yes'}])
+    prepared = official.prepare_inputs(bundle, submission)
+
+    monkeypatch.setattr(official, '_source', lambda directory, name: '')
+    monkeypatch.setattr(official, '_functions', lambda source, names, namespace=None: {
+        'has_intersection': lambda *args: True,
+        'extract_answer': lambda value: value,
+        'calculate_metrics': lambda answers, golds: [1.0],
+    })
+    monkeypatch.setattr(multihop_official, 'score_multihop_retrieval',
+                        lambda bundle, submission, source_directory: {
+                            'metrics': {'upstream_hits_at_10': 1.0},
+                            'pending_metrics': [],
+                            'per_case': [{'case_id': case['case_id'],
+                                          'metrics': {'upstream_hits_at_10': 1.0}}],
+                            'dependencies': {'fixture': True},
+                        })
+
+    result = official.score_prepared(bundle, submission, prepared,
+                                     source_directory=tmp_path,
+                                     output_dir=tmp_path / 'scores')
+    assert result['per_case'][0]['metrics']['upstream_hits_at_10'] == 1.0
+    assert result['batch_only_metrics'] == []

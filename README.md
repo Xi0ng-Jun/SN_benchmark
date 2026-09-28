@@ -6,10 +6,12 @@
 
 先看[评测状态](docs/evaluation-status.md)和[文档导航](docs/README.md)。当前主线已经合并 Dashboard 实验地图和原生评分恢复；本地 `main` 尚未推送到远程，服务器实验状态仍需以实际产物核实。
 
+外部方法比较的最新本地结果与重放命令见[外部答卷与受控方法](docs/notebook-external-results-2026-09-28.md)：Multi-Meta-RAG 两模型完整 2,556 题、ALCE 八份样本答卷及 ASQA 文本配对、QMSum Socratic SegEnc 的 281 题 Perl 重评分，以及 QASPER LAB、HotpotQA KG2RAG、ALCE VANILLA 受控运行入口；正式 SN 对外部方法的比较仍待服务器运行。
+
 当前主要命令：
 
 - `scripts/build_experiment_dashboard.py`：只读已有 run，生成实验地图、单题回放和结果分析。
-- `scripts/prepare_notebook_benchmarks.py`、`scripts/run_notebook_benchmarks.py`：准备和运行 QASPER、MultiHop-RAG、ALCE、QMSum。
+- `scripts/prepare_notebook_benchmarks.py`、`scripts/run_notebook_benchmarks.py`：准备和运行 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA。
 - `scripts/run_notebook_baseline.py`：运行 QMSum BM25 + 显式生成模型对照。
 - `scripts/run_notebook_agent.py`：运行 SN 原生 DeepEval 组件或显式完整轨迹评测。
 - `scripts/score_native_components.py`：从已保存组件建立独立补评批次。

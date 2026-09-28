@@ -1,0 +1,84 @@
+{
+  "format": "multihop-full-comparison-inputs-v1",
+  "suite": "multihop_rag",
+  "bundle_id": "5f5104cf2032430aa9fccf2421268e2328328f78b7e4dadf6cb7fb27f86a5346",
+  "scope": "full",
+  "case_count": 2556,
+  "document_count": 609,
+  "retrieval_denominator": 2255,
+  "group_count": 1,
+  "partition_id": "multihop_rag-group-ec1eb66d08e423a8139770bc3ca20a67610f0ee512d80b0e2004559146b83ea6",
+  "case_type_counts": {
+    "inference_query": 816,
+    "comparison_query": 856,
+    "temporal_query": 583,
+    "null_query": 301
+  },
+  "selection": "All questions in fixed complete source files, not the earlier transport prefix",
+  "external_revision": "e77e4638cbae16fa7a63f291e73230d5bb356081",
+  "comparison_category": "recomputed-subset",
+  "profile": "multihop-c1c1287-upstream-weak-match-v1",
+  "bundle_files": {
+    "bundle/cases.jsonl": "4f5c4b04f1462e0ed324452aedea170e8c8fdd61266994e28fba93a2d5b77076",
+    "bundle/decisions.jsonl": "2c36da5c8956a0634b19bd9dd3720c42ade76c91f302df904ab55ee5d55bc9ec",
+    "bundle/documents.jsonl": "18ca73893b20ce325ff72af487c6c7c6b916c5a7dd3bf2578e32ef4b19747f63",
+    "bundle/manifest.json": "3d8401c0ed86cf29dfeda21ea3ff4d408499c95291a08f90871e4a3e5491147b",
+    "bundle/partitions.jsonl": "632b20e124e64e9f01d6fac278740fa840606cd97c179cf986e017a4a9b2e714",
+    "bundle/raw-corpus": "20b61b5ab84de84a927420c5d265b7ec8d859ae49980699958a787ade9e4d28f",
+    "bundle/raw-data": "03cfb4926461f868684903aadc8024447bdda5bb3f6804741424cce338515bff",
+    "bundle/source.json": "721a50367222b73373bb4f8aa157cbfce10fc807bef6f4c326a13f8987156a50"
+  },
+  "source_files": {
+    "output/voyage-02_256_32_with_filtering.json": "3ebd57ddf6e2ea29f61d45a8e25514bbf91ae74f8c95bf020bd539b9559774eb",
+    "qa_output/google-palm-voyage-02-filtering.json": "732232e2b5fcb2d4af163b3cd9de14ee3f2815d6000e1034ff5702a6882dcea0",
+    "qa_output/gpt-4-voyage-02-filtering.json": "f4ad29c607867e4ef73a3f9d5016559ee9bbcdb0331c3a05cb2948d0cf82812c"
+  },
+  "scorer_files": {
+    "scorers/multihop_qa_evaluate.py": "a518bc37d94d2e84cc9012b41a758567e308dceea92aba14cda44a1364626ae7",
+    "scorers/multihop_retrieval_evaluate.py": "6734516f0d5f9385076f76bf4e08d54968541fdb05f519f1cf687c0b65ae0f90"
+  },
+  "expected_external_qa_correct": {
+    "gpt4": 1549,
+    "palm": 1553
+  },
+  "uncertainty": "Unavailable for existing cluster bootstrap: one group; no significance claim",
+  "limitations": [
+    "Author complete corpus/index identity unproven",
+    "Different generation prompts/models/output budgets",
+    "SN ordered ranking contract and actual SN comparison still pending"
+  ],
+  "source_evidence": {
+    "qa_gpt.py": {
+      "sha256": "9fddbdde475c4b79fe55a554d8d0d07eede16049916e4a45ae8b581195bec1e2",
+      "git_blob": "3fe2aa6774280a838f145c8b25942c1087d6a304"
+    },
+    "qa_google.py": {
+      "sha256": "08206d1af02e0a97274fa614668789571c4086a8bf937d713f6f8010955f0a87",
+      "git_blob": "1e83b5fb189e5328f05e7fb5d723841043bdbe41"
+    },
+    "evaluate_qa.py": {
+      "sha256": "f649074a2d398a0d59e028a4cfbf3996099713d100daa7b729fd959039bd4d83",
+      "git_blob": "623d2fd970097f152170793178a8d24bf8ced9f6"
+    },
+    "create_neo4j_index.py": {
+      "sha256": "ed9f96acdd478d8183764ed1b7d1183a1c86a91f3afc1a26b32095d9aed2e932",
+      "git_blob": "a8023eb7d0df3acab565cb7a1f9b369dfb51180e"
+    },
+    "query_metadata_filters_retrieve.py": {
+      "sha256": "a14d5ef0721284f07b07a6096a4b59929a322fdbe8289cd891e223541868cf98",
+      "git_blob": "2c58d1acb1b5bf47ef9834265aaa265394fabfbc"
+    },
+    "retrieve_neo4j_index.py": {
+      "sha256": "1d54beae1af6b672daab603217f8e2dc094ac4b987ce014078d5d537b334a384",
+      "git_blob": "d0f3291ad2a87a3ab088e266af42c6a7ef5cb8de"
+    },
+    "README.md": {
+      "sha256": "02f4e93c8d1035a7fb17344e180adab2fbca253bdc3ab2993eee1898e8d13f90",
+      "git_blob": "a022e905e04487049c8a7b7f9c0ed935a652377b"
+    },
+    "LICENCE": {
+      "sha256": "25f53c4c89d8b24c306eeec92eb4689485d5ab23751da86c1de5772d5f3d4c09",
+      "git_blob": "3c8687cb3047dac0fa9377b0f81d0e86cbf6e2dc"
+    }
+  }
+}

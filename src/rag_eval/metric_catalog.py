@@ -121,7 +121,8 @@ def benchmark_rows():
     from .notebook_runner import metric_specs
     from .notebook_data import ADAPTATION_REVISION
     for suite, tasks in {"qasper": ["extractive"], "multihop_rag": ["comparison_query"],
-                         "alce": ["asqa", "qampari", "eli5"], "qmsum": ["general", "specific"]}.items():
+                         "alce": ["asqa", "qampari", "eli5"], "qmsum": ["general", "specific"],
+                         "hotpotqa": ["bridge", "comparison"]}.items():
         for task in tasks:
             for spec in metric_specs({"suite": suite, "task": task, "adaptation_revision": ADAPTATION_REVISION}):
                 rows.append((suite + "/" + task, "SN Product（R；chunk / reasoning）", spec["scorer"]))

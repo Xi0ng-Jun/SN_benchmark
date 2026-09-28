@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/princeton-nlp/ALCE",
+  "revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+  "files": {
+    "run.py": "3a3e1062a900c4af56fa52199684a97a05deb2b754bec6984e172ee678a55e71",
+    "utils.py": "92e6900b5350f7da4dc179f3d9f498f73d976377a412e8c244db8339ad7976b9",
+    "prompts/asqa_default.json": "a5d1085a4745897d34138b8b3d9781dafaa9e8b8ff00140c4521d43ba8c7b5c1",
+    "prompts/eli5_default.json": "0c00ba7f9e790325201465a0783927e9c0a8a57032485ca90f2009f4390fd7cc",
+    "prompts/qampari_default.json": "5785af9382fe33afcf83855d2ec4caca974effdd8350091a4145035abe98a87c",
+    "configs/asqa_llama2_shot2_ndoc5_gtr_default.yaml": "b623f89edce4eee1fb7169298a27b165290c2f1587f2f86d8f30ba66a41263f5",
+    "configs/eli5_llama2_shot2_ndoc5_bm25_default.yaml": "7313d34e00b04d45207c86224ea0833f144ddf76ed6ef2e4c48db36138cc57c0",
+    "configs/qampari_llama2_shot2_ndoc5_gtr_default.yaml": "38acd2114497e9bcab997a61ceb374768dcd57eb99a47faeac28e3fd36f7ca9f"
+  }
+}

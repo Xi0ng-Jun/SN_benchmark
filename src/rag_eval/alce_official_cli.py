@@ -1,4 +1,4 @@
-"""Explicit, offline-only execution of ALCE's fixed full batch evaluator.
+"""Explicit, offline-only execution of ALCE's fixed batch evaluator.
 
 Model snapshots and NLTK resources must be provisioned first. This module never
 substitutes a smaller NLI model, downloads weights, or averages per-case MAUVE.
@@ -22,11 +22,15 @@ QA = 'gaotianyu1350/roberta-large-squad'
 MAUVE = 'gpt2-large'
 
 
-def alce_arguments(task):
+def alce_arguments(task, *, scoring_mode='full'):
     if task not in {'asqa', 'qampari', 'eli5'}:
         raise ValueError('Unknown ALCE task')
+    if scoring_mode not in {'full', 'answer-only'}:
+        raise ValueError('ALCE scoring mode must be full or answer-only')
     # Upstream checks the *entire --f string* for qampari. Use a local basename.
-    args = ['--f', task + '.json', '--citations', '--at_most_citations', '3']
+    args = ['--f', task + '.json']
+    if scoring_mode == 'full':
+        args += ['--citations', '--at_most_citations', '3']
     if task == 'asqa':
         args += ['--qa', '--mauve']
     elif task == 'eli5':
@@ -34,9 +38,9 @@ def alce_arguments(task):
     return args
 
 
-def parse_metrics(task, values):
-    alce_arguments(task)
-    required = {'citation_rec', 'citation_prec'}
+def parse_metrics(task, values, *, scoring_mode='full'):
+    alce_arguments(task, scoring_mode=scoring_mode)
+    required = {'citation_rec', 'citation_prec'} if scoring_mode == 'full' else set()
     diagnostics = {'length'}
     if task == 'qampari':
         required |= {'qampari_prec', 'qampari_rec', 'qampari_rec_top5', 'qampari_f1', 'qampari_f1_top5'}
@@ -70,11 +74,12 @@ def _tree_hashes(root):
     return {str(p.relative_to(root)): _file_hash(p) for p in sorted(root.rglob('*')) if p.is_file()}
 
 
-def inspect_cache(cache, task):
+def inspect_cache(cache, task, *, scoring_mode='full'):
     """Record the resolved offline main ref and every public snapshot byte."""
-    alce_arguments(task)
+    alce_arguments(task, scoring_mode=scoring_mode)
     cache = Path(cache).resolve()
-    models = [AUTOAIS] + ([QA, MAUVE] if task == 'asqa' else [MAUVE] if task == 'eli5' else [])
+    models = [AUTOAIS] if scoring_mode == 'full' or task == 'eli5' else []
+    models += [QA, MAUVE] if task == 'asqa' else [MAUVE] if task == 'eli5' else []
     result = {}
     for model in models:
         root = cache / ('models--' + model.replace('/', '--'))
@@ -111,17 +116,19 @@ def citation_eligibility_program(source):
 
 
 def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_data,
-                     python=sys.executable, timeout=3600):
+                     python=sys.executable, timeout=3600, scoring_mode='full'):
     from .benchmark_official import _source, SOURCES
     if prepared.get('suite') != 'alce':
         raise ValueError('ALCE input required')
     task = prepared['task']
-    arguments = alce_arguments(task)
+    arguments = alce_arguments(task, scoring_mode=scoring_mode)
+    if scoring_mode == 'full' and prepared.get('citation_mapping_supported') is False:
+        raise ValueError('Full ALCE scoring requires observed citation mapping')
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('Positive ALCE batch timeout required')
     sources = {local: _source(source_directory, public) for local, public in
                [('eval.py', 'alce_eval.py'), ('utils.py', 'alce_utils.py')]}
-    models = inspect_cache(hf_cache, task)
+    models = inspect_cache(hf_cache, task, scoring_mode=scoring_mode)
     nltk_data = Path(nltk_data).resolve()
     if not (nltk_data / 'tokenizers').is_dir():
         raise ValueError('Provision NLTK tokenizer resources before ALCE scoring')
@@ -132,14 +139,16 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
         (destination / name).write_text(source, encoding='utf-8')
     save_json(destination / (task + '.json'), {'data': prepared['data']})
     # Seed the original evaluator's bootstrap without modifying its source.
-    eligibility = citation_eligibility_program(sources['eval.py'])
+    eligibility = ''
+    if scoring_mode == 'full':
+        eligibility = ('data = json.load(open(' + repr(task + '.json') + '))["data"]\n'
+                       'qampari = ' + repr(task == 'qampari') + '\n' +
+                       citation_eligibility_program(sources['eval.py']) +
+                       'json.dump(eligible_indices, open("citation-eligible-indices.json", "w"))\n')
     launcher = ('import runpy, sys, numpy, torch, json, os, nltk\n'
                 'nltk.data.path = [os.environ["NLTK_DATA"]]\nfrom nltk import sent_tokenize\n'
                 'sent_tokenize("Tokenizer resource preflight.")\n'
-                'numpy.random.seed(0)\ntorch.manual_seed(0)\n'
-                'data = json.load(open(' + repr(task + '.json') + '))["data"]\n'
-                'qampari = ' + repr(task == 'qampari') + '\n' + eligibility +
-                'json.dump(eligible_indices, open("citation-eligible-indices.json", "w"))\n'
+                'numpy.random.seed(0)\ntorch.manual_seed(0)\n' + eligibility +
                 'sys.argv = ["eval.py"] + sys.argv[1:]\n'
                 'runpy.run_path("eval.py", run_name="__main__")\n')
     (destination / 'launch.py').write_text(launcher, encoding='utf-8')
@@ -155,7 +164,8 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
                              text=True, capture_output=True, check=True, timeout=60)
     dependencies = {'models': models, 'nltk_files': nltk_hashes,
                     'runtime': json.loads(runtime.stdout), 'numpy_seed': 0, 'torch_seed': 0,
-                    'at_most_citations': 3, 'arguments': arguments,
+                    'scoring_mode': scoring_mode,
+                    'at_most_citations': 3 if scoring_mode == 'full' else None, 'arguments': arguments,
                     'sources': {k: SOURCES[k] for k in ('alce_eval.py', 'alce_utils.py')},
                     'launcher_sha256': hashlib.sha256(launcher.encode()).hexdigest(),
                     'bridge_sha256': _file_hash(Path(__file__))}
@@ -170,12 +180,14 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
         if completed.returncode:
             raise RuntimeError('Official ALCE CLI failed; inspect saved stdout/stderr')
         raw = json.loads((destination / (task + '.json.score')).read_text())
-        metrics, diagnostics = parse_metrics(task, raw)
-        eligible = json.loads((destination / 'citation-eligible-indices.json').read_text())
-        if (not isinstance(eligible, list) or not eligible or
-                any(type(i) is not int or not 0 <= i < len(prepared['case_ids']) for i in eligible)
-                or eligible != sorted(set(eligible))):
-            raise ValueError('Invalid or empty ALCE citation metric denominator')
+        metrics, diagnostics = parse_metrics(task, raw, scoring_mode=scoring_mode)
+        eligible = []
+        if scoring_mode == 'full':
+            eligible = json.loads((destination / 'citation-eligible-indices.json').read_text())
+            if (not isinstance(eligible, list) or not eligible or
+                    any(type(i) is not int or not 0 <= i < len(prepared['case_ids']) for i in eligible)
+                    or eligible != sorted(set(eligible))):
+                raise ValueError('Invalid or empty ALCE citation metric denominator')
     except Exception as exc:
         save_json(destination / 'failure.json', {'status': 'error', 'error_type': type(exc).__name__})
         raise

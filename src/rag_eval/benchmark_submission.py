@@ -159,9 +159,15 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
                                       'runtime_settings_sha256': identity['runtime_settings'],
                                       'verification': 'configuration-hashes; not matched to reference model'},
                       input_policy='frozen-source-documents',
-                      configuration={'mode': manifest['mode'], 'identity': config})
+                      configuration={'mode': manifest['mode'], 'identity': config,
+                                     'comparison_category': 'controlled-rerun'})
         if evidence_policy is not None:
             method['configuration']['qasper_evidence'] = evidence_policy
+        if identity.get('hotpot_evidence') is not None:
+            method['configuration']['hotpot_evidence'] = identity['hotpot_evidence']
+        if identity.get('multihop_retrieval') is not None:
+            method['configuration']['multihop_retrieval'] = identity['multihop_retrieval']
+            method['configuration']['retrieval_contract'] = identity['multihop_retrieval']['policy']
         for row in run['outputs']:
             status = row['status']
             record = deepcopy(row.get('product_record', {}))

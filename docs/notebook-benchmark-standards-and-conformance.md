@@ -1,10 +1,10 @@
-# 四套 Benchmark 的标准、实现对应与验收边界
+# 五套 Benchmark 的标准、实现对应与验收边界
 
-核实日期：2026-09-25。适用于 `feat/benchmark-protocol-correctness` 工作树中的实现；实现提交为 `128246c`，已推送到 `origin/feat/benchmark-protocol-correctness`，尚未合并到本地 `main` 或部署到服务器。本文中的“当前实现”不等于主线或服务器已经部署的版本。
+核实日期：2026-09-28。适用于 `feat/benchmark-protocol-correctness` 工作树中的实现；基线提交为 `6423475`；本工作树含 HotpotQA 实现与文档的未提交改动，尚未合并到本地 `main` 或部署到服务器。本文中的“当前实现”不等于主线或服务器已经部署的版本。
 
 本页回答三个问题：**标准具体规定什么、框架在哪一层落实这些规定、现有证据能支持多强的结论。** 官方资源全集见[官方资料手册](notebook-benchmark-official-resources.md)，运行命令见[实验计划](notebook-benchmark-experiment-plan.md)，MultiHop/ALCE 的完整本地验收见[真实数据记录](notebook-benchmark-real-data-validation.md)。
 
-当前结论是：四套固定版本的数据适配与生成输入隔离已做完整文件验证；QASPER 答案与 SN 最终引用证据评分、MultiHop QA/检索评分、ALCE 文本评分和 QMSum Perl ROUGE 已有对应校准。**这还不是四套 benchmark 全部指标、SN 全量运行和论文方法比较均已完成。** QASPER 新证据映射的适用范围、ALCE 真实模型评分与 MultiHop 排名观测等边界见下文。
+当前结论是：QASPER、MultiHop-RAG、ALCE、QMSum 的固定文件适配与生成输入隔离已有完整文件验证；HotpotQA 已完成固定 HF 全量 7,405 题适配与原版 CLI 的 12 项指标合成校准。QASPER 答案与 SN 最终引用证据评分、MultiHop QA/检索评分、ALCE 文本评分和 QMSum Perl ROUGE 已有对应校准，HotpotQA 已有全量离线合成校准。**这还不是五套 benchmark 全部指标、SN 全量运行和论文方法比较均已完成。** QASPER 新证据映射的适用范围、ALCE 真实模型评分与 MultiHop 排名观测等边界见下文。
 
 ## 1. “标准”不是一个指标名称
 
@@ -60,7 +60,7 @@ gold 是标准答案和人工证据标注。冻结数据包内必须保留它们
 
 | 层 | 当前实现保证 | 代码入口与检查 |
 | --- | --- | --- |
-| 数据适配 | `notebook-data-v3` 保留公开原文边界、原始标注和题目；不按 gold 是否易映射删题 | [notebook_data.py](../src/rag_eval/notebook_data.py)：`adapt`、四个套件适配函数；[数据测试](../tests/test_notebook_data_v3.py) |
+| 数据适配 | `notebook-data-v3` 保留公开原文边界、原始标注和题目；不按 gold 是否易映射删题 | [notebook_data.py](../src/rag_eval/notebook_data.py)：`adapt`、五个套件适配函数；[数据测试](../tests/test_notebook_data_v3.py) |
 | 数据冻结 | 保存 `raw-data`、必要的 `raw-corpus`、`source.json`、cases/documents/decisions/partitions 及哈希；加载时从 raw 重建并比对，不能只改外层 hash 蒙混过关 | [notebook_bundle.py](../src/rag_eval/notebook_bundle.py)：`prepare`、`load_bundle` |
 | 材料完整性 | 一个问题所需的完整材料范围不可因容量不足被静默拆开或截断；容量不足报错 | 同文件 `_build`；本次 MultiHop 显式容量 609，ALCE 100 |
 | 生成输入 | `notebook-request-v3` 不发送 `references`、`expected_answer`、`gold_document_ids`；QASPER/MultiHop 不发送答案类型或 null 标签，公共 task 为 `qa` | 同文件 `request_question`、`partition_bundle`；[运行边界测试](../tests/test_notebook_v3_runtime.py) |
@@ -86,7 +86,7 @@ gold 是标准答案和人工证据标注。冻结数据包内必须保留它们
 
 空答不一定在每项指标上都是零。例如 QASPER 证据列表与 gold 都为空时 Evidence F1 为 1；ALCE 的 ASQA/ELI5 空句输出可能不进入 AutoAIS 聚合。QASPER 正确输出字面答案 `Unanswerable` 是成功提交的一种内容，与运行状态 `no_answer` 不同。
 
-Notebook 原诊断、DeepEval Faithfulness/AnswerRelevancy、组件分和 Agent 轨迹分用于解释表现，不替代四套 benchmark 的官方指标。旧 [notebook_scoring.py](../src/rag_eval/notebook_scoring.py) 与 ALCE 诊断桥接轨道仍存在，应与本页的官方 submission/scorer 轨道分别标注。
+Notebook 原诊断、DeepEval Faithfulness/AnswerRelevancy、组件分和 Agent 轨迹分用于解释表现，不替代五套 benchmark 的官方指标。旧 [notebook_scoring.py](../src/rag_eval/notebook_scoring.py) 与 ALCE 诊断桥接轨道仍存在，应与本页的官方 submission/scorer 轨道分别标注。
 
 ## 3. QASPER：科研论文问答与证据
 
@@ -198,6 +198,12 @@ SN 的 `AnswerAnchor` 保存 object/source/element 标识，`EvidenceContextServ
 
 复跑脚本、报告与命令见[本次实施记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)；回归测试见 [test_qasper_evidence.py](../tests/test_qasper_evidence.py)。解析或产品上下文格式改变时，应首先复跑来源/截短反例；缺观测应修在生产该观测的边界，不在 scorer 中增加“最像 gold”的兜底。
 
+### 3.6 外部 LAB citation 方法的证据契约
+
+2026-09-28 新增 QASPER 的 LAB LongChat citation 受控入口，复用固定作者生成/解析，完整 1,451 题与官方 v0.3 对齐。ITG 段落按原 abstract/full_text 顺序回映到原字符串，保留空白和重复段落；测试 document/节点 metadata 中的标签清除，三个训练演示的标签只留在训练侧。作者解析后的显式节点才作为预测证据，结构节点是无效预测；未知原始编号沿用作者丢弃规则，原始文本仍保存。不可回答字面答案保留成功状态，不转换为错误或空答。
+
+作者会省略 figure captions、执行自己的 tokenizer 截断，并在完整节点集合中解析引用；这些与 SN 的输入/引用策略不同，必须随方法身份披露。评分仍用本项目固定 QASPER 官方 scorer；不把 LAB 自有指标或论文总分改标为本项目成绩。已验证原图加载、去标签后渲染、原 parser 和顺序映射，真实模型尚未执行。完整来源、差异及命令见[外部结果 §6](notebook-external-results-2026-09-28.md#6-qasperlab-longchat-citation-受控方法)。
+
 ## 4. MultiHop-RAG：跨文档问答与排名检索
 
 ### 4.1 数据、输入和输出
@@ -241,7 +247,11 @@ QA 的完整分母为 2556，包含 null。框架不会因某题生成错误就�
 
 最后一项不是通常按相关文档累计 precision 的 MAP。一篇 passage 同时包含多个 fact、gold 数大于 10 等条件下，其值可能超过 1。框架保留上游公式与名称前缀，不截断到 1，也不换成另一种 MAP 后沿用同一 profile。
 
-当前 BM25 对照可提交真实排名，来源文档、token 范围及文本会核实。**SN 尚未接入经过验证的等价排名契约，检索指标保留 pending。** 当前 SN 上下文 fact 覆盖只作诊断。论文中的 dense/hybrid 检索器和 gold-evidence QA 条件须作为不同方法/轨道记录。
+BM25 对照可提交真实排名，来源文档、token 范围及文本会核实。SN 的 chunk 模式现在有 `sn-multihop-chunk-selected-passages-v1` 排名契约：在原生 MMR／查询配额／mix 选择、source-graph 激活和回答合成之前，捕获 `AskService._activate_selected_source_graph` 返回的有序 `RetrievedChunk`，保留原文并用 SQLite/source snapshot 校验归属。它不按 relevance 重新排序、不去重、不从最终上下文或引用反推；显式空列表才是零命中，缺阶段/失败/重复阶段保持 pending 或 error。reasoning 模式没有等价的单一 passage 排名，仍保持 pending。论文中的 dense/hybrid 检索器和 gold-evidence QA 条件须作为不同方法/轨道记录。
+
+实现入口：[sn_retrieval.py](../src/rag_eval/sn_retrieval.py)、[multihop_official.py](../src/rag_eval/multihop_official.py)。请求身份同时保存原始 benchmark 问题和不计入 gold 的 SN 指令；验证和导出会重新核对二者。检索快照随输出保存，评分回放不依赖 live 数据库；生成失败不会抹掉已经观察到的检索，完整检索指标仍要求所有非 null 题都有明确观察。冻结 mapping 要求每个 `source_id` 唯一归属一个公开文档；审计同时区分观察到的 passage 数与实际参与官方前十名计算的数量。
+
+这使 SN 的结果可以使用官方 Hits/MAP/MRR 公式重评分，但不自动变成同条件检索器实验：SN 的产品 chunk、MMR/配额/图激活和预算与作者 256-token chunk 或其他外部检索器可能不同。报告应把它标为当前冻结输入下的 controlled-system/diagnostic 结果，不能仅凭该分数归因于某一个检索算法。
 
 ### 4.4 证据与边界
 
@@ -274,6 +284,8 @@ ALCE 不是一个统一问答分数。ASQA 是长答案，QAMPARI 是多答案�
 ### 5.2 输出与引用转换
 
 profile：`alce-246c476-cli-v1`。ASQA/ELI5 请求单行段落并引用来源；QAMPARI 请求逗号分隔答案列表并逐项引用。`candidate-topk` 是本项目控制组，不是作者 VANILLA 提示的复现。
+
+2026-09-28 新增独立的 `run_alce_vanilla.py` 受控方法：复用固定作者 `make_demo` 与 `LLM.generate` HF 分支，按 Llama2 两示例/五候选配置执行；完整 ASQA 948、ELI5 1,000、QAMPARI 1,000 题的 prompt 和 shown-doc 与作者 main 离线逐题一致。生成输入不含评测标签，实际所见候选编号进入 `citation_index_to_document_id`；未见候选的引用保持无效。完整输入 token IDs 含 BOS，预算按实际长度计算；加载和随机数与原作者环境的差异明确披露。输出可走现有完整引用评分，但真实模型、依赖和 AutoAIS 尚未运行，不能把输入验证称为论文成绩复现。详细契约与命令见[外部结果 §7](notebook-external-results-2026-09-28.md#7-alce完整答案与引用的-vanilla-受控方法)。
 
 SN 产品引用使用 `[kN]`，官方输入使用候选位置 `[1]`、`[2]` 等。桥接层根据本次观测的 anchor → source/document → 原候选位置转换，保留 raw answer 和逐次转换审计。未知或有歧义的锚点、没有观测支持的数字引用改为超出候选范围的 `N+1`；相同候选内容映射到第一个等价位置并记录。相关实现为 [notebook_alce.py](../src/rag_eval/notebook_alce.py) 的 `export_case` 及 `benchmark_official.py` 的 `prepare_inputs`。
 
@@ -309,7 +321,7 @@ SN 产品引用使用 `[kN]`，官方输入使用候选位置 `[1]`、`[2]` 等�
 
 **AutoAIS citation precision：** 联合引用支持目标时，再判断每条引用是独立支持，还是移除它后其余引用不再足够；满足任一条件才是有效贡献。以实际计入的引用数为题内分母，没有计入引用时为 0，再对题平均。它不是“引用编号能解析”“出现了几个引用”或人工证据重合率。
 
-ASQA/ELI5 分句后没有句子的输出被 AutoAIS 跳过；QAMPARI 的逗号构造对空输出仍产生一项。故同一个答卷，文本分数与引用分数可能有不同分母，而且引用分母还可能因方法输出不同而变化。框架保存每个指标的 `metric_case_ids` 和 `metric_denominators`，不能只存一个总题数。
+ASQA/ELI5 分句后没有句子的输出被 AutoAIS 跳过；QAMPARI 的逗号构造对空输出仍产生一项。故同一个答卷，文本分数与引用分数可能有不同分母，而且引用分母还可能因方法输出不同而变化。框架保存每个指标的 `metric_case_ids` 和 `metric_denominators`，不能只存一个总题数。某个官方批量指标没有逐题值时，评分工件还必须在 `batch_only_metrics` 明确列出；它可以保留批量差异，但不能进入逐题配对。
 
 ### 5.5 模型、依赖与当前验收程度
 
@@ -329,9 +341,52 @@ ASQA/ELI5 分句后没有句子的输出被 AutoAIS 跳过；QAMPARI 的逗号�
 
 因此当前可以声称 ALCE 数据、文本指标和引用聚合范围已验证；完整语义评分仍待服务器执行。完整 CLI 缺模型、分句资源不足、输出指标不全或进程失败时，不产生伪装成功的完整成绩。
 
-## 6. QMSum：查询驱动的会议摘要
 
-### 6.1 数据与输入轨道
+## 6. HotpotQA：distractor 多跳问答与 supporting facts
+
+### 6.1 本项目采用的官方轨道
+
+依据：[HotpotQA 论文](https://aclanthology.org/D18-1259/)、[官方仓库](https://github.com/hotpotqa/hotpot)、[HF 数据卡](https://huggingface.co/datasets/hotpotqa/hotpot_qa) 和固定 [hotpot_evaluate_v1.py](https://github.com/hotpotqa/hotpot/blob/fa3a36370899e1d85822de61e58c85ea19993154/hotpot_evaluate_v1.py)。第一版冻结 `distractor` validation：每道题的完整 context 作为其不可拆分资料集，保留自然干扰段落和原始顺序。`fullwiki` 需要另外冻结 processed Wikipedia、检索器和 fullwiki gold 输入，本轮不与 distractor 混用。
+
+| 层 | 官方要求 | 当前实现 |
+| --- | --- | --- |
+| 输入范围 | `id/question/answer/type/level/context/supporting_facts`；`type` 为 bridge 或 comparison | `_hotpot()` 同时接受原始 JSON 的 `[[title, sentences]]` 和 HF 列式 `{title, sentences}`；标题唯一、句子必须为字符串；空白句保留编号，越界官方 supporting tuple 保留原标注并单列未映射项 |
+| 公共材料 | 给模型每题的 context 段落和句子，不暴露 answer 或 supporting facts | `notebook-data-v3` 为每个段落建立 document，为每句建立 `source_units`；`notebook-request-v3` 只发送问题与标题/句子文本，任务类型改为公共 `qa` |
+| 题目身份 | 官方 `_id`/`id` 和原始顺序 | `sample_id` 沿用 `_id` 或 `id`，`case_id=hotpotqa:<id>`；同一题的约十个段落进入同一 partition，manifest scope 为 `per question distractor context` |
+| 生成输出 | Answer；完整官方轨道还需 `[title, sent_id]` supporting facts | SN 新 v3 runner 保存最终引用的来源快照并投影为 `[title, sent_id]`；reference runner 要求 `evidence_unit_ids` 并能完成投影 |
+
+### 6.2 官方评分与本地 bridge
+
+固定上游 commit 为 `fa3a36370899e1d85822de61e58c85ea19993154`，上游文件 SHA256 为 `d35fc91a6db21d791dbdda11daf3856e9359f5701d54e3eefba20d88fecc02c0`。本地 [hotpot_official.py](../src/rag_eval/hotpot_official.py) 镜像以下公式并在 bridge identity 中记录 URL、commit、revision 和 SHA256：
+
+- Answer：`normalize_answer` 小写、去标点、去冠词、压缩空格；token EM/Precision/Recall/F1。`yes`、`no`、`noanswer` 与不同答案之间直接记零。
+- Supporting Fact：将预测与 gold 的 `[title, sent_id]` 对视为集合，计算 EM/Precision/Recall/F1。
+- Joint：答案与 supporting-fact 的 precision/recall 相乘后计算 F1；EM 要求两项同时正确。
+
+`benchmark_official.prepare_inputs()` 只接受显式 `record.predicted_supporting_facts`，不会把 `gold_supporting_facts`、最终上下文覆盖或检索命中自动当作预测。缺少显式预测时，Answer 四项仍评分，八项 Supporting Fact/Joint 指标进入 `pending_metrics`，且不缩小答案分母。reference 的 `evidence_unit_ids` 会按冻结 `supporting_fact_unit_map` 映射为 `[title, sent_id]`；未知 unit 映射为保留的无效对，不能静默借用 gold。
+
+### 6.3 SN 当前符合程度和特殊情况
+
+当前已完成：原始/HF 两种 shape 的适配、完整 distractor context 冻结、句子 source unit、gold-free v3 request、Answer 官方公式、显式 supporting-fact 答卷的 Supporting/Joint 评分，以及 reference fake generator 到官方 scorer 的离线链路测试。新增 `hotpot_evidence.py` 将 SN 实际最终引用的 source chunk/element 按公开字符区间投影为官方 `[title, sent_id]`，保存快照并在导出/评分时重放；映射失败保留答案、整批 Supporting/Joint 进入 `pending`。完整 73,700 个真实公共段落经实际 SN parser/chunker 的 92,312 个 chunk 做了独立区间核对，92,312/92,312 一致；79 个文档含 81 个 parser 不产生的句位（54 个 HTML 标记、27 个数字或星号被解释为空列表标记），明确标为不可观测，不伪造证据。这是无模型解析验收，服务器真实 SN 回放仍待完成。
+
+特殊情况按以下规则处理：
+
+1. 缺答案、错误、缺题保留原状态；不把 `missing` 或 mapping error 静默变为错误答案。
+2. 重复 title、标题/句子数组长度不一致、supporting title 不在 context 仍拒绝。真实 validation 的 49 个空白句位保留原字符串和 ID。问题 `5ae61bfd5542992663a4f261` 有 `Jimmy Butler (basketball),902` 的越界 gold：`official_supporting_facts` 原样保留并参与官方集合评分，`gold.unmapped_supporting_facts` 记录缺少公共句位；不伪造 source unit、不修标签、不删题。
+3. 重复 supporting fact 交给官方 set 语义；预测顺序不会改变集合分数，原始列表仍保留在答卷审计中。
+4. `fullwiki`、无 gold 的 test、gold-evidence 或 oracle 片段必须使用新的 source/setting identity，不能混入 distractor validation 主轨。
+
+### 6.4 验收门槛
+
+SN 投影策略固定为 `sn-hotpot-final-citations-visible-sentences-v1`。预测对象是最终答案实际选中的 citation；一个句子的来源区间只要在被引用对象的可见部分中有内容，就作为整个官方句位输出。因此 chunk 粒度较粗或截短后仅露出句子开头都可能产生多选，由 scorer 计入 false positive，不从 gold 修正。重复文本按原位置区分、跨文档按原 title 区分，空白句不因偏移重排；仅标题引用或未知 citation 使用 `\0invalid-sn-support:*,-1` 无效对，不静默丢弃。来源不明、捕获缺失、解析变换无法精确还原等工程错误，不转换为模型空证据。
+
+新 v3 SN runtime 在 gold join 前捕获 `hotpot_evidence`，保存实际观测、源对象快照、公开 catalogue 身份和投影；方法身份包含 projector 及复用的 QASPER source projection 实现哈希。加载 run、导出和官方评分均可离线重放。SN 不能仅凭手填 `predicted_supporting_facts` 绕过 policy/snapshot；failed/missing 行不能携带 supporting facts。旧 run 没有这套观测时维持 answer-only，不自动生成所谓历史 Supporting/Joint 分数。
+
+服务器 smoke 至少覆盖 bridge、comparison、多个 supporting 句、自然干扰段落和错误/缺失状态；检查 request 中没有 answer/type/level/supporting facts，检查每个 source unit 的 title、sentence ID 和展示顺序。Answer-only SN 运行可先进入评分，但完整 Hotpot 官方指标只有在 projection policy、mapping error 和 replay snapshot 固定后才允许报告 Supporting Fact/Joint。
+
+## 7. QMSum：查询驱动的会议摘要
+
+### 7.1 数据与输入轨道
 
 依据：[原论文](https://aclanthology.org/2021.naacl-main.472/)、[固定官方 test](https://github.com/Yale-LILY/QMSum/blob/83d7768c1f2b4dfeb091385d3dc7e239b8e5bb7e/data/ALL/jsonl/test.jsonl)、[作者评分澄清](https://github.com/Yale-LILY/QMSum/issues/5#issuecomment-890003212)、其指向的 [MatchSum metrics.py](https://github.com/maszhongming/MatchSum/blob/c7754245a454d0ba3535db0e4cc1a13b3d35680d/metrics.py)。
 
@@ -341,7 +396,7 @@ ASQA/ELI5 分句后没有句子的输出被 AutoAIS 跳过；QAMPARI 的逗号�
 
 原 benchmark 允许研究直接全文摘要和 locate-then-summarize 方法；我们选择完整会议端到端条件。使用 gold 相关片段的模型可以做单独的理想输入分析，不能放在相同条件的主比较中。
 
-### 6.2 ROUGE 的具体实现
+### 7.2 ROUGE 的具体实现
 
 profile：`qmsum-author-rouge155-hmnet-seg-v1`。作者澄清指定 pyrouge 0.1.3，并指向 MatchSum 的 Perl ROUGE 调用。框架 [qmsum_official.py](../src/rag_eval/qmsum_official.py) 的 `score_qmsum_rouge` 实际执行 **ROUGE-1.5.5 Perl**，保留作者参数 `-c 95 -r 1000 -n 2 -m -a`；另加 `-d` 输出逐题明细以核实范围。
 
@@ -353,7 +408,7 @@ profile：`qmsum-author-rouge155-hmnet-seg-v1`。作者澄清指定 pyrouge 0.1.
 
 空预测仍保留对应行和参考摘要。执行失败、超时或输出缺逐题明细时保存命令/stdout/stderr 并报错，不把历史 Python ROUGE 结果填入 Perl profile。
 
-### 6.3 校准结果与不能外推的部分
+### 7.3 校准结果与不能外推的部分
 
 完整 281 题的数据、原 turn 边界和 gold 修改不影响生成输入已验证。另以作者公开 HMNet 答卷校准：独立 pyrouge SEE 与当前 SPL 在相同顺序、同样分句下均得到 **36.464 / 11.374 / 31.558**（百分制 R-1/R-2/R-L）。这支持两条调用路径在该校准输入上的一致性。
 
@@ -361,21 +416,21 @@ profile：`qmsum-author-rouge155-hmnet-seg-v1`。作者澄清指定 pyrouge 0.1.
 
 QMSum 已跑各一题 SN/BM25 的真实生成与新评分/比较。SN 当时旧 Python ROUGE 诊断缺可选包而报错，答案仍被保存，后续独立 Perl 评分成功；不能把原诊断错误擦掉后称原 run 全部正常。正式 281 题 SN 实验及同条件外部方法比较仍待完成。
 
-## 7. 与其他方法比较时，还需要满足什么
+## 8. 与其他方法比较时，还需要满足什么
 
-本节是**本项目的实验与比较政策**。其中同题、披露条件等符合可复现研究的一般要求，但本比较器的严格拒绝行为不应冒称为四个 benchmark 官方统一强制规则。
+本节是**本项目的实验与比较政策**。其中同题、披露条件等符合可复现研究的一般要求，但本比较器的严格拒绝行为不应冒称为五个 benchmark 官方统一强制规则。
 
-### 7.1 代码已经强制的检查
+### 8.1 代码已经强制的检查
 
 主比较要求相同 frozen bundle、suite、scope、按冻结顺序排列的 case IDs、profile 与 scorer 内容身份；每种方法只选一个明确尝试，生成中没有 missing/error。只比较双方都已完成的指标，保留 pending 和独有指标。
 
 对每项共同指标，参与题目 ID 必须相同，不能只有分母数字相同。ALCE 如果两种方法的空答造成引用 eligible IDs 不同，双方原始官方分数仍可分别保存，但当前主比较拒绝直接作该范围下的比较。**不能为了通过检查，事后挑两边都有分的题或修改官方空答规则。** 如要做另一个预先声明的补充分析，需单独冻结范围、说明选择依据与选择偏差。
 
-批量总分直接保留 scorer 输出。只有真实存在逐题值的共同指标才计算配对差；MAUVE、部分模型批指标没有逐题值时不虚构。当前比较器不会自动做显著性检验、置信区间或 SOTA 排名；QMSum scorer 自带的 ROUGE 区间另存，不等同于系统差值的显著性检验。
+批量总分直接保留 scorer 输出。只有真实存在逐题值的共同指标才计算配对差；MAUVE、部分模型批指标没有逐题值时不虚构，并由 `batch_only_metrics` 显式披露。比较器对有至少两个自然 group 的逐题差异计算固定种子的、按 case 等权的 group_id cluster bootstrap 95% CI，同时保存 group 数和有效 case 数；group 不足时标记 unavailable。这是探索性区间，不是显著性检验。它不会做跨 benchmark 总分或 SOTA 排名；QMSum scorer 自带的 ROUGE 区间另存，不等同于系统差值的不确定性估计。
 
 哈希和重建可检查工件一致性，不能单凭哈希证明原输入一定来自官方、模型服务一定用了声明的权重，或导入的外部答卷从未访问 gold。外部方法仍需核对原始来源和执行说明。
 
-### 7.2 开发者仍须审查的条件
+### 8.2 开发者仍须审查的条件
 
 | 比较问题 | 必须固定或披露的内容 |
 | --- | --- |
@@ -391,26 +446,33 @@ QMSum 已跑各一题 SN/BM25 的真实生成与新评分/比较。SN 当时旧 
 
 当前报告可汇总实际观察到的延迟、provider 调用/token 和覆盖情况；未观测到的 token 记 unavailable，没有价格/币种就不估算货币成本。配置 hash 或相同 model ID 不证明所有模型调用和 prompt 都相同，受控实验还需要运行配置核对。
 
-### 7.3 三种外部结果标签
+### 8.3 三种外部结果标签
 
 | 标签 | 可以做什么 | 不能暗示什么 |
 | --- | --- | --- |
 | `published-reference` | 引用论文/作者表格，逐项注明数据和条件差异 | 不是本项目在统一 scorer 下得到的成绩 |
-| `recomputed-subset` | 将可验证对齐的公开逐题答卷在明确子集上重评分 | 不是完整官方 test 的结果，也不抹去原方法的 gold 输入条件 |
+| `recomputed-subset` | 将可验证对齐的公开逐题答卷在明确范围上重评分；`scope=full/subset` 决定覆盖范围 | 标签本身不证明全量、原论文复现或同条件；不抹去原方法的 gold 输入条件 |
 | `controlled-rerun` | 按本次冻结协议重跑公开方法并统一评分 | 若改变作者 prompt/模型/输入，不能继续称完全复现原论文 |
+
+正式比较工件中的每个方法都必须显式声明 `configuration.comparison_category`；`kind=published` 只能标记为 `published-reference`，不能通过配置改写成受控重跑。SN 与本项目控制组由构造器写入 `controlled-rerun`，外部导入器只接受 `recomputed-subset` 或 `controlled-rerun`。
+
+2026-09-28 已完成[真实外部答卷重评分](notebook-external-results-2026-09-28.md)：Multi-Meta-RAG 两模型各 2,556 题，QA 分母 2,556、检索分母 2,255；ALCE 八份 100 题样本中 ASQA 已有四方法文本指标报告；QMSum Socratic SegEnc 已按作者公开代码顺序映射完整 281 条并使用固定 Perl profile 重评。QMSum 原运行输入清单不可得，顺序约定及限制必须随结果披露。问题/标签/scorer 对齐支持相应条件下的描述性配对，未恢复的语料、prompt 或预算禁止同条件和因果结论。
+
+ALCE 人工评测样本缺完整引用映射时使用 `citation_mapping_status=unavailable`，`--alce-full` 明确拒绝；新增 `--alce-answer-only` 则仅关闭固定原版 CLI 的 citations，仍可运行 ASQA QA/MAUVE/ROUGE 或 ELI5 claims-NLI/MAUVE/ROUGE。ELI5 仍使用原 AutoAIS 模型判 claims。引用分数/分母保持不存在并标 pending，不填零。模式、模型及原命令属于 scorer 身份，两侧比较必须一致。批次模型指标不能作为逐题值重复填充，也不能用于现有逐题 bootstrap。代码已验证，真实模型执行尚未验收。
 
 框架内 BM25/full-context/candidate-topk 属于自建控制组，用于检查 SN 相对朴素方法的收益；它们不能代替 LED、MultiHop dense/hybrid、ALCE VANILLA/RERANK 或 QMSum 作者模型的复现。没有独立在线榜单，也仍可用公开答卷/检查点作可靠比较；有榜单则仍需核对它是否同一协议。
 
-## 8. 当前符合程度与服务器验收项
+## 9. 当前符合程度与服务器验收项
 
 这里的“已验证”特指本地证据范围，不能推断服务器部署状态。
 
 | 套件 | 完整数据/公共输入 | 已有评分一致性证据 | 仍未验证/缺少的关键能力 | 正式全量 SN 与外部方法比较 |
 | --- | --- | --- | --- | --- |
 | QASPER | 416 篇/1451 题；0 排除 | 最终引用快照/回放与原 CLI Evidence F1 一题一致；完整公共语料解析/截短验收 | 服务器真实模式及全量证据观测；与 LED 输入条件对齐 | 未完成 |
-| MultiHop-RAG | 609 篇/2556 题；0 排除 | 全题正负 QA 校准；真实 BM25 排名与原检索脚本对照 | SN 排名观测契约；论文检索器复现 | 未完成 |
-| ALCE | 五普通变体 4896 行；0 排除 | 三主轨文本评分/预处理；真实 NLTK 下 AutoAIS 参与范围 | 真实 AutoAIS/QA/MAUVE 与完整评分环境；新 SN 生成 | 未完成 |
+| MultiHop-RAG | 609 篇/2556 题；0 排除 | 全题 QA 校准；BM25 排名对照；Multi-Meta 两模型完整 QA/检索重评与原 CLI 一致 | SN 排名观测契约；受控检索器复现及 corpus 身份 | 未完成；已有外部两答卷配对 |
+| ALCE | 五普通变体 4896 行；0 排除 | 三主轨文本/预处理；真实 NLTK 下 AutoAIS 参与范围；真实 ASQA 100 题四配置重评 | human_eval 完整引用映射；真实 AutoAIS/QA/MAUVE；新 SN 生成 | 未完成；已有 ASQA 样本文本配对 |
 | QMSum | 35 场/281 题；0 排除 | 真实 Perl 与独立 pyrouge 校准；一题真实链路 | 历史报告值差异；公开答卷版本对齐；同条件基线 | 未完成 |
+| HotpotQA | 固定 distractor validation 7,405 题/73,700 段落，原始/HF shape 一致 | 全量合成校准 12 指标与原 CLI 误差小于 1e-12；原生 answer/sp 导入已实现 | 实际模型输出与 SN projection 的服务器回放、fullwiki 未验证 | 未完成 |
 
 下一阶段由开发者在服务器执行以下可检查验收，技术选型不需要用户代为决定：
 
@@ -419,13 +481,13 @@ QMSum 已跑各一题 SN/BM25 的真实生成与新评分/比较。SN 当时旧 
 3. **补齐真实评分依赖。** 执行 ALCE 原大型模型评分和 QMSum Perl 环境检查，保存依赖 hash、真实输出和 eligible IDs；不以替代模型或控制流探针结果过关。
 4. **冻结并完成主范围。** 预先确定全量或明确命名的子集，运行 SN 与参考控制组；出现失败先保留产物并查原因，修复后按事前重试规则执行，不按分数择优。
 5. **选择可比较的外部方法。** 取得公开答卷/检查点，审核 ID、输入和预算，选择重评分还是重跑；条件不足就标论文参考值，不放进统一排名。
-6. **出具结论与限制。** 报告各套件独立主指标、失败覆盖、真实成本、配对分析及待验证项；不把四套不同任务压成一个无依据总分。
+6. **出具结论与限制。** 报告各套件独立主指标、失败覆盖、真实成本、配对分析及待验证项；不把五套不同任务压成一个无依据总分。
 
 QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照结果或映射错误批次只能比较已验证的答案指标。MultiHop SN 排名仍未接入。报告必须写明实际完成指标，不能用诊断分替代正式证据/排名指标。
 
-## 9. 可复查的版本与证据
+## 10. 可复查的版本与证据
 
-### 9.1 固定版本身份
+### 10.1 固定版本身份
 
 | 对象 | 本次身份 |
 | --- | --- |
@@ -437,11 +499,13 @@ QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照�
 | ALCE scorer | `princeton-nlp/ALCE@246c476a4edfc564266b7346b6e29ef4861ae937` |
 | QMSum 数据 | `Yale-LILY/QMSum@83d7768c1f2b4dfeb091385d3dc7e239b8e5bb7e`；test SHA256 `6bcd428211260ad2efae3af76cbaf6a7f5ae4bb5e1e59c45a4b8e89539cb9208` |
 | QMSum 评分依据 | MatchSum `c7754245a454d0ba3535db0e4cc1a13b3d35680d`；HMNet `416966c63e3cb7a57dc59b4ce8fa76f11fd048be` |
+| HotpotQA 轨道 | `hotpotqa/hotpot_qa@1908d6afbbead072334abe2965f91bd2709910ab` distractor validation；parquet SHA256 `c20b638ca82b21d04fe12e14ff417ad05153d4d215a65de54497fca4e972f7c6`；7,405 题 |
+| HotpotQA scorer | `hotpotqa/hotpot@fa3a36370899e1d85822de61e58c85ea19993154`；`hotpot_evaluate_v1.py` SHA256 `d35fc91a6db21d791dbdda11daf3856e9359f5701d54e3eefba20d88fecc02c0` |
 | 独立 pyrouge 校准 | `08e9cc35d713f718a05b02bf3bb2e29947d436ce`；不是用这个 commit 标记所有可能 pyrouge 安装 |
 
 下载来的 QASPER/MultiHop/ALCE 原评分脚本还须与 `benchmark_official.py` 的 `SOURCES` 及 `multihop_official.py` 的 `SOURCE` 中的 SHA256 一致才执行。模型、Perl 和 NLTK 身份保存在各次 score 的 dependencies 中。更新任何会影响输入或分数的内容，都应重审 profile/身份和证据，不静默让旧成绩看似可比。
 
-### 9.2 真实数据与独立校准报告
+### 10.2 真实数据与独立校准报告
 
 以下路径相对当前 worktree。`var/` 被 Git 忽略，**不会随代码仓库自动分发到服务器**；本节记录位置，服务器正式实验应另存自己的证据。长期保留或迁移报告时需同时保留原始输入、来源身份、校准脚本及 stdout/stderr，而不只是复制一个 passed 字段。
 
@@ -453,6 +517,8 @@ QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照�
 | QASPER 最终引用 Evidence F1 | `var/benchmark-protocol-validation/qasper-evidence-20260924/replay-v1/report.json`、同目录上级 `acceptance.py` | 真实一题回放与原 CLI 一致、8 个手算评分反例、原文件未改、共用 scorer 的比较链路 |
 | QASPER 全公开语料来源/截短 | `var/benchmark-protocol-validation/qasper-evidence-20260924/corpus-report.json`、`corpus_probe.py` | 416 篇实际 parser、11,065 个完整块、81,316 个截短测试；非真实模型选证据成绩 |
 | QMSum 完整适配 | `var/benchmark-protocol-validation/qmsum-validation.json` | 281 题、turn 完整性和标签隔离 |
+| HotpotQA 全量适配/评分校准 | `var/benchmark-protocol-validation/hotpot-full-20260928/validation.json` 与 bundle、原版 CLI stdout | 7,405 题/73,700 段落、原句位及异常 gold 保留、12 指标全量合成校准；不是模型成绩 |
+| HotpotQA SN 句子投影 | `var/benchmark-protocol-validation/hotpot-evidence-20260928/corpus-report.json` | 实际 SN parser/chunker 全量 73,700 段落、92,312 chunk 对照；81 个不可观测句位单列；无模型生成 |
 | MultiHop/ALCE 下载身份 | `var/benchmark-protocol-validation/vpn-acquisition-20260924/` | 文件实测大小、hash、固定发布来源与解包清单 |
 | MultiHop 完整检索核查 | `var/benchmark-protocol-validation/multihop-acceptance-20260924/run-v2/acceptance-report.json` | 独立排名重建和原检索脚本对照 |
 | MultiHop 正负 QA 校准 | `var/benchmark-protocol-validation/multihop-acceptance-20260924/qa-mixed-v2/mixed-calibration-report.json` | 全 2556 题八类输入的原函数/CLI 一致性 |
@@ -462,9 +528,9 @@ QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照�
 | QMSum 独立校准 | `var/qmsum-official-calibration/verified-calibration/report.json`、`alignment-audit.json` | Perl/pyrouge 一致性、279/281 对齐差异与历史分数残差 |
 | 一题真实比较 | `var/benchmark-protocol-validation/comparison-qasper-validated-20260924/`、`comparison-qmsum-validated-20260924/` | SN/BM25 生成到比较链路；不支持整体性能结论 |
 
-协议修正阶段的 Python 基线为657项；最终引用证据接入后，2026-09-24完整回归为 **697 passed、0 skipped，10.74秒**（新增40项证据测试）。此前 Dashboard JavaScript **34 passed、0 skipped**，本次无前端变动未重跑。没有新模型调用。命令与执行记录见[协议记录](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md#evidence-log)和[证据接入记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)。
+协议修正阶段的 Python 基线为657项；2026-09-24 QASPER 证据接入回归为697项，2026-09-26 HotpotQA 适配后的阶段回归为 **704 passed、2 skipped**（当前最新为 749 passed、2 skipped，见[评测状态](evaluation-status.md)）。两个跳过项需要 sibling project/native judge 或显式本地 Perl ROUGE；Dashboard JavaScript 当前为 **34 passed、0 skipped**。没有新模型调用。命令与执行记录见[协议记录](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md#evidence-log)和[证据接入记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)。
 
-### 9.3 回归测试保护哪些契约
+### 10.3 回归测试保护哪些契约
 
 | 测试文件 | 重点 |
 | --- | --- |
@@ -481,10 +547,10 @@ QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照�
 
 测试通过只覆盖被测条件。完整数据变形检查、独立原始 CLI、真实 Perl 和服务器模型实验各自补充不同证据，不能互相替代。
 
-## 10. 对外描述与后续维护
+## 11. 对外描述与后续维护
 
 可以使用的描述是：“在固定 QASPER v0.3 的 1451 题范围和已声明公开输入变体上，用指定官方 evaluator 计算 Answer F1”；前提是相应全量运行确实完成。当前只有一题真实运行，就必须写成“一题链路验收”。
 
-不能使用的描述包括：“通过单元测试，所以四套官方标准全部符合”“ALCE 引用可解析，所以 AutoAIS 正确”“QMSum 都叫 ROUGE，所以与论文数字可直接比较”“官方数据已下载，所以已经完成 benchmark 实验”。
+不能使用的描述包括：“通过单元测试，所以五套官方标准全部符合”“ALCE 引用可解析，所以 AutoAIS 正确”“QMSum 都叫 ROUGE，所以与论文数字可直接比较”“官方数据已下载，所以已经完成 benchmark 实验”。
 
 后续修改职责按边界保持清楚：换数据或公开输入改 adapter/bundle/request；增加证据或检索观测改 runtime/submission；换 scorer/模型/参数改评分 profile 与依赖身份；改可比条件改 comparison 并明确这是本项目政策。每次更新本文，写明改变的规则、独立验证证据和剩余未知，避免再次只留下笼统的“符合官方标准”。

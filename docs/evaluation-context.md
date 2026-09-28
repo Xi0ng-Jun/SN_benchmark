@@ -10,7 +10,7 @@
 
 当前实现覆盖四条主要路径：
 
-- Notebook 场景：QASPER、MultiHop-RAG、ALCE、QMSum，协议为 `sn-notebook-benchmarks-v1`。
+- Notebook 场景：QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA，协议为 `sn-notebook-benchmarks-v1`。
 - 原生 Agent：SN 原生 DeepEval span，协议为 `sn-deepeval-native-v1`；默认评组件，`--trajectory` 才评完整轨迹。
 - 已保存组件补评：`scripts/score_native_components.py`，从原始组件工件建立独立评分批次。
 - 离线 Dashboard：`scripts/build_experiment_dashboard.py`，只读已保存 run，展示实验地图、单题回放和结果分析。
@@ -42,7 +42,7 @@
 
 2026-09-24用户进一步明确正式执行在服务器；随后单独授权利用本机代理下载MultiHop-RAG与ALCE并进行真实数据/评分实现验收。本次下载及不调用生成模型的本地校准已执行，证据见[真实数据验收](notebook-benchmark-real-data-validation.md)。后续正式SN/LLM生成及完整ALCE模型评分在服务器进行。
 
-当前不扩展交互可靠性、资料更新一致性、KG、DAG、PDF/OCR 或新的 benchmark；是否纳入后续范围由具体实验结果决定。
+当前不再追加新的 benchmark；交互可靠性、资料更新一致性、KG、DAG、PDF/OCR 仍不在本轮范围。HotpotQA 是本轮已决定并已纳入的扩展；后续是否继续增加由具体实验结果决定。
 
 ## 阅读顺序
 

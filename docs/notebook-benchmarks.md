@@ -2,15 +2,15 @@
 
 文档状态：当前协议与服务器操作说明。真实数据和服务器状态必须按运行产物核实；当前总览见 [评测状态](evaluation-status.md)。
 
-论文、作者仓库、Hugging Face 发布、榜单状态及原始任务说明见 [四套 Benchmark 官方资料](notebook-benchmark-official-resources.md)。
+论文、作者仓库、Hugging Face 发布、榜单状态及原始任务说明见 [五套 Benchmark 官方资料](notebook-benchmark-official-resources.md)。
 
 本轮 SN 主实验及后续对照的执行口径见 [Notebook 实验计划](notebook-benchmark-experiment-plan.md)。
 
 新 prepare CLI 默认 `notebook-data-v3`，SN/Agent CLI 默认不含 gold 字段的 `notebook-request-v3`。旧 v1/v2 包与显式请求仍可读取，不能手改 manifest。v2 历史修正见[数据修正记录](notebook-data-corrections.md)；新的答卷、官方评分与比较入口见[当前实验计划](notebook-benchmark-experiment-plan.md)。
 
-本阶段新增 **QASPER、MultiHop-RAG、ALCE、QMSum** 四套资料型评测，协议为 `sn-notebook-benchmarks-v1`。这些是独立公开数据集，不是四个新增 DeepEval 内置 Benchmark 类。它们复用本项目 SN 隔离执行、观测、结果账本与 Dashboard；确定性指标按各数据集方法实现，ALCE 的模型指标显式调用固定版本官方评分代码。没有默认新增 GEval 或 DeepEval LLM judge，也不把 Agent trace 完整度当作 Agent 得分。
+本阶段新增 **QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA** 五套资料型评测，协议为 `sn-notebook-benchmarks-v1`。这些是独立公开数据集，不是五个新增 DeepEval 内置 Benchmark 类。它们复用本项目 SN 隔离执行、观测、结果账本与 Dashboard；确定性指标按各数据集方法实现，ALCE 的模型指标显式调用固定版本官方评分代码。没有默认新增 GEval 或 DeepEval LLM judge，也不把 Agent trace 完整度当作 Agent 得分。
 
-旧十套的数据协议、资料上限和历史成绩不自动迁移。2026-09-23 已验证完整真实 QASPER/QMSum 数据、Perl评分校准，并完成一题真实 SN/BM25 链路；MultiHop/ALCE 完整下载及 ALCE 模型评分尚未完成。公开来源见[官方资料](notebook-benchmark-official-resources.md)，实现计划见[协议修正计划](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md)。
+旧十套的数据协议、资料上限和历史成绩不自动迁移。2026-09-23 已验证完整真实 QASPER/QMSum 数据；HotpotQA 适配覆盖原始与 HF 两种公开 shape，并完成 fixture 级官方评分链路；MultiHop/ALCE 完整下载及 ALCE 模型评分尚未完成。公开来源见[官方资料](notebook-benchmark-official-resources.md)，实现计划见[协议修正计划](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md)。
 
 ## 能力、选择、资料范围
 
@@ -20,8 +20,9 @@
 | MultiHop-RAG | 多文档比较、时间/推理题、无答案题 | 指定官方 queries 全部有效题，四类 question_type 单独展示；发布 split=train 不冒称独立 test | **整个 corpus**，包含 gold 之外文章；一个完整 corpus 分区 | answer、evidence_list.fact、证据文章映射 |
 | ALCE | 长答案/列表回答、回答覆盖、引用支持 | 明确 asqa/qampari/eli5、retriever、普通/oracle variant；文件内全部有效题 | 每题原文件中的**全部候选片段**；保留顺序，同候选集合可共用分区 | qa_pairs、答案别名、claims、长答案等 |
 | QMSum | 面向问题的会议摘要 | 官方 JSONL 中全部 general/specific 查询 | 一场会议的全部发言（含原样空发言），保留 speaker 与 `[turn N]`；一场会议一个分区 | 人工摘要、specific 的全部 relevant_text_span |
+| HotpotQA | distractor 多跳问答、comparison/bridge 和句子级 supporting facts | 官方 distractor validation 全部题；每题完整 context 不拆分 | 每题约十个 Wikipedia 段落，逐句 source unit；一个题一个资料分区 | answer、type、level、supporting_facts；生成请求不携带这些标签 |
 
-QASPER v3不按标注删题，仅使用公共文字材料，不能保证每题都可单靠文字回答；v2筛选只为读取历史包保留。QMSum general无局部证据金标准，不算specific turn诊断。MultiHop保留公开来源/日期等元数据；证据URL优先匹配，无URL需唯一标题；冲突、丢失或fact无法定位时报错，不静默删题。
+QASPER v3不按标注删题，仅使用公共文字材料，不能保证每题都可单靠文字回答；v2筛选只为读取历史包保留。QMSum general无局部证据金标准，不算specific turn诊断。HotpotQA 第一版固定 distractor validation；fullwiki 需要独立 processed Wikipedia 与检索协议。MultiHop保留公开来源/日期等元数据；证据URL优先匹配，无URL需唯一标题；冲突、丢失或fact无法定位时报错，不静默删题。
 
 **一道题的资料不会分散到多个分区。** 如果资料总数超过准备时声明的容量，准备失败，要求显式调整容量；不会删掉候选或 gold 文章。默认 40 只是新命令的容量默认值，不是题量配额。MultiHop 当前发布 corpus 为 609 篇，应按实际文件记录数设足容量；ALCE top-100 候选一般需至少 100。新路径把容量写入隔离 SN 进程的 settings 与实验身份，不修改生产配置；旧十套仍按旧规则执行。
 
@@ -64,7 +65,7 @@ QASPER 的匹配只合并连续空白并去首尾空白，原文与原始证据�
 }
 ```
 
-ALCE 还必须记录 `"task": "asqa"`、`"retriever": "gtr"`、`"variant": "ordinary"`（以实际文件为准）。MultiHop 的 source.split 必须为 `train`。QMSum 使用 `val`/`test` 等原始 split。可额外记录原发布包 URL、SHA256、license_url 和转换历史；准备器会保留元数据并自行计算输入文件 SHA256，但**不会联网认证你填写的来源信息**。
+ALCE 还必须记录 `"task": "asqa"`、`"retriever": "gtr"`、`"variant": "ordinary"`（以实际文件为准）。MultiHop 的 source.split 必须为 `train`。QMSum 使用 `val`/`test` 等原始 split。HotpotQA 的 source.setting 必须为 `distractor`，第一版 split 为有 gold 的 `validation`；原始 JSON 与 HF 列式字典格式均会校验。可额外记录原发布包 URL、SHA256、license_url 和转换历史；准备器会保留元数据并自行计算输入文件 SHA256，但**不会联网认证你填写的来源信息**。
 
 ```bash
 python scripts/prepare_notebook_benchmarks.py \
@@ -82,9 +83,14 @@ python scripts/prepare_notebook_benchmarks.py \
 python scripts/prepare_notebook_benchmarks.py \
   --suite qmsum --raw /data/qmsum-test.jsonl \
   --source /data/qmsum-source.json --output /eval/bundles/qmsum
+
+python scripts/prepare_notebook_benchmarks.py \
+  --suite hotpotqa --raw /data/hotpot_dev_distractor_v1.json \
+  --source /data/hotpot-distractor-source.json --max-documents 10 \
+  --output /eval/bundles/hotpotqa-distractor-v3
 ```
 
-`--raw` 支持原始 QASPER paper-ID JSON、MultiHop JSON list、ALCE JSON list 或含 data 数组的对象、QMSum JSONL。不自动执行 HF loader、下载脚本、解压或格式猜测。上面的 ALCE 文件名只是路径示意，按官方包实际文件替换。
+`--raw` 支持原始 QASPER paper-ID JSON、MultiHop JSON list、ALCE JSON list 或含 data 数组的对象、QMSum JSONL，以及 HotpotQA 原始 list 或 HF 列式 dict rows。不自动执行 HF loader、下载脚本、解压或格式猜测。上面的 ALCE 文件名只是路径示意，按官方包实际文件替换。
 
 ## SN 执行与隔离
 
@@ -98,6 +104,8 @@ python scripts/run_notebook_benchmarks.py \
 ```
 
 reasoning 用相同 bundle/partition、另一个新 run-dir 和新进程。默认不会遍历其他分区；服务器 Agent 应枚举完整 partitions，显式记录计划和实际执行范围。每次独立导入与建索引；代码没有实现跨 mode 共享已处理 notebook。数据库、上传存储、缓存、日志、模型服务配置快照均位于 run/runtime；禁用 KG、历史记忆、用户 profile 注入和检索经验。模型服务读取服务器 SN 已部署的配置，不要求额外 tested/judge 配置。
+
+HotpotQA 的每个 partition 是一道题的完整 distractor context；服务器应同时检查 bridge/comparison、多个 supporting sentence、干扰段落和错误状态。SN 当前可以直接生成并评分 Answer EM/F1/Precision/Recall；没有显式 `[title, sent_id]` 预测时，Supporting Fact/Joint 在官方 score 中保留 pending。不要把最终 context 覆盖率写成 supporting-fact F1。
 
 CLI当前默认request-v3：请求中不携带references/expected_answer/gold_document_ids；QASPER/MultiHop任务统一为qa，题型留在评分侧；ALCE要求单段或逗号列表。v3沿用v2明确的QMSum指令，避免模板引入额外指代。旧v1/v2须显式选择，程序化execute默认v1仅为历史调用兼容；官方答卷导出必须v3。请求版本进入实验身份，不静默混比。历史v2动机见[归档](archive/2026-09/qmsum-next-iteration.md)。
 
@@ -126,7 +134,7 @@ python scripts/run_notebook_baseline.py \
 
 ## 指标与适用条件
 
-下表是原 Notebook run 的 SN 诊断指标，保留用于 Dashboard。新正式比较通过 `benchmark_protocol.py score`：QMSum使用作者确认的Perl、ALCE遵循CLI预处理/批量评分，QASPER evidence须显式预测。不能用下表诊断均值冒充新的官方分数；完整口径见[实验计划](notebook-benchmark-experiment-plan.md)。
+下表是原 Notebook run 的 SN 诊断指标，保留用于 Dashboard。新正式比较通过 `benchmark_protocol.py score`：QMSum使用作者确认的Perl、ALCE遵循CLI预处理/批量评分，QASPER evidence须显式预测；HotpotQA supporting facts 须显式投影为 `[title, sent_id]`。不能用下表诊断均值冒充新的官方分数；完整口径见[实验计划](notebook-benchmark-experiment-plan.md)。
 
 QASPER新v3 SN运行已自动冻结“最终引用→原始段落”证据快照，官方评分重放校验后输出Evidence F1。无引用是显式空列表；缺来源/歧义是映射错误，不静默丢题或借用上下文。旧无快照run只在 `export-sn --qasper-evidence` 时只读恢复到新submission。该政策属于方法适配，规则与验收范围见[标准文档§3.5](notebook-benchmark-standards-and-conformance.md#35-2026-09-24-已实现的最终引用投影与特殊情况)。
 
@@ -135,13 +143,14 @@ QASPER新v3 SN运行已自动冻结“最终引用→原始段落”证据快照
 | Benchmark | 主指标 | 诊断指标 | 算法与边界 |
 | --- | --- | --- | --- |
 | QASPER | `qasper_answer_token_f1_body_v1` | `qasper_context_paragraph_f1_whitespace_v2` | 答案规范化 token F1，对全部标注取 max；SN 完整正文只去 `[kN]`，不抽出最有利答案。上下文诊断从有可靠来源映射的最终上下文中仅合并空白后匹配**完整段落**，计算与 gold 的集合 F1；不是官方模型预测 evidence 字段的成绩。不可回答参考为 Unanswerable |
-| MultiHop-RAG | `multihop_official_weak_match_body_v1` | `multihop_context_fact_recall_v1` | 按指定官方版本的弱词重合：小写、空白分词，交集非空即 1；不是严格正确性。fact 诊断要求全文片段和原文档一致，null_query 为 N/A；没有检索排序，不提供 Hits@k/MRR/MAP |
+| MultiHop-RAG | `multihop_official_weak_match_body_v1` | `multihop_context_fact_recall_v1` | 按指定官方版本的弱词重合：小写、空白分词，交集非空即 1；不是严格正确性。fact 诊断要求全文片段和原文档一致，null_query 为 N/A；SN chunk-native ranking 另有独立契约可提供 Hits@k/MRR/MAP，reasoning 仍没有单一排名 |
 | ALCE ASQA | `alce_asqa_str_em_body_v1` | `alce_asqa_str_hit_body_v1` | 每组短答案任意别名是否出现在规范化正文中；覆盖组比例 / 全部覆盖二元值。沿用 substring，不能理解为语义判定 |
 | ALCE QAMPARI | `alce_qampari_f1_top5_body_v1` | prec、rec、rec_top5、f1 | 逗号拆分预测，与答案别名集比较；重复预测按官方实现参与 precision；top5 recall 的分母为 min(5, gold 数) |
 | ALCE ELI5 | `alce_eli5_claims_official_v1` | 引用分 | 显式官方 NLI 推断回答是否支持每个参考 claim，未执行时 unscored |
 | ALCE 全部任务 | 各任务主指标如上 | `alce_citation_rec_official_v1` / `alce_citation_prec_official_v1` | 固定官方 compute_autoais，逐句检查引用联合支持和多引用必要性；显式本地模型推断，不是 GEval |
 | QMSum | `qmsum_rouge1_f1_body_v1`、`qmsum_rouge2_f1_body_v1`、`qmsum_rougeL_f1_body_v1` | specific: `qmsum_context_nonempty_turn_recall_v2` | 固定 rouge-score==0.1.2、use_stemmer=True，全文回答与人工摘要比较，不冒充原论文完全复现。turn 诊断匹配原始非空发言全文，空发言不计分母并记录 ID；相关 span 全为空时 N/A，重复发言不能证明唯一位置 |
-| 全部四套 | — | `product.citation_object.existence_ratio` | 复用 SN 隔离库对象存在性检查，不代表语义支持 |
+| HotpotQA | `hotpot_answer_em_official_v1`、`hotpot_answer_f1_official_v1`、`hotpot_answer_precision_official_v1`、`hotpot_answer_recall_official_v1` | Supporting Fact/Joint 官方指标 | 按固定 `hotpot_evaluate_v1.py` normalize_answer 和 `[title, sent_id]` 集合评分；SN 没有显式 supporting-fact projection 时保持 pending，context coverage 只作诊断 |
+| 全部五套 | — | `product.citation_object.existence_ratio` | 复用 SN 隔离库对象存在性检查，不代表语义支持 |
 
 QMSum 依赖通过项目可选 extra `notebook` 声明，服务器需自行准备。缺依赖是 **error**，不是数据集不适用；不会静默改用自制 ROUGE。已保存的完整上下文保持原样；仅在重新验证 context_block、handle 和来源分段完全一致后，证据评分忽略未绑定来源的前导说明，并记录 `unbound_context_indices`。缺可靠上下文映射时诊断 N/A；无法正常作答时评分 unscored。连续主分仅报告均值和评分覆盖率，不生成答对率、综合质量总分或发布门禁。
 
@@ -201,12 +210,12 @@ python scripts/build_experiment_dashboard.py \
 
 ## 历史离线验证记录（2026-09-17）
 
-以下数字是 Notebook 适配阶段的历史本地验证，不能替代合并后主线当前回归；当前回归以[评测状态](evaluation-status.md)中的 447 项 Python 和 34 项 Dashboard JavaScript 检查为准。
+以下数字是 Notebook 适配阶段的历史本地验证，不能替代合并后主线当前回归；当前回归以[评测状态](evaluation-status.md)中的 704 项 Python（2 项可选环境跳过）和 34 项 Dashboard JavaScript 检查为准。
 
 - 全量 Python 回归 **319 passed**，无跳过；测试进程 socket/getaddrinfo 阻断，网络尝试 **0**。使用已有 venv 和只读 SN 类型/schema；SN 导入/Ask 与官方模型推断用测试替身，未运行产品实验。
 - Dashboard JavaScript 回归 **18 passed**；三个脚本及 ALCE module 的命令帮助检查通过。
 - 两项独立审阅发现已修复并复核：真实 reasoning 上下文前导说明的来源分段，以及 Dashboard 分区标签传递。
-- 上述早期验证不含真实ROUGE；2026-09-23已经独立完成真实Perl校准、QASPER/QMSum全量文件适配和一题SN端到端验证。ALCE模型分与MultiHop/ALCE完整文件仍未验收，详见当前实验计划。
+- 上述早期验证不含真实ROUGE；2026-09-23已经独立完成真实Perl校准、QASPER/QMSum全量文件适配和一题SN端到端验证。ALCE模型分与MultiHop/ALCE完整文件仍未验收；HotpotQA 尚未进行服务器真实模型运行，详见当前实验计划。
 
 复现测试（不会安装依赖）：
 

@@ -1,6 +1,6 @@
-# QASPER、MultiHop-RAG、ALCE、QMSum 官方资料手册
+# QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA 官方资料手册
 
-资料检索：2026-09-23；完整文件与评分证据更新：2026-09-24。文档状态：外部来源参考，供后续整理、论文阅读与实验设计使用。返回[文档导航](README.md)。
+资料检索：2026-09-23；完整文件与评分证据更新：2026-09-24；HotpotQA 资料与适配更新：2026-09-26。文档状态：外部来源参考，供后续整理、论文阅读与实验设计使用。返回[文档导航](README.md)。
 
 本页最初整理网页资料；随后已验证完整QASPER/QMSum文件、Perl评分校准与一题真实SN/BM25实验。2026-09-24又经代理下载并校验MultiHop/ALCE固定完整文件，完成真实数据及文本评分核查；ALCE大型评分模型尚未运行。下文区分**论文报告规模**、**发布页面记录单位**与**本项目实测口径**；链接状态是核查时观察，实际证据见[实验计划](notebook-benchmark-experiment-plan.md)和[MultiHop/ALCE验收](notebook-benchmark-real-data-validation.md)。
 
@@ -14,17 +14,19 @@
 | MultiHop-RAG | 跨新闻文档的检索与多跳问答 | [arXiv:2401.15391](https://arxiv.org/abs/2401.15391)，作者仓库标明 COLM 2024 | [yixuantt/MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG) | [yixuantt/MultiHopRAG](https://huggingface.co/datasets/yixuantt/MultiHopRAG) | 在已查作者入口中未找到独立官方提交榜单；论文提供结果表 |
 | ALCE | 带引用生成：流畅性、答案正确性和引用支持 | [EMNLP 2023](https://aclanthology.org/2023.emnlp-main.398/) | [princeton-nlp/ALCE](https://github.com/princeton-nlp/ALCE) | [princeton-nlp/ALCE-data](https://huggingface.co/datasets/princeton-nlp/ALCE-data) | 在已查作者入口中未找到独立官方提交榜单；按三个子任务阅读论文结果 |
 | QMSum | 根据用户查询总结一场长会议的相关内容 | [NAACL 2021](https://aclanthology.org/2021.naacl-main.472/) | [Yale-LILY/QMSum](https://github.com/Yale-LILY/QMSum) | 未从原论文和作者仓库确认原作者维护的独立 HF 数据集；衍生版本见 §5.4 | 作者仓库提供实验结果；SCROLLS 等为衍生套件，旧网站存在访问异常 |
+| HotpotQA | 给定带干扰段落的多跳问答与句子级 supporting facts | [EMNLP 2018](https://aclanthology.org/D18-1259/) | [hotpotqa/hotpot](https://github.com/hotpotqa/hotpot) | [hotpotqa/hotpot_qa](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | 官方主页提供 Codalab test 提交流程；本项目不提交榜单，论文/主页结果按 setting 分开读取 |
 
-| 比较项 | QASPER | MultiHop-RAG | ALCE | QMSum |
-| --- | --- | --- | --- | --- |
-| 资料单位 | 论文全文 | 完整新闻文章库 | 检索语料；发布包提供每题候选片段 | 完整会议转录 |
-| 期望回答 | 抽取、自由文本、Yes/No、不可回答 | 实体、比较/时间判断、信息不足 | ASQA 长答案、QAMPARI 列表、ELI5 解释 | 针对查询的摘要 |
-| 主要证据标注 | 段落、图表及高亮文本 | 多文档 evidence/fact | 参考答案/别名/claims；引用支持由评测模型判断 | specific 查询的相关 turn 范围 |
-| 论文/发布说明规模 | 1,585 篇，5,049 问 | 609 篇，2,556 问 | 论文称每个子任务从 dev 取 1,000 例；文件实数需另核 | 232 场，1,808 对查询摘要 |
-| 语言 | 英语 | 英语 | 英语 | 英语 |
-| 主要评测入口 | Answer F1、Evidence F1 | 检索排名指标、QA 脚本成功比例 | 子任务正确性、MAUVE、引用 precision/recall | ROUGE-1/2/L |
+| 比较项 | QASPER | MultiHop-RAG | ALCE | QMSum | HotpotQA |
+| --- | --- | --- | --- | --- | --- |
+| 资料单位 | 论文全文 | 完整新闻文章库 | 检索语料；发布包提供每题候选片段 | 完整会议转录 | 每题约十个 Wikipedia 段落 |
+| 期望回答 | 抽取、自由文本、Yes/No、不可回答 | 实体、比较/时间判断、信息不足 | ASQA 长答案、QAMPARI 列表、ELI5 解释 | 针对查询的摘要 | bridge/comparison 多跳答案 |
+| 主要证据标注 | 段落、图表及高亮文本 | 多文档 evidence/fact | 参考答案/别名/claims；引用支持由评测模型判断 | specific 查询的相关 turn 范围 | `[title, sent_id]` supporting facts |
+| 论文/发布说明规模 | 1,585 篇，5,049 问 | 609 篇，2,556 问 | 论文称每个子任务从 dev 取 1,000 例；文件实数需另核 | 232 场，1,808 对查询摘要 | 113K 问；distractor validation 7,405 |
+| 语言 | 英语 | 英语 | 英语 | 英语 | 英语 |
+| 主要评测入口 | Answer F1、Evidence F1 | 检索排名指标、QA 脚本成功比例 | 子任务正确性、MAUVE、引用 precision/recall | ROUGE-1/2/L | Answer、Supporting Fact、Joint EM/F1 |
 
 表中规模与任务分别依据 [QASPER 论文](https://aclanthology.org/2021.naacl-main.365.pdf)、[MultiHop-RAG 论文](https://arxiv.org/pdf/2401.15391)、[ALCE 论文 §2](https://aclanthology.org/2023.emnlp-main.398.pdf)、[QMSum 论文表 1](https://aclanthology.org/2021.naacl-main.472.pdf)。各套任务和评分单位不同，不据此计算跨 benchmark 总分。
+
 
 ## 2. QASPER
 
@@ -266,9 +268,65 @@ ALCE论文§2称从每个上游数据集的development set选取1000例，并说
 
 未在 QMSum 作者仓库中确认独立在线提交榜单。论文与仓库实验表是原始结果来源；衍生套件的 leaderboard 状态见下一节。仓库 [LICENSE](https://github.com/Yale-LILY/QMSum/blob/main/LICENSE) 为 **MIT**；原始 AMI/ICSI/议会材料仍需保留来源信息。
 
-## 6. 衍生版本与榜单访问状态
+## 6. HotpotQA
 
-| 资源 | 与本次四套 benchmark 的关系 | 可用参考入口 | 本次核查与边界 |
+### 6.1 论文与官方资源
+
+**HotpotQA: A Dataset for Diverse, Explainable Multi-hop Question Answering**，Yang 等，EMNLP 2018。[ACL Anthology](https://aclanthology.org/D18-1259/)、[arXiv:1809.09600](https://arxiv.org/abs/1809.09600) 是论文与引用入口。数据集强调跨多个 Wikipedia 段落的多跳推理，并为每道题提供句子级 supporting facts；`bridge` 和 `comparison` 两类题共同覆盖连接实体与比较推理。
+
+| 资源 | 地址 | 用途与归属 |
+| --- | --- | --- |
+| 官方主页 | [hotpotqa.github.io](https://hotpotqa.github.io/) | 数据下载、任务说明和 test 提交入口 |
+| 官方代码仓库 | [hotpotqa/hotpot](https://github.com/hotpotqa/hotpot) | 原始 baseline、数据处理和 evaluator |
+| 官方 evaluator | [hotpot_evaluate_v1.py](https://github.com/hotpotqa/hotpot/blob/fa3a36370899e1d85822de61e58c85ea19993154/hotpot_evaluate_v1.py) | Answer、Supporting Fact、Joint 的 EM/F1/Precision/Recall |
+| 固定 evaluator commit | [fa3a36370899e1d85822de61e58c85ea19993154](https://github.com/hotpotqa/hotpot/commit/fa3a36370899e1d85822de61e58c85ea19993154) | 本项目固定的上游源码 revision |
+| Hugging Face 数据集 | [hotpotqa/hotpot_qa](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | `distractor`/`fullwiki` config、字段 schema、split 预览 |
+| 官方数据仓库说明 | [GitHub README](https://github.com/hotpotqa/hotpot#data) | 原始 JSON 文件名和下载脚本 |
+| 论文索引 | [ACL Anthology](https://aclanthology.org/D18-1259/) | 论文、BibTeX 和正式引用 |
+| 榜单/提交 | [主页 submission guide](https://hotpotqa.github.io/) | 官方 test 集提交需要按 Codalab 指引；本项目当前只使用有 gold 的 validation |
+
+上游 evaluator 文件在该 commit 的 SHA256 是 `d35fc91a6db21d791dbdda11daf3856e9359f5701d54e3eefba20d88fecc02c0`。`src/rag_eval/hotpot_official.py` 是不依赖网络的公式镜像，记录该 URL、commit 和上游文件哈希；本地镜像自身的哈希另由 benchmark bridge 记录，不能把镜像误写成上游文件原件。
+
+### 6.2 数据、setting 与标注
+
+HotpotQA 有两个主要轨道：
+
+- **distractor**：每题提供约 10 个 Wikipedia 段落，其中包含 supporting paragraphs 和自然干扰项；答案与 supporting facts 可直接用于 validation 评分。
+- **fullwiki**：模型先在处理后的 Wikipedia 语料中检索，再回答；需要独立的 processed-Wikipedia corpus、检索设置和官方 fullwiki 输入，不能用 distractor 的 10 段上下文代替。
+
+HF 数据卡列出 `distractor` train 90,447 / validation 7,405，`fullwiki` train 90,447 / validation 7,405 / test 7,405。官方 test 标签和可提交文件遵循主页流程；本项目第一版冻结 **distractor validation**，因为它保留每题完整公共 context 与 gold supporting facts，能在服务器端复现输入边界。暂不把 fullwiki 或无 gold 的 test 伪装成同一轨道。
+
+原始 JSON 的一题通常是：
+
+```json
+{
+  "_id": "...",
+  "question": "...",
+  "answer": "...",
+  "type": "bridge|comparison",
+  "level": "easy|medium|hard",
+  "supporting_facts": [["Title", 0]],
+  "context": [["Title", ["sentence 0", "sentence 1"]]]
+}
+```
+
+HF Parquet/列式导出将 `context` 表示为 `{title: [...], sentences: [[...], ...]}`，将 `supporting_facts` 表示为 `{title: [...], sent_id: [...]}`。两种形状表达同一题；本项目适配器验证标题与句子数组长度及标题唯一性，保留原 sentence 字符串、顺序和编号，包括空白句。官方 supporting tuple 原样交给 scorer；越界 ID 另存 unmapped 元信息，不伪造句子或修正标签。2026-09-28 全量验收发现 49 个空白句位，以及一道题的 gold ID 902 超出 context。固定 HF revision 为 `1908d6afbbead072334abe2965f91bd2709910ab`，完整 7,405 题已验证，来源及校准见[外部结果](notebook-external-results-2026-09-28.md)。
+
+### 6.3 官方评分与比较边界
+
+对答案，官方 `normalize_answer` 小写、删除标点、去除冠词并压缩空白，然后计算 token EM、Precision、Recall、F1；`yes`、`no`、`noanswer` 与其他答案之间不做部分匹配。对 supporting facts，比较 `[title, sent_id]` 对的集合并计算 EM/Precision/Recall/F1。Joint 指标将答案与 supporting-fact 的 precision、recall 相乘，再计算 joint F1；Joint EM 要求两者同时 exact。
+
+这意味着“最终上下文包含 gold 段落”只能作为覆盖诊断，不能代替模型提交的 supporting-fact 预测。SN 当前正式 runner 会保存答案和最终引用/anchor 观测，但尚未自动把它们投影为 HotpotQA 官方 `[title, sent_id]` 字段；因此 SN 第一阶段正式报告 **Answer EM/F1/Precision/Recall**，Supporting Fact 与 Joint 保持 `pending`。`benchmark_reference.py` 的 reference JSON 契约已经可以生成显式 `evidence_unit_ids` 并投影 supporting facts，作为完整指标链路的控制组。
+
+### 6.4 Leaderboard、许可与本项目 setting
+
+官方主页提供 test 集下载与 Codalab submission guide；主页上的历史 leaderboard/snapshot 只能在记录其 setting（distractor 或 fullwiki）、split、模型和 supporting-fact 轨道后引用。不要把 fullwiki 的论文数字放入 distractor validation 的同条件表，也不要把没有逐题答卷的历史数字当成 SN 的 paired comparison。
+
+HotpotQA 数据与处理后的 Wikipedia 语料按 **CC BY-SA 4.0** 发布；使用时保留数据集论文、主页和原始来源归属。官方仓库中的 baseline 代码和数据文件许可须按各自 LICENSE/README 读取，不能仅凭数据许可推断代码许可。
+
+## 7. 衍生版本与榜单访问状态
+
+| 资源 | 与本次五套 benchmark 的关系 | 可用参考入口 | 本次核查与边界 |
 | --- | --- | --- | --- |
 | SCROLLS | 将 QASPER、QMSum 等统一为长文本 text-to-text 任务 | [作者 GitHub](https://github.com/tau-nlp/scrolls)、[HF](https://huggingface.co/datasets/tau/scrolls) | 属于 SCROLLS 团队的正式发布；不是原版任务所有证据字段/指标的替代 |
 | ZeroSCROLLS | 包含 QASPER、QMSum 的 zero-shot 长文本套件 | [作者 HF](https://huggingface.co/datasets/tau/zero_scrolls) | 按其自己的任务格式、抽样和评价协议解读 |
@@ -279,7 +337,7 @@ ALCE论文§2称从每个上游数据集的development set选取1000例，并说
 
 本次没有向任何榜单提交结果、登录账户或验证提交流程。对 MultiHop-RAG、ALCE、QMSum 的“未找到独立官方榜单”，含义仅是**已检查的论文、作者仓库和数据卡未提供可确认入口**，不是证明网上不存在任何相关榜单。
 
-## 7. 与 Silicon Notebook 当前评测的对应关系
+## 8. 与 Silicon Notebook 当前评测的对应关系
 
 本节为项目事实与解释，不是 benchmark 发布方要求。新官方评分入口为 [benchmark_official.py](../src/rag_eval/benchmark_official.py)；[notebook_scoring.py](../src/rag_eval/notebook_scoring.py) 保留 Notebook 诊断，[notebook_alce.py](../src/rag_eval/notebook_alce.py) 同时提供引用转换。逐项规则、公式、代码证据和未完成项见[标准与实现符合性](notebook-benchmark-standards-and-conformance.md)，执行入口见[当前实验计划](notebook-benchmark-experiment-plan.md)。
 
@@ -289,10 +347,11 @@ ALCE论文§2称从每个上游数据集的development set选取1000例，并说
 | MultiHop-RAG | 完整 corpus 的独立分区，gold 留在评分侧 | 官方弱匹配答案分、上下文 fact 覆盖 | fact 覆盖不是 Hits/MAP/MRR；正文答案与宽松词匹配要结合案例解释 |
 | ALCE | 每题完整候选，区分task/retriever/ordinary-oracle | 字符串指标及显式官方CLI模型批评分 | 不重检全Wikipedia/Sphere；只认实际显示的引用，保留官方预处理和各指标实际分母 |
 | QMSum | 一场完整会议一个分区，区分general/specific | 新官方轨道Perl ROUGE-1/2/L；turn覆盖仅诊断 | 明确分句与题序，不声称复现历史279题表格 |
+| HotpotQA | 每题一个 distractor context 分区；句子保持 source unit | Answer EM/F1/Precision/Recall；Supporting Fact/Joint 需显式预测，当前 SN pending | 采用 distractor validation；fullwiki 检索与 test 提交另行处理 |
 
-四套官方任务本身均不定义本项目的 DeepEval Agent 总轨迹或组件协议。`sn-deepeval-native-v1` 中的 Faithfulness、AnswerRelevancy、TaskCompletion 等是另行声明的诊断维度，不能改名为这四套 benchmark 的官方指标。[原生 Agent 协议](native-agent-evaluation.md)
+五套官方任务本身均不定义本项目的 DeepEval Agent 总轨迹或组件协议。`sn-deepeval-native-v1` 中的 Faithfulness、AnswerRelevancy、TaskCompletion 等是另行声明的诊断维度，不能改名为这五套 benchmark 的官方指标。[原生 Agent 协议](native-agent-evaluation.md)
 
-## 8. 版本记录与后续整理入口
+## 9. 版本记录与后续整理入口
 
 本次通过 GitHub commit API 核实以下仓库 `main` 的提交身份。固定链接用于重查本次读到的代码，**不表示这些提交均为原论文实验时的版本**，也不表示自动更新项目依赖。
 

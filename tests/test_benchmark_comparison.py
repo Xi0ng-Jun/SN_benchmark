@@ -27,12 +27,18 @@ def rehash(score):
     score['scores_id'] = fingerprint(score)
 
 
-def examples(tmp_path, *, count=2):
-    raw = [dict(meeting_transcripts=[dict(speaker='A', content='Cats run.')],
-                general_query_list=[dict(query='Summarize.', answer='Cats run.'),
-                                    dict(query='What happened?', answer='Cats ran.')],
-                specific_query_list=[])]
-    save(tmp_path / 'raw.jsonl', raw[0])
+def examples(tmp_path, *, count=2, two_groups=False):
+    raw = ([dict(meeting_transcripts=[dict(speaker='A', content='Cats run.')],
+                 general_query_list=[dict(query='Summarize.', answer='Cats run.')],
+                 specific_query_list=[]),
+            dict(meeting_transcripts=[dict(speaker='B', content='Cats sleep.')],
+                 general_query_list=[dict(query='Summarize.', answer='Cats sleep.')],
+                 specific_query_list=[])] if two_groups else
+           [dict(meeting_transcripts=[dict(speaker='A', content='Cats run.')],
+                 general_query_list=[dict(query='Summarize.', answer='Cats run.'),
+                                     dict(query='What happened?', answer='Cats ran.')],
+                 specific_query_list=[])])
+    (tmp_path / 'raw.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in raw))
     save(tmp_path / 'source.json', dict(dataset='QMSum', split='test', revision='fixture',
          source_url='https://example.org/fixture', license='test'))
     bundle = prepare('qmsum', tmp_path / 'raw.jsonl', tmp_path / 'source.json', tmp_path / 'bundle',
@@ -43,7 +49,8 @@ def examples(tmp_path, *, count=2):
     for i in range(count):
         method = dict(name=f'method-{i}', kind='reference', citation_style='none',
                       model_identity={'model': f'fixture-{i}'}, input_policy='full-transcript',
-                      configuration={'max_output_tokens': 256 + i})
+                      configuration={'max_output_tokens': 256 + i,
+                                     'comparison_category': 'controlled-rerun'})
         rows = [dict(case_id=c['case_id'], status='success', prediction='Cats run.') for c in cases]
         submission = build_submission(bundle, method=method, predictions=rows)
         prepared = official.prepare_inputs(bundle, submission)
@@ -55,6 +62,7 @@ def examples(tmp_path, *, count=2):
                      coverage=submission['coverage'], profile=prepared['profile'], dependencies=dependencies,
                      prepared_id=fingerprint(prepared), scorer_identity=identity, scorer_id=fingerprint(identity),
                      metrics={'rougeL': .4 + .1 * i, 'mauve': .2 + .1 * i},
+                     batch_only_metrics=['mauve'],
                      per_case=[dict(case_id=c['case_id'], status='success', group_id=c['group_id'],
                                     task=c['task'], metrics={'rougeL': [.1 + i * .2, .9][j]})
                                for j, c in enumerate(cases)],
@@ -90,6 +98,7 @@ def test_only_common_metrics_are_compared_and_pending_differences_are_explicit(t
     compare = module()
     _, entries, _, scores = examples(tmp_path)
     scores[1]['metrics'].pop('mauve')
+    scores[1]['batch_only_metrics'] = []
     scores[1]['pending_metrics'].append('mauve')
     rehash(scores[1]); save(entries[1]['scores'], scores[1])
     report = compare.compare_submissions(tmp_path / 'bundle', entries)
@@ -216,6 +225,66 @@ def test_duplicate_method_with_another_answer_is_still_a_duplicate_attempt(tmp_p
         compare.compare_submissions(tmp_path / 'bundle', entries)
 
 
+def test_published_reference_cannot_enter_paired_comparison(tmp_path):
+    compare = module()
+    bundle, entries, submissions, scores = examples(tmp_path)
+    published_method = dict(submissions[1]['method'], kind='published')
+    published = build_submission(bundle, method=published_method, predictions=submissions[1]['predictions'])
+    scores[1].update(method=published['method'], method_id=published['method_id'],
+                     submission_id=fingerprint(published),
+                     prepared_id=fingerprint(official.prepare_inputs(bundle, published)))
+    rehash(scores[1]); save(entries[1]['submission'], published); save(entries[1]['scores'], scores[1])
+    with pytest.raises(ValueError, match='published-reference|published'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+
+
+def test_published_kind_cannot_override_its_published_reference_category(tmp_path):
+    compare = module()
+    bundle, entries, submissions, scores = examples(tmp_path)
+    published_method = dict(submissions[1]['method'], kind='published')
+    published_method['configuration']['comparison_category'] = 'controlled-rerun'
+    published = build_submission(bundle, method=published_method, predictions=submissions[1]['predictions'])
+    scores[1].update(method=published['method'], method_id=published['method_id'],
+                     submission_id=fingerprint(published),
+                     prepared_id=fingerprint(official.prepare_inputs(bundle, published)))
+    rehash(scores[1]); save(entries[1]['submission'], published); save(entries[1]['scores'], scores[1])
+    with pytest.raises(ValueError, match='published|comparison category'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+
+
+def test_missing_comparison_category_is_not_inferred(tmp_path):
+    compare = module()
+    bundle, entries, submissions, scores = examples(tmp_path)
+    method = copy.deepcopy(submissions[1]['method'])
+    method['configuration'].pop('comparison_category')
+    submission = build_submission(bundle, method=method, predictions=submissions[1]['predictions'])
+    scores[1].update(method=method, method_id=submission['method_id'],
+                     submission_id=fingerprint(submission),
+                     prepared_id=fingerprint(official.prepare_inputs(bundle, submission)))
+    rehash(scores[1]); save(entries[1]['scores'], scores[1])
+    save(entries[1]['submission'], submission)
+    with pytest.raises(ValueError, match='comparison_category'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+
+
+def test_batch_only_metric_requires_an_explicit_declaration(tmp_path):
+    compare = module()
+    _, entries, _, scores = examples(tmp_path)
+    scores[1].pop('batch_only_metrics')
+    rehash(scores[1]); save(entries[1]['scores'], scores[1])
+    with pytest.raises(ValueError, match='batch_only_metrics'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+
+
+def test_batch_only_metric_cannot_have_per_case_values(tmp_path):
+    compare = module()
+    _, entries, _, scores = examples(tmp_path)
+    scores[1]['per_case'][0]['metrics']['mauve'] = .3
+    rehash(scores[1]); save(entries[1]['scores'], scores[1])
+    with pytest.raises(ValueError, match='batch_only_metrics|Per-case'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+
+
 def test_same_explicit_subset_is_valid_but_subset_and_full_cannot_mix(tmp_path):
     compare = module()
     bundle, entries, submissions, scores = examples(tmp_path)
@@ -247,6 +316,7 @@ def test_empty_metric_intersection_has_no_main_comparison(tmp_path):
     compare = module()
     _, entries, _, scores = examples(tmp_path)
     scores[1]['metrics'] = {'another_metric': .5}
+    scores[1]['batch_only_metrics'] = ['another_metric']
     for row in scores[1]['per_case']:
         row['metrics'] = {}
     rehash(scores[1]); save(entries[1]['scores'], scores[1])
@@ -284,6 +354,7 @@ def test_batch_denominators_are_disclosed_and_nonstandard_upstream_map_is_not_cl
         score['metric_denominators'] = {'rougeL': 2, 'mauve': 2, 'upstream_map_at_10': 1}
         score['metric_case_ids'] = {'rougeL': score['case_ids'], 'mauve': score['case_ids'],
                                     'upstream_map_at_10': score['case_ids'][:1]}
+        score['batch_only_metrics'] = ['mauve', 'upstream_map_at_10']
         rehash(score); save(entries[i]['scores'], score)
     report = compare.compare_submissions(tmp_path / 'bundle', entries)
     assert report['metric_denominators']['upstream_map_at_10'] == 1
@@ -367,6 +438,40 @@ def test_matching_conditional_subsets_and_legacy_full_scope_are_disclosed(tmp_pa
     assert legacy['metric_case_ids']['mauve'] == scores[0]['case_ids']
     assert legacy['methods'][0]['metric_case_ids_source'] == 'inferred_from_full_case_scope'
     assert legacy['conditional_metric_scopes'] == {}
+
+
+def test_explicit_conditional_metric_can_be_paired_on_its_eligible_cases(tmp_path):
+    compare = module()
+    _, entries, _, scores = examples(tmp_path)
+    for score in scores:
+        score['metric_denominators'] = {'rougeL': 2, 'mauve': 1}
+        score['metric_case_ids'] = {'rougeL': score['case_ids'], 'mauve': score['case_ids'][1:]}
+        score['batch_only_metrics'] = []
+        score['per_case'][1]['metrics']['mauve'] = .2
+        rehash(score); save(entries[scores.index(score)]['scores'], score)
+    scores[1]['per_case'][1]['metrics']['mauve'] = .4
+    rehash(scores[1]); save(entries[1]['scores'], scores[1])
+    report = compare.compare_submissions(tmp_path / 'bundle', entries)
+    assert report['paired_metrics'] == ['mauve', 'rougeL']
+    pair = report['comparisons'][0]
+    assert 'mauve' not in pair['paired'][0]['differences']
+    assert pair['paired'][1]['differences']['mauve'] == pytest.approx(.2)
+    assert pair['paired_mean_differences']['mauve'] == pytest.approx(.2)
+
+
+def test_grouped_bootstrap_is_reported_when_scope_has_multiple_groups(tmp_path):
+    compare = module()
+    _, entries, _, _ = examples(tmp_path, two_groups=True)
+    report = compare.compare_submissions(tmp_path / 'bundle', entries)
+    assert report['uncertainty']['computed'] is True
+    detail = report['comparisons'][0]['uncertainty']['rougeL']
+    assert detail['computed'] is True
+    assert detail['group_count'] == 2
+    assert len(detail['ci95']) == 2
+    assert detail['estimator'] == 'case-weighted mean difference'
+    assert detail['resampling_unit'] == 'group_id'
+    assert report['uncertainty']['computed_metric_count'] == 1
+    assert report['uncertainty']['unavailable_metric_count'] == 0
 
 
 def attach_observations(bundle, entry, submission, score, observations):

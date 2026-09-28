@@ -1,10 +1,10 @@
 # Notebook 类应用公开基准：数据与评分资源可获取性
 
-核查日期：2026-09-17。对象为 QASPER、ALCE、MultiHop-RAG、QMSum、LAB 和 ResearchQA。
+原始核查日期：2026-09-17；HotpotQA 纳入更新：2026-09-26。本文保留早期可获取性记录；当前执行入口以[HotpotQA 官方资料](notebook-benchmark-official-resources.md#6-hotpotqa)和[实验计划](notebook-benchmark-experiment-plan.md)为准。对象为 QASPER、ALCE、MultiHop-RAG、QMSum、HotpotQA、LAB 和 ResearchQA。
 
 ## 核查结论与证据边界
 
-QASPER、ALCE、MultiHop-RAG、QMSum 都已公开任务所需的数据资源，可以作为 SN 下一阶段的接入候选。LAB 也有可访问的预处理数据包。ResearchQA 的题目、标注和评测代码已公开，但其加载方式、论文全文获取与 PDF 依赖需要先处理。
+QASPER、ALCE、MultiHop-RAG、QMSum 和 HotpotQA 都已公开任务所需的数据资源；前四者已有完整文件核查，HotpotQA 当前已完成 fixture 级协议核查。LAB 也有可访问的预处理数据包。ResearchQA 的题目、标注和评测代码已公开，但其加载方式、论文全文获取与 PDF 依赖需要先处理。
 
 本轮只读取官方论文、说明、代码、文件目录和元数据，并对部分数据地址发送 HTTP HEAD 请求。HEAD 不读取文件正文。没有下载数据集、论文 PDF、模型权重或压缩包，没有解包、运行 loader、执行评分、调用 SN 或修改生产代码。因此，下文的规模来自发布说明，不能当作本地完整性审计结果；本机访问情况也不保证公司服务器的网络情况。
 
@@ -14,6 +14,7 @@ QASPER、ALCE、MultiHop-RAG、QMSum 都已公开任务所需的数据资源，�
 | ALCE | ASQA、QAMPARI、ELI5 的预检索候选片段包，含 top-100 候选及 oracle 重排变体 | 按子集提供答案、短答案及别名、参考长答案或 claims 等评分输入 | 三个子任务的发布包；本轮未解包计数 | 官方 `eval.py`；引用评分依赖 AutoAIS/NLI 模型 | 资料和 scorer 均有，需适配 SN 引用与准备评分模型 |
 | MultiHop-RAG | 独立文章库 `corpus.json`，含正文及来源元数据 | `MultiHopRAG.json` 中的问题、答案、题型、证据列表 | 2,556 问；HF corpus 页面为 609 篇文章；两个 config 均展示为 train | 官方检索、问答评分脚本 | 可复用已有项目基础，先补多文档证据集合支持 |
 | QMSum | 会议完整文本，按说话人和发言组织 | 查询、人工参考摘要；特定查询附相关发言范围 | train / val / test；232 场会议、1,808 对查询与摘要 | 发布 ROUGE 结果和模型入口；主数据仓库未提供独立 scorer | 数据齐备，评分实现需另行固定 |
+| HotpotQA | distractor 每题约十个 Wikipedia 段落；fullwiki 另有 processed corpus | answer、type、level、supporting_facts 句子对 | distractor/fullwiki；HF 列出 validation 7,405 | 官方 `hotpot_evaluate_v1.py`；本项目固定 distractor validation | HF 固定完整 7,405 题已取得、适配并作原 scorer 校准；尚无真实模型输出 |
 | LAB | 大学数据仓库发布的 `data.zip`，将六类任务整理为 Intertext Graph 格式 | 各任务原有标签及归因评测材料，标注来源随任务而异 | 数据仓库版本 4；包大小 1,410,519,294 bytes | 任务评分与归因评分代码 | 发布包可访问；与 QASPER 等任务重叠，按需采用 |
 | ResearchQA | 表中提供论文 PDF 地址、论文身份、部分来源片段 | 答案、分章节候选证据、judge rubric、部分题型的拒答标志 | 论文报告 494 篇、6,211 问；当前 HF 全量加载状态异常，未实测计数 | OpenPaper 的 `server/evals/run_benchmark.py` 等 | 保留候选；不能描述为已具备无障碍文本接入 |
 
@@ -82,17 +83,25 @@ ALCE 不要求每道题都只有唯一的正确引用组合。官方 `human_eval
 
 主仓库 LICENSE 为 MIT；保留会议来源信息。
 
-## 5. LAB：公开预处理包可访问，包含重叠任务
+## 5. HotpotQA：数据可得，第一版采用 distractor validation
+
+来源：[官方主页](https://hotpotqa.github.io/)、[官方仓库](https://github.com/hotpotqa/hotpot)、[HF 数据卡](https://huggingface.co/datasets/hotpotqa/hotpot_qa)、[固定 evaluator](https://github.com/hotpotqa/hotpot/blob/fa3a36370899e1d85822de61e58c85ea19993154/hotpot_evaluate_v1.py)。
+
+HotpotQA 的 `distractor` 轨道直接为每题提供约十个段落和句子级 supporting facts，适合先验证 SN 的多跳阅读、答案评分和证据投影；`fullwiki` 需要另行获取 processed Wikipedia 并固定检索器。本项目于 2026-09-28 取得 HF revision `1908d6afbbead072334abe2965f91bd2709910ab` 的完整 validation parquet（SHA256 `c20b638ca82b21d04fe12e14ff417ad05153d4d215a65de54497fca4e972f7c6`）。转换后与 KG2RAG 作者仓库副本全部行/顺序一致；完整 7,405 题、73,700 段落已适配。49 个空白句位、1 处 supporting ID 902 的越界标注均保留，不改 gold、不删题。全量合成校准的 12 项指标与原版 CLI 一致（误差小于 1e-12）。这不代表真实模型成绩或 SN supporting projection 完成，详情见[当前外部结果](notebook-external-results-2026-09-28.md)。
+
+## 6. LAB：已核实公开数据包，不含已发布逐题结果
 
 来源：[官方仓库](https://github.com/UKPLab/emnlp2024-attribute-or-abstain)、[大学数据仓库版本 4](https://tudatalib.ulb.tu-darmstadt.de/handle/tudatalib/4276.4)。
 
 发布记录列出 QASPER、Natural Questions、Evidence Inference、WiCE、ContractNLI、GovReport，统一采用 Intertext Graph 格式。不能把它们都当作全新独立数据，也不能在与 QASPER 合并汇总时重复计题。
 
-本轮读取到官方 `data.zip` 的[文件元数据](https://tudatalib.ulb.tu-darmstadt.de/server/api/core/bitstreams/f3f94e39-f71c-4de8-9aea-8f796a3bd420)：大小 **1,410,519,294 bytes**；对元数据返回的 [content 地址](https://tudatalib.ulb.tu-darmstadt.de/server/api/core/bitstreams/f3f94e39-f71c-4de8-9aea-8f796a3bd420/content) 发送 HEAD，得到 HTTP 200、`application/zip`。未下载或检查包内文件完整性。网页的 `/bitstreams/.../download` 本身返回 HTML，不能把这个响应误当 ZIP 文件。
+本轮读取到官方 `data.zip` 的[文件元数据](https://tudatalib.ulb.tu-darmstadt.de/server/api/core/bitstreams/f3f94e39-f71c-4de8-9aea-8f796a3bd420)：大小 **1,410,519,294 bytes**；对元数据返回的 [content 地址](https://tudatalib.ulb.tu-darmstadt.de/server/api/core/bitstreams/f3f94e39-f71c-4de8-9aea-8f796a3bd420/content) 发送 HEAD，得到 HTTP 200、`application/zip`。未下载整个压缩包，不声称完整文件校验通过。网页的 `/bitstreams/.../download` 本身返回 HTML，不能把这个响应误当 ZIP 文件。
 
-官方 README 的开头指向版本 4，而后面的旧示例仍指向版本 2；应明确使用哪个发布版本。GitHub 提供任务和归因 scorer；GovReport 的部分证据使用 BM25 自动构造，不能统一称为人工 gold evidence。发布页标注 CC BY 4.0（另有说明的内容除外），代码为 Apache-2.0。
+2026-09-28 网页仍返回反机器人 HTML，但原 content 接口实际支持 HTTP Range。已读取 ZIP 尾部与全部 15,834 条中央目录，`data/results/` 只有空目录；单独提取并校验 CRC 的 `data/results.csv` 是 hash/分数均为空的模板。此发布 bundle 仅含 code.zip/data.zip，没有发现独立结果包；不能用它替代 QASPER 模型答卷。记录见 `var/external-comparison/remaining-methods-20260928/lab-acquisition-audit.json`。官方 README 的开头指向版本 4，而后面的旧示例仍指向版本 2；应明确使用哪个发布版本。GitHub 提供任务和归因 scorer；GovReport 的部分证据使用 BM25 自动构造，不能统一称为人工 gold evidence。发布页标注 CC BY 4.0（另有说明的内容除外），代码为 Apache-2.0。
 
-## 6. ResearchQA：题目与代码可得，全文路线仍有具体缺口
+QASPER 的 test/train ITG 成员已另行按字节范围提取并校验，未下载完整包。完整 416 篇/1,451 题与现有官方标签一致；现已准备 LAB LongChat citation 受控入口，详见[外部结果 §6](notebook-external-results-2026-09-28.md#6-qasperlab-longchat-citation-受控方法)。这里取得的是输入和训练示例，仍不是已生成的公开答卷。
+
+## 7. ResearchQA：题目与代码可得，全文路线仍有具体缺口
 
 来源：[数据卡](https://huggingface.co/datasets/khoj-ai/ResearchQA/blob/main/README.md)、[数据页面](https://huggingface.co/datasets/khoj-ai/ResearchQA)、[作者评测说明](https://github.com/khoj-ai/openpaper/blob/master/server/evals/README.md)。
 
@@ -105,11 +114,11 @@ ALCE 不要求每道题都只有唯一的正确引用组合。官方 `human_eval
 3. 作者代码主要围绕 OpenPaper 和原始 PDF 基线组织。用于 SN 时需适配系统调用及引用结构；若坚持当前纯文本范围，还需确定可靠的全文文本来源。
 4. 发布题目包含模型生成标注。数据卡标注 CC BY-NC 4.0，并明确引用原文段落保留原出版者条款；这些应作为来源元信息记录。
 
-因此它可以留作后续候选，本轮不将其列入最先实施的四套。
+因此它可以留作后续候选，本轮不将其列入最先实施的五套。
 
 ## 建议下一步
 
-先围绕 **QASPER、ALCE、MultiHop-RAG、QMSum** 设计 SN 数据适配。LAB 可按需求复用具体任务和归因方法；ResearchQA 待全文获取与数据加载方式确定后再安排。
+先围绕 **QASPER、ALCE、MultiHop-RAG、QMSum、HotpotQA** 设计 SN 数据适配；HotpotQA 的第一版 setting 固定为 distractor validation。LAB 可按需求复用具体任务和归因方法；ResearchQA 待全文获取与数据加载方式确定后再安排。
 
 标准题目、答案和已有证据优先复用发布方版本，不要求重新人工编题或增加“先审核官方 benchmark 才能评分”的门槛。仍需做通常的数据与接口校验：固定版本、保留原始 ID、区分全文与 gold、记录缺失字段、完整保留多文档证据集合；这些是接入正确性的检查。
 

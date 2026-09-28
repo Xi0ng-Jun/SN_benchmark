@@ -27,12 +27,23 @@ def main(argv=None):
     parser.add_argument('--chunk-window', type=int, default=256)
     parser.add_argument('--chunk-overlap', type=int, default=32)
     parser.add_argument('--case-id', action='append', dest='case_ids', help='Explicit subset; repeat for several cases')
+    parser.add_argument('--case-id-file', type=Path,
+                        help='Read one frozen case ID per line; may be combined with --case-id')
     args = parser.parse_args(argv)
     from rag_eval.benchmark_reference import execute, reference_config
+    from rag_eval.notebook_runner import load_case_ids_file
+    case_ids = list(args.case_ids or [])
+    if args.case_id_file is not None:
+        try:
+            case_ids.extend(load_case_ids_file(args.case_id_file))
+        except ValueError as exc:
+            parser.error(str(exc))
+    if not case_ids:
+        case_ids = None
     configuration = reference_config(args.strategy, top_k=args.top_k, max_context_chars=args.max_context_chars,
                                      chunk_window=args.chunk_window, chunk_overlap=args.chunk_overlap)
     run = execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=args.run_dir,
-                  model_config=args.model_config, configuration=configuration, case_ids=args.case_ids)
+                  model_config=args.model_config, configuration=configuration, case_ids=case_ids)
     print(run/'submission.json')
     return run
 

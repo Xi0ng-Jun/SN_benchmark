@@ -1,0 +1,30 @@
+{
+  "format": "hotpot-train-demonstrations-v1",
+  "source_url": "https://datasets-server.huggingface.co/rows?dataset=hotpotqa%2Fhotpot_qa&config=distractor&split=train&offset=0&length=4",
+  "source_sha256": "d5ce60f4a7a7d53c9032eaa61cd002f8ae1c107533adb89d397b8ad9d4cfa158",
+  "source_revision": "unversioned rows API snapshot; file hash freezes the acquired response",
+  "split": "train",
+  "selection": "first four training rows before any model scoring",
+  "examples": [
+    {
+      "id": "5a7a06935542990198eaf050",
+      "question": "Which magazine was started first Arthur's Magazine or First for Women?",
+      "answer": "Arthur's Magazine"
+    },
+    {
+      "id": "5a879ab05542996e4f30887e",
+      "question": "The Oberoi family is part of a hotel company that has a head office in what city?",
+      "answer": "Delhi"
+    },
+    {
+      "id": "5a8d7341554299441c6b9fe5",
+      "question": "Musician and satirist Allie Goertz wrote a song about the \"The Simpsons\" character Milhouse, who Matt Groening named after who?",
+      "answer": "President Richard Nixon"
+    },
+    {
+      "id": "5a82171f5542990a1d231f4a",
+      "question": " What nationality was James Henry Miller's wife?",
+      "answer": "American"
+    }
+  ]
+}

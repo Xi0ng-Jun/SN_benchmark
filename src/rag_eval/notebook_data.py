@@ -9,7 +9,7 @@ VERSION = 'sn-notebook-benchmarks-v1'
 LEGACY_ADAPTATION = 'notebook-data-v1'
 ADAPTATION_REVISION = 'notebook-data-v2'
 OFFICIAL_ADAPTATION_REVISION = 'notebook-data-v3'
-SUITES = {name: {'product': True} for name in ('qasper', 'multihop_rag', 'alce', 'qmsum')}
+SUITES = {name: {'product': True} for name in ('qasper', 'multihop_rag', 'alce', 'qmsum', 'hotpotqa')}
 
 
 def _text(value, name):
@@ -302,6 +302,98 @@ def _qmsum(raw, revision):
     return cases, docs, []
 
 
+def _hotpot(raw, revision):
+    """Adapt the official HotpotQA distractor JSON without changing its scope.
+
+    A Hotpot question owns the ten paragraphs supplied with that question.  We
+    preserve each paragraph and sentence as a public source unit so retrieval
+    and later supporting-fact projection can distinguish document and sentence
+    identity.  The answer and supporting facts stay exclusively in ``gold``.
+    """
+    rows = _list(raw, 'HotpotQA rows')
+    cases, documents, decisions = [], [], []
+    for index, row in enumerate(rows):
+        sample = row.get('_id', row.get('id'))
+        sample = _text(sample, 'Hotpot question ID')
+        question = _text(row.get('question'), 'Hotpot question')
+        answer = _text(row.get('answer'), 'Hotpot answer')
+        kind = row.get('type')
+        level = row.get('level')
+        if kind not in {'bridge', 'comparison'}:
+            raise ValueError('Hotpot type must be bridge or comparison')
+        if level not in {'easy', 'medium', 'hard'}:
+            raise ValueError('Hotpot level must be easy, medium or hard')
+        raw_context = row.get('context')
+        if isinstance(raw_context, dict):
+            titles = _list(raw_context.get('title'), 'Hotpot context titles')
+            sentence_groups = _list(raw_context.get('sentences'), 'Hotpot context sentences')
+            if len(titles) != len(sentence_groups):
+                raise ValueError('Hotpot context title/sentence lengths differ')
+            contexts = list(zip(titles, sentence_groups))
+        else:
+            contexts = _list(raw_context, 'Hotpot context')
+        by_title = {}
+        question_documents = []
+        for ordinal, context in enumerate(contexts):
+            if not isinstance(context, (list, tuple)) or len(context) != 2:
+                raise ValueError('Hotpot context entry must be [title, sentences]')
+            title = _text(context[0], 'Hotpot context title')
+            if title in by_title:
+                raise ValueError('Hotpot context title is ambiguous: ' + title)
+            sentences = _list(context[1], 'Hotpot sentences')
+            # Official validation includes empty strings. Their positions are
+            # part of the sentence-ID contract, so preserve them without renumbering.
+            if any(not isinstance(sentence, str) for sentence in sentences):
+                raise ValueError('Hotpot sentences must be text')
+            source_units = [dict(id=f'sentence:{sent_id}', text=sentence, kind='sentence', sent_id=sent_id)
+                            for sent_id, sentence in enumerate(sentences)]
+            text = '\n\n'.join([title, *sentences])
+            document = _document('hotpotqa', [sample, ordinal, title], title, text, source_units=source_units)
+            documents.append(document)
+            question_documents.append(document)
+            by_title[title] = document
+        raw_supporting_value = row.get('supporting_facts')
+        if isinstance(raw_supporting_value, dict):
+            supporting_titles = _list(raw_supporting_value.get('title'), 'Hotpot supporting titles', nonempty=False)
+            supporting_ids = _list(raw_supporting_value.get('sent_id'), 'Hotpot supporting sentence IDs', nonempty=False)
+            if len(supporting_titles) != len(supporting_ids):
+                raise ValueError('Hotpot supporting title/sentence lengths differ')
+            raw_supporting = list(zip(supporting_titles, supporting_ids))
+        else:
+            raw_supporting = _list(raw_supporting_value, 'Hotpot supporting_facts', nonempty=False)
+        supporting, unmapped_supporting = [], []
+        for fact in raw_supporting:
+            if not isinstance(fact, (list, tuple)) or len(fact) != 2:
+                raise ValueError('Hotpot supporting fact must be [title, sent_id]')
+            title, sent_id = _text(fact[0], 'Hotpot supporting title'), fact[1]
+            if type(sent_id) is not int or sent_id < 0:
+                raise ValueError('Hotpot supporting sentence ID must be nonnegative integer')
+            document = by_title.get(title)
+            if document is None:
+                raise ValueError('Hotpot supporting fact title is missing from context')
+            units = document['source_units']
+            if sent_id >= len(units):
+                # One published dev label is sentence 902 in a five-sentence
+                # paragraph. The official evaluator compares the raw tuple;
+                # do not invent a source unit, correct the label, or drop the QA.
+                unmapped_supporting.append(dict(title=title, sent_id=sent_id,
+                                                reason='sentence_id_outside_context'))
+                continue
+            supporting.append(dict(title=title, sent_id=sent_id, document_id=document['id'],
+                                   source_unit_id=units[sent_id]['id']))
+        case = _case('hotpotqa', sample, kind, question, [d['id'] for d in question_documents],
+                         [answer], dict(answer=answer, supporting_facts=supporting,
+                                    official_supporting_facts=[[f[0], f[1]] for f in raw_supporting],
+                                    type=kind, level=level),
+                     [f['document_id'] for f in supporting], sample)
+        if unmapped_supporting:
+            case['gold']['unmapped_supporting_facts'] = unmapped_supporting
+        cases.append(case)
+        decisions.append(dict(case_id=case['case_id'], sample_id=sample, status='selected',
+                              reason='official HotpotQA distractor context with sentence annotations'))
+    return cases, documents, decisions
+
+
 def adapt(suite, raw, *, corpus=None, task=None, adaptation_revision=ADAPTATION_REVISION):
     if adaptation_revision not in {LEGACY_ADAPTATION, ADAPTATION_REVISION, OFFICIAL_ADAPTATION_REVISION}:
         raise ValueError('Unsupported notebook adaptation revision')
@@ -317,6 +409,8 @@ def adapt(suite, raw, *, corpus=None, task=None, adaptation_revision=ADAPTATION_
         cases, docs, decisions = _multihop(raw, corpus, adaptation_revision)
     elif suite == 'alce':
         cases, docs, decisions = _alce(raw, task, adaptation_revision)
+    elif suite == 'hotpotqa':
+        cases, docs, decisions = _hotpot(raw, adaptation_revision)
     else:
         cases, docs, decisions = _qmsum(raw, adaptation_revision)
     if not decisions:

@@ -81,6 +81,8 @@ def _bridge_dependencies(suite):
         files += ['multihop_official.py']
     elif suite == 'qasper':
         files += ['qasper_evidence.py']
+    elif suite == 'hotpotqa':
+        files += ['hotpot_official.py', 'hotpot_evidence.py', 'qasper_evidence.py']
     return {'bridge': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                        for name in files},
             'python': sys.version.split()[0],
@@ -197,10 +199,20 @@ def prepare_inputs(bundle, submission):
         if len(tasks) != 1:
             raise ValueError('One ALCE subtask required per official CLI batch')
         result.update(profile='alce-246c476-cli-v1', task=tasks.pop(), data=[])
+        citation_unavailable = submission['method']['configuration'].get('citation_mapping_status') == 'unavailable'
+        if citation_unavailable:
+            result['citation_mapping_supported'] = False
         for row in rows:
             case = cases[row['case_id']]
             record = row.get('record', {})
-            if row['status'] == 'success' and style == 'sn':
+            if citation_unavailable:
+                item = deepcopy(case['gold'])
+                item.update(question=case['question'], docs=[],
+                            output=row['prediction'] if row['status'] == 'success' else '')
+                audit = dict(case_id=row['case_id'], raw_answer=row['prediction'],
+                             converted_answer=item['output'], status=row['status'],
+                             citation_mapping_status='unavailable; text scoring only')
+            elif row['status'] == 'success' and style == 'sn':
                 if record.get('answer') != row['prediction'] or record.get('status') != 'success':
                     raise ValueError('SN answer differs from its observed citation record')
                 converted = export_case(case, record)
@@ -230,6 +242,44 @@ def prepare_inputs(bundle, submission):
             dict(case_id=row['case_id'], reference=cases[row['case_id']]['gold']['answer'],
                  prediction=(body_text(row['prediction']) if style == 'sn' else row['prediction'])
                             if row['status'] not in {'missing', 'error'} else '') for row in rows])
+    elif suite == 'hotpotqa':
+        data, predicted_supporting, supporting_supported, mapping_errors = [], {}, True, []
+        from .hotpot_evidence import validate_prediction
+        policy = submission['method']['configuration'].get('hotpot_evidence') if submission['method']['kind'] == 'sn' else None
+        documents = {d['id']: d for d in bundle['documents']} if policy is not None else {}
+        for row in rows:
+            case = cases[row['case_id']]
+            sample = case['sample_id']
+            gold_supporting = case['gold']['official_supporting_facts']
+            record = row.get('record', {})
+            facts = record.get('predicted_supporting_facts')
+            if row['status'] in {'error', 'missing'} and facts is not None:
+                raise ValueError('Failed Hotpot prediction cannot carry supporting facts')
+            if record.get('hotpot_evidence') is not None and policy is None:
+                raise ValueError('Hotpot evidence snapshot requires declared method policy identity')
+            if submission['method']['kind'] == 'sn' and facts is not None and policy is None:
+                raise ValueError('SN supporting facts require declared method policy and replayable snapshot')
+            if policy is not None and row['status'] not in {'missing', 'error'}:
+                facts = validate_prediction(record, [documents[did] for did in case['material_document_ids']],
+                                            policy, row['status'], row['prediction'])
+            if facts is not None:
+                if (not isinstance(facts, list) or any(not isinstance(item, list) or len(item) != 2 or
+                                                       not isinstance(item[0], str) or type(item[1]) is not int
+                                                       for item in facts)):
+                    raise ValueError('Invalid HotpotQA supporting-fact prediction')
+                predicted_supporting[sample] = [list(item) for item in facts]
+            else:
+                supporting_supported = False
+                mapping_errors.append(row['case_id'])
+            data.append(dict(case_id=row['case_id'], sample_id=sample,
+                             answer=(body_text(row['prediction']) if style == 'sn' else row['prediction'])
+                             if row['status'] not in {'missing', 'error'} else '',
+                             gold_answer=case['gold']['answer'],
+                             gold_supporting_facts=gold_supporting,
+                             supporting_facts=facts))
+        result.update(profile='hotpotqa-distractor-v1-official-v1', data=data,
+                      supporting_fact_supported=supporting_supported,
+                      supporting_fact_mapping_errors=mapping_errors)
     else:
         raise ValueError('Unsupported benchmark suite')
     return result
@@ -265,12 +315,18 @@ def _alce_text(prepared, source_directory):
 
 def score_prepared(bundle, submission, prepared, *, source_directory, output_dir, rouge_home=None,
                    alce_runtime=None):
-    """Text/Perl scoring by default; full ALCE inference requires explicit runtime."""
+    """Text/Perl scoring by default; ALCE model metrics require explicit runtime."""
     submission = validate_submission(bundle, submission)
     if prepared != prepare_inputs(bundle, submission):
         raise ValueError('Prepared inputs differ from frozen bundle and submission')
     if alce_runtime is not None and prepared['suite'] != 'alce':
         raise ValueError('ALCE runtime is only valid for ALCE submissions')
+    alce_mode = (alce_runtime or {}).get('scoring_mode', 'full')
+    if alce_runtime is not None:
+        from .alce_official_cli import alce_arguments
+        alce_arguments(prepared['task'], scoring_mode=alce_mode)
+        if alce_mode == 'full' and prepared.get('citation_mapping_supported') is False:
+            raise ValueError('Full ALCE scoring requires observed citation mapping; use explicit answer-only scoring')
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
     save_json(output_dir / 'prepared.json', prepared)
@@ -314,6 +370,15 @@ def score_prepared(bundle, submission, prepared, *, source_directory, output_dir
         metrics.update(retrieval['metrics'])
         pending += retrieval['pending_metrics']
         metric_case_ids.update({name: [r['case_id'] for r in retrieval['per_case']] for name in retrieval['metrics']})
+        retrieval_names = set(retrieval['metrics'])
+        retrieval_by_case = {
+            r['case_id']: {name: value for name, value in r['metrics'].items() if name in retrieval_names}
+            for r in retrieval['per_case']
+        }
+        answer_by_case = {row['case_id']: values for row, values in zip(rows, individual)}
+        for case_id, values in retrieval_by_case.items():
+            answer_by_case.setdefault(case_id, {}).update(values)
+        individual = [answer_by_case[row['case_id']] for row in rows]
     elif suite == 'alce':
         metrics, individual, normalized = _alce_text(prepared, source_directory)
         dependencies['sources'] = {k: SOURCES[k] for k in ('alce_eval.py', 'alce_utils.py')}
@@ -336,7 +401,27 @@ def score_prepared(bundle, submission, prepared, *, source_directory, output_dir
             metrics = batch['metrics']
             metric_case_ids.update(batch['metric_case_ids'])
             dependencies['alce_batch'] = batch['dependencies']
-            pending = []
+            pending = ['citation_rec', 'citation_prec'] if alce_mode == 'answer-only' else []
+    elif suite == 'hotpotqa':
+        from .hotpot_official import SOURCE_COMMIT, SOURCE_REVISION, SOURCE_SHA256, SOURCE_URL, aggregate, score_one
+        dependencies['sources'] = {'hotpot_evaluate_v1.py': {
+            'url': SOURCE_URL, 'commit': SOURCE_COMMIT, 'revision': SOURCE_REVISION,
+            'sha256': SOURCE_SHA256, 'implementation': 'formula mirror in hotpot_official.py'}}
+        answer_rows, full_rows = [], []
+        for item in prepared['data']:
+            answer_only = score_one(item['answer'], item['gold_answer'])
+            answer_rows.append(dict(case_id=item['case_id'], **answer_only))
+            if prepared['supporting_fact_supported']:
+                full_rows.append(dict(case_id=item['case_id'], **score_one(
+                    item['answer'], item['gold_answer'], item['supporting_facts'], item['gold_supporting_facts'])))
+        metrics = aggregate([{key: value for key, value in row.items() if key != 'case_id'}
+                             for row in (full_rows if prepared['supporting_fact_supported'] else answer_rows)])
+        per_case_by_id = {row['case_id']: {key: value for key, value in row.items() if key != 'case_id'}
+                          for row in (full_rows if prepared['supporting_fact_supported'] else answer_rows)}
+        individual = [per_case_by_id[row['case_id']] for row in rows]
+        if not prepared['supporting_fact_supported']:
+            pending = ['supporting_fact_em', 'supporting_fact_f1', 'supporting_fact_prec',
+                       'supporting_fact_recall', 'joint_em', 'joint_f1', 'joint_prec', 'joint_recall']
     else:
         if rouge_home is None:
             raise ValueError('QMSum requires an explicit ROUGE-1.5.5 distribution')
@@ -355,6 +440,15 @@ def score_prepared(bundle, submission, prepared, *, source_directory, output_dir
     per_case = [dict(case_id=row['case_id'], status=row['status'], group_id=cases[row['case_id']]['group_id'],
                      task=cases[row['case_id']]['task'], metrics=validate_metrics(scores))
                 for row, scores in zip(rows, individual)]
+    metric_case_ids = {name: list(metric_case_ids.get(name, submission['case_ids'])) for name in metrics}
+    batch_only_metrics = []
+    for name in metrics:
+        actual_ids = [row['case_id'] for row in per_case if name in row['metrics']]
+        expected_ids = metric_case_ids[name]
+        if actual_ids and actual_ids != expected_ids:
+            raise ValueError('Per-case metric coverage differs from its declared eligible-case IDs: ' + name)
+        if not actual_ids:
+            batch_only_metrics.append(name)
     result = dict(format='benchmark-scored-submission-v1', bundle_id=submission['bundle_id'],
                   submission_id=fingerprint(submission), suite=suite, scope=submission['scope'],
                   case_ids=submission['case_ids'], method=submission['method'], method_id=submission['method_id'],
@@ -363,8 +457,9 @@ def score_prepared(bundle, submission, prepared, *, source_directory, output_dir
                   scorer_identity=scorer_identity(prepared['profile'], dependencies),
                   scorer_id=fingerprint(scorer_identity(prepared['profile'], dependencies)),
                   metrics=metrics, per_case=per_case, pending_metrics=pending,
-                  metric_case_ids={name: metric_case_ids.get(name, submission['case_ids']) for name in metrics},
-                  metric_denominators={name: len(metric_case_ids.get(name, rows)) for name in metrics},
+                  metric_case_ids=metric_case_ids,
+                  metric_denominators={name: len(metric_case_ids[name]) for name in metrics},
+                  batch_only_metrics=batch_only_metrics,
                   official_paper_reproduction=False)
     result['scores_id'] = fingerprint(result)
     save_json(output_dir / 'scores.json', result)

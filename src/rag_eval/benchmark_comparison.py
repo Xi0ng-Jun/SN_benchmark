@@ -12,6 +12,7 @@ from itertools import combinations
 import json
 import math
 from pathlib import Path
+import random
 import re
 
 from .artifacts import save_json
@@ -22,6 +23,19 @@ from .starter_protocol import fingerprint
 
 
 FORMAT = 'benchmark-comparison-v1'
+COMPARISON_CATEGORIES = {'recomputed-subset', 'controlled-rerun', 'published-reference'}
+
+
+def _comparison_category(method):
+    configuration = method.get('configuration', {})
+    category = configuration.get('comparison_category') if isinstance(configuration, dict) else None
+    if category is None:
+        raise ValueError('Method configuration.comparison_category is required for formal comparison')
+    if category not in COMPARISON_CATEGORIES:
+        raise ValueError('Unknown comparison category: ' + str(category))
+    if method.get('kind') == 'published' and category != 'published-reference':
+        raise ValueError('published methods must use comparison_category=published-reference')
+    return category
 
 
 def _nonnegative_observation(value, field):
@@ -101,6 +115,53 @@ def _hash(value, field):
         raise ValueError(f'{field} must be a SHA256 identity')
 
 
+def _quantile(values, probability):
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * probability
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _group_bootstrap(rows, metrics, *, seed=0, resamples=2000):
+    """Estimate paired mean uncertainty by resampling benchmark groups.
+
+    The observed statistic is the per-case mean difference, while each
+    resample draws groups with replacement and retains every eligible case in
+    a selected group.  A single-group scope is reported as unavailable rather
+    than pretending that bootstrap uncertainty exists.
+    """
+    rng = random.Random(seed)
+    result = {}
+    for metric in sorted(metrics):
+        groups = {}
+        for row in rows:
+            if metric in row['differences']:
+                groups.setdefault(row['group_id'], []).append(row['differences'][metric])
+        eligible = [value for values in groups.values() for value in values]
+        if len(groups) < 2 or not eligible:
+            result[metric] = {'computed': False, 'reason': 'fewer_than_two_groups',
+                              'group_count': len(groups), 'case_count': len(eligible),
+                              'estimator': 'case-weighted mean difference',
+                              'resampling_unit': 'group_id'}
+            continue
+        group_ids = list(groups)
+        samples = []
+        for _ in range(resamples):
+            sampled = [group_ids[rng.randrange(len(group_ids))] for _ in group_ids]
+            values = [value for group_id in sampled for value in groups[group_id]]
+            samples.append(sum(values) / len(values))
+        observed = sum(eligible) / len(eligible)
+        result[metric] = {'computed': True, 'group_count': len(groups), 'case_count': len(eligible),
+                          'estimator': 'case-weighted mean difference',
+                          'resampling_unit': 'group_id',
+                          'resampling': 'cluster bootstrap; retain all cases in each sampled group',
+                          'mean': observed, 'ci95': [_quantile(samples, .025), _quantile(samples, .975)]}
+    return result
+
+
 def _read(path):
     path = Path(path).resolve()
     payload = path.read_bytes()
@@ -176,6 +237,7 @@ def _validate_scores(bundle, submission, scores):
             raise ValueError('Retrieval metrics require explicit eligible-case denominators')
         denominators = {name: len(submission['case_ids']) for name in metrics}
     metric_cases = scores.get('metric_case_ids')
+    explicit_metric_cases = metric_cases is not None
     scope_ids = submission['case_ids']
     if metric_cases is not None:
         if not isinstance(metric_cases, dict) or set(metric_cases) != set(metrics):
@@ -198,13 +260,22 @@ def _validate_scores(bundle, submission, scores):
         raise ValueError('pending_metrics must contain distinct nonempty descriptions')
     if any(item.split(':', 1)[0].strip() in metrics for item in pending):
         raise ValueError('Metric cannot be scored and pending simultaneously')
+    declared_batch_only = scores.get('batch_only_metrics')
+    if declared_batch_only is None:
+        declared_batch_only = []
+    if (not isinstance(declared_batch_only, list)
+            or any(not isinstance(name, str) or not name.strip() for name in declared_batch_only)
+            or len(declared_batch_only) != len(set(declared_batch_only))
+            or not set(declared_batch_only) <= set(metrics)):
+        raise ValueError('batch_only_metrics must contain distinct scored metric names')
     rows = scores.get('per_case')
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError('Missing per-case coverage records')
     if [row.get('case_id') for row in rows] != submission['case_ids']:
         raise ValueError('Per-case coverage/order differs from frozen case IDs or contains duplicates')
     cases = {c['case_id']: c for c in bundle['cases']}
-    per_case_metrics = None
+    per_case_metrics = set()
+    legacy_per_case_metrics = None
     for row, prediction in zip(rows, submission['predictions']):
         case = cases[row['case_id']]
         for key, expected in [('status', prediction['status']), ('group_id', case['group_id']), ('task', case['task'])]:
@@ -213,14 +284,35 @@ def _validate_scores(bundle, submission, scores):
         keys = set(validate_metrics(row.get('metrics')))
         if not keys <= set(metrics):
             raise ValueError('Per-case metric has no corresponding batch metric')
-        if per_case_metrics is not None and keys != per_case_metrics:
-            raise ValueError('Per-case metric coverage is inconsistent; partial denominators are not comparable')
-        if any(denominators[key] != len(rows) for key in keys):
+        if not explicit_metric_cases:
+            if legacy_per_case_metrics is not None and keys != legacy_per_case_metrics:
+                raise ValueError('Per-case metric coverage is inconsistent; partial denominators are not comparable')
+            legacy_per_case_metrics = keys
+        if not explicit_metric_cases and any(denominators[key] != len(rows) for key in keys):
             raise ValueError('Per-case metric denominator differs from its complete row coverage')
-        per_case_metrics = keys
+    if explicit_metric_cases:
+        rows_by_metric = {metric: [row['case_id'] for row in rows if metric in row['metrics']]
+                          for metric in metrics}
+        for metric, actual_ids in rows_by_metric.items():
+            expected_ids = metric_cases[metric]
+            if actual_ids and actual_ids != expected_ids:
+                raise ValueError(f'Per-case metric IDs differ from metric_case_ids: {metric}')
+            if not actual_ids and metric not in declared_batch_only:
+                raise ValueError(f'Metric without per-case values must be listed in batch_only_metrics: {metric}')
+            if actual_ids and metric in declared_batch_only:
+                raise ValueError(f'Metric with per-case values cannot be listed in batch_only_metrics: {metric}')
+            if actual_ids:
+                per_case_metrics.add(metric)
+    else:
+        per_case_metrics = legacy_per_case_metrics or set()
+        missing_batch_only = set(metrics) - per_case_metrics
+        if missing_batch_only - set(declared_batch_only):
+            raise ValueError('Metrics without per-case values require batch_only_metrics')
+        if set(declared_batch_only) & per_case_metrics:
+            raise ValueError('batch_only_metrics contains a metric with per-case values')
     if not submission['coverage']['generation_complete']:
         raise ValueError('Main comparison requires complete generation; missing/error cases remain incomplete')
-    return per_case_metrics or set(), denominators, metric_cases
+    return per_case_metrics or set(), denominators, metric_cases, set(declared_batch_only)
 
 
 def compare_submissions(bundle_directory, entries):
@@ -240,11 +332,14 @@ def compare_submissions(bundle_directory, entries):
             raise ValueError('Each comparison entry requires submission and scores file paths')
         saved, submission_file = _read(entry['submission'])
         submission = validate_submission(bundle, saved)
+        category = _comparison_category(submission['method'])
+        if category == 'published-reference':
+            raise ValueError('published-reference cannot enter paired comparison')
         submission_id = fingerprint(submission)
         if submission_id in seen_submissions or submission['method_id'] in seen_methods:
             raise ValueError('Duplicate submission/method attempt; explicitly select one attempt per method')
         scores, score_file = _read(entry['scores'])
-        per_metrics, denominators, metric_cases = _validate_scores(bundle, submission, scores)
+        per_metrics, denominators, metric_cases, batch_only = _validate_scores(bundle, submission, scores)
         if loaded:
             reference = loaded[0]['scores']
             for key in ('bundle_id', 'suite', 'scope', 'case_ids', 'profile', 'scorer_id', 'scorer_identity'):
@@ -252,9 +347,10 @@ def compare_submissions(bundle_directory, entries):
                     raise ValueError(f'Cannot compare different {key}; freeze the same data, scope and scorer')
         seen_submissions.add(submission_id)
         seen_methods.add(submission['method_id'])
-        loaded.append({'submission': submission, 'scores': scores, 'per_metrics': per_metrics,
+        loaded.append({'submission': submission, 'scores': scores, 'category': category, 'per_metrics': per_metrics,
                        'denominators': denominators,
                        'metric_case_ids': metric_cases,
+                       'batch_only_metrics': batch_only,
                        'files': {'submission': submission_file, 'scores': score_file}})
     common = set.intersection(*(set(item['scores']['metrics']) for item in loaded))
     if not common:
@@ -270,6 +366,8 @@ def compare_submissions(bundle_directory, entries):
     for item in loaded:
         scores = item['scores']
         methods.append({'method_id': scores['method_id'], 'method': deepcopy(scores['method']),
+                        'comparison_category': item['category'],
+                        'provenance': deepcopy(scores['method'].get('configuration', {}).get('external_source')),
                         'submission_id': scores['submission_id'], 'scores_id': scores['scores_id'],
                         'prepared_id': scores['prepared_id'], 'coverage': deepcopy(scores['coverage']),
                         'metrics': deepcopy(scores['metrics']), 'pending_metrics': list(scores['pending_metrics']),
@@ -279,7 +377,7 @@ def compare_submissions(bundle_directory, entries):
                         'denominator_source': ('explicit' if 'metric_denominators' in scores else 'inferred_from_full_case_scope'),
                         'unavailable_metrics': sorted(union - set(scores['metrics'])),
                         'unshared_metrics': sorted(set(scores['metrics']) - common),
-                        'batch_only_metrics': sorted(set(scores['metrics']) - item['per_metrics']),
+                        'batch_only_metrics': sorted(item['batch_only_metrics']),
                         'observed_cost': _observed_cost(item['submission']),
                         'files': item['files']})
     differences = {}
@@ -288,27 +386,43 @@ def compare_submissions(bundle_directory, entries):
         if any(value != values[0] for value in values[1:]):
             differences[field] = [{'method_id': m['method_id'], 'value': deepcopy(value)}
                                   for m, value in zip(methods, values)]
+    categories = [m['comparison_category'] for m in methods]
+    if any(category != categories[0] for category in categories[1:]):
+        differences['comparison_category'] = [
+            {'method_id': m['method_id'], 'value': m['comparison_category']} for m in methods]
     comparisons = []
     for left, right in combinations(loaded, 2):
         a, b = left['scores'], right['scores']
         rows, groups = [], {}
-        for ar, br in zip(a['per_case'], b['per_case']):
+        right_by_case_id = {row['case_id']: row for row in b['per_case']}
+        if len(right_by_case_id) != len(b['per_case']) or set(right_by_case_id) != {row['case_id'] for row in a['per_case']}:
+            raise ValueError('Cannot pair per-case scores with different case IDs')
+        for ar in a['per_case']:
+            br = right_by_case_id[ar['case_id']]
+            left_metrics = {k: ar['metrics'][k] for k in sorted(paired) if k in ar['metrics'] and k in br['metrics']}
+            right_metrics = {k: br['metrics'][k] for k in sorted(paired) if k in ar['metrics'] and k in br['metrics']}
             row = {'case_id': ar['case_id'], 'group_id': ar['group_id'], 'task': ar['task'],
                    'left_status': ar['status'], 'right_status': br['status'],
-                   'left': {k: ar['metrics'][k] for k in sorted(paired)},
-                   'right': {k: br['metrics'][k] for k in sorted(paired)},
-                   'differences': {k: br['metrics'][k] - ar['metrics'][k] for k in sorted(paired)}}
+                   'left': left_metrics, 'right': right_metrics,
+                   'differences': {k: right_metrics[k] - left_metrics[k] for k in left_metrics}}
             rows.append(row)
             groups.setdefault(row['group_id'], []).append(row)
         def means(items):
-            return {key: sum(row['differences'][key] for row in items) / len(items) for key in sorted(paired)}
+            return {key: sum(row['differences'][key] for row in items if key in row['differences']) /
+                    sum(key in row['differences'] for row in items)
+                    for key in sorted(paired)
+                    if any(key in row['differences'] for row in items)}
+        uncertainty = _group_bootstrap(rows, paired)
         comparisons.append({'left_method_id': a['method_id'], 'right_method_id': b['method_id'],
                             'direction': 'right minus left',
                             'batch_differences': {k: b['metrics'][k] - a['metrics'][k] for k in sorted(common)},
                             'paired': rows, 'paired_mean_differences': means(rows),
                             'group_differences': [{'group_id': group, 'case_count': len(items),
-                                                   'mean_differences': means(items)} for group, items in groups.items()]})
+                                                   'mean_differences': means(items)} for group, items in groups.items()],
+                            'uncertainty': uncertainty})
     first = loaded[0]['scores']
+    uncertainty_details = [detail for comparison in comparisons for detail in comparison['uncertainty'].values()]
+    computed_uncertainty = sum(detail.get('computed', False) for detail in uncertainty_details)
     report = {'format': FORMAT, 'suite': first['suite'], 'bundle_id': first['bundle_id'],
               'source': deepcopy(bundle['manifest']['source']),
               'adaptation_revision': bundle['manifest']['adaptation_revision'],
@@ -321,8 +435,21 @@ def compare_submissions(bundle_directory, entries):
                   key: {'case_count': loaded[0]['denominators'][key], 'case_ids': list(loaded[0]['metric_case_ids'][key])}
                   for key in sorted(common) if loaded[0]['metric_case_ids'][key] != first['case_ids']},
               'paired_metrics': sorted(paired), 'methods': methods, 'method_differences': differences,
+              'comparison_categories': sorted(set(categories)),
               'comparisons': comparisons,
-              'uncertainty': {'computed': False, 'reason': 'No confidence intervals or significance test computed.'},
+              'uncertainty': {
+                  'computed': computed_uncertainty > 0,
+                  'method': 'case-weighted-cluster-bootstrap-95pct-v1',
+                  'resampling_unit': 'group_id',
+                  'estimator': 'case-weighted mean difference',
+                  'seed': 0, 'resamples': 2000,
+                  'comparison_count': len(comparisons),
+                  'metric_count': len(uncertainty_details),
+                  'computed_metric_count': computed_uncertainty,
+                  'unavailable_metric_count': len(uncertainty_details) - computed_uncertainty,
+                  'reason': ('At least one comparison has fewer than two eligible groups.'
+                             if computed_uncertainty < len(uncertainty_details) else None),
+              },
               'interpretation': [
                   'Batch metrics are preserved from each validated score artifact; no per-case recomputation.',
                   'Paired/group means describe per-case differences, a different estimator from Perl batch ROUGE.',
@@ -352,6 +479,7 @@ def _markdown(report):
                        'the same explicitly identified cases were used by every method. IDs are listed in report.json.']
     for entry in report['methods']:
         lines += ['', f'**{cell(entry["method"]["name"])}** (`{entry["method_id"][:12]}`)', '',
+                  f'Comparison category: `{cell(entry["comparison_category"])}`.', '',
                   'Model, input policy, configuration and supplied budgets:', '',
                   '```json', json.dumps(entry['method'], ensure_ascii=False, indent=2), '```', '',
                   f'Pending: {cell(", ".join(entry["pending_metrics"]) or "none")}.',
@@ -378,9 +506,18 @@ def _markdown(report):
             per_case = comparison['paired_mean_differences'].get(metric)
             lines.append(f'| {cell(metric)} | {value:+.6f} | ' +
                          (f'{per_case:+.6f}' if per_case is not None else 'unavailable') + ' |')
+        lines += ['', 'Case-weighted cluster-bootstrap uncertainty for paired per-case differences:']
+        for metric, detail in comparison['uncertainty'].items():
+            if detail['computed']:
+                lines.append(f'- {cell(metric)}: 95% CI [{detail["ci95"][0]:+.6f}, '
+                             f'{detail["ci95"][1]:+.6f}] over {detail["group_count"]} groups '
+                             f'and {detail["case_count"]} eligible cases.')
+            else:
+                lines.append(f'- {cell(metric)}: unavailable ({cell(detail["reason"])}); '
+                             f'{detail["group_count"]} groups and {detail["case_count"]} eligible cases.')
     lines += ['', 'Per-case and group differences, source identity and artifact hashes are in [report.json](report.json).', '']
     lines += [f'- {message}' for message in report['interpretation']]
-    lines += ['- No uncertainty interval or significance test was computed.', '']
+    lines += ['- Intervals resample group_id clusters and weight all eligible cases equally; no significance test was computed.', '']
     return '\n'.join(lines)
 
 

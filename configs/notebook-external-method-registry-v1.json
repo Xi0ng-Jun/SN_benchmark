@@ -1,0 +1,1380 @@
+{
+  "format": "notebook-external-method-registry-v1",
+  "updated": "2026-09-28",
+  "status": "observed external rescoring: MultiHop full, ALCE ASQA samples and QMSum Socratic full; SN comparisons and remaining candidates pending",
+  "protocol": {
+    "bundle_revision": "notebook-data-v3",
+    "request_revision": "notebook-request-v3",
+    "submission_format": "benchmark-submission-v1",
+    "comparison_categories": [
+      "recomputed-subset",
+      "controlled-rerun",
+      "published-reference"
+    ],
+    "condition_status_values": [
+      "verified",
+      "inferred",
+      "missing",
+      "not_applicable"
+    ],
+    "policy": "Deterministic case mapping and identical frozen scorer permit descriptive comparison of published answers. Unknown generation conditions must remain explicit and prohibit same-condition or causal claims. Oracle/gold-input sources remain excluded from ordinary comparisons."
+  },
+  "scopes": {
+    "qasper-v03-test": {
+      "suite": "qasper",
+      "split": "test",
+      "source_revision": "v0.3",
+      "planned_scope": "all published test questions in the frozen v0.3 bundle",
+      "expected_count": 1451,
+      "primary_metrics": [
+        "Answer F1"
+      ],
+      "evidence_metric_requirement": "explicit original-paragraph predictions for the complete declared scope"
+    },
+    "multihop-all-published": {
+      "suite": "multihop_rag",
+      "split": "published train container; no independent official test split asserted",
+      "source_revision": "HF revision 71ac0d0bd1f951d2d6b70311f7d2ae404e1ffa82",
+      "planned_scope": "all published questions and the complete 609-document corpus",
+      "expected_count": 2556,
+      "retrieval_denominator": 2255,
+      "primary_metrics": [
+        "upstream QA weak-match accuracy",
+        "Hits@4",
+        "Hits@10",
+        "MAP@10",
+        "MRR@10"
+      ]
+    },
+    "alce-ordinary-by-task": {
+      "suite": "alce",
+      "split": "ordinary variant; ASQA, QAMPARI and ELI5 kept separate",
+      "source_revision": "HF revision 334fa2e7dd32040c3fef931a123c4be1a81e91a0",
+      "planned_scope": "all cases in the frozen ordinary bundle for each task",
+      "expected_count": null,
+      "count_status": "verify from the frozen bundle before execution",
+      "primary_metrics": [
+        "task-specific official text metric"
+      ],
+      "citation_metrics": "AutoAIS/claims/QA/MAUVE require their pinned runtime and are reported separately"
+    },
+    "qmsum-frozen-test": {
+      "suite": "qmsum",
+      "split": "test",
+      "source_revision": "QMSum repository test.jsonl at the frozen source revision",
+      "planned_scope": "all rows in the frozen server test file, including the 281st query",
+      "expected_count": 281,
+      "meeting_count": 35,
+      "primary_metrics": [
+        "ROUGE-1 F1",
+        "ROUGE-2 F1",
+        "ROUGE-L F1"
+      ]
+    },
+    "hotpotqa-distractor-validation": {
+      "suite": "hotpotqa",
+      "split": "validation",
+      "source_revision": "HF hotpotqa/hotpot_qa@1908d6afbbead072334abe2965f91bd2709910ab",
+      "planned_scope": "all validation questions with one complete distractor context per question",
+      "expected_count": 7405,
+      "count_status": "verified from full frozen bundle; all 7405 rows equal official KG2RAG bundled data",
+      "primary_metrics": [
+        "Answer EM",
+        "Answer F1",
+        "Answer Precision",
+        "Answer Recall"
+      ],
+      "conditional_metrics": [
+        "Supporting Fact EM/F1/Precision/Recall",
+        "Joint EM/F1/Precision/Recall"
+      ],
+      "source_sha256": "c20b638ca82b21d04fe12e14ff417ad05153d4d215a65de54497fca4e972f7c6",
+      "bundle_id": "1136533bc2a9a4e6f52092df7d3e0e9ff21c8ce9b35dc637336eb6735b740699",
+      "document_count": 73700,
+      "validation_artifact": "var/benchmark-protocol-validation/hotpot-full-20260928/validation.json"
+    }
+  },
+  "methods": [
+    {
+      "method_id": "qasper.led_base.full_text.reference",
+      "suite": "qasper",
+      "scope_id": "qasper-v03-test",
+      "display_name": "LED-base full-text paper result",
+      "priority": "first_wave",
+      "candidate_category": "published-reference",
+      "source": {
+        "paper_url": "https://aclanthology.org/2021.naacl-main.365/",
+        "repository_url": "https://github.com/allenai/qasper-led-baseline",
+        "code_revision": "afd0fb96bf78ce8cd8157639c6f6a6995e4f9089",
+        "code_revision_status": "fixed source acquired; no trained checkpoint or full predictions recovered; GitHub releases empty"
+      },
+      "conditions": {
+        "model": "LED-base; exact checkpoint and decoding settings are not yet verified",
+        "retriever": "none or dataset reader supplied context",
+        "input": "paper full_text reader; abstract/caption inclusion must be checked",
+        "chunking_budget": "paper setting must be recovered before any rerun",
+        "prompt_or_config": "not available"
+      },
+      "condition_status": {
+        "model": "inferred",
+        "retriever": "verified",
+        "input": "inferred",
+        "chunking_budget": "missing",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "qasper-v03-full-text-answer-v1",
+      "expected_output": [
+        "answer",
+        "explicit original paragraph evidence if Evidence F1 is used"
+      ],
+      "availability": "training code only in inspected source; stock predictor expects predicted_evidence not emitted by model; blind inference adaptation needed",
+      "admission": "published-reference only until case-level output and conditions are verified"
+    },
+    {
+      "method_id": "qasper.bm25.full_text.control",
+      "suite": "qasper",
+      "scope_id": "qasper-v03-test",
+      "display_name": "Project BM25/full-context control",
+      "priority": "first_wave",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "owner": "silicon-notebook",
+        "repository_url": null,
+        "code_revision": "current benchmark protocol commit at campaign freeze"
+      },
+      "conditions": {
+        "model": "must match the declared answer-generation role; exact model config is pending server freeze",
+        "retriever": "BM25 or full-context, recorded as separate method IDs",
+        "input": "frozen QASPER v0.3 bundle",
+        "chunking_budget": "recorded in reference configuration",
+        "prompt_or_config": "reference runner configuration"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "inferred"
+      },
+      "scorer": "qasper-v03-full-text-answer-v1",
+      "expected_output": [
+        "answer",
+        "explicit evidence only when produced by the method"
+      ],
+      "availability": "runner exists; real campaign output not yet generated",
+      "admission": "controlled-rerun after the campaign manifest and model identity are frozen"
+    },
+    {
+      "method_id": "multihop.author_bm25.qa",
+      "suite": "multihop_rag",
+      "scope_id": "multihop-all-published",
+      "display_name": "MultiHop-RAG author BM25/simple retrieval plus QA",
+      "priority": "first_wave",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "paper_url": "https://arxiv.org/abs/2401.15391",
+        "repository_url": "https://github.com/yixuantt/MultiHop-RAG",
+        "code_revision": "c1c1287aa60a94acf9c4d20c891c9cd611a0f6e8",
+        "scorer_revision": "c1c1287aa60a94acf9c4d20c891c9cd611a0f6e8"
+      },
+      "conditions": {
+        "model": "paper model identity and generation settings require explicit server configuration",
+        "retriever": "author BM25/simple baseline",
+        "input": "complete 609-document corpus; no gold evidence injection",
+        "chunking_budget": "paper reports 256-token chunks and top-K settings; verify implementation flags",
+        "prompt_or_config": "author QA prompt must be preserved"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "verified",
+        "input": "inferred",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "inferred"
+      },
+      "scorer": "multihop-c1c1287-upstream-weak-match-v1",
+      "expected_output": [
+        "answer",
+        "ordered retrieved documents or chunks for retrieval metrics"
+      ],
+      "availability": "code is public; runnable output not yet generated in this campaign",
+      "admission": "controlled-rerun only until ranked retrieval output and QA output are both audited"
+    },
+    {
+      "method_id": "multihop.paper_dense_baselines.reference",
+      "suite": "multihop_rag",
+      "scope_id": "multihop-all-published",
+      "display_name": "MultiHop-RAG paper dense/reranker baselines",
+      "priority": "secondary",
+      "candidate_category": "published-reference",
+      "source": {
+        "paper_url": "https://arxiv.org/abs/2401.15391",
+        "repository_url": "https://github.com/yixuantt/MultiHop-RAG",
+        "code_revision": "c1c1287aa60a94acf9c4d20c891c9cd611a0f6e8"
+      },
+      "conditions": {
+        "model": "paper reports multiple embedding and reranker/model combinations; exact row identity must be selected per table",
+        "retriever": "bge-large-en-v1.5, text-embedding-ada-002, voyage-02 and bge-reranker-large appear as separate conditions",
+        "input": "paper condition must be matched to complete corpus versus gold-evidence condition",
+        "chunking_budget": "not fully verified",
+        "prompt_or_config": "not recovered"
+      },
+      "condition_status": {
+        "model": "inferred",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "missing",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "paper-reported official retrieval/QA scripts",
+      "expected_output": [
+        "paper aggregate or row-level ranked retrieval output"
+      ],
+      "availability": "no compatible row-level output yet audited",
+      "admission": "published-reference only"
+    },
+    {
+      "method_id": "alce.vanilla.ordinary",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "ALCE VANILLA ordinary HF controlled rerun",
+      "priority": "first_wave",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "paper_url": "https://aclanthology.org/2023.emnlp-main.398/",
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "data_revision": "334fa2e7dd32040c3fef931a123c4be1a81e91a0"
+      },
+      "conditions": {
+        "model": "author Llama-2-70b-chat-hf profile; actual local snapshot pending",
+        "retriever": "fixed ordinary ASQA/GTR, QAMPARI/GTR, ELI5/BM25; first five in native order",
+        "input": "948 ASQA, 1000 ELI5, 1000 QAMPARI; separate submissions; no evaluation labels",
+        "chunking_budget": "4096 effective input+output tokens, up to 300 output, no prompt truncation; fp16, temperature 1.0, top_p .95",
+        "prompt_or_config": "pinned llama2_shot2_ndoc5 configs; actual make_demo and HF LLM.generate; selected demo indices [1,3]"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "verified",
+        "input": "verified",
+        "chunking_budget": "verified",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text",
+        "numeric citations mapped to shown candidates"
+      ],
+      "availability": "all 2948 prompts and shown-doc lists match author main offline; checked result files are synthetic offline validation only, so real model output and full citation scores remain pending",
+      "admission": "controlled full-system comparison with declared loading/RNG/BOS-budget differences; not original paper-score reproduction",
+      "implementation": {
+        "entry": "scripts/run_alce_vanilla.py",
+        "module": "src/rag_eval/alce_vanilla.py",
+        "source_lock": "configs/alce-vanilla-source-lock.json",
+        "artifact_root": "var/external-comparison/alce-vanilla-20260928",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "alce.rerank.ordinary.reference",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "ALCE RERANK ordinary candidate paper result",
+      "priority": "secondary",
+      "candidate_category": "published-reference",
+      "source": {
+        "paper_url": "https://aclanthology.org/2023.emnlp-main.398/",
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937"
+      },
+      "conditions": {
+        "model": "paper model/checkpoint and reranker identity not yet selected",
+        "retriever": "retrieval plus reranking; ordinary and oracle candidates must remain separate",
+        "input": "task-specific candidate files",
+        "chunking_budget": "not yet verified",
+        "prompt_or_config": "not yet recovered"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "inferred",
+        "chunking_budget": "missing",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "paper aggregate or original result JSON"
+      ],
+      "availability": "Full paper/reference output still unaudited; genuine 100-question published human-evaluation samples registered separately",
+      "admission": "published-reference only"
+    },
+    {
+      "method_id": "qmsum.author_model_output",
+      "suite": "qmsum",
+      "scope_id": "qmsum-frozen-test",
+      "display_name": "QMSum author model output",
+      "priority": "first_wave",
+      "candidate_category": "published-reference",
+      "source": {
+        "paper_url": "https://aclanthology.org/2021.naacl-main.472/",
+        "repository_url": "https://github.com/Yale-LILY/QMSum",
+        "code_revision": "416966c63e3cb7a57dc59b4ce8fa76f11fd048be",
+        "data_revision": "83d7768c1f2b4dfeb091385d3dc7e239b8e5bb7e",
+        "scorer_revision": "08e9cc35d713f718a05b02bf3bb2e29947d436ce",
+        "code_revision_status": "verified from the local HMNet archive; output is a gold-input calibration artifact"
+      },
+      "conditions": {
+        "model": "HMNet; archive and calibration manifest identify the author model",
+        "retriever": "gold relevant spans supplied to HMNet (oracle-input calibration)",
+        "input": "279 published outputs; not the frozen 35-meeting/281-query ordinary scope",
+        "chunking_budget": "HMNet sentence regex and turn order are preserved in the calibration replay",
+        "prompt_or_config": "source output metadata required"
+      },
+      "condition_status": {
+        "model": "verified",
+        "retriever": "verified",
+        "input": "verified",
+        "chunking_budget": "verified",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "qmsum-author-rouge155-hmnet-seg-v1",
+      "expected_output": [
+        "query-addressable summary text"
+      ],
+      "availability": "279 prediction/reference pairs and HMNet gold-input condition verified locally; 273 uniquely text-match current test and 6 published rows do not",
+      "admission": "published-reference calibration-only; rejected for ordinary paired comparison because of gold-input condition and 279/281 scope mismatch"
+    },
+    {
+      "method_id": "qmsum.bm25.control",
+      "suite": "qmsum",
+      "scope_id": "qmsum-frozen-test",
+      "display_name": "Project BM25 meeting-summary control",
+      "priority": "first_wave",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "owner": "silicon-notebook",
+        "repository_url": null,
+        "code_revision": "current benchmark protocol commit at campaign freeze"
+      },
+      "conditions": {
+        "model": "tested answer-generation role must be recorded",
+        "retriever": "BM25 turn selection; top-k and character budget are fixed per run",
+        "input": "complete meeting transcript; no gold relevant span injected",
+        "chunking_budget": "baseline configuration is part of method identity",
+        "prompt_or_config": "configs/public-starter-models.example.json-derived model config"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "verified",
+        "input": "verified",
+        "chunking_budget": "verified",
+        "prompt_or_config": "inferred"
+      },
+      "scorer": "qmsum-author-rouge155-hmnet-seg-v1",
+      "expected_output": [
+        "summary text"
+      ],
+      "availability": "runner and one-query validation exist; full campaign output not generated",
+      "admission": "controlled-rerun after Perl ROUGE environment and method identity are frozen"
+    },
+    {
+      "method_id": "hotpotqa.distractor_reader.reference",
+      "suite": "hotpotqa",
+      "scope_id": "hotpotqa-distractor-validation",
+      "display_name": "HotpotQA official distractor reader paper result",
+      "priority": "first_wave",
+      "candidate_category": "published-reference",
+      "source": {
+        "paper_url": "https://aclanthology.org/D18-1259/",
+        "repository_url": "https://github.com/hotpotqa/hotpot",
+        "scorer_revision": "fa3a36370899e1d85822de61e58c85ea19993154",
+        "data_setting": "distractor; paper/test setting must not be mixed with validation reruns"
+      },
+      "conditions": {
+        "model": "paper reader/checkpoint identity is not yet selected",
+        "retriever": "distractor paragraphs supplied by the dataset; fullwiki is excluded",
+        "input": "complete per-question distractor context",
+        "chunking_budget": "sentence/document boundaries are official source units",
+        "prompt_or_config": "not recovered"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "verified",
+        "input": "verified",
+        "chunking_budget": "verified",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "hotpotqa-distractor-v1-official-v1",
+      "expected_output": [
+        "answer",
+        "[title, sent_id] supporting facts for full official metrics"
+      ],
+      "availability": "paper/Codalab aggregate only until row-level output and setting are audited",
+      "admission": "published-reference only"
+    },
+    {
+      "method_id": "hotpotqa.bm25.distractor_control",
+      "suite": "hotpotqa",
+      "scope_id": "hotpotqa-distractor-validation",
+      "display_name": "Project BM25/full-context distractor control",
+      "priority": "first_wave",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "owner": "silicon-notebook",
+        "repository_url": null,
+        "code_revision": "current benchmark protocol commit at campaign freeze"
+      },
+      "conditions": {
+        "model": "declared answer-generation role must be fixed",
+        "retriever": "full distractor context or BM25 sentence selection; these are separate method IDs",
+        "input": "distractor validation only; no answer/type/level/supporting facts in request",
+        "chunking_budget": "complete context ownership and sentence ordering are preserved",
+        "prompt_or_config": "reference runner configuration"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "verified",
+        "prompt_or_config": "inferred"
+      },
+      "scorer": "hotpotqa-distractor-v1-official-v1",
+      "expected_output": [
+        "answer",
+        "supporting facts only if explicit sentence projection exists"
+      ],
+      "availability": "fixture chain exists; real output not generated",
+      "admission": "controlled-rerun; Supporting Fact/Joint remain pending without explicit projection"
+    },
+    {
+      "method_id": "multihop.multimeta.gpt4_voyage02",
+      "suite": "multihop_rag",
+      "scope_id": "multihop-all-published",
+      "display_name": "Multi-Meta-RAG GPT-4 with Voyage-02 retrieval",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "paper_url": null,
+        "repository_url": "https://github.com/mxpoliakov/Multi-Meta-RAG",
+        "code_revision": "e77e4638cbae16fa7a63f291e73230d5bb356081",
+        "prediction_path": "qa_output/gpt-4-voyage-02-filtering.json",
+        "retrieval_path": "output/voyage-02_256_32_with_filtering.json",
+        "prediction_sha256": "f4ad29c607867e4ef73a3f9d5016559ee9bbcdb0331c3a05cb2948d0cf82812c",
+        "retrieval_sha256": "3ebd57ddf6e2ea29f61d45a8e25514bbf91ae74f8c95bf020bd539b9559774eb"
+      },
+      "conditions": {
+        "model": "gpt-4-0613",
+        "retriever": "voyage-2 embeddings + BAAI/bge-reranker-large + metadata filtering; actual ordered passages and first-six prompts verified",
+        "input": "All 2556 frozen questions and gold observations match; original complete corpus/index identity remains unproven",
+        "chunking_budget": "256-token chunks with 32-token overlap in the published retrieval artifact",
+        "prompt_or_config": "qa_gpt.py; gpt-4-0613; temperature 0.1; first six passages; exact stored prompts checked; output token cap not explicit"
+      },
+      "condition_status": {
+        "model": "verified",
+        "retriever": "verified",
+        "input": "verified",
+        "chunking_budget": "verified",
+        "prompt_or_config": "verified",
+        "corpus_identity": "missing"
+      },
+      "scorer": "multihop-c1c1287-upstream-weak-match-v1",
+      "expected_output": [
+        "answer",
+        "ordered retrieved documents for retrieval metrics when available"
+      ],
+      "availability": "Complete 2556 answers and ordered rankings imported; QA and retrieval rescored; old 146-row prefix retained as historical subset",
+      "admission": "Full frozen-scope published-answer descriptive comparison; QA n=2556, retrieval n=2255; not controlled rerun or proof of same complete corpus; SN comparison pending",
+      "results": {
+        "scope": "full",
+        "case_count": 2556,
+        "qa_correct": 1549,
+        "qa_accuracy": 0.6060250391236307,
+        "retrieval_count": 2255,
+        "artifact_root": "var/external-comparison/multimeta-full-e77e4638-20260928/gpt4",
+        "score_path": "var/external-comparison/multimeta-full-e77e4638-20260928/gpt4-scored/scores.json",
+        "report_path": "var/external-comparison/multimeta-full-e77e4638-20260928/comparison/report.json"
+      }
+    },
+    {
+      "method_id": "multihop.multimeta.palm_voyage02",
+      "suite": "multihop_rag",
+      "scope_id": "multihop-all-published",
+      "display_name": "Multi-Meta-RAG PaLM text-bison@001 with Voyage-02 retrieval",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "paper_url": null,
+        "repository_url": "https://github.com/mxpoliakov/Multi-Meta-RAG",
+        "code_revision": "e77e4638cbae16fa7a63f291e73230d5bb356081",
+        "prediction_path": "qa_output/google-palm-voyage-02-filtering.json",
+        "retrieval_path": "output/voyage-02_256_32_with_filtering.json",
+        "prediction_sha256": "732232e2b5fcb2d4af163b3cd9de14ee3f2815d6000e1034ff5702a6882dcea0",
+        "retrieval_sha256": "3ebd57ddf6e2ea29f61d45a8e25514bbf91ae74f8c95bf020bd539b9559774eb"
+      },
+      "conditions": {
+        "model": "text-bison@001",
+        "retriever": "voyage-2 embeddings + BAAI/bge-reranker-large + metadata filtering; actual ordered passages and first-six prompts verified",
+        "input": "All 2556 frozen questions and gold observations match; original complete corpus/index identity remains unproven",
+        "chunking_budget": "256-token chunks with 32-token overlap in the published retrieval artifact",
+        "prompt_or_config": "qa_google.py; Vertex text-bison@001; temperature 0.1; max_output_tokens=12; first six passages; exact stored prompts checked"
+      },
+      "condition_status": {
+        "model": "verified",
+        "retriever": "verified",
+        "input": "verified",
+        "chunking_budget": "verified",
+        "prompt_or_config": "verified",
+        "corpus_identity": "missing"
+      },
+      "scorer": "multihop-c1c1287-upstream-weak-match-v1",
+      "expected_output": [
+        "answer",
+        "ordered retrieved documents for retrieval metrics when available"
+      ],
+      "availability": "Complete 2556 answers and ordered rankings imported; QA and retrieval rescored; old 146-row prefix retained as historical subset",
+      "admission": "Full frozen-scope published-answer descriptive comparison; QA n=2556, retrieval n=2255; not controlled rerun or proof of same complete corpus; SN comparison pending",
+      "results": {
+        "scope": "full",
+        "case_count": 2556,
+        "qa_correct": 1553,
+        "qa_accuracy": 0.6075899843505478,
+        "retrieval_count": 2255,
+        "artifact_root": "var/external-comparison/multimeta-full-e77e4638-20260928/palm",
+        "score_path": "var/external-comparison/multimeta-full-e77e4638-20260928/palm-scored/scores.json",
+        "report_path": "var/external-comparison/multimeta-full-e77e4638-20260928/comparison/report.json",
+        "empty_answers": 30
+      }
+    },
+    {
+      "method_id": "alce.human_sample.asqa.vanilla",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-asqa-vanilla",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "asqa-gpt-35-turbo-gtr-shot2-ndoc5-42-azure.json"
+      },
+      "conditions": {
+        "model": "gpt-35-turbo; exact checkpoint not recorded in source",
+        "retriever": "gtr label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "5 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; official ASQA text scoring and four-method descriptive pairing complete",
+      "admission": "ASQA answer-text descriptive comparison only on published sample; unknown settings prohibit same-condition claims; full citation scoring blocked without observed mapping",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 1,
+        "metrics": {
+          "str_em": 0.353,
+          "str_hit": 0.09
+        },
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "qa",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/asqa/vanilla",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/asqa/vanilla/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "alce.human_sample.asqa.interactive",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-asqa-interactive",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "asqa-gpt-35-turbo-gtr_interact_search_summary-shot2-ndoc10-42-azure.json"
+      },
+      "conditions": {
+        "model": "gpt-35-turbo; exact checkpoint not recorded in source",
+        "retriever": "gtr label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "10 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; official ASQA text scoring and four-method descriptive pairing complete",
+      "admission": "ASQA answer-text descriptive comparison only on published sample; unknown settings prohibit same-condition claims; full citation scoring blocked without observed mapping",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 1,
+        "metrics": {
+          "str_em": 0.38199999999999995,
+          "str_hit": 0.09
+        },
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "qa",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/asqa/interactive",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/asqa/interactive/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "alce.human_sample.asqa.rerank",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-asqa-rerank",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "asqa-gpt-35-turbo-gtr-shot2-ndoc5-42-azure-sample4.json.rerank"
+      },
+      "conditions": {
+        "model": "gpt-35-turbo; exact checkpoint not recorded in source",
+        "retriever": "gtr label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "5 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; official ASQA text scoring and four-method descriptive pairing complete",
+      "admission": "ASQA answer-text descriptive comparison only on published sample; unknown settings prohibit same-condition claims; full citation scoring blocked without observed mapping",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 2,
+        "metrics": {
+          "str_em": 0.3655,
+          "str_hit": 0.11
+        },
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "qa",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/asqa/rerank",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/asqa/rerank/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "alce.human_sample.asqa.vicuna",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-asqa-vicuna",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "asqa-vicuna-13b-rigorous-shot2-ndoc3-42.json"
+      },
+      "conditions": {
+        "model": "vicuna-13b; exact checkpoint not recorded in source",
+        "retriever": "gtr label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "3 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; official ASQA text scoring and four-method descriptive pairing complete",
+      "admission": "ASQA answer-text descriptive comparison only on published sample; unknown settings prohibit same-condition claims; full citation scoring blocked without observed mapping",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 0,
+        "metrics": {
+          "str_em": 0.26466666666666666,
+          "str_hit": 0.05
+        },
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "qa",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/asqa/vicuna",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/asqa/vicuna/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "alce.human_sample.eli5.vanilla",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-eli5-vanilla",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "eli5-gpt-35-turbo-bm25-shot2-ndoc5-42-azure.json"
+      },
+      "conditions": {
+        "model": "gpt-35-turbo; exact checkpoint not recorded in source",
+        "retriever": "bm25 label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "5 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; input preprocessing complete; model metrics pending",
+      "admission": "Imported sample only; no scored correctness metric yet",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 5,
+        "metrics": {},
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "claims_nli",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/eli5/vanilla",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/eli5/vanilla/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "alce.human_sample.eli5.interactive",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-eli5-interactive",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "eli5-gpt-35-turbo-bm25_interact_doc_id_extraction-shot2-ndoc10-42-azure.json"
+      },
+      "conditions": {
+        "model": "gpt-35-turbo; exact checkpoint not recorded in source",
+        "retriever": "bm25 label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "10 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; input preprocessing complete; model metrics pending",
+      "admission": "Imported sample only; no scored correctness metric yet",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 3,
+        "metrics": {},
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "claims_nli",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/eli5/interactive",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/eli5/interactive/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "alce.human_sample.eli5.rerank",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-eli5-rerank",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "eli5-gpt-35-turbo-bm25-shot2-ndoc5-42-azure-sample4.json.rerank"
+      },
+      "conditions": {
+        "model": "gpt-35-turbo; exact checkpoint not recorded in source",
+        "retriever": "bm25 label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "5 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; input preprocessing complete; model metrics pending",
+      "admission": "Imported sample only; no scored correctness metric yet",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 9,
+        "metrics": {},
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "claims_nli",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/eli5/rerank",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/eli5/rerank/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "alce.human_sample.eli5.vicuna",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "alce-human-eli5-vicuna",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "repository_url": "https://github.com/princeton-nlp/ALCE",
+        "code_revision": "246c476a4edfc564266b7346b6e29ef4861ae937",
+        "prediction_path": "human_eval/human_eval_citations_completed.json",
+        "prediction_sha256": "cfed9293752413d7c7631f36524dd4ee9ef58b209cdf9c63f6fc1e280b43cca6",
+        "method_key": "eli5-vicuna-13b-rigorous-shot2-ndoc3-42.json"
+      },
+      "conditions": {
+        "model": "vicuna-13b; exact checkpoint not recorded in source",
+        "retriever": "bm25 label from task; observed citation pairs audited separately",
+        "input": "100 author-selected questions uniquely mapped to ordinary frozen bundle; original shown-doc list unavailable",
+        "chunking_budget": "3 documents and 2 shots according to method key; full token budget unavailable",
+        "prompt_or_config": "method key observed; prompt realization, model checkpoint, temperature and retries unverified"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "missing",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "alce-246c476-cli-v1",
+      "expected_output": [
+        "answer text; citation mapping pending"
+      ],
+      "availability": "100 native outputs imported, preserving empty answers; input preprocessing complete; model metrics pending",
+      "admission": "Imported sample only; no scored correctness metric yet",
+      "results": {
+        "scope": "subset",
+        "case_count": 100,
+        "empty_answers": 1,
+        "metrics": {},
+        "pending_metrics": [
+          "citation_rec",
+          "citation_prec",
+          "claims_nli",
+          "mauve",
+          "rougeLsum"
+        ],
+        "artifact_root": "var/external-comparison/alce-human-246c476-20260928/eli5/vicuna",
+        "score_path": "var/external-comparison/alce-human-246c476-20260928/eli5/vicuna/scored/scores.json"
+      },
+      "answer_only_scoring": "--alce-answer-only implemented; real model metrics pending; citations remain unavailable"
+    },
+    {
+      "method_id": "qmsum.socratic.segenc.author_test",
+      "suite": "qmsum",
+      "scope_id": "qmsum-frozen-test",
+      "display_name": "Socratic SegEnc author test predictions (281 queries)",
+      "priority": "first_wave",
+      "candidate_category": "recomputed-subset",
+      "source": {
+        "paper_url": "https://aclanthology.org/2023.acl-long.713/",
+        "repository_url": "https://github.com/salesforce/socratic-pretraining",
+        "code_revision": "d0de964b4c26746c11f634f0c1162aa80c27baa5",
+        "model_repository": "Salesforce/socratic-pretraining-qmsum",
+        "model_revision": "d127cbc54b974a58e8bd75935f2863d136e0bc3d",
+        "prediction_url": "https://huggingface.co/Salesforce/socratic-pretraining-qmsum/resolve/d127cbc54b974a58e8bd75935f2863d136e0bc3d/test.predictions",
+        "prediction_sha256": "8cdbbb9e2b1a6bbd8f99aa7d59b7314d3a3659914c4902b627756bbe7d69247e",
+        "preprocessing_revision": "8666f5023cb4932037d2b907fba9373d325d1bef"
+      },
+      "conditions": {
+        "model": "release-associated Socratic SegEnc/BART-large; actual run weight hash absent",
+        "retriever": "none; full transcript segmented and budgeted",
+        "input": "author full-transcript SegEnc preprocessing; 32 overlapping chunks, no relevant-span selection",
+        "chunking_budget": "example script: chunks=32, stride=true, source_len=512, generation_max_len=512, seed=1; actual run overrides unavailable",
+        "prompt_or_config": "public example and model config available; actual run overrides unavailable"
+      },
+      "condition_status": {
+        "model": "inferred",
+        "retriever": "inferred",
+        "input": "inferred",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "missing"
+      },
+      "scorer": "qmsum-author-rouge155-hmnet-seg-v1",
+      "expected_output": [
+        "summary text"
+      ],
+      "mapping_basis": "published preprocessing/inference order; author run input manifest unavailable",
+      "availability": "Pinned author test.predictions obtained, imported and rescored with real Perl ROUGE on all 281 frozen queries",
+      "admission": "descriptive answer comparison under disclosed published-code-order mapping; no same-condition, paper reproduction or causal claim",
+      "results": {
+        "scope": "full",
+        "question_count": 281,
+        "meeting_count": 35,
+        "empty_answers": 0,
+        "metrics": {
+          "rouge1": 0.38955,
+          "rouge2": 0.1396,
+          "rougeL": 0.33942
+        },
+        "metric_denominators": {
+          "rouge1": 281,
+          "rouge2": 281,
+          "rougeL": 281
+        },
+        "artifact_root": "var/external-comparison/qmsum-socratic-d127cbc5-20260928",
+        "sn_comparison": "pending"
+      }
+    },
+    {
+      "method_id": "hotpotqa.kg2rag.adapted.control",
+      "suite": "hotpotqa",
+      "scope_id": "hotpotqa-distractor-validation",
+      "display_name": "KG2RAG adapted controlled rerun",
+      "priority": "first_wave",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "repository_url": "https://github.com/nju-websoft/KG2RAG",
+        "code_revision": "7d626c77b7af30b55aa3f960cde755b9549a0616"
+      },
+      "conditions": {
+        "model": "planned Llama3:8b; actual Ollama weight digest pending",
+        "retriever": "author vector/KG/graph pipeline; planned mxbai-embed-large and BGE reranker",
+        "input": "complete per-question distractor context; public input export verified on 7405 cases",
+        "chunking_budget": "one source sentence per TextNode; default top_k=10; runtime context/truncation pending",
+        "prompt_or_config": "four frozen train QA examples; KG extraction without evaluation-derived examples; all adaptations recorded"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "hotpotqa official fixed evaluator",
+      "expected_output": [
+        "answer text",
+        "explicit source-node title/sentence supporting predictions",
+        "per-case error status"
+      ],
+      "availability": "runner and full prepare-only validation complete; actual author dependency/model integration pending",
+      "admission": "adapted controlled system comparison only after server acceptance; not unmodified paper reproduction",
+      "implementation": {
+        "entry": "scripts/run_kg2rag.py",
+        "module": "src/rag_eval/kg2rag_runner.py",
+        "demonstrations": "configs/hotpot-kg2rag-train-demonstrations.json",
+        "artifact_root": "var/external-comparison/kg2rag-controlled-20260928",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "qasper.lab.longchat.citation.control",
+      "suite": "qasper",
+      "scope_id": "qasper-v03-test",
+      "display_name": "LAB LongChat citation controlled rerun",
+      "priority": "first_wave",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "paper_url": "https://aclanthology.org/2024.emnlp-main.463/",
+        "repository_url": "https://github.com/UKPLab/emnlp2024-attribute-or-abstain",
+        "code_revision": "6c663ed61521dd0032ca41af3dc503e7c2e13dac",
+        "test_itg_sha256": "0b5d84987791e9da68aa96605407cc887d777407d25a6a06ebd464600471ab66",
+        "train_itg_sha256": "94cbc6cae8996ee7cda609a8ede286c5234610d7bb7b88b40dc75e358b03fab8"
+      },
+      "conditions": {
+        "model": "lmsys/longchat-7b-v1.5-32k; actual server snapshot pending",
+        "retriever": "none; citation generation from author ordered long-document input",
+        "input": "1451 exact QASPER test questions; original title/abstract/paragraph/headings; author prompt excludes figure captions",
+        "chunking_budget": "author 16000 input tokens, 100 new tokens; tokenizer truncation, greedy, bf16",
+        "prompt_or_config": "author citation config with original per-answer train examples 11/0/17; explicit HF batch=1"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "verified",
+        "input": "verified",
+        "chunking_budget": "inferred",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "qasper-v03-full-text-answer-v1",
+      "expected_output": [
+        "author parsed answer",
+        "explicit node predictions mapped to original evidence text",
+        "per-case status and actual token input"
+      ],
+      "availability": "complete 416-paper/1451-case prepare-only, actual graph/config/parser validation complete; models not run",
+      "admission": "controlled full-system comparison under declared input/runtime differences; not paper score reproduction",
+      "implementation": {
+        "entry": "scripts/run_lab_qasper.py",
+        "module": "src/rag_eval/lab_qasper.py",
+        "runtime": "src/rag_eval/lab_qasper_runtime.py",
+        "source_lock": "configs/qasper-lab-source-lock.json",
+        "artifact_root": "var/external-comparison/lab-qasper-citation-20260928",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "sn.qasper.chunk",
+      "suite": "qasper",
+      "scope_id": "qasper-v03-test",
+      "display_name": "Silicon Notebook native chunk mode",
+      "priority": "primary_sn",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "repository_url": "local Silicon Notebook evaluator integration",
+        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
+        "working_tree_patch_required": true
+      },
+      "conditions": {
+        "model": "actual server model identity and snapshot required",
+        "retriever": "Silicon Notebook native chunk retrieval",
+        "input": "frozen QASPER v0.3 test bundle; no gold evidence injection",
+        "chunking_budget": "actual server chunk/index and generation budgets required",
+        "prompt_or_config": "notebook-request-v3; actual model config required"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "missing",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "qasper-v03-full-text-answer-v1",
+      "expected_output": ["answer text", "explicit final evidence projection when observed", "per-case status"],
+      "availability": "runner and QASPER protocol implemented; formal server output pending",
+      "admission": "primary SN controlled rerun; not a published-paper reproduction",
+      "implementation": {
+        "entry": "scripts/run_notebook_benchmarks.py",
+        "mode": "chunk",
+        "request_revision": "notebook-request-v3",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "sn.multihop_rag.chunk",
+      "suite": "multihop_rag",
+      "scope_id": "multihop-all-published",
+      "display_name": "Silicon Notebook native chunk mode with ordered retrieval snapshot",
+      "priority": "primary_sn",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "repository_url": "local Silicon Notebook evaluator integration",
+        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
+        "working_tree_patch_required": true
+      },
+      "conditions": {
+        "model": "actual server model identity and snapshot required",
+        "retriever": "native chunk selection captured as sn-multihop-chunk-selected-passages-v1",
+        "input": "frozen 2556-question, 609-document MultiHop bundle; no gold evidence injection",
+        "chunking_budget": "actual server chunk/index and generation budgets required",
+        "prompt_or_config": "notebook-request-v3; actual model config required"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "missing",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "multihop-c1c1287-upstream-weak-match-v1",
+      "expected_output": ["answer text", "ordered selected chunks", "per-case status"],
+      "retrieval_contract": "sn-multihop-chunk-selected-passages-v1",
+      "availability": "native snapshot capture and official replay implemented; formal server output pending",
+      "admission": "primary SN controlled rerun; retrieval metrics require complete non-null snapshots",
+      "implementation": {
+        "entry": "scripts/run_notebook_benchmarks.py",
+        "mode": "chunk",
+        "retrieval_module": "src/rag_eval/sn_retrieval.py",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "sn.multihop_rag.reasoning",
+      "suite": "multihop_rag",
+      "scope_id": "multihop-all-published",
+      "display_name": "Silicon Notebook reasoning mode",
+      "priority": "primary_sn",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "repository_url": "local Silicon Notebook evaluator integration",
+        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
+        "working_tree_patch_required": true
+      },
+      "conditions": {
+        "model": "actual server model identity and snapshot required",
+        "retriever": "reasoning path; no single ordered passage ranking contract",
+        "input": "frozen 2556-question, 609-document MultiHop bundle; no gold evidence injection",
+        "chunking_budget": "actual server generation budget required",
+        "prompt_or_config": "notebook-request-v3; actual model config required"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "missing",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "multihop-c1c1287-upstream-weak-match-v1",
+      "expected_output": ["answer text", "per-case status"],
+      "availability": "runner implemented; formal server output pending",
+      "admission": "answer-only controlled rerun; retrieval metrics remain pending",
+      "implementation": {
+        "entry": "scripts/run_notebook_benchmarks.py",
+        "mode": "reasoning",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "sn.alce.chunk",
+      "suite": "alce",
+      "scope_id": "alce-ordinary-by-task",
+      "display_name": "Silicon Notebook native chunk mode on ALCE task bundles",
+      "priority": "primary_sn",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "repository_url": "local Silicon Notebook evaluator integration",
+        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
+        "working_tree_patch_required": true
+      },
+      "conditions": {
+        "model": "actual server model identity and snapshot required",
+        "retriever": "Silicon Notebook native chunk retrieval over task bundle candidates",
+        "input": "frozen ASQA/QAMPARI/ELI5 bundle; no gold answer or citation injection",
+        "chunking_budget": "actual server chunk/index and generation budgets required",
+        "prompt_or_config": "notebook-request-v3; task-specific ALCE request adapter"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "missing",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "alce-official-fixed-cli-v1",
+      "expected_output": ["answer text", "observed citations when mapped", "per-case status"],
+      "availability": "runner and task bundles prepared; formal server output pending",
+      "admission": "primary SN controlled rerun; ASQA/QAMPARI/ELI5 reported separately",
+      "implementation": {
+        "entry": "scripts/run_notebook_benchmarks.py",
+        "mode": "chunk",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "sn.qmsum.chunk",
+      "suite": "qmsum",
+      "scope_id": "qmsum-frozen-test",
+      "display_name": "Silicon Notebook native chunk mode",
+      "priority": "primary_sn",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "repository_url": "local Silicon Notebook evaluator integration",
+        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
+        "working_tree_patch_required": true
+      },
+      "conditions": {
+        "model": "actual server model identity and snapshot required",
+        "retriever": "Silicon Notebook native chunk retrieval over meeting turns",
+        "input": "frozen 35-meeting, 281-query QMSum bundle; no gold span injection",
+        "chunking_budget": "actual server chunk/index and generation budgets required",
+        "prompt_or_config": "notebook-request-v3; actual model config required"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "missing",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "qmsum-author-rouge155-hmnet-seg-v1",
+      "expected_output": ["summary text", "per-case status"],
+      "availability": "runner and Perl scoring path implemented; formal server output pending",
+      "admission": "primary SN controlled rerun; general and specific queries reported separately",
+      "implementation": {
+        "entry": "scripts/run_notebook_benchmarks.py",
+        "mode": "chunk",
+        "formal_results": "pending"
+      }
+    },
+    {
+      "method_id": "sn.hotpotqa.chunk",
+      "suite": "hotpotqa",
+      "scope_id": "hotpotqa-distractor-validation",
+      "display_name": "Silicon Notebook native chunk mode with supporting-fact projection",
+      "priority": "primary_sn",
+      "candidate_category": "controlled-rerun",
+      "source": {
+        "repository_url": "local Silicon Notebook evaluator integration",
+        "code_revision": "64234752a54ed9d1105e34f26a4fb8bd2ab750f7",
+        "working_tree_patch_required": true
+      },
+      "conditions": {
+        "model": "actual server model identity and snapshot required",
+        "retriever": "Silicon Notebook native chunk retrieval over complete distractor context",
+        "input": "frozen 7405-question HotpotQA distractor validation bundle; no gold supporting-fact injection",
+        "chunking_budget": "actual server chunk/index and generation budgets required",
+        "prompt_or_config": "notebook-request-v3; final citation projection policy fixed"
+      },
+      "condition_status": {
+        "model": "missing",
+        "retriever": "inferred",
+        "input": "verified",
+        "chunking_budget": "missing",
+        "prompt_or_config": "verified"
+      },
+      "scorer": "hotpotqa official fixed evaluator",
+      "expected_output": ["answer text", "mapped [title, sent_id] predictions when observed", "per-case status"],
+      "supporting_fact_contract": "hotpot-final-citation-to-supporting-fact-v1",
+      "availability": "runner and sentence projection implemented; formal server output pending",
+      "admission": "primary SN controlled rerun; Supporting Fact/Joint require complete explicit projection",
+      "implementation": {
+        "entry": "scripts/run_notebook_benchmarks.py",
+        "mode": "chunk",
+        "projection_module": "src/rag_eval/hotpot_evidence.py",
+        "formal_results": "pending"
+      }
+    }
+  ],
+  "candidate_access_observations": {
+    "observed_date": "2026-09-28",
+    "evidence_directory": "var/external-comparison/remaining-methods-20260928",
+    "segenc": {
+      "repository": "salesforce/query-focused-sum",
+      "revision": "8666f5023cb4932037d2b907fba9373d325d1bef",
+      "checkpoint_probe": "run-1 HEAD and GET returned 403 AccessDenied"
+    },
+    "hgn": {
+      "repository": "yuwfan/HGN",
+      "revision": "c95f1dcc5ab81d4b6cf0f43a7618317c6d0042dc",
+      "checkpoint_probe": "Azure package returned 409 Public access is not permitted",
+      "protocol_issue": "native eval_model selects support threshold using the same dev gold joint_f1"
+    },
+    "summn": {
+      "repository": "psunlpgroup/Summ-N",
+      "revision": "05ea309fce2d18d940a7022a6acde050aa71463f",
+      "download": "QMSum_full.hypo: 279 rows; SHA256 92b3090f96ae212f8d0e9a9f5cf9c3b2bdba497b84648dd8416101b2ec4a0f26",
+      "admission": "mapping unavailable; not imported"
+    },
+    "sae": {
+      "checkpoint_probe": "official README Google Drive file returned 404"
+    },
+    "kg2rag": {
+      "repository": "nju-websoft/KG2RAG",
+      "revision": "7d626c77b7af30b55aa3f960cde755b9549a0616",
+      "availability": "controlled adapter implemented; complete 7405-case public input prepared, no model run",
+      "protocol_issues": [
+        "QA prompt includes four evaluated validation examples",
+        "KG extraction prompt repeats two validation-related factual examples",
+        "54 titles have more than one distinct sentence array; title-only KG caching can use wrong context",
+        "query exceptions become empty answers and lose error status"
+      ],
+      "prompt_overlap_question_ids": [
+        "5a8b57f25542995d1e6f1371",
+        "5a8c7595554299585d9e36b6",
+        "5a87ab905542996e4f3088c1",
+        "5a7be2595542997c3ec972ac"
+      ],
+      "admission": "adapted controlled-rerun only; QA training demonstrations, KG zero-shot format prompt, content-keyed cache and explicit errors differ from unmodified author runtime"
+    },
+    "lab": {
+      "repository": "UKPLab/emnlp2024-attribute-or-abstain",
+      "revision": "6c663ed61521dd0032ca41af3dc503e7c2e13dac",
+      "availability": "No published model predictions recovered; 416-paper/1451-question test ITG and original train demos verified; LongChat citation controlled runner prepared",
+      "audit": "var/external-comparison/remaining-methods-20260928/lab-acquisition-audit.json"
+    }
+  }
+}
