@@ -3,7 +3,7 @@
   "campaign_id": "2026-09-25-external-comparison-v1",
   "status": "server-preparation",
   "generated_at": "2026-09-28",
-  "evaluator_base_commit": "2e1fa92336233a525929cb40fb6142161434cc64",
+  "evaluator_base_commit": "ba198311aed53020558280ac1ce34a5a4701b930",
   "evaluator_revision_status": "protocol commit pinned; server must record the actual checkout SHA in experiment-manifest.json",
   "request_revision": "notebook-request-v3",
   "data_revision": "notebook-data-v3",
