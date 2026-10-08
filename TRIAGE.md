@@ -1,6 +1,6 @@
 # 工程熵清单 TRIAGE
 
-更新：2026-09-29，已同步仓内退役清理。工作树：`feat/benchmark-protocol-correctness`，删除前 HEAD `86addcf421d627f62553204275b506b4d8bc022b`。删除事实与原因见 [DELETION_LOG](DELETION_LOG.md)，本页继续登记尚未解决的技术债。
+更新：2026-10-08，已同步共享工件、compact 导出和角色打包。工作树：`feat/benchmark-protocol-correctness`。删除事实与原因见 [DELETION_LOG](DELETION_LOG.md)，本页继续登记尚未解决的技术债。
 
 **只维护 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA。** 其他旧 benchmark 专属实现、入口、兼容、测试、配置、受跟踪样本／结果和文档已删除。共享 Agent、Dashboard、身份、runtime、模型适配和五套内比较继续保留。服务器、Git 外私有工件、虚拟环境／第三方包及上传包未清理。
 
@@ -17,7 +17,7 @@
 
 ## 2. 规模与变化
 
-下表按工作树中实际存在的源码／测试／配置计算，含本轮新文件，不含被忽略环境、缓存和数据。物理行数不是复杂度，测试文件数也不是通过数。
+下表保留 2026-09-29 清理时源码／测试／配置规模证据；不代表 2026-10-08 加入共享存储后的当前数量。物理行数不是复杂度，测试文件数也不是通过数。
 
 | 范围 | 清理前 | 清理后 |
 | --- | ---: | ---: |
@@ -131,6 +131,14 @@ Git 外 frozen bundles、scorer、upload 包及 var 中私有资产未操作；�
 
 后续建议顺序：先收敛 T01 新建默认和 G07 输入契约，再核对 T04／T05／T07 具体保留消费者，最后决定 T09／T11 原型／教学用途。当前五套核心不变量不能等到熵清理完成才修；有正确性反例就处理责任边界。
 
+### S01 · 已实现边界，服务器预算仍待实测
+
+`artifact_store/bundle_index` 安装一次不可变 bundle 与分区 capsule；新 run 显式 `--artifact-root` 复用输入和 evaluator/SN 源码，runtime 不共享。`run_reader` 的调用内 context、compact scoring projection、set/dict case 查找、补评/ALCE attachment 引用发布和 results/review 包已实现，不能继续按“每个新 run 必定复制全 input/source”分析成本。
+
+仍未解决：服务器实际 input/source/runtime/outputs/agent 占比、I/O/RSS、安装/导出/打包耗时和全量验收；旧物理副本首次读取仍有完整校验成本，run 导入／建索引仍独立，campaign 任务仍手动展开。QASPER/Hotpot response/captures 是 observation hash 契约的一部分，不以 allowlist 再裁剪；如果成为主要体积，需要独立证据协议与等价性校准。
+
+同次 context 不是持久可信缓存，bounded capsule 报告不是 canonical 全审计；`outputs_sha256` 是读取时身份，不能当作历史生成时签封。review 包按现有 reader/scorer 依赖复核，不提供 runtime 清理依据。无自动删除/TTL/GC；旧 QASPER recovery、失败和运行中数据库继续保留。服务器操作与失效模型见[结果存储与导出](docs/result-storage-and-export.md)。
+
 ## 附录：清理后测试、脚本与配置清单
 
 下列清单只包含仍存在的文件。混合职责逐断言判断；分类“保留”不代表任何旧默认都合理。删除的文件及原因只在 DELETION_LOG 中逐项记录。
@@ -152,6 +160,7 @@ Git 外 frozen bundles、scorer、upload 包及 var 中私有资产未操作；�
 | System 轨道 · 保留 | [test_system_capture.py](tests/test_system_capture.py)、[test_sn_execution.py](tests/test_sn_execution.py) |
 | 基础数据与指标 · 保留 | [test_cases.py](tests/test_cases.py)、[test_datasets.py](tests/test_datasets.py)、[test_deepeval_runner.py](tests/test_deepeval_runner.py)、[test_metrics.py](tests/test_metrics.py) |
 | 新增共享契约／支持范围 · 保留 | [test_run_results.py](tests/test_run_results.py)、[test_supported_scope.py](tests/test_supported_scope.py) |
+| 共享存储、投影与回传 · 保留 | [test_artifact_store.py](tests/test_artifact_store.py)、[test_bundle_index.py](tests/test_bundle_index.py)、[test_scoring_projection.py](tests/test_scoring_projection.py)、[test_export_scaling.py](tests/test_export_scaling.py)、[test_result_package.py](tests/test_result_package.py) |
 
 合计 50 个文件。
 

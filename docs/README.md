@@ -15,6 +15,8 @@
 ## 当前协议与操作入口
 
 - [项目执行指南 RUNBOOK](../RUNBOOK.md)：安装、启动、测试、构建与服务器交付、配置／外部服务和过时步骤；当前 SN-only 操作从这里开始。
+- [共享结果存储与导出](result-storage-and-export.md)：已有 bundle 完整校验安装、共享不可变对象与 capsule、bounded 报告／canonical 导出、compact 答卷、results/review 包及保留边界。
+- [服务器存储与回传指令](server-result-storage-export-prompt.md)：当前 SN-only 的共享存储和回传交接模板、阶段实测项目与失败后停止条件；不代表服务器已执行。
 - [实验 Dashboard](experiment-dashboard.md)：实验地图、单题回放、结果分析和比较规则。
 - [Notebook 场景](notebook-benchmarks.md)：QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA 的资料、分区、执行和评分。
 - [Benchmark 标准与实现符合性](notebook-benchmark-standards-and-conformance.md)：五套任务的数据、输入、输出、精确评分、汇总和比较条件；逐项对应代码、证据、适配差异与未验证项。
@@ -46,3 +48,7 @@
 
 - [历史归档](archive/README.md)：五套及共用工程的交接、旧执行路径和阶段性报告。
 - `superpowers/plans/` 与 `superpowers/specs/`：保留五套及共用过程记录；退役 benchmark 专属记录已删除，混合文件仅保留共用内容。不作为当前命令入口。
+
+- [2026-10-08 保存／导出离线验证与合成规模记录](result-storage-export-verification-2026-10-08.md)
+
+- [已有完成实验的服务器导出升级指令](server-upgrade-running-export-prompt.md)

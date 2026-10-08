@@ -11,7 +11,7 @@ import re
 from .artifacts import digest, save_json
 from .metric_catalog import describe_metric
 from .identity import fingerprint
-from .run_report import load_run, read_journal
+from .run_report import load_run, read_journal, RunReadContext
 
 ASSETS = Path(__file__).with_name("dashboard")
 _SECRET = re.compile(r"(?:api[_-]?key|authorization|password|secret|access[_-]?token|refresh[_-]?token|endpoint|base[_-]?url|service[_-]?url)$", re.I)
@@ -61,8 +61,12 @@ def _local_file(run, relative):
     return path
 
 
-def _source_cases(run, manifest, warnings):
-    path = _local_file(run, "input/cases.jsonl")
+def _source_cases(run, manifest, warnings, *, context=None):
+    context = context or RunReadContext()
+    from .artifact_store import read_run_refs
+    if read_run_refs(run) is not None:
+        return context.case_index(context.bundle_for_run(run))
+    path = context.input_directory(run) / "cases.jsonl"
     source = manifest["identity"].get("source", {})
     expected = source.get("artifacts", {}).get("cases.jsonl") or source.get("files", {}).get("cases.jsonl")
     if expected and (not path.exists() or digest(path) != expected):
@@ -84,11 +88,12 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
     if not paths or len(paths) != len(set(paths)):
         raise ValueError("Provide distinct run directories")
     runs, entries, observations, audit = [], [], {}, []
+    context = RunReadContext()
     seen_runs = set()
     for path in paths:
         # The existing loader rejects changed identities, duplicate and invalid
         # scores; an unfinished JSONL tail remains a disclosed missing record.
-        loaded = load_run(path)
+        loaded = load_run(path, context=context)
         manifest = loaded["manifest"]
         warnings = list(loaded["warnings"])
         key = fingerprint(str(path))
@@ -118,7 +123,7 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
         family = fingerprint(config) if complete_identity else None
         if not complete_identity:
             warnings.append("配置身份不完整：条目可查看，但不可进行配对差值比较。")
-        source_cases = _source_cases(path, manifest, warnings)
+        source_cases = _source_cases(path, manifest, warnings, context=context)
         outputs = {r["case_id"]: r for r in loaded["outputs"]}
         results = {r["result_id"]: r for r in loaded["scores"]}
         events = defaultdict(list)

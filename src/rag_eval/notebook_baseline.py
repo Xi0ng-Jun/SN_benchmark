@@ -167,11 +167,13 @@ def run_qmsum_case(case, generate, *, turns, top_k=8, max_context_chars=12000,
     return output, scores
 
 
-def validate_saved_baseline_run(run, manifest, planned, outputs):
+def validate_saved_baseline_run(run, manifest, planned, outputs, *, reader=None):
     from .notebook_bundle import load_bundle, partition_bundle
     run = Path(run)
     identity = manifest['identity']
-    bundle = load_bundle(run/'input')
+    from .run_reader import RunReadContext
+    reader = reader or RunReadContext()
+    bundle = reader.bundle_for_run(run)
     context = identity['notebook_context']
     if (manifest['suite'] != 'qmsum' or manifest['mode'] != 'bm25' or manifest['track'] != 'R'
             or manifest.get('release_gate') is not False or bundle['manifest']['suite'] != 'qmsum'
@@ -184,16 +186,16 @@ def validate_saved_baseline_run(run, manifest, planned, outputs):
     config = identity['baseline']
     if config != baseline_config(config['top_k'], config['max_context_chars']):
         raise ValueError('Baseline configuration changed')
-    product = partition_bundle(bundle, context['partition_id'])
+    product = reader.partition(bundle, context['partition_id'], 'notebook-request-v1')
     saved_product = json.loads((run/'product-bundle.json').read_text())
     if saved_product != product or identity['product_bundle'] != dict(
             protocol_version=BASELINE_VERSION, material_manifest=product['manifest']):
         raise ValueError('Baseline product bundle changed')
     ids = {q['case_id'] for q in product['questions']}
-    cases = {c['case_id']: c for c in bundle['cases'] if c['case_id'] in ids}
+    cases = {q['case_id']: reader.case_index(bundle)[q['case_id']] for q in product['questions']}
     if planned != plan_rows(list(cases.values()), manifest['run_id'], manifest['protocol_id']):
         raise ValueError('Baseline score plan differs from frozen partition')
-    turns = partition_turns(run/'input', product)
+    turns = partition_turns(reader.input_directory(run), product)
     for output in outputs:
         case = cases.get(output['case_id'])
         if case is None:

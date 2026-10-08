@@ -2,6 +2,8 @@
 
 文档状态：服务器操作说明。执行前必须核对实际分支、配置、run-dir 和来源样本；本机不替服务器执行。
 
+2026-10-08：本文保留专门 Agent 恢复任务及历史 prompt，不扩展当前 SN-only campaign。新共享输入／源码、compact 导出和 results/review 回传按[服务器存储 prompt](server-result-storage-export-prompt.md)与[结果存储说明](result-storage-and-export.md)。已有组件补评继续读完整审计工件，不用 compact submission；新 shared Agent run 必须同时传 `--artifact-root` 和从受信任安装输出冻结的 `--artifact-index-id`，runtime 隔离不变。review 包不含 runtime，不能据此删除旧库／日志；本文历史 request-v2 命令仍非新正式运行默认。
+
 
 ## 当前：评分超时恢复
 

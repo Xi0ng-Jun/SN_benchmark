@@ -18,6 +18,8 @@ def main(argv=None):
     from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--artifact-root', type=Path, help='Campaign immutable store; bundle must be installed before running')
+    parser.add_argument('--artifact-index-id', help='Pinned partition index ID from trusted canonical installation; required with --artifact-root')
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--partition-id', required=True)
     parser.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
@@ -38,6 +40,8 @@ def main(argv=None):
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
                         help='Generation request contract (default: v3 without gold fields); explicit v1/v2 preserve historical requests.')
     args = parser.parse_args(argv)
+    if (args.artifact_root is None) != (args.artifact_index_id is None):
+        parser.error('--artifact-root and --artifact-index-id must be supplied together')
     # Set before any optional SDK import. The judge uses its explicit own credentials.
     os.environ.update(DEEPEVAL_TELEMETRY_OPT_OUT='YES', DEEPEVAL_DISABLE_DOTENV='1',
                       DEEPEVAL_NO_INSPECT_PROMPT='1', CONFIDENT_TRACING_ENABLED='NO')
@@ -49,7 +53,7 @@ def main(argv=None):
     code = 0
     try:
         execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
-                mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
+                mode=args.mode, artifact_root=args.artifact_root, artifact_index_id=args.artifact_index_id, partition_id=args.partition_id, request_revision=args.request_revision,
                 case_ids=args.case_ids, model_config=args.model_config,
                 agent_config={'judge_config': args.judge_config.resolve(), 'trajectory': args.trajectory,
                               'metrics': args.metrics, 'task_timeout': args.task_timeout})
@@ -60,7 +64,7 @@ def main(argv=None):
         code = 2
     if (run / 'manifest.json').is_file():
         try:
-            report = write_report([run], run / 'report')
+            report = write_report([run], run / 'report', partition_only=args.artifact_root is not None)
             if any(r['state']['phase'] != 'finished' or r['warnings'] for r in report['runs']):
                 code = code or 2
         except Exception as exc:

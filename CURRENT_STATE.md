@@ -1,6 +1,6 @@
 # 当前状态
 
-更新：2026-09-29。适用范围：Silicon Notebook 评测仓库。本文记录当前决策依据；范围改变时更新对应条目，历史证据另存，不在这里追加交接流水账。
+更新：2026-10-08。适用范围：Silicon Notebook 评测仓库。本文记录当前决策依据；范围改变时更新对应条目，历史证据另存，不在这里追加交接流水账。
 
 ## 目标
 
@@ -23,6 +23,8 @@
 - 当前服务器范围为 **SN-only**：五套 chunk，另加 MultiHop reasoning；先 smoke 后 full。外部方法／reference 暂缓，专门 Agent judge 评测需单独安排，不由普通 reasoning 运行自动产生。
 - 新正式 Notebook 运行使用 `notebook-data-v3`／`notebook-request-v3`；原生 Agent 使用 `sn-deepeval-native-v1` 和 DeepEval 4.2.2。Python API 部分旧默认仍存在，新调用显式选版本。
 - 一个 partition × mode × attempt 使用新进程、新 run-dir；当前入口不支持原目录隐式续跑。实际源码、模型、scorer 和依赖身份在服务器冻结，结构预检不能代替环境或模型对齐验收。
+- **共享输入／源码已实现，服务器迁移待验收。** `prepare --install-bundle ... --artifact-root ...` 安装已有 bundle，并将受信任输出 index ID 冻结到 campaign 配置；新 run 必须同时传 `--artifact-root`／`--artifact-index-id` 复用不可变 bundle/index/evaluator/SN 对象，不能每次从可变 pointer 重取预期 ID。runtime 仍独立；单 run 自动报告只校验所用 capsule，正式 export 完整校验 canonical bundle。
+- **完整审计与回传答卷分开。** outputs/Agent 工件保留完整事实；SN submission 使用五套 compact scoring projection，保留证据回放字段、状态与来源 hash。`package_benchmark_results.py --mode results|review` 按角色生成私有包；无自动删除、TTL、GC，不改原 run/runtime。具体边界见[结果存储与导出](docs/result-storage-and-export.md)。
 
 ## 已废弃假设
 
@@ -34,7 +36,7 @@
 ## 已知债务与暂缓原因
 
 - **五套内部版本默认与输入规则仍分散。** 旧 benchmark 专属路径已删除，共用职责已迁到独立模块；Python API 旧默认、五套历史 reader、预检与运行器的题单解析差异仍待收敛，见 [TRIAGE](TRIAGE.md)。
-- **逐 run 重复复制／导入／建索引，campaign 仍靠执行者展开。** 先保住隔离和完整输入；取得服务器耗时、磁盘和失败数据后再决定缓存或调度改造。
+- **重复不可变输入／源码已收敛，可变成本仍需实测。** 共享模式和 compact 导出已实现；旧物理副本仍逐份验证，导入／数据库／建索引仍按 run 隔离，campaign 靠执行者展开。服务器实际 runtime、证据体积、I/O、RSS 与阶段耗时尚未核实，不能据离线样例宣称全量性能收益。
 - **环境交付与报告分散。** SN／scorer／权重分别准备，Dashboard、官方比较和组件补评使用不同工件。暂不做统一平台，先明确身份及转换契约，避免重复计数或误合分数。
 
 以上是当前工程取舍，**不构成暂缓修复正确性缺陷的理由**。具体风险和验证入口见[当前架构](ARCHITECTURE_CURRENT.md)。

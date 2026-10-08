@@ -4,6 +4,14 @@
 
 本页保留已记录的代码／实验事实及阶段进展；当前目标、不变量和执行范围以 [CURRENT_STATE.md](../CURRENT_STATE.md) 为阅读入口。下方历史数字不代表本次重新验收，服务器状态需读取实际工件确认。
 
+## 2026-10-08 结果保存与导出改造
+
+当前工作树已实现共享不可变 bundle/index/evaluator/SN 工件、固定 canonical 安装 index ID、操作内读取上下文、五套 compact scoring projection、private results/review 角色包与 logical/allocated inventory。runtime 仍逐 run 隔离；原始 observations、证据/排名回放、状态、分母与逐条持久化保证保持。补评、ALCE attachment、Dashboard 和 review 迁移读取已接通。原数据/旧 run 不迁移、不删除。
+
+最终完整离线 Python **685 passed，1 skipped**（未配置可选本地 Perl ROUGE）；Node **34 passed**。独立审查 162 项相关检查通过，发现的索引身份、缓存范围和输出路径重叠问题已加反例修复。合成 1k/5k/10k 工件完整导出每次 canonical 重建一次，review 包迁移读取题数一致；详细时间、体积、内存及测量局限见[验证记录](result-storage-export-verification-2026-10-08.md)。这些不是 SN／模型实验，不代表服务器性能或正式成绩。
+
+代码位于 `feat/benchmark-protocol-correctness`，基线为 `bcea0c5`。用户于 2026-10-08 随后授权同步这轮改造；提交／远程身份以 Git 和交接消息为准。本机未运行服务器。新操作指南见[共享存储与回传](result-storage-and-export.md)，待服务器指令见[交接 prompt](server-result-storage-export-prompt.md)。服务器现有 run 的实际版本/进度本次未重新核实。
+
 ## 2026-09-29 仓内退役清理
 
 仅保留 **QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA**。其他旧 benchmark 专属代码、CLI、测试、配置、受跟踪样本／结果及文档已删除；共用身份、runtime、模型客户端、结果账本与报告已迁到独立模块，没有保留旧模块转发壳。Dashboard 测试使用真实构建的合成 QASPER bundle，继续执行冻结来源和计划重建校验。

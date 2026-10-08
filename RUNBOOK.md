@@ -1,6 +1,6 @@
 # Silicon Notebook 评测项目执行指南
 
-核实日期：2026-09-29。工作树：`feat/benchmark-protocol-correctness`；删除前 HEAD 为 `86addcf421d627f62553204275b506b4d8bc022b`，本文已同步本轮尚未提交的清理。每次执行记录实际 SHA 与工作区状态。
+核实日期：2026-10-08。工作树：`feat/benchmark-protocol-correctness`；本文同步当前共享存储、compact 导出与回传实现。每次执行记录实际 SHA 与工作区状态，不用旧上传包的版本替代当前源码身份。
 
 本文面向 **benchmark-deepeval 评测仓库**，覆盖安装、启动、测试、构建与服务器交付、配置和失效指引。它不是 Silicon Notebook 产品前后端的部署手册。命令以 Bash、评测仓库根目录为工作目录；`/path/to/...`、`<...>` 必须替换成实际值。
 
@@ -16,7 +16,7 @@
 /home/wabiwabi/silicon-notebook/benchmark-deepeval/.worktrees/benchmark-protocol-correctness
 ```
 
-2026-09-29 本轮有尚未提交的删除、迁移与文档改动。父目录的 `main` 位于 `e022c60`，有另一批未提交文档，不应直接切到父目录照抄命令。未在本次任务中 fetch 或查询远程，也未读取服务器进程或实验工件。
+2026-10-08 本轮有尚未提交的共享存储、导出、打包和文档改动。2026-09-29 曾记录父目录 `main` 为 `e022c60`；该历史身份不能替代当前 checkout 检查，不应直接切到父目录照抄命令。本次文档任务未 fetch／查询远程，也未读取服务器进程或实验工件。
 
 进入实际 checkout 后先检查：
 
@@ -32,6 +32,8 @@ git worktree list
 | 冻结已经取得的本地数据 | `scripts/prepare_notebook_benchmarks.py` | 否，也不下载 |
 | SN 按分区生成回答，保存运行期诊断 | `scripts/run_notebook_benchmarks.py` | 是，服务器执行 |
 | 导出 SN 答卷 | `scripts/benchmark_protocol.py export-sn` | 否 |
+| 安装已有 frozen bundle 到共享 store | `scripts/prepare_notebook_benchmarks.py --install-bundle ... --artifact-root ...` | 否，完整验证输入并生成分区索引 |
+| results／review 回传包 | `scripts/package_benchmark_results.py` | 否，按角色校验并生成新包，不删除原文件 |
 | 官方评分 | `scripts/benchmark_protocol.py score` | QASPER/MultiHop/Hotpot 文本评分及 QMSum Perl 不调用模型；ALCE 显式模型模式会调用 |
 | 原生 Agent 组件／轨迹评测 | `scripts/run_notebook_agent.py` | 是，SN 加独立 judge |
 | 已保存组件补评 | `scripts/score_native_components.py` | 只调用 judge |
@@ -213,11 +215,24 @@ PY
 
 ### 3.4 运行一个分区；通过 smoke 后再扩 full
 
+先将每套／ALCE task 的已有 frozen bundle 安装到同一个 campaign store。它保持原 bundle 只读；新准备数据也可在原 prepare 命令增加 `--artifact-root` 同次安装。run 使用共享 store 前必须完成安装：
+
+```bash
+export ARTIFACT_ROOT="$CAMPAIGN_ROOT/artifacts"
+"$EVAL_PYTHON" scripts/prepare_notebook_benchmarks.py \
+  --install-bundle "$BUNDLE" --artifact-root "$ARTIFACT_ROOT"
+```
+
+`--install-bundle` 不能混用新准备的 `--suite/--raw/--source/--output/--corpus`。store 保存不可变 bundle/index 与实际源码快照；数据库、storage、模型配置与日志仍每个 partition × mode × attempt 独立。run 目录直接放在 `runs/<job--partition--attempt>/`，不能嵌套于 store；后续角色打包依赖这一布局。未指定 store 的旧复制模式仍能运行与校验，不自动迁移历史目录。
+
+将受信任安装输出的 `Shared bundle` 和 `Shared partition index` ID 按每套／ALCE task 写入冻结 campaign 配置，运行前从该配置设 `ARTIFACT_INDEX_ID`。所有 shared run CLI/API 要同时提供 root 和预期 index ID；禁止每次从可变 store pointer 重读预期值。入口拒绝 index ID 不匹配，包括 bundle/index 同时替换的情形；来源／派生协议变更需要显式新 campaign，不静默改 pin。
+
 先填写 `BUNDLE`、`PARTITION_ID`、`SN_MODEL_CONFIG`、`RUN_DIR`。分区来自该 bundle 的 `partitions.jsonl`，题目来自 `cases.jsonl`。下面为服务器 smoke 示例：
 
 ```bash
 "$EVAL_PYTHON" scripts/run_notebook_benchmarks.py \
-  --bundle "$BUNDLE" --partition-id "$PARTITION_ID" \
+  --bundle "$BUNDLE" --artifact-root "$ARTIFACT_ROOT" --partition-id "$PARTITION_ID" \
+  --artifact-index-id "$ARTIFACT_INDEX_ID" \
   --mode chunk --request-revision notebook-request-v3 \
   --project-root "$PROJECT_ROOT" --model-config "$SN_MODEL_CONFIG" \
   --case-id-file "$PARTITION_CASE_FILE" \
@@ -231,6 +246,8 @@ PY
 smoke 核验请求无 gold、资料范围正确、输出及失败状态完整、证据映射可回放，并验证对应官方评分路径。通过后按计划枚举全量 partitions，省略 `--case-id-file`。MultiHop reasoning 使用 `--mode reasoning` 和不同的新目录；其他方法保持本轮清单中的 mode。
 
 每个运行会保存 manifest、状态、题单、`outputs.jsonl`、运行期 `scores.jsonl` 和产品工件。**runner 的诊断分不等于统一答卷的官方成绩**；后续导出和官方评分仍须执行。
+
+共享运行自动生成的单 run 报告只验证消费的 partition capsule，`summary.json.input_validation` 明示该边界；正式 export 和默认 reader/Dashboard 才做 canonical 全 bundle 审计。不能把“报告生成”当作整套 frozen 输入已完整校验。具体引用、对象布局和旧 run 兼容见[结果存储与导出](docs/result-storage-and-export.md)。
 
 ### 3.5 导出答卷，再做官方评分
 
@@ -247,6 +264,8 @@ mapfile -t RUN_DIRS < "$CAMPAIGN_ROOT/$JOB_ID.run-dirs.txt"
 
 这是 **full scope** 的示例；smoke 导出另加 `--case-id-file "$SMOKE_CASE_FILE"` 声明对应 bundle 的完整 smoke 范围。省略 scope 时按全 bundle 对账，未提供的题会留下 missing，不能把缺失的全量导出当作成功的 smoke 或正式完整成绩。
 
+SN 答卷继续使用 `benchmark-submission-v1`，方法配置声明 `sn-official-scoring-projection-v1`。投影前校验完整原 record，保留 QASPER/Hotpot 全 response/captures 与证据快照、MultiHop 完整排名、ALCE anchors/maps/errors、QMSum 全答案和失败状态；去除无关上下文。来源行保留 run_id/outputs_sha256，读取期间 ledger 变化则拒绝导出。完整 outputs/Agent 事实仍在 run，compact submission 不供 Dashboard/组件补评替代原 run。
+
 普通官方评分（QASPER/MultiHop/Hotpot 或 ALCE 轻量文本路径）：
 
 ```bash
@@ -254,7 +273,7 @@ export SCORERS="$SERVER_ROOT/assets/scorers/fetched-official-scorers"
 "$EVAL_PYTHON" scripts/benchmark_protocol.py score \
   --bundle "$BUNDLE" \
   --submission "$CAMPAIGN_ROOT/submissions/$JOB_ID/submission.json" \
-  --sources "$SCORERS" --output "$CAMPAIGN_ROOT/scores/$JOB_ID"
+  --sources "$SCORERS" --output "$CAMPAIGN_ROOT/official-scores/$JOB_ID"
 ```
 
 QMSum 必须改用含显式 ROUGE 路径的命令：
@@ -266,7 +285,7 @@ export PERL5LIB="$ROUGE_HOME${PERL5LIB:+:$PERL5LIB}"
   --bundle "$BUNDLE" \
   --submission "$CAMPAIGN_ROOT/submissions/$JOB_ID/submission.json" \
   --sources "$SCORERS" --rouge-home "$ROUGE_HOME" \
-  --output "$CAMPAIGN_ROOT/scores/$JOB_ID-perl"
+  --output "$CAMPAIGN_ROOT/official-scores/$JOB_ID-perl"
 ```
 
 上传包之外的 Perl 模块布局须按实际位置设置 `PERL5LIB`。单独 export `ROUGE_HOME` 不会让 `score` 自动读取它。
@@ -280,7 +299,7 @@ ALCE 完整模型评分在已准备 §2.3 环境后执行：
   --sources "$SCORERS" --alce-full \
   --alce-python "$ALCE_PYTHON" --alce-hf-cache "$ALCE_HF_CACHE" \
   --alce-nltk-data "$ALCE_NLTK_DATA" \
-  --output "$CAMPAIGN_ROOT/scores/$JOB_ID-alce-full"
+  --output "$CAMPAIGN_ROOT/official-scores/$JOB_ID-alce-full"
 ```
 
 只评答案时将 `--alce-full` 换成 `--alce-answer-only`，另用新输出目录；二者互斥，引用分在 answer-only 保持 pending。full 还要求完整 shown-doc／引用映射。
@@ -293,7 +312,8 @@ ALCE 完整模型评分在已准备 §2.3 环境后执行：
 
 ```bash
 "$EVAL_PYTHON" scripts/run_notebook_agent.py \
-  --bundle "$BUNDLE" --partition-id "$PARTITION_ID" \
+  --bundle "$BUNDLE" --artifact-root "$ARTIFACT_ROOT" --partition-id "$PARTITION_ID" \
+  --artifact-index-id "$ARTIFACT_INDEX_ID" \
   --mode reasoning --request-revision notebook-request-v3 \
   --project-root "$PROJECT_ROOT" --model-config "$SN_MODEL_CONFIG" \
   --judge-config "$JUDGE_CONFIG" --case-id "$CASE_ID" \
@@ -304,7 +324,24 @@ ALCE 完整模型评分在已准备 §2.3 环境后执行：
 
 SN TOML 控制产品模型，judge JSON 控制评审模型，二者独立。答案／组件先保存，judge 失败不应抹掉回答。组件补评入口及必填参数用 `scripts/score_native_components.py --help` 查看，具体步骤见[评分恢复](docs/native-scoring-recovery.md)。补评需要新的 output，只支持三个组件指标，不能从普通日志补造完整 Agent 原生轨迹。
 
-### 3.7 查看 Dashboard
+### 3.7 按角色生成回传包
+
+新 campaign 使用 `runs/<run-id>/`、`submissions/`、`official-scores/`、`reports/`／`comparisons/`；已有嵌套 run 和 `scores/` 先在新 staging 按实际角色组织，原工件只读，不能指望打包器递归猜角色。输出必须在 campaign 外且是新路径：
+
+```bash
+"$EVAL_PYTHON" scripts/package_benchmark_results.py \
+  --campaign "$CAMPAIGN_ROOT" --mode results \
+  --output "$SERVER_ROOT/deliveries/$CAMPAIGN_ID-results.tar.gz"
+"$EVAL_PYTHON" scripts/package_benchmark_results.py \
+  --campaign "$CAMPAIGN_ROOT" --mode review \
+  --output "$SERVER_ROOT/deliveries/$CAMPAIGN_ID-review.tar.gz"
+```
+
+results 包用于必要答卷、官方成绩/审计、scope/coverage、来源身份和已生成报告。review 另带完整 outputs、计划/诊断分、必要 Agent 轨迹/组件/指标与映射，共享 bundle/index/source 只附一次。二者均排除 runtime/storage/模型配置/原始服务日志，不等于自由文本脱敏。回传 archive 及相邻 `.receipt.json`，保存包内 hash/inventory；收据包含字节、阶段耗时和验证计数。解包后用 `result_package.validate_package` 校验。
+
+原 bundle/run/runtime/日志继续保留，无自动删除、TTL 或 GC；旧 QASPER 显式证据恢复还可能读数据库。完整目录约束、inventory/API 与服务器测量项见[结果存储与导出](docs/result-storage-and-export.md)，交接模板见[服务器存储 prompt](docs/server-result-storage-export-prompt.md)。上述操作本身不授权扩大模型实验。
+
+### 3.8 查看 Dashboard
 
 只读已有 run，可在本机执行；当前服务器 SN-only prompt 不包含这个步骤，回传后按需生成。
 
@@ -422,6 +459,9 @@ runtime 自动隔离数据库、存储、缓存和日志，并关闭 profile、�
 | 只装 evaluator/DeepEval 就能跑 SN 和所有官方模型分 | SN backend、Perl、ALCE 评分环境及模型资源是独立前提；按 §2 准备 |
 | 在 `.venv/bin/pytest` 和 `python -m pytest` 间任意切换 | 曾发生 `scripts` 导入失败；统一在仓库根使用指定解释器的 `-m pytest` |
 | 对已存在的 Notebook run-dir 直接续跑 | 当前入口拒绝，使用新 attempt 并保留原产物 |
+| 仅凭 capsule 单 run 报告宣称全输入审计／正式导出完成 | 报告披露 bounded 校验，export 必须 canonical 全验证 |
+| 将 `scores/`、任意嵌套 run 或整份 campaign tar 当作角色结果包 | 新成绩存 `official-scores/`，run 为直接子目录，按 §3.7 打包；旧目录在新 staging 组织，不改原 run |
+| 已有 review 包就删除 runtime 或旧 QASPER 数据库 | 当前没有清理资格判定或删除命令；恢复依赖仍可能需要服务器库 |
 | 只运行 `--mode reasoning` 就得到 Agent 七项指标 | 只执行业务路径；专门评测要用 Agent 入口、judge 和适用的 `--trajectory` |
 | 给 Agent CLI 传普通 runner 的 `--case-id-file` | 当前不支持；使用重复 `--case-id` |
 | 用 `evaluate_agent_traces.py` 把旧 JSON 变成正式原生 Agent／DAG 成绩 | 该入口只保留历史确定性诊断；不能替代原生观测与 judge 评测 |

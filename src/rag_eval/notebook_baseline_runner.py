@@ -14,19 +14,33 @@ from .run_results import EventJournal
 
 
 def execute(*, root, project, bundle_dir, run, partition_id, model_config,
-            top_k=8, max_context_chars=12000):
+            top_k=8, max_context_chars=12000, artifact_root=None, artifact_index_id=None):
     root, project, bundle_dir, run, model_config = [Path(p).resolve() for p in
                                                   (root, project, bundle_dir, run, model_config)]
     for forbidden in (root/'src', root/'scripts', project, bundle_dir, model_config):
         if run.is_relative_to(forbidden) or forbidden.is_relative_to(run):
             raise ValueError('Run must be separate from code/product/input/model config')
+    if artifact_root is not None:
+        store_path = Path(artifact_root).resolve()
+        if any(store_path.is_relative_to(p) or p.is_relative_to(store_path)
+               for p in (root / 'src', root / 'scripts', project, bundle_dir)):
+            raise ValueError('Shared store must be separate from code/product/input')
+        if run.is_relative_to(store_path) or store_path.is_relative_to(run):
+            raise ValueError('Run must be separate from shared artifact store')
     if run.exists():
         raise ValueError('Use a new run directory; no implicit resume')
     config = baseline_config(top_k, max_context_chars)
-    bundle = load_bundle(bundle_dir)
+    shared_refs = None
+    if artifact_root is None:
+        bundle = load_bundle(bundle_dir)
+    else:
+        from .bundle_index import find_installed_bundle, load_partition
+        shared_refs = find_installed_bundle(bundle_dir, artifact_root, expected_index_id=artifact_index_id)
+        capsule = load_partition(artifact_root, shared_refs, partition_id, 'notebook-request-v1')
+        bundle = dict(capsule, partitions=[capsule['partition']])
     if bundle['manifest']['suite'] != 'qmsum':
         raise ValueError('Only QMSum is supported by this baseline')
-    product = partition_bundle(bundle, partition_id)
+    product = partition_bundle(bundle, partition_id) if shared_refs is None else capsule['product']
     members = {q['case_id'] for q in product['questions']}
     cases = [c for c in bundle['cases'] if c['case_id'] in members]
     if not cases:
@@ -36,12 +50,17 @@ def execute(*, root, project, bundle_dir, run, partition_id, model_config,
     run.mkdir(parents=True, exist_ok=False)
     save_json(run/'state.json', dict(phase='initializing'))
     try:
-        shutil.copytree(bundle_dir, run/'input')
-        if load_bundle(run/'input') != bundle:
-            raise ValueError('Input changed while copying')
-        turns = partition_turns(run/'input', product)
+        if shared_refs is None:
+            shutil.copytree(bundle_dir, run/'input')
+            if load_bundle(run/'input') != bundle:
+                raise ValueError('Input changed while copying')
+        else:
+            from .artifact_store import write_run_refs
+            write_run_refs(run, artifact_root, shared_refs)
+        from .run_reader import input_directory
+        turns = partition_turns(input_directory(run), product)
         save_json(run/'product-bundle.json', product)
-        code = snapshot_sources(root, project, run)
+        code = snapshot_sources(root, project, run, **({'artifact_root': artifact_root} if artifact_root is not None else {}))
         # Only SN's explicit model client is reused. No production dotenv or service
         # registry, no repository/notebook creation, no ingestion or Ask pipeline.
         settings, runtime = configure_environment(project, run, product_track=False,
@@ -57,7 +76,8 @@ def execute(*, root, project, bundle_dir, run, partition_id, model_config,
         protocol_id = fingerprint({**identity, 'mode': 'bm25'})
         planned = plan_rows(cases, run.name, protocol_id)
         save_jsonl(run/'planned.jsonl', planned)
-        save_json(run/'manifest.json', dict(format='public-starter-run-v1', run_id=run.name, suite='qmsum',
+        from .artifact_store import reference_identity
+        save_json(run/'manifest.json', dict(**reference_identity(run), format='public-starter-run-v1', run_id=run.name, suite='qmsum',
                   track='R', mode='bm25', product_protocol=BASELINE_VERSION,
                   protocol_id=protocol_id, pairing_id=fingerprint(identity), identity=identity,
                   models=public_models, source_manifest=bundle['manifest'],

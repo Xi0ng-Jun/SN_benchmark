@@ -197,7 +197,7 @@ def score_outputs(run, cases, planned, sink):
 
 
 def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
-            agent_config=None, case_ids=None, model_config=None):
+            agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
@@ -209,10 +209,27 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     for forbidden in (root / 'src', root / 'scripts', project, bundle_dir):
         if run.is_relative_to(forbidden) or forbidden.is_relative_to(run):
             raise ValueError('Run must be separate from code/product/input')
+    if artifact_root is not None:
+        store_path = Path(artifact_root).resolve()
+        if any(store_path.is_relative_to(p) or p.is_relative_to(store_path)
+               for p in (root / 'src', root / 'scripts', project, bundle_dir)):
+            raise ValueError('Shared store must be separate from code/product/input')
+        if run.is_relative_to(store_path) or store_path.is_relative_to(run):
+            raise ValueError('Run must be separate from shared artifact store')
     if run.exists():
         raise ValueError('Use a new run directory; no implicit resume')
-    bundle = load_bundle(bundle_dir)
-    product = partition_bundle(bundle, partition_id, request_revision=request_revision)
+    shared_refs = None
+    if artifact_root is None:
+        bundle = load_bundle(bundle_dir)
+        product = partition_bundle(bundle, partition_id, request_revision=request_revision)
+    else:
+        from .bundle_index import find_installed_bundle, load_partition
+        shared_refs = find_installed_bundle(bundle_dir, artifact_root, expected_index_id=artifact_index_id)
+        capsule = load_partition(artifact_root, shared_refs, partition_id, request_revision)
+        bundle = dict(capsule, partitions=[capsule['partition']])
+        if not capsule.get('qasper_evidence_catalogues'):
+            bundle.pop('qasper_evidence_catalogues', None)
+        product = capsule['product']
     cases = selected_cases(bundle, product, case_ids)
     if not cases:
         raise ValueError('Cannot execute an empty partition')
@@ -233,11 +250,15 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     run.mkdir(parents=True, exist_ok=False)
     update_state(run, 'initializing')
     try:
-        shutil.copytree(bundle_dir, run / 'input')
-        if load_bundle(run / 'input') != bundle:
-            raise ValueError('Input changed while copying')
+        if shared_refs is None:
+            shutil.copytree(bundle_dir, run / 'input')
+            if load_bundle(run / 'input') != bundle:
+                raise ValueError('Input changed while copying')
+        else:
+            from .artifact_store import write_run_refs
+            write_run_refs(run, artifact_root, shared_refs)
         save_json(run / 'product-bundle.json', product)
-        code = snapshot_sources(root, project, run)
+        code = snapshot_sources(root, project, run, **({'artifact_root': artifact_root} if artifact_root is not None else {}))
         settings, runtime = configure_environment(project, run, product_track=True,
                                                    document_limit=bundle['manifest']['max_documents'],
                                                    **({'model_config': model_config} if model_config is not None else {}))
@@ -277,7 +298,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         protocol_id = fingerprint({**identity, 'mode': mode})
         planned = plan_rows(cases, run.name, protocol_id, mode)
         save_jsonl(run / 'planned.jsonl', planned)
-        save_json(run / 'manifest.json', dict(format='public-starter-run-v1', run_id=run.name,
+        from .artifact_store import reference_identity
+        save_json(run / 'manifest.json', dict(**reference_identity(run), format='public-starter-run-v1', run_id=run.name,
                   suite=bundle['manifest']['suite'], track='R', mode=mode, protocol_id=protocol_id,
                   pairing_id=fingerprint(identity), models={}, source_manifest=bundle['manifest'],
                   product_protocol=VERSION, planned_sha256=digest(run / 'planned.jsonl'),
@@ -323,9 +345,11 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         raise
 
 
-def validate_saved_run(run, manifest, planned, outputs):
+def validate_saved_run(run, manifest, planned, outputs, *, reader=None):
     """Rebuild the entire public input/partition/metric contract before reporting."""
-    frozen = load_bundle(run / 'input')
+    from .run_reader import RunReadContext
+    reader = reader or RunReadContext()
+    frozen = reader.bundle_for_run(run)
     if frozen['manifest'] != manifest['identity']['source'] or frozen['manifest'] != manifest['source_manifest']:
         raise ValueError('Notebook source differs from run identity')
     context = manifest['identity']['notebook_context']
@@ -334,8 +358,8 @@ def validate_saved_run(run, manifest, planned, outputs):
     request_revision = context.get('request_revision', LEGACY_REQUEST_REVISION)
     if request_revision != LEGACY_REQUEST_REVISION:
         expected_context['request_revision'] = request_revision
-    product = partition_bundle(frozen, context['partition_id'], request_revision=request_revision)
-    cases = selected_cases(frozen, product, context.get('case_ids'))
+    product = reader.partition(frozen, context['partition_id'], request_revision)
+    cases = reader.selected_cases(frozen, product, context.get('case_ids'))
     if 'case_ids' in context:
         expected_context['case_ids'] = [case['case_id'] for case in cases]
     if context != expected_context or manifest.get('track') != 'R' or manifest.get('release_gate') is not False:

@@ -1,6 +1,6 @@
 # Notebook 评测的独立重评分
 
-文档状态：当前实现说明。重评分创建独立批次并保持原 run 只读。
+文档状态：2026-10-08 当前实现说明。重评分创建独立批次并保持原 run 只读；共享输入／源码与回传边界见[结果存储与导出](result-storage-and-export.md)。
 
 
 独立重评分把一次评测拆成两条成本不同的路径：
@@ -17,11 +17,14 @@
 因此原运行目录始终保持只读，派生目录保存：
 
 - `base-manifest.json`、`base-planned.jsonl`、`base-scores.jsonl`：来源运行的快照；
-- 原 `input/`、`product-bundle.json`、`outputs.jsonl` 和模型事件的副本；
+- 输入来源：共享 run 复制校验后的 `artifact-refs.json` 并重新计算相对 store 路径，复用同一不可变 bundle/index/source；旧 run 仍复制原 `input/`；
+- `product-bundle.json`、完整 `outputs.jsonl` 和已存在模型事件的副本；
 - 新的 `planned.jsonl`、`scores.jsonl`、`manifest.json` 和 `state.json`；
 - `manifest.scoring_batch`：来源运行、来源文件哈希、评分器选择、题目选择和评分批次版本。
 
 派生 run 使用新的 `run_id`、`protocol_id` 和 `pairing_id`。它可以单独加载、审计、进入 Dashboard；配置族会与生成 run 分开，避免把同一批回答误计为第二次 SN 问答。
+
+`RunReadContext` 在同次读取中完整验证 canonical 输入、复用字典；派生 run 不复制共享对象、不创建或共享产品 runtime。ALCE `attach_scores` 采用同一输入 resolver/引用发布边界；旧复制 run 继续支持。补评不接收 compact submission 代替原 outputs，因为被投影删除的上下文与组件输入不能补造。
 
 ## 命令
 
@@ -55,7 +58,7 @@ python scripts/rescore_notebook_run.py \
   --all
 ```
 
-输出目录必须是新的目录，并且不能位于来源 run 内。重复运行需要使用另一个输出目录；命令没有隐式续跑。
+输出目录必须是新的目录，并且不能位于来源 run 内。共享来源的 output 应留在同一 campaign `runs/<新run-id>`，使相对 store 引用保持可解析；脱离 campaign 交付时用 review 包带上共享依赖，不单独复制一个派生目录。重复运行需要使用另一个输出目录；命令没有隐式续跑。
 
 ## 评分选择规则
 
@@ -80,3 +83,5 @@ python scripts/rescore_notebook_run.py \
 本地验证覆盖：原目录不被修改、来源回答篡改会在创建输出前被拒绝、指定指标/题目筛选、成功分数默认不重复计算、`--all` 强制重算、评分中断保留已写分数，以及全量阻断网络回归。真实服务器 run 的重评分仍需在服务器上执行。
 
 现有生成 run 的 manifest 没有在生成完成后预先提交 `outputs.jsonl` 哈希；重评分会记录重评分开始时看到的来源文件哈希，并依靠现有 bundle、prompt、上下文和协议校验发现结构性篡改。若需要对“答案文字本身”提供生成时点的不可变证明，后续应在生成 run 结束时增加输出 ledger 哈希，再由 loader 强制核验；这属于生成协议增强，不由本次重评分入口回填历史 run。
+
+SN export 的 `outputs_sha256` 同样是导出时观察到的完整 ledger 身份，读取过程中变化则拒绝；它不回填历史生成时点证明。results 包只回传必要答卷／成绩；需要原始回答、映射、Agent 工件及输入／源码复核时使用 review。两种模式都不带 runtime/配置/原始模型日志，也不删除服务器源文件；旧 QASPER evidence recovery 等数据库依赖继续保留服务器端。

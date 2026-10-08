@@ -15,7 +15,8 @@ from .run_support import read_rows
 
 
 def _export_payload(run):
-    bundle = load_bundle(run / 'input')
+    from .run_reader import RunReadContext
+    bundle = RunReadContext().bundle_for_run(run)
     cases = {c['case_id']: c for c in bundle['cases']}
     exports = [export_case(cases[o['case_id']], o['product_record']) for o in read_rows(run / 'outputs.jsonl')
                if o['status'] == 'success' and o['output_available']]
@@ -86,13 +87,18 @@ def attach_scores(run, official_dir, output):
     run, official_dir, output = [Path(p).resolve() for p in (run, official_dir, output)]
     if output.exists() or any(output.is_relative_to(p) or p.is_relative_to(output) for p in (run, official_dir)):
         raise ValueError('Use a new separate derived run directory')
-    loaded = load_run(run)
+    from .artifact_store import reject_shared_output
+    reject_shared_output(output, source=run)
+    from .run_reader import RunReadContext
+    reader = RunReadContext()
+    loaded = load_run(run, context=reader)
     manifest = loaded['manifest']
     if manifest['suite'] != 'alce' or manifest['identity'].get('official_scoring'):
         raise ValueError('Attach once to an original ALCE run; score citations and claims together for ELI5')
     invocation, scores = _read_official(run, official_dir, loaded['planned'])
     output.mkdir(parents=True, exist_ok=False)
-    shutil.copytree(run / 'input', output / 'input')
+    from .artifact_store import copy_run_input, reference_identity
+    copy_run_input(run, output)
     shutil.copytree(official_dir, output / 'official-scoring')
     for name in ('product-bundle.json', 'outputs.jsonl', 'model-events.jsonl', 'preparation-usage.json', 'source-identity.json', 'runtime-identity.json'):
         if (run / name).exists():
@@ -102,7 +108,7 @@ def attach_scores(run, official_dir, output):
     save_jsonl(output / 'base-scores.jsonl', loaded['scores'])
     identity = {**manifest['identity'], 'official_scoring': _scoring_identity(invocation)}
     protocol = fingerprint({**identity, 'mode': manifest['mode']})
-    cases = load_bundle(output / 'input')['cases']
+    cases = reader.bundle_for_run(output)['cases']
     ids = {p['case_id'] for p in loaded['planned']}
     planned = plan_rows([c for c in cases if c['case_id'] in ids], output.name, protocol, manifest['mode'])
     save_jsonl(output / 'planned.jsonl', planned)

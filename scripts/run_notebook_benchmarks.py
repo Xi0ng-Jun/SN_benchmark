@@ -12,6 +12,8 @@ def main():
     from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--artifact-root', type=Path, help='Campaign immutable store; bundle must be installed before running')
+    parser.add_argument('--artifact-index-id', help='Pinned partition index ID from trusted canonical installation; required with --artifact-root')
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--partition-id', required=True)
     parser.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
@@ -24,6 +26,8 @@ def main():
     parser.add_argument('--case-id-file', type=Path,
                         help='Read one frozen case ID per line; may be combined with --case-id')
     args = parser.parse_args()
+    if (args.artifact_root is None) != (args.artifact_index_id is None):
+        parser.error('--artifact-root and --artifact-index-id must be supplied together')
     from rag_eval.notebook_runner import execute, load_case_ids_file
     case_ids = list(args.case_ids or [])
     if args.case_id_file is not None:
@@ -39,7 +43,7 @@ def main():
     try:
         execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
                 mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
-                case_ids=case_ids, model_config=args.model_config)
+                case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root, artifact_index_id=args.artifact_index_id)
     except KeyboardInterrupt:
         code = 130
     except Exception as exc:
@@ -47,7 +51,7 @@ def main():
         code = 2
     if (run / 'state.json').exists():
         try:
-            report = write_report([run], run / 'report')
+            report = write_report([run], run / 'report', partition_only=args.artifact_root is not None)
             if any(r['state']['phase'] != 'finished' or r['warnings'] for r in report['runs']):
                 code = code or 2
             print(run / 'report/report.md')

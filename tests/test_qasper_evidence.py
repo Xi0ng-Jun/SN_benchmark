@@ -296,7 +296,7 @@ def test_export_new_snapshot_or_explicit_readonly_old_recovery(tmp_path, monkeyp
     original = deepcopy(loaded)
     hashes = lambda: {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in run.rglob('*') if p.is_file()}
     before = hashes()
-    monkeypatch.setattr(run_report, 'load_run', lambda path: loaded)
+    monkeypatch.setattr(run_report, 'load_run', lambda path, *, context=None, include_model_events=True: loaded)
     result = export_sn_runs(tmp_path / 'input/bundle', [run], tmp_path / 'export', qasper_evidence=recover)
     submission = json.loads(Path(result).read_text())
     assert submission['method']['configuration']['qasper_evidence'] == api().identity()
@@ -409,7 +409,8 @@ def test_unknown_reference_requires_complete_observations(tmp_path, field):
     assert capture(f)['status']=='error'
 
 
-def test_declared_new_run_snapshot_checked_by_saved_run_reader(tmp_path, monkeypatch):
+def test_declared_new_run_snapshot_checked_by_saved_run_reader(tmp_path):
+    from shutil import copytree
     from rag_eval import notebook_runner
     from rag_eval.notebook_bundle import partition_bundle
     from test_notebook_data_v3 import freeze, REQUEST_V3
@@ -417,7 +418,7 @@ def test_declared_new_run_snapshot_checked_by_saved_run_reader(tmp_path, monkeyp
     f=fixture(tmp_path);bundle=freeze(tmp_path/'input','qasper',f[0])
     product=partition_bundle(bundle,bundle['partitions'][0]['partition_id'],request_revision=REQUEST_V3)
     run=tmp_path/'run';run.mkdir();(run/'product-bundle.json').write_text(json.dumps(product))
-    monkeypatch.setattr(notebook_runner,'load_bundle',lambda path:bundle)
+    copytree(tmp_path/'input/bundle',run/'input')
     context=dict(partition_id=bundle['partitions'][0]['partition_id'],selected_cases=bundle['manifest']['selected_cases'],
                  partition_count=bundle['manifest']['partition_count'],request_revision=REQUEST_V3)
     manifest=dict(identity=dict(source=bundle['manifest'],product_bundle=product['manifest'],notebook_context=context,

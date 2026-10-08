@@ -2,6 +2,8 @@
 
 本手册把[外部比较计划](superpowers/plans/2026-09-25-external-benchmark-comparison.md)的服务器阶段收敛成可执行文件。机器可读入口是 [`notebook-external-campaign-v1.json`](../configs/notebook-external-campaign-v1.json) 和 [`notebook-external-execution-plan-v1.jsonl`](../configs/notebook-external-execution-plan-v1.jsonl)。它们是执行模板，不是已经完成的服务器实验；`<...>` 占位符必须在服务器上由实际路径、哈希和身份替换并写入 campaign 目录。
 
+2026-10-08 操作边界：当前执行仍为 **SN-only**，外部/reference/BM25 候选暂缓。以下外部方法登记是保留的后续能力，不能直接执行完整候选计划；当前先按 [RUNBOOK](../RUNBOOK.md) 过滤 SN 任务。共享输入、bounded 单 run 报告、canonical export 与角色回传已实现，服务器实测尚未在本机核验；详见[结果存储与导出](result-storage-and-export.md)。
+
 ## 启动前冻结
 
 在 `${CAMPAIGN_ROOT}` 下建立以下目录，并把当前 evaluator checkout 复制或只读挂载进去：
@@ -13,15 +15,16 @@ ${CAMPAIGN_ROOT}/
   execution-plan.jsonl
   execution-status.jsonl
   bundles/
+  artifacts/
   scorers/
   sources/
-  runs/
+  runs/                         # 每个 run 是直接子目录
   submissions/
-  scores/
+  official-scores/
   comparisons/
 ```
 
-先复制候选登记、campaign 范围和执行题单三个模板，再补写实际值：bundle `manifest.json` 的 SHA256、公开数据 URL/revision、官方 scorer commit、Python/依赖 lock、SN checkout SHA、模型和 tokenizer 快照、模型服务身份、采样参数、重试规则，以及每个运行的 `run_dir`。提交冻结前必须能从 manifest 找到每个计划行的输入、方法和输出目录；不从 shell 历史推断。本 campaign 的评测协议已推送为 `ba198311aed53020558280ac1ce34a5a4701b930`；服务器仍必须在 `experiment-manifest.json` 记录实际 checkout SHA。
+先复制候选登记、campaign 范围和执行题单三个模板，再补写实际值：bundle `manifest.json` 的 SHA256、公开数据 URL/revision、官方 scorer commit、Python/依赖 lock、SN checkout SHA、模型和 tokenizer 快照、模型服务身份、采样参数、重试规则，以及每个运行的 `run_dir`。提交冻结前必须能从 manifest 找到每个计划行的输入、方法和输出目录；不从 shell 历史推断。历史评测协议提交 `ba198311aed53020558280ac1ce34a5a4701b930` 不包含本次共享存储改造；服务器必须在 `experiment-manifest.json` 记录实际已含当前实现的 checkout SHA。
 
 ### 模型服务与比较轨道
 
@@ -71,6 +74,13 @@ ${PYTHON} scripts/validate_external_campaign.py \
 set -euo pipefail
 PYTHON=/path/to/evaluator/.venv/bin/python
 export PYTHONPATH=/path/to/evaluator/src
+ARTIFACT_ROOT="$CAMPAIGN_ROOT/artifacts"
+
+# 一次完整安装已冻结 bundle，不改写原目录
+$PYTHON scripts/prepare_notebook_benchmarks.py \
+  --install-bundle "$BUNDLE" --artifact-root "$ARTIFACT_ROOT"
+
+# 安装输出的 bundle/index ID 先写入冻结 campaign 配置；ARTIFACT_INDEX_ID 从该配置取得
 
 # 固定 scorer；若来源已缓存，也必须校验 manifest/hash
 $PYTHON scripts/benchmark_protocol.py fetch-sources \
@@ -78,26 +88,43 @@ $PYTHON scripts/benchmark_protocol.py fetch-sources \
 
 # 一个 SN partition；完整运行需对每个 partition 建独立 run-dir
 $PYTHON scripts/run_notebook_benchmarks.py \
-  --bundle "$BUNDLE" --partition-id "$PARTITION_ID" --mode chunk \
+  --bundle "$BUNDLE" --artifact-root "$ARTIFACT_ROOT" --partition-id "$PARTITION_ID" --mode chunk \
+  --artifact-index-id "$ARTIFACT_INDEX_ID" \
   --request-revision notebook-request-v3 \
   --project-root "$PROJECT_ROOT" --model-config "$SN_MODEL_CONFIG" \
-  --run-dir "$CAMPAIGN_ROOT/runs/$JOB_ID/$PARTITION_ID" \
+  --run-dir "$CAMPAIGN_ROOT/runs/$JOB_ID--$PARTITION_ID--attempt-1" \
   --case-id-file "$CASE_FILE"       # smoke 时使用；full 时省略
 
 # 导出、评分、比较必须使用新目录
+mapfile -t RUN_DIRS < "$CAMPAIGN_ROOT/$JOB_ID.run-dirs.txt"
 $PYTHON scripts/benchmark_protocol.py export-sn \
-  --bundle "$BUNDLE" --runs "$CAMPAIGN_ROOT/runs/$JOB_ID" \
+  --bundle "$BUNDLE" --runs "${RUN_DIRS[@]}" \
   --output "$CAMPAIGN_ROOT/submissions/$JOB_ID"
 $PYTHON scripts/benchmark_protocol.py score \
   --bundle "$BUNDLE" \
   --submission "$CAMPAIGN_ROOT/submissions/$JOB_ID/submission.json" \
   --sources "$CAMPAIGN_ROOT/scorers" \
-  --output "$CAMPAIGN_ROOT/scores/$JOB_ID"
+  --output "$CAMPAIGN_ROOT/official-scores/$JOB_ID"
 ```
 
 QMSum 的 `score` 必须显式加冻结的 `--rouge-home` 和 `PERL5LIB`；ALCE 先用 answer-only 模式验收文本路径，只有 shown-doc 映射和固定模型依赖都完整时才使用 full 模式；QASPER Evidence、HotpotQA Supporting/Joint 不因上下文覆盖自动解除 pending。
 
+`$JOB_ID.run-dirs.txt` 每行一个实际 run-dir，由执行记录生成，不能用共同父目录替代；smoke export 另加 `--case-id-file "$SMOKE_CASE_FILE"`，full 按完整 bundle 对账。自动单 run 报告只校验已消费 capsule，正式 export 使用 canonical 全验证及 compact scoring projection。QASPER/Hotpot 完整 response/captures、MultiHop ranking、ALCE 映射和所有失败状态保留；outputs 始终是完整审计来源。
+
+每个 benchmark/task 的预期 `ARTIFACT_INDEX_ID` 取自受信任 installer 的 `Shared partition index` 输出并写入冻结配置，和 `Shared bundle` ID 一起审计。不要每次从可变 pointer 读取预期 ID；所有 shared run CLI/API 要同时传 root 与 index pin，pointer 或 bundle/index 对象集合替换则拒绝，审查后另建 campaign。
+
 ## 服务器回传的最低工件
+
+按角色生成新包，输出放 campaign 外；回传 archive 和相邻 receipt，不把整个 campaign/runtime tar：
+
+```bash
+$PYTHON scripts/package_benchmark_results.py --campaign "$CAMPAIGN_ROOT" \
+  --mode results --output "/path/to/deliveries/$CAMPAIGN_ID-results.tar.gz"
+$PYTHON scripts/package_benchmark_results.py --campaign "$CAMPAIGN_ROOT" \
+  --mode review --output "/path/to/deliveries/$CAMPAIGN_ID-review.tar.gz"
+```
+
+results 带 compact 答卷、官方成绩/审计、scope/coverage/来源身份和报告；review 另带完整 outputs、必要 Agent 工件/映射及去重共享输入/源码。runtime、配置和原始日志仍在服务器，不回传也不删除；旧 QASPER 恢复等数据库依赖继续保留。记录 inventory 分类字节、安装/导出/打包耗时、RSS 和完整覆盖；实际收益由服务器同范围实测决定。解包后调用 `result_package.validate_package` 验证。
 
 每个 job 至少回传：
 

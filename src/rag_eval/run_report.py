@@ -14,110 +14,7 @@ from .notebook_data import SUITES as NOTEBOOK_SUITES, VERSION as NOTEBOOK_VERSIO
 ALL_SUITES = NOTEBOOK_SUITES
 
 
-def read_journal(path, warnings):
-    if not path.exists():
-        warnings.append(f"{path.name}: not created")
-        return []
-    content = path.read_text(encoding="utf-8")
-    lines = content.splitlines()
-    rows = []
-    for index, line in enumerate(lines):
-        try:
-            row = json.loads(line)
-            if not isinstance(row, dict):
-                raise ValueError("Journal entries must be objects")
-            rows.append(row)
-        except json.JSONDecodeError:
-            if index == len(lines) - 1 and not content.endswith("\n"):
-                warnings.append(f"{path.name}: incomplete final line ignored; run is incomplete")
-            else:
-                raise ValueError(f"Corrupt journal: {path.name}, line {index + 1}") from None
-    return rows
-
-
-def load_run(run):
-    warnings = []
-    state_path = run / "state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"phase": "unknown"}
-    manifest_path = run / "manifest.json"
-    if not manifest_path.exists():
-        if not state_path.exists():
-            raise ValueError("Not a Notebook run directory: " + str(run))
-        return {"path": str(run), "manifest": None, "state": state, "groups": [], "planned": [],
-                "outputs": [], "scores": [], "warnings": ["Initialization did not produce a complete run manifest"]}
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != "public-starter-run-v1":
-        raise ValueError("Unsupported run format")
-    if manifest.get("suite") not in NOTEBOOK_SUITES:
-        raise ValueError("Unsupported benchmark: " + str(manifest.get("suite")))
-    if manifest.get("track") != "R":
-        raise ValueError("Notebook reports require track R")
-    if manifest.get("product_protocol") not in {NOTEBOOK_VERSION, "sn-notebook-baseline-v1"}:
-        raise ValueError("Unsupported Notebook product protocol")
-    identity_product = manifest.get("identity", {}).get("product_bundle") or {}
-    if fingerprint({**manifest["identity"], "mode": manifest["mode"]}) != manifest["protocol_id"]:
-        raise ValueError("Protocol fingerprint does not match the recorded configuration")
-    if manifest["track"] == "R" and fingerprint(manifest["identity"]) != manifest["pairing_id"]:
-        raise ValueError("Product pairing identity does not match its configuration")
-    if digest(run / "planned.jsonl") != manifest["planned_sha256"]:
-        raise ValueError("Planned result ledger changed")
-    planned = read_journal(run / "planned.jsonl", warnings)
-    outputs = read_journal(run / "outputs.jsonl", warnings)
-    scores = read_journal(run / "scores.jsonl", warnings)
-    if (identity_product.get("protocol_version") == NOTEBOOK_VERSION) != (manifest.get("product_protocol") == NOTEBOOK_VERSION):
-        raise ValueError("Notebook protocol declaration differs from run identity")
-    if manifest.get("product_protocol") == NOTEBOOK_VERSION:
-        from .notebook_runner import validate_saved_run
-        validate_saved_run(run, manifest, planned, outputs)
-    baseline = "sn-notebook-baseline-v1"
-    if (identity_product.get("protocol_version") == baseline) != (manifest.get("product_protocol") == baseline):
-        raise ValueError("Baseline protocol declaration differs from run identity")
-    if manifest["mode"] == "bm25" and manifest.get("product_protocol") != baseline:
-        raise ValueError("BM25 requires the baseline protocol")
-    if manifest.get("product_protocol") == baseline:
-        from .notebook_baseline import validate_saved_baseline_run
-        validate_saved_baseline_run(run, manifest, planned, outputs)
-    cases = {p["case_id"] for p in planned}
-    observed = {}
-    for output in outputs:
-        case_id = output["case_id"]
-        if case_id not in cases or case_id in observed:
-            raise ValueError("Unexpected or duplicate saved prediction")
-        if output.get("status") not in {"success", "error", "not_applicable", "clarification", "no_answer"} or type(output.get("output_available")) is not bool:
-            raise ValueError("Invalid prediction status or availability")
-        observed[case_id] = output
-    if len(cases) != manifest["planned_predictions"] or len(planned) != manifest["planned_scores"]:
-        raise ValueError("Manifest counts differ from the plan")
-    for p in planned:
-        if any(p[field] != manifest[field] for field in ("run_id", "protocol_id", "suite", "track", "mode")):
-            raise ValueError("Planned identity differs from manifest")
-    for score in scores:
-        if score.get("output_available") and not observed.get(score["case_id"], {}).get("output_available"):
-            raise ValueError("Score claims an output that was not saved")
-    groups = summarize(planned, scores)
-    for group in groups:
-        members = [p for p in planned if all((p.get("task", p["suite"]) if k == "task" else p[k]) == group[k] for k in GROUP_FIELDS)]
-        ids = {p["case_id"] for p in members}
-        group.update(saved_outputs=sum(observed.get(i, {}).get("output_available", False) for i in ids),
-                     prediction_errors=sum(observed.get(i, {}).get("status") == "error" for i in ids),
-                     missing_predictions=sum(i not in observed for i in ids),
-                     prediction_not_applicable=sum(observed.get(i, {}).get("status") == "not_applicable" for i in ids))
-        group["prediction_status_counts"] = dict(Counter(observed[i]["status"] for i in ids if i in observed))
-        group["behavior_observations"] = dict(Counter(
-            (observed[i].get("behavior") or {}).get("kind", "not_observed") for i in ids if i in observed))
-        group["material_roles"] = sorted({p["material_role"] for p in members if "material_role" in p})
-        # This denominator includes answers already saved when scoring was interrupted.
-        group["saved_output_coverage"] = group["saved_outputs"] / len(ids) if ids else None
-    if len(outputs) != len(cases) or len(scores) != len(planned):
-        warnings.append("Prediction or score ledger incomplete; missing items remain in planned denominators")
-    if state["phase"] not in {"finished", "finished_with_errors", "failed", "interrupted", "not_applicable"}:
-        warnings.append("No terminal state recorded; the process may still be running or may have stopped")
-    events = read_journal(run / "model-events.jsonl", warnings)
-    started = {e["call_id"] for e in events if e.get("event") == "started"}
-    terminal = {e["call_id"] for e in events if e.get("event") in {"completed", "failed"}}
-    return {"path": str(run), "manifest": manifest, "state": state, "groups": groups,
-            "planned": planned, "outputs": outputs, "scores": scores, "warnings": warnings,
-            "unfinished_model_calls": len(started - terminal)}
+from .run_reader import RunReadContext, load_run, read_journal
 
 
 def paired_modes(runs):
@@ -159,12 +56,13 @@ def _number(value):
     return "—" if value is None else f"{value:.3f}"
 
 
-def write_report(run_dirs, output):
+def write_report(run_dirs, output, *, partition_only=False):
     """Create a new report directory; saved experimental artifacts remain unchanged."""
     paths = [Path(p).resolve() for p in run_dirs]
     if len(paths) != len(set(paths)) or not paths:
         raise ValueError("Provide distinct Notebook run directories")
-    runs = [load_run(p) for p in paths]
+    context = RunReadContext(partition_only=partition_only)
+    runs = [load_run(p, context=context) for p in paths]
     pairs, pairing_warnings = paired_modes(runs)
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -241,6 +139,7 @@ def write_report(run_dirs, output):
     summary = {"format": "public-starter-report-v1", "release_gate": False,
                "runs": [{k: v for k, v in r.items() if k not in {"planned", "outputs", "scores"}} for r in runs],
                "paired_modes": pairs, "pairing_warnings": pairing_warnings}
+    summary["input_validation"] = "partition-capsule; full canonical audit required before official export" if partition_only else "canonical-full"
     save_json(output / "summary.json", summary)
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return summary

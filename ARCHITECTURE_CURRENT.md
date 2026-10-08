@@ -1,6 +1,6 @@
 # Silicon Notebook 评测项目：当前架构
 
-核实日期：2026-09-29。工作树：`feat/benchmark-protocol-correctness`，删除前 HEAD 为 `86addcf421d627f62553204275b506b4d8bc022b`；本文已同步本轮尚未提交的清理。
+核实日期：2026-10-08。工作树：`feat/benchmark-protocol-correctness`；本文同步当前共享工件、reader、compact 导出和打包实现。执行时仍须记录实际提交与未提交源码身份。
 
 本文解释 **benchmark-deepeval 评测仓库目前怎样工作、数据由谁负责、修改会影响哪里**。安装与命令见 [RUNBOOK.md](RUNBOOK.md)，benchmark 评分定义见[标准与实现符合性](docs/notebook-benchmark-standards-and-conformance.md)。本文描述当前代码，不是目标架构或重构方案，也不展开 SN 产品自身的完整架构。
 
@@ -30,7 +30,8 @@
 flowchart TD
     Raw["本地官方原始数据与来源信息"] --> Freeze["prepare CLI / notebook_data / notebook_bundle"]
     Freeze --> Bundle["Frozen bundle：资料、题目、分区、哈希"]
-    Bundle --> Run["Notebook CLI / notebook_runner"]
+    Bundle --> Store["artifact_store / bundle_index：不可变对象与分区 capsule"]
+    Store --> Run["Notebook CLI / notebook_runner"]
     Run --> Runtime["runtime_environment：隔离配置、源码与模型身份"]
     Runtime --> SN["独立 SN checkout：导入、索引、Ask"]
     SN --> Models["产品 LLM、embedding、reranker"]
@@ -38,7 +39,7 @@ flowchart TD
     Obs --> Runs["run 工件：outputs / 诊断 scores / 状态"]
     Obs -. "显式 Agent 入口" .-> Native["native_agent + DeepEval + 独立 judge"]
     Native --> NativeFiles["agent/ 原生轨迹、组件、逐项分数"]
-    Runs --> Export["benchmark_submission：export-sn"]
+    Runs --> Export["run_reader / scoring_projection / benchmark_submission：canonical export-sn"]
     Public["外部逐题答卷或受控方法输出"] --> Import["专用 importer / external_submission_import"]
     Import --> Submission["统一 submission.json"]
     Export --> Submission
@@ -51,6 +52,10 @@ flowchart TD
     Runs --> Dashboard["只读 Dashboard / Markdown 报告"]
     NativeFiles --> Dashboard
     NativeFiles --> Rescore["保存组件补评：只调用 judge，写新目录"]
+    Submission --> Package["result_package：results / review 私有回传包"]
+    Scores --> Package
+    Runs --> Package
+    Store --> Package
 ```
 
 图中的外部方法和 Agent 评测表示代码能力，不表示当前 SN-only campaign 会运行它们。Dashboard 目前围绕保存的 run 工作；**不能把官方 `submission.json`／`scores.json` 或独立组件补评目录直接当作 run 丢进去**。正式答卷比较由独立比较 CLI 完成，尚无统一覆盖所有产物的实验管理服务。
@@ -61,7 +66,7 @@ flowchart TD
 
 | 入口 | 后续主要模块 | 输入 → 输出 |
 | --- | --- | --- |
-| [`prepare_notebook_benchmarks.py`](scripts/prepare_notebook_benchmarks.py) | `notebook_data`、`notebook_bundle` | 本地原始数据／来源 → 新 frozen bundle；不下载 |
+| [`prepare_notebook_benchmarks.py`](scripts/prepare_notebook_benchmarks.py) | `notebook_data`、`notebook_bundle`、`bundle_index` | 本地数据 → frozen bundle；`--artifact-root` 安装共享对象，`--install-bundle` 安装已有 bundle；不下载 |
 | [`run_notebook_benchmarks.py`](scripts/run_notebook_benchmarks.py) | `notebook_runner` | 一个 bundle 的一个 partition、一个 mode → 新 run；调用 SN 模型 |
 | [`run_notebook_agent.py`](scripts/run_notebook_agent.py) | 同一 runner，加 `native_agent` | 同上，加 judge／指标选择 → 回答和原生评测工件 |
 | [`benchmark_protocol.py`](scripts/benchmark_protocol.py) | `benchmark_submission`、`benchmark_official`、`external_submission_import` | scorer 获取、SN 导出、外部导入、官方评分的子命令；只有 `fetch-sources` 下载固定 scorer |
@@ -71,6 +76,7 @@ flowchart TD
 | [`score_native_components.py`](scripts/score_native_components.py) | `native_component_scoring` | 保存的完整组件样本 → 新补评批次；只调用 judge |
 | [`rescore_notebook_run.py`](scripts/rescore_notebook_run.py) | `notebook_rescoring` | 已有 Notebook 回答 → 新的运行期评分批次；区别于官方 submission 评分 |
 | [`build_experiment_dashboard.py`](scripts/build_experiment_dashboard.py) | `experiment_aggregation`、`explorer_artifacts` | 已有 run → 静态报告目录；不启动模型 |
+| [`package_benchmark_results.py`](scripts/package_benchmark_results.py) | `result_package` | campaign → results/review 私有包、逐文件哈希、inventory 与收据；不删除原始工件 |
 
 五套 Notebook 数据集为 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA，ALCE 分为 ASQA/QAMPARI/ELI5。当前 SN-only 计划有 6 个 method、12 条 smoke/full 模板行；ALCE task 和各 partition 还需展开，模板行不是最终进程数。
 
@@ -99,17 +105,19 @@ flowchart TD
 | 模块组 | 负责的保证 | 主要消费者／变更影响 |
 | --- | --- | --- |
 | [`notebook_data.py`](src/rag_eval/notebook_data.py)、[`notebook_bundle.py`](src/rag_eval/notebook_bundle.py) | 官方数据适配、公共资料与 gold 分离、稳定 case/group/partition 标识、资料完整性、冻结重建校验 | SN、reference、import/export、评分、比较、报告；改动影响实验身份，不只是读取格式 |
+| [`artifact_store.py`](src/rag_eval/artifact_store.py)、[`bundle_index.py`](src/rag_eval/bundle_index.py) | 不可变对象安装、内容哈希／引用、并发发布、完整 canonical 安装与分区 capsule | runner、派生评分和回传；不拥有可变数据库，不改变资料范围 |
 | [`notebook_runner.py`](src/rag_eval/notebook_runner.py) | 一次一个 partition/mode；执行顺序、题单、输出、诊断分、失败状态与来源身份 | 普通 Notebook 和 Agent CLI 共用；这里决定 run 的生命周期 |
 | [`runtime_environment.py`](src/rag_eval/runtime_environment.py) | 源码快照、SN 环境隔离、固定模型配置、显式 judge 解析 | Notebook、reference、独立 judge／组件补评复用；职责已从旧入口分离 |
 | [`benchmark_runtime.py`](src/rag_eval/benchmark_runtime.py)、[`system_runtime.py`](src/rag_eval/system_runtime.py) | 创建 notebook、导入资料、校验 embedding、建索引；意图预览、Ask、持久化确认与产品状态 | 与 SN 私有仓储／业务接口耦合；Notebook 复用其中的函数，不会调用每个历史入口 |
 | [`system_capture.py`](src/rag_eval/system_capture.py)、[`usage_capture.py`](src/rag_eval/usage_capture.py)、[`sn_retrieval.py`](src/rag_eval/sn_retrieval.py) | 保存真实合成上下文、可观察成本和 MultiHop chunk 实际选段排名 | 原始工件、证据投影、成本报告；不从结果倒推不存在的调用 |
 | [`qasper_evidence.py`](src/rag_eval/qasper_evidence.py)、[`hotpot_evidence.py`](src/rag_eval/hotpot_evidence.py) | 最终引用到原论文段落／Hotpot 原句位置的显式投影及快照回放 | Evidence／Supporting Fact／Joint 指标；候选上下文覆盖不能替代预测 |
 | [`native_agent.py`](src/rag_eval/native_agent.py)、[`native_metrics.py`](src/rag_eval/native_metrics.py)、[`native_sdk.py`](src/rag_eval/native_sdk.py) | 真实 SN span 接入固定 SDK、适用性、逐指标 checkpoint、完整轨迹和组件边界 | DeepEval judge、Agent 工件、后续组件补评 |
-| [`benchmark_submission.py`](src/rag_eval/benchmark_submission.py)、[`external_submission_import.py`](src/rag_eval/external_submission_import.py) | 不同执行来源汇入显式答卷身份；保留 missing/error/来源映射 | 官方 scorer 与比较器；是运行与评分之间的交换格式 |
+| [`benchmark_submission.py`](src/rag_eval/benchmark_submission.py)、[`scoring_projection.py`](src/rag_eval/scoring_projection.py)、[`external_submission_import.py`](src/rag_eval/external_submission_import.py) | 显式答卷身份；验证原观测后投影必要字段，保留 missing/error、完整证据快照与来源 run/hash | 官方 scorer 与比较器；compact 交换格式不替代审计 run |
 | [`benchmark_official.py`](src/rag_eval/benchmark_official.py) 及各 suite scorer | 准备评分输入、固定算法／依赖身份、聚合规则、实际分母和 pending | `scores.json`、比较报告；独立于 run 内的诊断分 |
 | [`benchmark_comparison.py`](src/rag_eval/benchmark_comparison.py)、[`benchmark_review.py`](src/rag_eval/benchmark_review.py) | 同范围、同 scorer、逐题资格和配对；适用的 group bootstrap；复核材料 | 正式比较、论文分析；不自动证明生成模型一致或单变量因果关系 |
 | [`identity.py`](src/rag_eval/identity.py)、[`trace_contract.py`](src/rag_eval/trace_contract.py)、[`run_support.py`](src/rag_eval/run_support.py)、[`model_adapter.py`](src/rag_eval/model_adapter.py) | 稳定身份哈希、诚实 trace 完整度、状态／引用对象诊断、显式模型调用与事件 | 五套执行、Agent、reference、补评；旧套件分支与旧模块导入已删除 |
-| [`run_results.py`](src/rag_eval/run_results.py)、[`run_report.py`](src/rag_eval/run_report.py)、[`artifacts.py`](src/rag_eval/artifacts.py) | 事件落盘、计划对账、状态区分、身份校验、离线 run 读取 | 五套 run、Dashboard、导出和补评；基础格式具有跨模块影响 |
+| [`run_reader.py`](src/rag_eval/run_reader.py)、[`run_report.py`](src/rag_eval/run_report.py)、[`run_results.py`](src/rag_eval/run_results.py)、[`artifacts.py`](src/rag_eval/artifacts.py) | reader 校验输入／计划／观测，调用内 context 复用；report 生成展示，journal 逐条落盘 | 默认 canonical 全验证；共享运行自动单 run 报告显式只校验 capsule，不作为官方导出审计 |
+| [`result_package.py`](src/rag_eval/result_package.py) | 只读角色清单、results/review 包、依赖去重、字节／耗时／hash 收据 | 服务器回传；排除 runtime/配置/原始服务日志，不提供删除策略 |
 | [`experiment_aggregation.py`](src/rag_eval/experiment_aggregation.py)、[`explorer_artifacts.py`](src/rag_eval/explorer_artifacts.py)、[`explorer_steps.py`](src/rag_eval/explorer_steps.py) | 只读工件变成实验关系、逐题详情与页面数据 | 静态前端，不是另一套实验执行或评分引擎 |
 
 官方评分桥接并非一种统一调用形式：QASPER/MultiHop 等复用固定作者源码中的评分逻辑；Hotpot 在本仓库有经原版校准的实现；QMSum 启动 Perl ROUGE 子进程；ALCE 区分轻量文本逻辑和显式原版模型评分子进程。具体等价性、适配差异及尚未验证项由标准文档逐 suite 说明。
@@ -122,16 +130,17 @@ flowchart TD
 | --- | --- | --- |
 | 执行意图 | `configs/notebook-external-*.json`、execution-plan JSONL、`configs/comparison-scopes/` | 仓库模板只说明计划；服务器实际 SHA、路径和状态需另记 campaign manifest／账本 |
 | 冻结数据 | bundle 的 `raw-data`、可选 `raw-corpus`、`source.json`、`documents.jsonl`、`cases.jsonl`、`partitions.jsonl`、`decisions.jsonl`、`manifest.json` | 原始字节和来源决定适配结果；load 时核哈希并重建对照。gold 留在评测侧，生成请求只取公共字段 |
-| 执行身份 | run 的 `manifest.json`、`source-identity.json`、`runtime-identity.json`、`source/`、`product-source.tar` | 保存 evaluator 源码哈希、SN 提交、依赖与配置身份；目录名不能证明同一实验 |
-| 执行输入与计划 | run 的 `input/`、`product-bundle.json`、`planned.jsonl` | input 保留整份冻结 bundle，product-bundle 是具体分区的生成输入；planned 说明预期评分条目 |
+| 执行身份 | run 的 `manifest.json`、`source-identity.json`、`runtime-identity.json`；共享 `artifact-refs.json` 指向 evaluator/SN 对象，旧 run 保留 `source/`、`product-source.tar` | 实际源码／archive 字节、依赖与配置身份；manifest 绑定共享对象集合，目录名不能证明同一实验 |
+| 执行输入与计划 | 新共享 run 的 `artifact-refs.json`、store bundle/index/capsule；旧 run 的 `input/`；每个 run 的 `product-bundle.json`、`planned.jsonl` | frozen bundle 一份、派生 capsule 与官方 bundle 身份分开；product-bundle 是分区完整无 gold 输入，planned 说明预期评分条目 |
 | 原始回答和状态 | `outputs.jsonl`、`state.json`、`product-artifacts/attempts.jsonl` | 回答事实与运行阶段；原始输出不被 judge 成败或后续重评分覆盖 |
 | SN 数据库、文件与缓存 | `run/runtime/database.db`、`storage/`、模型配置副本、日志及相关索引 | `SQLiteRepository` 拥有产品表与持久化逻辑；路径隔离由 evaluator 设置。LLM 缓存开关被关闭，不是跨 run 共享答案池 |
 | 产品对象映射 | `product-artifacts/document-map.json` 等 | 将公开 document ID 对应到真实 source/chunk ID；证据投影依赖可验证的归属与原文位置 |
 | 运行期诊断分 | `run/scores.jsonl` | 按 `planned.jsonl` 保存诊断评分状态；不是下面的统一官方 scores |
 | Agent 原生工件 | `agent/components.jsonl`、`native-traces.jsonl`、`native-scores.jsonl`、events/diagnostics/summary、`agent/sdk/` | request/span/sample/metric ID 关联真实调用；不同快照／组件调用不增加题目数 |
-| 官方答卷与成绩 | 独立目录的 `submission.json`；评分目录的 `prepared.json`、答卷副本、bundle manifest、`scores.json` 及 scorer 特定工件 | submission 冻结方法与逐题状态；scores 记录实际分母、逐题／批量指标、依赖与内容身份 |
+| 官方答卷与成绩 | `submissions/<job>/submission.json`；`official-scores/<job>/` 的 `prepared.json`、答卷副本、bundle manifest、`scores.json` 及 scorer 特定工件 | SN compact submission 声明投影协议、run_id/outputs hash；保持原评分输入与分母，不含无关完整 product_record |
 | 补评批次 | `component-score-manifest.json`、`component-scores.jsonl` 等，或 Notebook rescoring run | 原始样本只读，新评分拥有独立批次和 judge/scorer 身份；不伪装成新一次 Ask |
 | 派生展示 | comparison `report.json/.md`，review `review.json/.md`、`annotations.jsonl`，Dashboard HTML/JSON/`details/` | 能追溯到输入工件；截图、Markdown 或页面均不替代原始证据 |
+| 回传包 | `package-manifest.json`、`inventory.json`、archive、相邻 receipt；review 的共享依赖与必要完整 observations | 角色 allowlist 与逐文件 hash；results 包不是完整 run，review 包也不自动授予 runtime 删除资格 |
 
 文件通常放在执行机器的 `var/` 或显式外部路径。`.gitignore` 排除大部分 `var/**`、虚拟环境、数据库及部分原始数据，Git 中的 `results/` 只承载选择保存的材料；**clone 不会恢复历史实验**。上传包位于仓库外，也是独立交付物，不能从“代码已推送”推断它同步更新。
 
@@ -144,15 +153,19 @@ flowchart TD
 ### 6.1 例子：QMSum 某会议中的一个问题
 
 1. `prepare` 从本地正式来源生成 bundle；同一会议的问题共享完整会议资料和一个 partition。选择一题只限制提问，不删会议内容。
-2. Notebook CLI 显式传递 `notebook-request-v3` 给 `notebook_runner.execute`。加载时校验 bundle，构建该 partition 的无 gold 请求，验证所选 case 属于该分区。
-3. runner 拒绝已有 run-dir，复制冻结输入、保存 evaluator/SN 源码身份，调用 `configure_environment`。它修改环境变量、导入路径和 cwd，因此一个分区/mode 使用一个新 CLI 进程。
+2. 先以 `prepare --install-bundle ... --artifact-root ...` 完整安装 canonical bundle，冻结 installer 输出的 bundle/index ID；Notebook CLI 显式传 `notebook-request-v3`、`--artifact-root` 和来自冻结配置的 `--artifact-index-id`，拒绝 pointer 变化，再校验 capsule、完整公开请求与选题归属。未指定 store 的旧复制模式仍完整加载 bundle。
+3. runner 拒绝已有 run-dir，发布共享输入／源码引用并调用 `configure_environment`；无 store 时仍复制 `input/`。配置、数据库和 storage 始终独立。环境变量、导入路径和 cwd 会变化，因此一个分区/mode 使用一个新 CLI 进程。
 4. `prepare_notebook` 通过 SN 导入整份资料，保存对象映射，检查分块和 embedding 覆盖并建索引。被测检索／生成模型由 SN TOML 及对应 Settings 决定。
 5. `run_system_question` 捕获实际合成输入及 usage，进入 `submit_system_question`。chunk 直接 Ask；reasoning 先做原生意图预览，需要澄清时记录 clarification，不从 gold 编造澄清回答。
 6. Ask 返回后检查 SN 是否实际持久化该答案，记录 success/no_answer/clarification/error。输出完成后接入评分侧标签做诊断；若证据观测失败，保留答案与错误状态，不捏造空证据成功。
-7. run 保存回答、诊断分和终态。随后显式列出真实 run 目录导出 submission，跨分区核对题量；不能将父目录交给 export 并期待递归发现。
+7. run 保存完整回答、诊断分和终态；共享模式自动单 run 报告披露 capsule 校验边界。正式 export 显式列真实 run 目录，用一个 context 做 canonical 全验证，按套件 compact 投影并跨分区对账；不能传父目录期待递归发现。
 8. QMSum 官方成绩从独立 submission 调用指定的 Perl ROUGE 产生。论文用的官方成绩与 run 内 Python ROUGE 诊断分别留存。
 
 当前 run 状态包括 `initializing`、`importing`、`asking`、`scoring`，终态可能是 `finished`、`finished_with_errors`、`failed`、`interrupted`。一个 run finished 只说明该次调用流程结束，不能证明整个 suite 的所有分区都完成，更不能证明官方评分或比较通过。
+
+输入／源码与答卷生命周期的具体命令、projection 字段、包角色及服务器尚未验证的性能范围见[结果存储与导出](docs/result-storage-and-export.md)。QASPER/Hotpot 的整个 response/captures 参与 evidence observation hash，首版仍原样保留；进一步裁剪必须重新设计证据协议，不能修改 hash 让旧快照通过。
+
+安装已有 bundle 会通过 `load_bundle` 完整哈希并重新适配一次，不重新 prepare 或改写原目录。当前 index 为每个 partition 存 v1/v2/v3 capsule，重复公开资料／请求；bundle object identity 的 `partition_capsules` 文件哈希绑定所选派生字节，reader 还精确核对共享源码与 run code identity。每个 run 仍保存完整 `product-bundle.json`，runtime 不变。QMSum BM25 初始化提取 turns 仍完整哈希并解析 raw data；SN bounded 初始化不能泛化成所有方法的性能承诺。
 
 ### 6.2 Agent 观测和评分的附加流程
 
@@ -246,7 +259,7 @@ judge 超时与产品调用失败是不同事实。已完成指标保持落盘�
 - **运行调度尚分散。** 当前 Notebook 的单 run 执行、campaign 模板和预检已经分开，但没有统一调度、恢复和服务端作业队列。以后做 campaign 自动化应承接计划／状态账本，不能靠扫“成功目录”决定完整范围。
 - **共用职责已从退役套件分离。** 身份、trace、模型客户端、环境、结果账本与报告使用独立模块；`system_runtime` 仍负责真实 SN Ask。后续修改依据生产者／消费者契约，不恢复旧套件转发层。
 - **数据、请求、运行、评分有多层版本。** 外层 `sn-notebook-benchmarks-v1`、`notebook-data-v3`、`notebook-request-v3`、`public-starter-run-v1` 和 `sn-deepeval-native-v1` 各管不同层。CLI 默认 v3，但某些 Python API 保留旧默认；新代码须显式传版本。
-- **逐 run 隔离有存储和准备开销。** 当前每个 run 复制整份 bundle、保存源码快照，并独立导入／建索引。Hotpot 等大量 partition 的总成本需要服务器测量；目前不能声称已有跨 mode 索引复用或可安全共享的缓存。
+- **逐 run 隔离仍有可变存储和准备开销。** 共享模式已复用冻结 bundle/index 与实际源码对象，但每次仍保存完整 product-bundle、outputs 和独立 runtime，独立导入／建索引。index 保存三套 request capsule，旧复制 run 仍有完整 input/source；Hotpot 等大量 partition 的总成本需要服务器测量，不据此声称跨 mode 复用可变索引或缓存。
 - **正式比较与 Dashboard 尚是两条报告路径。** Dashboard 更适合解释 run/组件，正式 submission 比较更适合论文指标；独立组件补评也不自动合入旧 run。今后统一展示应增加显式产物适配，保留来源和计数语义。
 - **依赖与配对部署仍需人工核实。** scorer、SN 观测补丁、模型服务配置、Python 环境和资产包各有身份，尚无单一部署包覆盖全部；远程 Git 更新不会同步权重／私有配置／运行数据库。
 - **评测覆盖是有边界的。** profile、历史记忆、检索经验和 KG 等在当前隔离配置中关闭；没有完整的 planner/reflection/memory 消融 campaign、长期交互或资料更新一致性验收，也没有自动发布门禁。支持 reasoning 不等于证明所有 Agent 模块贡献。

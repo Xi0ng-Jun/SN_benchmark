@@ -83,18 +83,23 @@ def rescore_run(source, output, *, metrics=None, case_ids=None, all_scores=False
     source, output = Path(source).resolve(), Path(output).resolve()
     if output.exists() or output.is_relative_to(source) or source.is_relative_to(output):
         raise ValueError("Rescoring output must be a new directory separate from source")
+    from .artifact_store import reject_shared_output
+    reject_shared_output(output, source=source)
     if metrics is not None:
         metrics = list(dict.fromkeys(metrics))
     if case_ids is not None:
         case_ids = list(dict.fromkeys(case_ids))
-    loaded = load_run(source)
+    from .run_reader import RunReadContext
+    from .artifact_store import copy_run_input, reference_identity
+    reader = RunReadContext()
+    loaded = load_run(source, context=reader)
     manifest = loaded.get("manifest")
     if not manifest or manifest.get("product_protocol") not in {NOTEBOOK_PROTOCOL, BASELINE_PROTOCOL}:
         raise ValueError("Only saved notebook benchmark runs can be rescored")
     protocol = manifest["product_protocol"]
     # Verify every source artifact before creating the derived directory.
     origin_files = _files(source)
-    bundle = load_bundle(source / "input")
+    bundle = reader.bundle_for_run(source)
     cases = {case["case_id"]: case for case in bundle["cases"]}
     plans = loaded["planned"]
     outputs = {row["case_id"]: row for row in loaded["outputs"]}
@@ -119,7 +124,7 @@ def rescore_run(source, output, *, metrics=None, case_ids=None, all_scores=False
     output.mkdir(parents=True, exist_ok=False)
     save_json(output / "state.json", {"phase": "initializing"})
     try:
-        shutil.copytree(source / "input", output / "input")
+        copy_run_input(source, output)
         for name in ("product-bundle.json", "outputs.jsonl", "model-events.jsonl",
                      "source-identity.json", "runtime-identity.json", "preparation-usage.json"):
             if (source / name).is_file():
@@ -135,7 +140,7 @@ def rescore_run(source, output, *, metrics=None, case_ids=None, all_scores=False
             plan["result_id"] = fingerprint(identity_fields)
         save_jsonl(output / "planned.jsonl", new_plans)
         save_json(output / "manifest.json", {**manifest, "run_id": output.name,
-                  "identity": identity, "protocol_id": protocol_id,
+                  "identity": identity, **reference_identity(output), "protocol_id": protocol_id,
                   "pairing_id": pairing_id, "planned_sha256": digest(output / "planned.jsonl"),
                   "scoring_batch": scoring_batch})
         new_by_key = {(p["case_id"], p["scorer"]): p for p in new_plans}

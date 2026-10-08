@@ -82,6 +82,7 @@ def test_sn_run_exports_observed_ranking_and_scores_it_independently_of_generati
     from rag_eval import benchmark_runtime, runtime_environment, system_runtime
     from rag_eval.benchmark_submission import export_sn_runs
     from rag_eval.multihop_official import score_multihop_retrieval
+    from rag_eval.notebook_bundle import request_question
     from rag_eval.notebook_runner import execute
     from rag_eval.run_report import load_run
 
@@ -131,8 +132,11 @@ def test_sn_run_exports_observed_ranking_and_scores_it_independently_of_generati
                                                  upstream_map_at_10=.25, upstream_mrr_at_10=.25))
     # A declared missing observation must not turn into an observed empty list.
     missing = deepcopy(submission)
-    record = missing['predictions'][1]['record']
-    with m.capture_chunk_ranking(repo, 'notebook', record, bundle['documents'], mapping) as unobserved:
+    missing_row = missing['predictions'][1]
+    record = missing_row['record']
+    case = next(case for case in bundle['cases'] if case['case_id'] == missing_row['case_id'])
+    question = request_question(case, request_revision='notebook-request-v3')
+    with m.capture_chunk_ranking(repo, 'notebook', question, bundle['documents'], mapping) as unobserved:
         pass
     record['retrieval'] = unobserved
     partial = score_multihop_retrieval(bundle, missing, source_directory=source_dir)

@@ -53,7 +53,9 @@ def resolve_models(path, required_roles):
     return resolved, public
 
 
-def snapshot_sources(root, project, run):
+def snapshot_sources(root, project, run, *, artifact_root=None):
+    if artifact_root is not None:
+        return _shared_snapshot_sources(Path(root), Path(project), Path(run), artifact_root)
     revision = subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip()
     changed = subprocess.check_output(["git", "-C", str(project), "diff", "HEAD", "--name-only"], text=True)
     if changed.strip():
@@ -148,3 +150,46 @@ def make_adapter(spec, role, settings, sink):
                                     max_retries=params["max_retries"])
     return ExplicitBenchmarkModel(client, model_id=spec["model_id"], role=role,
                                   parameters=params, config_sha256=spec["config_sha256"], sink=sink)
+
+
+def _shared_snapshot_sources(root, project, run, artifact_root):
+    """Store exact evaluator bytes and one deterministic git archive per clean SN tree."""
+    from .artifact_store import ArtifactStore, atomic_pointer, read_run_refs, write_run_refs
+    import tempfile
+    revision = subprocess.check_output(['git', '-C', str(project), 'rev-parse', 'HEAD'], text=True).strip()
+    changed = subprocess.check_output(['git', '-C', str(project), 'diff', 'HEAD', '--name-only'], text=True)
+    if changed.strip():
+        raise ValueError('Product tracked files differ from HEAD; use a reviewed clean product snapshot')
+    tree = subprocess.check_output(['git', '-C', str(project), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+    store = ArtifactStore(artifact_root)
+    paths = {str(p.relative_to(root)): p for folder in ('src/rag_eval', 'scripts')
+             for p in sorted((root / folder).rglob('*.py'))}
+    paths['pyproject.toml'] = root / 'pyproject.toml'
+    hashes = {name: digest(path) for name, path in paths.items()}
+    evaluator = store.install_files('evaluator', paths, identity={'benchmark_source_hashes': hashes})
+    product_identity = {'product_revision': revision, 'tree': tree}
+    pointer = store.root / 'source-indexes' / (fingerprint(product_identity) + '.json')
+    if pointer.is_file() and not pointer.is_symlink():
+        product = json.loads(pointer.read_text())
+        source = store.resolve(product)
+        obj = json.loads((source / 'object.json').read_text())
+        if obj['identity'] != product_identity or set(obj['files']) != {'product-source.tar'}:
+            raise ValueError('Product source snapshot identity changed')
+    else:
+        with tempfile.TemporaryDirectory(prefix='sn-source-') as staging:
+            archive = Path(staging) / 'product-source.tar'
+            with archive.open('xb') as target:
+                subprocess.run(['git', '-C', str(project), 'archive', revision], stdout=target, check=True)
+            product = store.install_files('sn', {'product-source.tar': archive}, identity=product_identity)
+        atomic_pointer(pointer, product)
+        source = store.resolve(product)
+    identity = {'product_revision': revision, 'product_archive_sha256': digest(source / 'product-source.tar'),
+                'benchmark_source_hashes': hashes,
+                'versions': {d.metadata['Name']: d.version for d in distributions()}}
+    refs = read_run_refs(run)
+    if refs is None:
+        raise ValueError('Shared source snapshots require installed bundle references')
+    refs['sources'] = {'evaluator': evaluator, 'sn': product}
+    write_run_refs(run, store.root, refs)
+    save_json(run / 'source-identity.json', identity)
+    return identity
