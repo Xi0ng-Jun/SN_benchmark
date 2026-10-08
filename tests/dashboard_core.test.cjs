@@ -6,7 +6,7 @@ const core = require('../src/rag_eval/dashboard/core.js');
 function entry(overrides = {}) {
   return {
     id: 'e-1', observation_id: 'o-1', run_key: 'rk-1', run_id: 'run-1',
-    suite: 'squad', task: 'qa', track: 'product', mode: 'chunk',
+    suite: 'qasper', task: 'qa', track: 'product', mode: 'chunk',
     scorer: 'exact', status: 'scored', output_status: 'success',
     behavior: 'answer', partition: 'p1', config_family: 'cfg-a',
     pairing_id: 'dataset-v1', case_id: 'case-1', score: 1,
@@ -17,39 +17,39 @@ function entry(overrides = {}) {
 
 test('filterEntries uses OR within a facet and AND across facets', () => {
   const rows = [
-    entry({id: '1', suite: 'squad', mode: 'chunk'}),
-    entry({id: '2', suite: 'drop', mode: 'chunk'}),
-    entry({id: '3', suite: 'squad', mode: 'reasoning'}),
-    entry({id: '4', suite: 'boolq', mode: 'chunk'}),
+    entry({id: '1', suite: 'qasper', mode: 'chunk'}),
+    entry({id: '2', suite: 'qmsum', mode: 'chunk'}),
+    entry({id: '3', suite: 'qasper', mode: 'reasoning'}),
+    entry({id: '4', suite: 'alce', mode: 'chunk'}),
   ];
-  const got = core.filterEntries(rows, {suite: ['squad', 'drop'], mode: ['chunk']}, '');
+  const got = core.filterEntries(rows, {suite: ['qasper', 'qmsum'], mode: ['chunk']}, '');
   assert.deepEqual(got.map((row) => row.id), ['1', '2']);
 });
 
 test('facetOptions respects other filters while keeping alternatives in its own facet', () => {
   const rows = [
-    entry({id: '1', suite: 'boolq', task: 'reading', scorer: 'yesno', mode: 'chunk'}),
-    entry({id: '2', suite: 'boolq', task: 'reading', scorer: 'citation', mode: 'chunk'}),
-    entry({id: '3', suite: 'squad', task: 'qa', scorer: 'geval', mode: 'chunk'}),
-    entry({id: '4', suite: 'squad', task: 'qa', scorer: 'geval', mode: 'reasoning'}),
+    entry({id: '1', suite: 'alce', task: 'reading', scorer: 'yesno', mode: 'chunk'}),
+    entry({id: '2', suite: 'alce', task: 'reading', scorer: 'citation', mode: 'chunk'}),
+    entry({id: '3', suite: 'qasper', task: 'qa', scorer: 'geval', mode: 'chunk'}),
+    entry({id: '4', suite: 'qasper', task: 'qa', scorer: 'geval', mode: 'reasoning'}),
   ];
-  const filters = {suite: ['boolq'], mode: ['chunk']};
+  const filters = {suite: ['alce'], mode: ['chunk']};
   assert.deepEqual(core.facetOptions(rows, 'scorer', filters), [
     {value: 'citation', count: 1}, {value: 'yesno', count: 1},
   ]);
   assert.deepEqual(core.facetOptions(rows, 'task', filters), [{value: 'reading', count: 2}]);
   assert.deepEqual(core.facetOptions(rows, 'suite', filters), [
-    {value: 'boolq', count: 2}, {value: 'squad', count: 1},
+    {value: 'alce', count: 2}, {value: 'qasper', count: 1},
   ]);
-  assert.deepEqual(core.facetOptions(rows, 'scorer', {...filters, suite: ['boolq', 'squad']}), [
+  assert.deepEqual(core.facetOptions(rows, 'scorer', {...filters, suite: ['alce', 'qasper']}), [
     {value: 'citation', count: 1}, {value: 'geval', count: 1}, {value: 'yesno', count: 1},
   ]);
-  assert.deepEqual(filters, {suite: ['boolq'], mode: ['chunk']});
+  assert.deepEqual(filters, {suite: ['alce'], mode: ['chunk']});
 });
 
 test('facetOptions retains selected zero-count values so an empty combination can be undone', () => {
-  const rows = [entry({suite: 'squad', scorer: 'geval'}), entry({id: '2', suite: 'boolq', scorer: 'yesno'})];
-  const filters = {suite: ['boolq'], scorer: ['geval']};
+  const rows = [entry({suite: 'qasper', scorer: 'geval'}), entry({id: '2', suite: 'alce', scorer: 'yesno'})];
+  const filters = {suite: ['alce'], scorer: ['geval']};
   assert.deepEqual(core.facetOptions(rows, 'scorer', filters), [
     {value: 'yesno', count: 1}, {value: 'geval', count: 0},
   ]);
@@ -59,10 +59,10 @@ test('facetOptions retains selected zero-count values so an empty combination ca
 
 test('facetOptions follows source search and preserves missing-score status options', () => {
   const rows = core.indexSearchText([
-    entry({id: '1', observation_id: 'mars', suite: 'boolq', status: 'missing', score: null}),
-    entry({id: '2', observation_id: 'moon', suite: 'squad'}),
+    entry({id: '1', observation_id: 'mars', suite: 'alce', status: 'missing', score: null}),
+    entry({id: '2', observation_id: 'moon', suite: 'qasper'}),
   ], {mars: {case: {question: '火星有几颗卫星？'}}, moon: {case: {question: '月亮是什么？'}}});
-  assert.deepEqual(core.facetOptions(rows, 'suite', {}, '火星'), [{value: 'boolq', count: 1}]);
+  assert.deepEqual(core.facetOptions(rows, 'suite', {}, '火星'), [{value: 'alce', count: 1}]);
   assert.deepEqual(core.facetOptions(rows, 'status', {}, '火星'), [{value: 'missing', count: 1}]);
 });
 
@@ -130,7 +130,7 @@ test('scoreHistogram refuses mixed metric families and reports why', () => {
 });
 
 test('scoreHistogram refuses different suite track or config families even for the same scorer', () => {
-  const mixed = [entry(), entry({id: '2', suite: 'drop', score: 0.5})];
+  const mixed = [entry(), entry({id: '2', suite: 'qmsum', score: 0.5})];
   assert.equal(core.scoreHistogram(mixed).reason, 'incompatible_dimensions');
 });
 

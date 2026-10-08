@@ -45,7 +45,7 @@
 
 收到代码后按以下顺序推进，不再为旧 QMSum 报告安排重复审计：
 
-1. 先将服务器现有 `run_notebook_benchmarks.py`、`notebook_runner.py`、`starter_runtime.py` 的模型配置注入与并发修复保存为本地提交，再整合远程开发分支。新代码尚未包含这些服务器独有补丁；不能用覆盖文件的方式丢弃它们。特别保留 `--model-config` 与新增 `--request-revision` 两条参数链。
+1. 先将服务器现有 `run_notebook_benchmarks.py`、`notebook_runner.py` 及运行环境模块的模型配置注入与并发修复保存为本地提交，再整合远程开发分支（运行环境职责现位于 `runtime_environment.py`）。新代码尚未包含这些服务器独有补丁；不能用覆盖文件的方式丢弃它们。特别保留 `--model-config` 与新增 `--request-revision` 两条参数链。
 2. 保留原 70 runs 及修订报告作为 request-v1 结果。新运行直接复用 `qmsum-data-v2` bundle，在新目录显式选择 request-v2，两种 mode 同时采用新模板。不要只重跑旧失败题再与旧成功题拼接成新全量结果。
 3. 固定一场会议（例如包含 `qmsum:18:general:0` 的分区，从 partitions 中查其真实 ID），按正常原生导入/Ask 执行 chunk/reasoning。只确认新参数与模型注入可用、原题不变、run 身份正确，之后按既定资源安排继续完整题单。这个检查只做一次，不按得分或澄清率反复调 prompt。
 

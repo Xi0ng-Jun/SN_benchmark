@@ -10,8 +10,8 @@ import re
 
 from .artifacts import digest
 from .experiment_aggregation import aggregate_runs, _redact
-from .starter_protocol import fingerprint
-from .starter_report import read_journal
+from .identity import fingerprint
+from .run_report import read_journal
 
 NATIVE_VERSION = "sn-deepeval-native-v1"
 _NATIVE_FILES = {"components": "components.jsonl", "scores": "native-scores.jsonl",

@@ -6,7 +6,7 @@ import pytest
 
 from rag_eval.artifacts import digest, save_json, save_jsonl
 from rag_eval.explorer_artifacts import write_explorer_data
-from rag_eval.starter_protocol import fingerprint
+from rag_eval.identity import fingerprint
 from test_experiment_dashboard import make_run
 
 
@@ -16,7 +16,7 @@ def export(tmp_path, runs, name="report"):
     return write_explorer_data(runs, directory), directory
 
 
-def detail(data, directory, case_id="q1", run_id=None):
+def detail(data, directory, case_id="qasper:q1", run_id=None):
     selected = next(o for o in data["observations"].values() if o["case_id"] == case_id and
                     (run_id is None or o["run_key"] == next(r["key"] for r in data["runs"] if r["run_id"] == run_id)))
     script = (directory / selected["detail_file"]).read_text()
@@ -44,20 +44,8 @@ def reidentify(run, identity):
 
 
 def rescored(tmp_path, original):
-    run = tmp_path / "rescored"
-    shutil.copytree(original, run)
-    for name in ("manifest.json", "planned.jsonl", "scores.jsonl"):
-        shutil.copyfile(original / name, run / ("base-" + name))
-    origin = json.loads((original / "manifest.json").read_text())
-    batch = {"version": "notebook-rescoring-v1", "origin_run_id": origin["run_id"],
-             "origin_manifest_sha256": digest(original / "manifest.json"),
-             "origin_artifacts": {name: digest(original / name) for name in
-                                   ("manifest.json", "planned.jsonl", "outputs.jsonl", "scores.jsonl")}}
-    manifest = json.loads((run / "manifest.json").read_text())
-    manifest.update(run_id="rescored", scoring_batch=batch)
-    save_json(run / "manifest.json", manifest)
-    reidentify(run, {**origin["identity"], "scoring_batch": batch})
-    return run
+    from rag_eval.notebook_rescoring import rescore_run
+    return rescore_run(original, tmp_path / 'rescored')
 
 
 def with_native(run):
@@ -65,7 +53,7 @@ def with_native(run):
     config = {"protocol": "sn-deepeval-native-v1", "sdk_version": "4.2.2", "judge": judge, "trajectory": True}
     manifest = json.loads((run / "manifest.json").read_text())
     reidentify(run, {**manifest["identity"], "agent_evaluation": config})
-    common = {"schema_version": "sn-deepeval-native-v1", "case_id": "q1", "mode": "chunk", "judge": judge, "request_id": "request-1"}
+    common = {"schema_version": "sn-deepeval-native-v1", "case_id": "qasper:q1", "mode": "chunk", "judge": judge, "request_id": "request-1"}
     save_json(run / "agent/native-manifest.json", {"schema_version": config["protocol"], "sdk_version": "4.2.2", "judge": judge})
     components = [{**common, "record_type": "span", "span_id": "span-1", "name": "sn.retrieve.chunks_multi",
                    "input": {"queries": ["Who?", "When?"]}, "output": [], "metadata": {"status": "success"}}]
@@ -84,8 +72,8 @@ def with_native(run):
     save_jsonl(run / "agent/native-diagnostics.jsonl", [{**common, "status": "completed"}])
     save_jsonl(run / "agent/native-errors.jsonl", [])
     save_jsonl(run / "agent/native-outputs.jsonl", [])
-    save_jsonl(run / "judge-events.jsonl", [{"case_id": "q1", "request_id": "request-1", "event": "completed"},
-                                           {"case_id": "q1", "request_id": "unknown", "event": "completed"}])
+    save_jsonl(run / "judge-events.jsonl", [{"case_id": "qasper:q1", "request_id": "request-1", "event": "completed"},
+                                           {"case_id": "qasper:q1", "request_id": "unknown", "event": "completed"}])
     return run
 
 
@@ -110,7 +98,7 @@ def test_index_is_lightweight_full_detail_redacted_and_safe(tmp_path):
     assert [e["score"] for e in native] == [0, .5]
     assert [r["phase"] for r in saved["native"]["traces"] if r["selected_for_display"]] == ["completed"]
     assert len(saved["native"]["judge_events"]) == 1
-    assert data["summary"]["planned_outputs"] == 2 and data["summary"]["planned_scores"] == 6
+    assert data["summary"]["planned_outputs"] == 2 and data["summary"]["planned_scores"] == 8
     assert [s["id"] for s in saved["steps"]] == ["source", "normalize", "partition", "import", "retrieve", "synthesize", "answer", "score"]
     assert next(s for s in saved["steps"] if s["id"] == "synthesize")["status"] == "missing"
 
@@ -121,7 +109,7 @@ def test_rescoring_links_verified_source_without_recounting_answers(tmp_path):
     data, _ = export(tmp_path, [rescore, run])
     assert data["summary"]["planned_outputs"] == 2
     assert data["summary"]["saved_outputs"] == 1
-    assert data["summary"]["planned_scores"] == 8
+    assert data["summary"]["planned_scores"] == 12
     assert data["summary"]["unique_questions"] == 2
     assert len([n for n in data["graph"]["nodes"] if n["kind"] == "answers"]) == 1
     assert any(e["kind"] == "rescore" for e in data["graph"]["edges"])
@@ -141,11 +129,7 @@ def test_tampered_rescoring_hash_is_rejected(tmp_path, artifact):
 
 def test_same_case_id_different_frozen_sources_are_distinct(tmp_path):
     first = make_run(tmp_path)
-    other = make_run(tmp_path, "other")
-    manifest = json.loads((other / "manifest.json").read_text())
-    identity = manifest["identity"]
-    identity["source"]["revision"] = "another-source"
-    reidentify(other, identity)
+    other = make_run(tmp_path, "other", corpus="other")
     data, _ = export(tmp_path, [first, other])
     assert data["summary"]["unique_questions"] == 4
     assert len([n for n in data["graph"]["nodes"] if n["kind"] == "dataset"]) == 2
@@ -173,7 +157,7 @@ def test_missing_trace_retains_components_and_incomplete_run(tmp_path):
     assert saved["native"]["traces"] == []
     assert saved["native"]["components"]
     assert any("trace" in warning for warning in data["runs"][0]["warnings"])
-    missing = detail(data, folder, "q2")
+    missing = detail(data, folder, "qasper:q2")
     assert missing["output"] is None
     assert next(s for s in missing["steps"] if s["id"] == "answer")["status"] == "missing"
     assert data["summary"]["prediction_status"] == {"success": 1, "missing": 1}

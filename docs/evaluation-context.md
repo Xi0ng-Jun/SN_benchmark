@@ -2,6 +2,8 @@
 
 本页记录当前仍有效的范围、证据规则和运行边界。按日期累积的阶段记录放在[历史归档](archive/README.md)，不要把历史命令当作当前入口。
 
+当前决策与执行范围先看根目录 [CURRENT_STATE.md](../CURRENT_STATE.md)。本页的日期授权记录用于理解背景，不扩大当前“实际实验在服务器执行”的范围。
+
 ## 目标与范围
 
 项目目标是建立 Silicon Notebook 的持续评测闭环，解释回答、检索、引用、组件和 Agent 过程的表现，并保留可复查的输入、输出、评分和配置身份。
@@ -15,7 +17,7 @@
 - 已保存组件补评：`scripts/score_native_components.py`，从原始组件工件建立独立评分批次。
 - 离线 Dashboard：`scripts/build_experiment_dashboard.py`，只读已保存 run，展示实验地图、单题回放和结果分析。
 
-公开 benchmark 的 Native/Product 适配、QMSum BM25 对照和 IFEval 直接评分仍保留在各自专题文档中；它们的实验身份和结果不能与 Notebook 或 Agent 轨道混成一个总分。
+**2026-09-29 用户已明确只保留上述五套 benchmark，仓内退役清理已执行。** 其他旧 benchmark 专属实现、入口、测试、配置、受跟踪样本／结果和文档已删除；身份、runtime、状态和报告能力已迁出。QMSum BM25、五套内外部比较与 Agent／Dashboard 保留。实际删除见 [DELETION_LOG](../DELETION_LOG.md)，剩余债务见 [TRIAGE](../TRIAGE.md)。服务器与 Git 外私有工件未清理。
 
 ## 证据分层
 
@@ -33,16 +35,16 @@
 - 每个 Notebook 分区和 mode 使用独立 notebook、数据库、存储、索引、缓存、日志和运行目录。
 - 生产 SN 主目录不由评测代码修改；SN 观测补丁通过独立 worktree 和评测仓库补丁交付。
 - gold、私有语料、密钥和服务地址不进入公开结果；结果文件只保存必要的脱敏身份和哈希。
-- 新运行使用新的 run-dir；续跑只能恢复同一配置的未完成输出，不能静默重评成功题。
+- 当前 Notebook 入口使用新的 run-dir，不支持原目录隐式续跑；重试新建 attempt 并记录来源与原因，补评写新批次，不静默重评成功题。
 - Dashboard 生成新输出目录，不改原始 run，不启动 SN、judge 或数据下载。
 
 ## 当前边界
 
-2026-09-23用户授权为正确评测与比较进行必要系统修改和重跑，不依赖历史服务器产物。可在独立runtime准备公开数据、校准评分并运行新实验；生产部署和timer不在范围内。已完成与未完成证据见[当前实验计划](notebook-benchmark-experiment-plan.md)，不要沿用历史“不在本机下载/运行”的阶段限制。
+2026-09-23用户授权为正确评测与比较进行必要系统修改和重跑，不依赖历史服务器产物。当时允许在独立runtime准备公开数据、校准评分并运行新实验；生产部署和timer不在范围内。这是历史授权背景，不代表当前允许本机运行实际实验。已完成与未完成证据见[当前实验计划](notebook-benchmark-experiment-plan.md)。
 
 2026-09-24用户进一步明确正式执行在服务器；随后单独授权利用本机代理下载MultiHop-RAG与ALCE并进行真实数据/评分实现验收。本次下载及不调用生成模型的本地校准已执行，证据见[真实数据验收](notebook-benchmark-real-data-validation.md)。后续正式SN/LLM生成及完整ALCE模型评分在服务器进行。
 
-当前不再追加新的 benchmark；交互可靠性、资料更新一致性、KG、DAG、PDF/OCR 仍不在本轮范围。HotpotQA 是本轮已决定并已纳入的扩展；后续是否继续增加由具体实验结果决定。
+Benchmark 支持集合固定为 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA，不再维护其他旧套件，也不追加新套件。交互可靠性、资料更新一致性、KG、DAG、PDF/OCR 仍不在本轮范围；未来改变支持集合须另行记录新决策。
 
 ## 阅读顺序
 

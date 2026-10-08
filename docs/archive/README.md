@@ -2,6 +2,8 @@
 
 这里保存已经结束、替代或仅用于回溯的评测阶段记录。归档文件仍是证据，不能当作当前命令或当前服务器状态。
 
+**2026-09-29 文档清理：五套之外的旧 benchmark 专属内容已从当前文档树删除。** 保留 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA 与共用工程历史；混合文件已移除退役部分，原文可由 Git 回溯。实际删除见 [DELETION_LOG](../../DELETION_LOG.md)，剩余清单见 [TRIAGE](../../TRIAGE.md)。
+
 ## 状态标签
 
 - **当前协议**：当前代码仍读取或生成的输入、输出和身份约定。
@@ -21,7 +23,7 @@
 - `sn-execution-tracing.md`：旧 SN 执行轨迹采集方案，已由 `native-agent-evaluation.md` 替代。
 - `qmsum-next-iteration.md`：QMSum 首轮结果收口记录，新的服务器动作以 Notebook 和评分恢复说明为准。
 
-公开起步方案、产品能力设计和旧执行台账暂时保留在 `docs/` 根目录，因为仍有专题文档引用它们；它们会标注为历史设计或历史实验。`superpowers/plans/` 和 `superpowers/specs/` 是过程档案，也不作为当前入口。
+产品能力设计等混合文件在 `docs/` 保留共用工程知识；公开起步、扩展、旧选题及退役套件执行台账已删除。`superpowers/plans/` 和 `superpowers/specs/` 只保留五套／共用记录，不作为当前入口，也不要求为退役测试维持兼容。
 
 ## 现行替代入口
 

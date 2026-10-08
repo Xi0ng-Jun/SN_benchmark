@@ -17,7 +17,7 @@ import time
 from .artifacts import digest, save_json
 from .benchmark_submission import build_submission
 from .lab_qasper import REVISION, instance_json, prediction_row
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 def generate_rows(questions, documents, evidence_maps, instance_factory, model, output):

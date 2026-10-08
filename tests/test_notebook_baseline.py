@@ -111,11 +111,11 @@ def prepare_fixture(tmp_path):
 
 
 def run_fixture(tmp_path, monkeypatch, *, interrupt=False, partition=0, name='bm25', top_k=2):
-    from rag_eval import starter_runtime
+    from rag_eval import runtime_environment
     from scripts import run_notebook_baseline as cli
     from rag_eval.notebook_bundle import load_bundle
-    from rag_eval.starter_model import ExplicitBenchmarkModel
-    from rag_eval.starter_protocol import fingerprint
+    from rag_eval.model_adapter import ExplicitBenchmarkModel
+    from rag_eval.identity import fingerprint
     if not (tmp_path/'bundle').exists():
         prepare_fixture(tmp_path)
     bundle = load_bundle(tmp_path/'bundle')
@@ -125,10 +125,10 @@ def run_fixture(tmp_path, monkeypatch, *, interrupt=False, partition=0, name='bm
     config = tmp_path/'models.json'
     config.write_text(json.dumps({'tested': dict(model_id='test-model', base_url_env='BASELINE_TEST_URL',
         api_key_env='BASELINE_TEST_KEY', parameters=dict(temperature=0, top_p=1, max_tokens=100, max_retries=0, timeout=60))}))
-    monkeypatch.setattr(starter_runtime, 'configure_environment', lambda *a, **k:
+    monkeypatch.setattr(runtime_environment, 'configure_environment', lambda *a, **k:
         (SimpleNamespace(), dict(comparable_settings_sha256='settings', service_config_sha256=None)))
     # Snapshot product code is a boundary; the actual source identity is tested elsewhere.
-    monkeypatch.setattr(starter_runtime, 'snapshot_sources', lambda *a:
+    monkeypatch.setattr(runtime_environment, 'snapshot_sources', lambda *a:
         dict(product_revision='fixture', benchmark_source_hashes={'src/rag_eval/notebook_scoring.py': 'fixture'}, versions={}))
     def make_adapter(spec, role, settings, sink):
         class Transport:
@@ -144,7 +144,7 @@ def run_fixture(tmp_path, monkeypatch, *, interrupt=False, partition=0, name='bm
                 return {'answer': 'The launch is delayed until June.'}
         return ExplicitBenchmarkModel(Transport(), model_id=spec['model_id'], role=role,
             parameters=spec['parameters'], config_sha256=spec['config_sha256'], sink=sink)
-    monkeypatch.setattr(starter_runtime, 'make_adapter', make_adapter)
+    monkeypatch.setattr(runtime_environment, 'make_adapter', make_adapter)
     argv = ['--bundle', str(tmp_path/'bundle'), '--partition-id', bundle['partitions'][partition]['partition_id'],
             '--project-root', str(tmp_path/'product'), '--model-config', str(config), '--run-dir', str(run),
             '--top-k', str(top_k)]
@@ -157,7 +157,7 @@ def run_fixture(tmp_path, monkeypatch, *, interrupt=False, partition=0, name='bm
 
 
 def test_cli_freezes_input_and_builds_dashboard_and_report(tmp_path, monkeypatch):
-    from rag_eval.starter_report import load_run, write_report
+    from rag_eval.run_report import load_run, write_report
     from rag_eval.experiment_aggregation import write_dashboard
     run = run_fixture(tmp_path, monkeypatch)
     loaded = load_run(run)
@@ -173,7 +173,7 @@ def test_cli_freezes_input_and_builds_dashboard_and_report(tmp_path, monkeypatch
 
 
 def test_interrupted_cli_keeps_full_plan_and_completed_cases(tmp_path, monkeypatch):
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
     run = run_fixture(tmp_path, monkeypatch, interrupt=True)
     loaded = load_run(run)
     assert loaded['state']['phase'] == 'interrupted'
@@ -185,7 +185,7 @@ def test_interrupted_cli_keeps_full_plan_and_completed_cases(tmp_path, monkeypat
 
 @pytest.mark.parametrize('artifact', ['input/documents.jsonl', 'input/cases.jsonl', 'product-bundle.json', 'outputs.jsonl'])
 def test_artifact_tampering_rejected(tmp_path, monkeypatch, artifact):
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
     run = run_fixture(tmp_path, monkeypatch)
     path = run/artifact
     text = path.read_text()
@@ -223,8 +223,8 @@ def make_sn_fixture(run, destination):
     from rag_eval.notebook_bundle import load_bundle
     from rag_eval.notebook_data import VERSION
     from rag_eval.notebook_runner import plan_rows
-    from rag_eval.starter_protocol import fingerprint
-    from rag_eval.starter_results import result_record
+    from rag_eval.identity import fingerprint
+    from rag_eval.run_results import result_record
     shutil.copytree(run, destination)
     manifest = json.loads((run/'manifest.json').read_text())
     identity = manifest['identity']
@@ -254,7 +254,7 @@ def scored_pair(tmp_path, monkeypatch):
     baseline = run_fixture(tmp_path, monkeypatch)
     # Give the fixture an explicit comparable scorer/dependency identity.
     from rag_eval.artifacts import digest, save_json, save_jsonl
-    from rag_eval.starter_protocol import fingerprint
+    from rag_eval.identity import fingerprint
     from rag_eval.notebook_baseline import plan_rows
     from rag_eval.notebook_bundle import load_bundle
     manifest = json.loads((baseline/'manifest.json').read_text())
@@ -266,7 +266,7 @@ def scored_pair(tmp_path, monkeypatch):
     bundle = load_bundle(baseline/'input')
     ids = {o['case_id'] for o in map(json.loads, (baseline/'outputs.jsonl').read_text().splitlines())}
     planned = plan_rows([c for c in bundle['cases'] if c['case_id'] in ids], baseline.name, manifest['protocol_id'])
-    from rag_eval.starter_results import result_record
+    from rag_eval.run_results import result_record
     save_jsonl(baseline/'planned.jsonl', planned)
     save_jsonl(baseline/'scores.jsonl', [result_record(p, status='scored', score=.25, output_available=True) for p in planned])
     manifest['planned_sha256'] = digest(baseline/'planned.jsonl')
@@ -295,7 +295,7 @@ def test_comparison_uses_shared_questions_not_unpaired_means(tmp_path, monkeypat
 def test_comparison_rejects_incomparable_or_duplicate_cells(tmp_path, monkeypatch, change):
     from rag_eval.notebook_baseline_comparison import compare_runs
     from rag_eval.artifacts import save_json
-    from rag_eval.starter_protocol import fingerprint
+    from rag_eval.identity import fingerprint
     a,b = scored_pair(tmp_path, monkeypatch)
     manifest = json.loads((b/'manifest.json').read_text())
     if change == 'scorer':
@@ -350,7 +350,7 @@ def test_no_matching_words_has_deterministic_ties_and_empty_context_prompt():
 
 @pytest.mark.parametrize('case_update', [{'suite':'qasper'}, {'product_protocol':'sn-notebook-v1'}])
 def test_bm25_mode_cannot_be_declared_as_an_sn_run(case_update):
-    from rag_eval.starter_results import planned_result
+    from rag_eval.run_results import planned_result
     from rag_eval.notebook_baseline import BASELINE_VERSION
     case = dict(qmsum_case(), product_protocol=BASELINE_VERSION)
     case.update(case_update)
@@ -360,7 +360,7 @@ def test_bm25_mode_cannot_be_declared_as_an_sn_run(case_update):
 
 def test_interrupted_later_scorer_preserves_previous_scores(tmp_path, monkeypatch):
     from rag_eval import notebook_scoring
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
     calls = []
     def scorer(case, record, name):
         calls.append(name)
@@ -380,7 +380,7 @@ def test_interrupted_later_scorer_preserves_previous_scores(tmp_path, monkeypatc
 def test_rescore_creates_derived_batch_without_model_calls(tmp_path, monkeypatch):
     from rag_eval import notebook_scoring
     from rag_eval.notebook_rescoring import rescore_run
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
     source = run_fixture(tmp_path, monkeypatch)
     original_outputs = (source/'outputs.jsonl').read_bytes()
     original_scores = (source/'scores.jsonl').read_bytes()
@@ -400,7 +400,7 @@ def test_rescore_creates_derived_batch_without_model_calls(tmp_path, monkeypatch
     assert len(loaded['outputs']) == len(load_run(source)['outputs'])
     assert any(row['score'] == .88 for row in loaded['scores'])
     assert loaded['manifest']['run_id'] == derived.name
-    from rag_eval.starter_report import write_report
+    from rag_eval.run_report import write_report
     write_report([derived], tmp_path/'rescored-report')
     assert '独立重评分' in (tmp_path/'rescored-report/report.md').read_text()
 
@@ -429,7 +429,7 @@ def test_rescore_rejects_tampered_origin_before_writing(tmp_path, monkeypatch):
 def test_rescore_interruption_keeps_scores_already_written(tmp_path, monkeypatch):
     from rag_eval import notebook_scoring
     from rag_eval.notebook_rescoring import rescore_run
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
     source = run_fixture(tmp_path, monkeypatch)
     count = {'n': 0}
     def score(case, record, scorer):

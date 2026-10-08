@@ -15,7 +15,6 @@ dev = ["pytest>=8"]
 notebook = ["rouge-score==0.1.2"]
 
 [project.scripts]
-rag-eval = "rag_eval.cli:main"
 rag-eval-deepeval = "rag_eval.deepeval_cli:main"
 
 [tool.pytest.ini_options]

@@ -17,7 +17,7 @@ import time
 from .artifacts import digest, save_json
 from .benchmark_submission import build_submission
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 REVISION = '7d626c77b7af30b55aa3f960cde755b9549a0616'
 SOURCE_HASHES = {

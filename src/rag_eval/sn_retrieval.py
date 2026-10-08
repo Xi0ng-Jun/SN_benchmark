@@ -14,7 +14,7 @@ import math
 from pathlib import Path
 
 from .artifacts import digest
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 POLICY = 'sn-multihop-chunk-selected-passages-v1'
 BOUNDARY = '_activate_selected_source_graph'

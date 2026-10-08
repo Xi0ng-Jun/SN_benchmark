@@ -8,23 +8,23 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from rag_eval.notebook_runner import execute
-from rag_eval.starter_report import load_run
+from rag_eval.run_report import load_run
 from test_notebook_execution import bundle_fixture
 
 
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_native_scoring_runs_after_durable_answer_without_changing_corpus(tmp_path, monkeypatch, cancelled):
-    from rag_eval import starter_runtime, benchmark_runtime, system_runtime, usage_capture
+    from rag_eval import runtime_environment, benchmark_runtime, system_runtime, usage_capture
 
     partition = bundle_fixture(tmp_path)
     run = tmp_path / 'native'
     settings = SimpleNamespace(db_path=run / 'runtime/database.db')
-    monkeypatch.setattr(starter_runtime, 'snapshot_sources', lambda *a: {'revision': 'test'})
-    monkeypatch.setattr(starter_runtime, 'configure_environment', lambda *a, **k: (
+    monkeypatch.setattr(runtime_environment, 'snapshot_sources', lambda *a: {'revision': 'test'})
+    monkeypatch.setattr(runtime_environment, 'configure_environment', lambda *a, **k: (
         settings, {'comparable_settings_sha256': 'settings', 'service_config_sha256': 'services'}))
-    monkeypatch.setattr(starter_runtime, 'resolve_models', lambda *a: (
+    monkeypatch.setattr(runtime_environment, 'resolve_models', lambda *a: (
         {'judge': {'model_id': 'fake'}}, {'judge': {'model_id': 'fake', 'config_sha256': 'identity'}}))
-    monkeypatch.setattr(starter_runtime, 'make_adapter', lambda *a: object())
+    monkeypatch.setattr(runtime_environment, 'make_adapter', lambda *a: object())
     monkeypatch.setattr(usage_capture, 'capture_usage', lambda *a: nullcontext({}))
     repository = ModuleType('app.services.sqlite_repository')
     repository.SQLiteRepository = lambda s: SimpleNamespace(db_path=s.db_path, close=lambda: None)

@@ -24,7 +24,7 @@ def main(argv=None):
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--judge-config', type=Path, required=True,
-                        help='Explicit judge JSON (public-starter-models format, judge role only)')
+                        help='Explicit judge JSON (model-roles.example.json format, judge role only)')
     parser.add_argument('--model-config', type=Path,
                         help='SN model-services TOML; default is project/.local/model-services.toml')
     parser.add_argument('--trajectory', action='store_true',
@@ -43,7 +43,7 @@ def main(argv=None):
                       DEEPEVAL_NO_INSPECT_PROMPT='1', CONFIDENT_TRACING_ENABLED='NO')
     os.environ.pop('CONFIDENT_API_KEY', None)
     from rag_eval.notebook_runner import execute
-    from rag_eval.starter_report import write_report
+    from rag_eval.run_report import write_report
 
     run = args.run_dir.resolve()
     code = 0

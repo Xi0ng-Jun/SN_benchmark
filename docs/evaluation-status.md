@@ -2,6 +2,14 @@
 
 核实基线：2026-09-28（北京时间）。本页是当前快照；详细历史、旧命令和交接上下文见[文档导航](README.md)和[历史归档](archive/README.md)。
 
+本页保留已记录的代码／实验事实及阶段进展；当前目标、不变量和执行范围以 [CURRENT_STATE.md](../CURRENT_STATE.md) 为阅读入口。下方历史数字不代表本次重新验收，服务器状态需读取实际工件确认。
+
+## 2026-09-29 仓内退役清理
+
+仅保留 **QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA**。其他旧 benchmark 专属代码、CLI、测试、配置、受跟踪样本／结果及文档已删除；共用身份、runtime、模型客户端、结果账本与报告已迁到独立模块，没有保留旧模块转发壳。Dashboard 测试使用真实构建的合成 QASPER bundle，继续执行冻结来源和计划重建校验。
+
+本轮离线 Python 回归 **538 passed，1 skipped**（未显式配置本地 Perl ROUGE）；Node **34 passed**。清理前基线为 769 passed、2 skipped；数量减少主要来自退役专属测试退出，同时保留／迁移通用状态、分母、trace 与工件校验。实际删除逐项见 [DELETION_LOG](../DELETION_LOG.md)，未处理债务见 [TRIAGE](../TRIAGE.md)。本轮未进行真实模型实验、服务器清理、提交或推送；下方为各日期历史证据。
+
 ## 当前代码与 Git
 
 - 本地 `benchmark-deepeval/main` 已合并 Dashboard、原生评分恢复及文档整理，HEAD 为 `e022c60`。

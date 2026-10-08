@@ -14,10 +14,10 @@ import uuid
 
 from .artifacts import digest, save_json, save_jsonl
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
-from .starter_report import load_run
-from .starter_results import EventJournal, result_record
-from .starter_runner import read_rows
+from .identity import fingerprint
+from .run_report import load_run
+from .run_results import EventJournal, result_record
+from .run_support import read_rows
 
 BASELINE_PROTOCOL = "sn-notebook-baseline-v1"
 NOTEBOOK_PROTOCOL = "sn-notebook-benchmarks-v1"
@@ -39,8 +39,8 @@ def _score_value(case, record, scorer, protocol):
     try:
         if protocol == NOTEBOOK_PROTOCOL:
             if scorer == "product.notebook.citation_object_existence_v1":
-                from .starter_runner import CITATIONS, _product_score
-                return _product_score(record["product_record"], CITATIONS, None, "rescoring")
+                from .run_support import CITATIONS, citation_score
+                return citation_score(record["product_record"])
             return notebook_scoring.score_case(case, record["product_record"], scorer)
         if protocol == BASELINE_PROTOCOL:
             return notebook_scoring.score_case(case, record["product_record"], scorer)

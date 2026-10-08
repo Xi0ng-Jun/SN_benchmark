@@ -15,7 +15,7 @@ from .artifacts import digest, save_json
 from .external_submission_import import import_external_predictions
 from .multihop_official import PUBLISHED_RANKING_CONTRACT
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 REVISION = 'e77e4638cbae16fa7a63f291e73230d5bb356081'

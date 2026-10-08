@@ -9,8 +9,8 @@ import re
 from .artifacts import save_json
 from .notebook_baseline import BASELINE_VERSION
 from .notebook_data import VERSION as SN_VERSION
-from .starter_protocol import fingerprint
-from .starter_report import load_run
+from .identity import fingerprint
+from .run_report import load_run
 
 SCORER_FILES = ('src/rag_eval/notebook_scoring.py', 'src/rag_eval/notebook_data.py', 'src/rag_eval/protocol.py')
 

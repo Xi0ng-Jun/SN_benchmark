@@ -25,7 +25,7 @@
 
 复用 SN QMSum 实验用的**同一份 bundle**，不重新选择问题或改写空发言；每个分区都对应一场完整会议。新增 baseline 不要求重跑正在进行的 SN 实验。`--project-root` 提供只读的 SN 源码与模型客户端；源码快照要求其已跟踪文件与 HEAD 一致。执行应使用独立 CLI 进程，运行目录不能与生产、源码、输入、模型配置重叠。SN `.env` 和模型服务 registry 不作为 baseline 的默认模型配置读取；缓存和日志使用本次私有 runtime。
 
-1. 从 `configs/public-starter-models.example.json` 复制生成配置，只需 `tested`。填写 SN **最终答案生成角色**的实际模型 ID、endpoint/key 环境变量名，以及 temperature、top_p、max_tokens、timeout、max_retries（如适用再指定 thinking_mode）。不要直接把配置样例中的占位值用于实验。显式模型身份保存模型名、参数、endpoint 哈希，不保存密钥或明文地址到 manifest/Dashboard。
+1. 从 `configs/model-roles.example.json` 复制生成配置，只需 `tested`。填写 SN **最终答案生成角色**的实际模型 ID、endpoint/key 环境变量名，以及 temperature、top_p、max_tokens、timeout、max_retries（如适用再指定 thinking_mode）。不要直接把配置样例中的占位值用于实验。显式模型身份保存模型名、参数、endpoint 哈希，不保存密钥或明文地址到 manifest/Dashboard。
 2. 在服务器上先验收一场会议：
 
 ```bash

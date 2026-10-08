@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from .starter_protocol import fingerprint, require_text
+from .identity import fingerprint, require_text
 
 VERSION = 'sn-notebook-benchmarks-v1'
 LEGACY_ADAPTATION = 'notebook-data-v1'

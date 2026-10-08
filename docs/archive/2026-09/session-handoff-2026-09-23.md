@@ -90,7 +90,6 @@ results/domain-goldens-current.rejected.json
 
 ### 公开任务、SN 运行与常规对照
 
-- 早期十套公开评测：SQuAD、DROP、BoolQ、LogiQA、IFEval、MMLU、GSM8K、TruthfulQA、HellaSwag、BBH。数据选择及 Native 模型参照 / SN Product 适配的范围见[选题方案](../../public-benchmark-selection-plan.md)和[指标实现表](../../benchmark-metrics-reference.md)。这些轨道不是同一种实验，不能合成一个总成绩。
 - 后续 Notebook 场景重点：QASPER、QMSum、MultiHop-RAG、ALCE（当前主要实验是 ASQA；也有 QAMPARI/ELI5 适配）。它们是独立公开研究数据集，不是四个 DeepEval 内置 Benchmark 类。见[Notebook 协议](../../notebook-benchmarks.md)。
 - 按完整任务资料组织隔离 notebook/runtime，参考答案和证据标注留在评分侧。QASPER 按论文、QMSum 按会议、MultiHop-RAG 用完整 corpus、ALCE 按单题完整候选集；不能用统一文档数上限拆散一道题所需资料。
 - SN chunk/reasoning 使用后端业务接口及隔离运行配置，不是通过生产 UI 逐题点击。问答实际保存的输入、上下文、答案和引用供后续评分、诊断与展示。

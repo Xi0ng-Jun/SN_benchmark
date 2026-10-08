@@ -33,7 +33,7 @@ def main():
             parser.error(str(exc))
     if not case_ids:
         case_ids = None
-    from rag_eval.starter_report import write_report
+    from rag_eval.run_report import write_report
     run = args.run_dir.resolve()
     code = 0
     try:

@@ -13,8 +13,8 @@ import re
 import time
 
 from .notebook_scoring import metric_specs
-from .starter_protocol import fingerprint
-from .starter_results import planned_result, result_record
+from .identity import fingerprint
+from .run_results import planned_result, result_record
 
 BASELINE_VERSION = 'sn-notebook-baseline-v1'
 _TOKEN = re.compile(r'\w+', re.UNICODE)

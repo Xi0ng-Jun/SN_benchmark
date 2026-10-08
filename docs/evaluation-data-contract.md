@@ -3,7 +3,7 @@
 > 设计草案：本页定义过渡期数据协议，只有代码和具体 run 的实际字段才构成当前契约。
 
 
-2026-09-10。本文件定义下一阶段的协议，**当前 runner 尚未消费新字段**。历史 JSONL 保持原状；新协议以独立 sidecar/导出承载，不就地迁移 baseline。[能力矩阵](product-capability-matrix.md)给出各字段用途，[公开历史样例](examples/drop-smoke-case.json)保留现有真实形状。
+2026-09-10。本文件保留早期共用数据设计，**不能将草案字段视为当前 runner 契约**。五套与共用历史工件保持原状；新协议以独立 sidecar/导出承载，不就地迁移已有运行。[能力矩阵](product-capability-matrix.md)给出各字段用途，实际输入与评分以[五套标准](notebook-benchmark-standards-and-conformance.md)为准。
 
 ## 四类记录与身份
 
@@ -20,7 +20,7 @@
 
 - `capability_ids` 可多标签，计入每类时去重；总问题数不能累加能力分桶。
 - `documents[]`：`public_id`, `text_sha256`, `text_ref`, `version`。语料包括 gold 与干扰文档，`corpus_hash` 覆盖整个候选库。正文进原生导入，gold、参考答案和行为标签只进评分。
-- `references: list[str]` 中每个字符串是一份完整可接受答案。SQuAD annotator 答案是备选；DROP 多 span 必须保留为一个复合答案，不可拆成多个“答中任意一个即可”。原始 number/date/spans 留在 `answer_spec.raw_answers`。
+- `references: list[str]` 中每个字符串是一份完整可接受答案；多项组成的答案不能拆成多个“答中任意一个即可”的备选。具体五套标注表示按各自任务契约保存，通用示意字段不能取代原始标注。
 - `answer_spec`：`kind` 为 span/number/date/multi_span/free_text/mixed；包含可选 `unit`, `precision`, `normalization_version`, `operands`, `operation`, `accepted_values`。操作数和 operation 由人核验，不能把模型生成推理变成 gold。整数计数精确比对；近似量只有人审规则允许时才应用单位换算/舍入误差。这是答案容差，不是质量发布阈值。
 - `gold_evidence[]`：`document_id`, `start`, `end`, `text`, `required_group`, `annotation_status`。offset 为原文 Unicode 字符下标、左闭右开，要求 `text[start:end] == span.text`；文档 UTF-8 字节哈希另存。切块变化需重新映射，不把原生 chunk ID 当稳定 gold。
 - `expected_behavior`：`allowed_actions` 从 answer/clarify/abstain/limit 选取，另有 `reason`, `answerability`, `required_disclosures`。复杂请求可允许回答已有部分并提示限制，但必须写清条件。未审问题的 `answerability=unknown`，不能自动纳入行为正确率。
@@ -80,4 +80,4 @@
 
 [Metrics 总览](https://deepeval.com/docs/metrics-introduction)区分端到端、trajectory、component 与 standalone；本阶段复用保存输出的 standalone metric.measure，不新增生产 tracing。[Evaluation 总览](https://deepeval.com/docs/evaluation-introduction)提供 evaluate/CLI、dataset 与多轮编排；这是可用能力，并不表示本仓库已改用它们。官方新 score-only API 与本地安装需分别核对，本次不改 SDK 参数。
 
-[Benchmarks 总览](https://deepeval.com/docs/benchmarks-introduction)的标准模型 benchmark 有固定 scorer。现有 SQuAD/DROP 是经改造的产品 RAG 评测：候选库与 Ask 输入已变化，使用自定义 judge；不得命名为官方 DeepEval DROP/SQuAD 标准分数或与榜单直接比较。
+[Benchmarks 总览](https://deepeval.com/docs/benchmarks-introduction)的标准模型 benchmark 有固定 scorer。五套的正式口径见[标准与实现符合性](notebook-benchmark-standards-and-conformance.md)；自定义产品输入或 judge 诊断须独立标识，不能因为指标相近就冒充官方榜单分数。

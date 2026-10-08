@@ -99,7 +99,7 @@ flowchart TD
 - **理解/策略经验套件**：单独冻结这些块，先观察是否送达和作用阶段，后续才研究质量/开销差异；不通过后台蒸馏临时制造实验输入。
 - **观测最小补充**：现有 `capture_synthesis()` 主要保存 evidence context，不保存完整 history/style/最终 prompt。未来在 benchmark 进程的已有方法边界做只读观测，明确 input_role（task/history/evidence/style/strategy）及 stage；不修改生产源码、不把 history 当 retrieval_context，也不编造完整 trajectory。
 
-当前公开 benchmark 使用新 notebook、独立问题，并关闭 profile、策略经验注入、consult 等机制；不能用那 400 次 Ask 推断 Memory/偏好的质量。补齐这里需要的是少量专用状态场景，不是扩大 SQuAD/DROP 题数。
+当前公开 benchmark 使用新 notebook、独立问题，并关闭 profile、策略经验注入、consult 等机制；单轮 Ask 不能推断 Memory/偏好的质量。补齐这里需要少量专用状态场景和独立验收依据。
 
 ## 7. 核对入口
 

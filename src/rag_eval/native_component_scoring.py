@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .artifacts import digest, save_json, save_jsonl
-from .starter_results import EventJournal
+from .run_results import EventJournal
 
 
 def load_samples(source_run, sample_ids, metrics):
@@ -74,7 +74,7 @@ def rescore_components(source_run, output, *, sample_ids, metrics, judge_factory
         'sample_ids': sample_ids, 'metrics': metrics, 'judge': judge_identity, 'sdk_version': version('deepeval'),
         'sdk_timeout': sdk_timeout_identity(),
         'scoring_sources': {name: digest(Path(__file__).with_name(name)) for name in
-                           ('native_component_scoring.py', 'native_metrics.py', 'native_sdk.py', 'starter_model.py')},
+                           ('native_component_scoring.py', 'native_metrics.py', 'native_sdk.py', 'model_adapter.py')},
         'execution': 'saved components; one full sample and one metric per evaluate; no SN invocation',
     })
     save_jsonl(output / 'components.jsonl', samples)

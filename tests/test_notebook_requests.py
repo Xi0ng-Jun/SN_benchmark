@@ -7,7 +7,7 @@ import pytest
 from rag_eval.artifacts import save_json
 from rag_eval.notebook_bundle import partition_bundle, prepare
 from rag_eval.notebook_runner import plan_rows, validate_saved_run
-from rag_eval.starter_protocol import fingerprint
+from rag_eval.identity import fingerprint
 
 
 def bundle_at(tmp_path, suite='qmsum'):

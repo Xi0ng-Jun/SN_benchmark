@@ -6,6 +6,7 @@
 
 - 目标是建立 Silicon Notebook 的持续评测闭环。
 - 评测框架使用 DeepEval。
+- Benchmark 仅保留 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA；其他旧 benchmark 专属内容已从当前工作树删除，见 `DELETION_LOG.md`；剩余技术债见 `TRIAGE.md`。不得为通过旧测试重新引入退役套件或叠加兼容。
 - 主要数据来源包括项目文档、真实用户问题、典型业务场景和公开评测集。
 
 ## 工作方式
@@ -18,4 +19,4 @@
 
 ## 进入任务前
 
-先阅读 `docs/evaluation-context.md` 和 `docs/evaluation-status.md`，再根据任务需要查看 `README.md`、代码、测试和 `rag-benchmark-docs/` 下的调研材料。
+先阅读 `CURRENT_STATE.md` 了解当前目标、不变量与执行范围，再阅读 `docs/evaluation-context.md` 和 `docs/evaluation-status.md` 查看背景与证据；根据任务需要查看 `RUNBOOK.md`、`ARCHITECTURE_CURRENT.md`、`TRIAGE.md`、代码、测试和调研材料。

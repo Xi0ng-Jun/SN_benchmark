@@ -26,7 +26,7 @@ from urllib.request import urlopen
 from .artifacts import save_json
 from .benchmark_submission import validate_submission
 from .notebook_scoring import body_text
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 from .multihop_official import SOURCE as MULTIHOP_RETRIEVAL_SOURCE, SOURCE_NAME as MULTIHOP_RETRIEVAL_SOURCE_NAME
 
 SOURCES = {

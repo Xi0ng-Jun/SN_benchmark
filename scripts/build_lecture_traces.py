@@ -10,7 +10,7 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("modules", nargs="*", default=["lecture_01", "lecture_02", "lecture_03", "lecture_04"])
+    parser.add_argument("modules", nargs="*", default=["lecture_01", "lecture_02", "lecture_03"])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     lectures = root / "lectures"

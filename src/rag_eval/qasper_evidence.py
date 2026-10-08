@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 POLICY = 'sn-qasper-final-citations-visible-units-v1'

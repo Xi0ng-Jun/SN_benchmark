@@ -67,7 +67,7 @@ SN `app.core.evaluation_tracing` 是可选薄封装：公开 `observe`/`update_c
 
 ## 运行示例与验收顺序
 
-先按[补丁包说明](../integrations/silicon-notebook/README.md)更新独立 SN worktree。使用同时具备 SN 依赖和固定 SDK 的 Python。`--judge-config` 沿用 [JSON 示例](../configs/public-starter-models.example.json)的 `judge` 段，仅需 judge 角色；环境变量保存凭据，模型参数由服务器填写。
+先按[补丁包说明](../integrations/silicon-notebook/README.md)更新独立 SN worktree。使用同时具备 SN 依赖和固定 SDK 的 Python。`--judge-config` 使用 [JSON 示例](../configs/model-roles.example.json)的 `judge` 段，仅需 judge 角色；环境变量保存凭据，模型参数由服务器填写。
 
 ```bash
 python scripts/run_notebook_agent.py \

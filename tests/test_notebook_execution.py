@@ -7,9 +7,9 @@ import pytest
 
 from rag_eval.notebook_bundle import prepare
 from rag_eval.notebook_runner import execute
-from rag_eval.starter_report import load_run
+from rag_eval.run_report import load_run
 from rag_eval.experiment_aggregation import aggregate_runs
-from rag_eval.starter_results import planned_result, result_record, summarize
+from rag_eval.run_results import planned_result, result_record, summarize
 
 
 def test_continuous_primary_is_not_binary_accuracy():
@@ -35,15 +35,15 @@ def bundle_fixture(tmp_path):
 
 
 def test_execution_preserves_clarification_and_dashboard_pairing(tmp_path, monkeypatch):
-    from rag_eval import starter_runtime, benchmark_runtime, system_runtime
+    from rag_eval import runtime_environment, benchmark_runtime, system_runtime
     part = bundle_fixture(tmp_path)
     settings = SimpleNamespace()
-    monkeypatch.setattr(starter_runtime, 'snapshot_sources', lambda *a: {'revision':'test'})
+    monkeypatch.setattr(runtime_environment, 'snapshot_sources', lambda *a: {'revision':'test'})
     def configure(project, run, **kwargs):
         settings.db_path = run/'runtime/database.db'
         assert kwargs['document_limit'] == 40
         return settings, dict(comparable_settings_sha256='settings', service_config_sha256='services')
-    monkeypatch.setattr(starter_runtime, 'configure_environment', configure)
+    monkeypatch.setattr(runtime_environment, 'configure_environment', configure)
     module = ModuleType('app.services.sqlite_repository')
     module.SQLiteRepository = lambda s: SimpleNamespace(db_path=s.db_path, close=lambda: None)
     monkeypatch.setitem(sys.modules, module.__name__, module)

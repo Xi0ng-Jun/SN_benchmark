@@ -9,8 +9,8 @@ import uuid
 from .artifacts import digest, save_json, save_jsonl
 from .notebook_baseline import BASELINE_VERSION, baseline_config, partition_turns, plan_rows, run_qmsum_case
 from .notebook_bundle import load_bundle, partition_bundle
-from .starter_protocol import fingerprint
-from .starter_results import EventJournal
+from .identity import fingerprint
+from .run_results import EventJournal
 
 
 def execute(*, root, project, bundle_dir, run, partition_id, model_config,
@@ -31,7 +31,7 @@ def execute(*, root, project, bundle_dir, run, partition_id, model_config,
     cases = [c for c in bundle['cases'] if c['case_id'] in members]
     if not cases:
         raise ValueError('Cannot execute an empty partition')
-    from .starter_runtime import configure_environment, make_adapter, resolve_models, snapshot_sources
+    from .runtime_environment import configure_environment, make_adapter, resolve_models, snapshot_sources
     resolved, public_models = resolve_models(model_config, ['tested'])
     run.mkdir(parents=True, exist_ok=False)
     save_json(run/'state.json', dict(phase='initializing'))

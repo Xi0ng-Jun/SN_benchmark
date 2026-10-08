@@ -79,11 +79,11 @@ def test_empty_selection_is_observed_but_absent_or_repeated_stages_are_not_ranki
 
 def test_sn_run_exports_observed_ranking_and_scores_it_independently_of_generation(tmp_path, monkeypatch, source_dir):
     import sys
-    from rag_eval import benchmark_runtime, starter_runtime, system_runtime
+    from rag_eval import benchmark_runtime, runtime_environment, system_runtime
     from rag_eval.benchmark_submission import export_sn_runs
     from rag_eval.multihop_official import score_multihop_retrieval
     from rag_eval.notebook_runner import execute
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
 
     m = api()
     bundle, repo, mapping, chunks = fixture(tmp_path)
@@ -109,8 +109,8 @@ def test_sn_run_exports_observed_ranking_and_scores_it_independently_of_generati
     def gold_join(repo, record, mapping, **kwargs):
         assert record['retrieval']['status'] == 'complete'
     monkeypatch.setattr(system_runtime, 'complete_evidence_checks', gold_join)
-    monkeypatch.setattr(starter_runtime, 'snapshot_sources', lambda *a: {'revision': 'fixture'})
-    monkeypatch.setattr(starter_runtime, 'configure_environment', lambda project, run, **k: (
+    monkeypatch.setattr(runtime_environment, 'snapshot_sources', lambda *a: {'revision': 'fixture'})
+    monkeypatch.setattr(runtime_environment, 'configure_environment', lambda project, run, **k: (
         SimpleNamespace(db_path=run/'runtime/database.db'),
         dict(comparable_settings_sha256='settings', service_config_sha256='service')))
     run = tmp_path/'run'

@@ -3,7 +3,7 @@
 > 背景参考：本页是早期能力矩阵，不代表当前每项能力已有真实实验覆盖。
 
 
-核对日期：2026-09-10。这是第一阶段评测设计，不是已完成的质量验收。总方案见[详细方案](product-capability-evaluation-plan.md)，字段见[数据协议](evaluation-data-contract.md)，实物见[一题到底](evaluation-case-walkthrough.md)。
+核对日期：2026-09-10。这是第一阶段评测设计，不是已完成的质量验收。总方案见[详细方案](product-capability-evaluation-plan.md)，字段见[数据协议](evaluation-data-contract.md)，五套真实案例见[比较案例复核](notebook-comparison-case-review-2026-09-28.md)。2026-09-29 移除退役套件实例，保留共用能力与观测约束。
 
 ## 产品入口与观测事实
 
@@ -23,13 +23,13 @@
 
 | capability_id / 产品问题 | 评测数据与期望 | 产品观测 | DeepEval | 确定性检查 | 人工判断 / 不适用条件 |
 |---|---|---|---|---|---|
-| `retrieval.document` 找到目标文档了吗 | SQuAD/DROP 冻结候选库；产品事实定位题；gold 文档与干扰文档 | 最终 context 的 source→public ID；未来另采候选列表及阶段 | 诊：Contextual Recall/Relevancy | 主：final-context 文档 hit、gold 文档覆盖；有真实排名才报 Hit@K、MRR、nDCG | 确认 gold 与候选库是否足以回答；当前无排名，@K 排序指标不适用 |
-| `retrieval.evidence` 正确片段进入生成了吗 | SQuAD 字符 offset；产品人工证据区间；多文档必要证据组 | 完整 context、handle/id_map、文档哈希、切块映射 | 诊：Contextual Recall | 主：gold source 内答案 span 到达；有证据组时 all-required 覆盖 | 文档命中不等于证据齐全；DROP 无完整证据标注，证据级 recall 不适用；子串命中不证明语义支持 |
-| `answer.fact` 事实回答是否准确、完整 | SQuAD 多 annotator 可接受答案；产品术语/限定条件题；允许答案及反例 | question、answer、真实 context、产品状态 | 主：GEval Answer Correctness、Faithfulness、Answer Relevancy | 可抽取短答案的 EM/token F1 作诊断；检查缺失答案与持久化 | 等价表达、遗漏、矛盾、范围/工况；无 gold 跳过 correctness，无可靠 context 跳过 faithfulness |
-| `answer.numeric` 数字、日期、计算是否正确 | DROP 原始 number/date/spans；产品经人审的操作数、单位、运算、舍入规则 | 最终答案；context 操作数；公开解释（若有） | 主：Correctness；Faithfulness/Relevancy；诊：计算解释 GEval 仅在另立协议后 | 主：唯一可解析数值/日期/单位与允许答案比对；受控运算复算 | 操作数语义、时间精度、百分比/百分点、合理推导；歧义多数字答案标 unknown，不能任取第一个数字；无步骤不能声称验证了内部推理 |
+| `retrieval.document` 找到目标文档了吗 | 固定候选库；产品事实定位题；gold 文档与干扰文档 | 最终 context 的 source→public ID；候选排名须另有真实观测 | 诊：Contextual Recall/Relevancy | 主：final-context 文档 hit、gold 文档覆盖；有真实排名才报 Hit@K、MRR、nDCG | 确认 gold 与候选库是否足以回答；无排名的运行不适用 @K 排序指标 |
+| `retrieval.evidence` 正确片段进入生成了吗 | 人工证据区间；多文档必要证据组 | 完整 context、handle/id_map、文档哈希、切块映射 | 诊：Contextual Recall | 主：gold source 内证据到达；有证据组时 all-required 覆盖 | 文档命中不等于证据齐全；无完整证据标注时不报告完整召回；子串命中不证明语义支持 |
+| `answer.fact` 事实回答是否准确、完整 | 完整可接受答案；产品术语/限定条件题；允许答案及反例 | question、answer、真实 context、产品状态 | 设计候选：GEval Answer Correctness、Faithfulness、Answer Relevancy；五套正式评分另按官方协议 | EM/token F1 按任务规则使用；检查缺失答案与持久化 | 等价表达、遗漏、矛盾、范围/工况；无 gold 跳过 correctness，无可靠 context 跳过 faithfulness |
+| `answer.numeric` 数字、日期、计算是否正确 | 产品经人审的操作数、单位、运算、舍入规则 | 最终答案；context 操作数；公开解释（若有） | 设计候选：Correctness；Faithfulness/Relevancy；计算解释 GEval 须另立协议 | 唯一可解析数值/日期/单位与允许答案比对；受控运算复算 | 操作数语义、时间精度、百分比/百分点、合理推导；歧义多数字答案标 unknown，不能任取第一个数字；无步骤不能声称验证了内部推理 |
 | `citation.traceability` 引用真实可回查吗 | 同版本 source/element/chunk 快照；正文引用与预期支持 claim | answer `[k]`、anchors、citations、id_map、scope、对象正文哈希 | 诊：引用支持 GEval 为后续定制，当前未接入；Faithfulness 只做全答案诊断 | 主：正文锚点解析、对象存在、归属/scope、引用原文与 context 可追溯；分别报对象及锚点分母 | 每条 claim 与它实际引用的片段是否相符、关键 claim 是否漏引；对象存在不能代替语义支持，quoted_span 截断不等于引用造假 |
 | `reasoning.paired` reasoning 相比 chunk 改善什么 | 同一 case、同一固定文档库与模型配置；事实/计算/多文档成对样本 | 两份独立运行结果、真实 context、公开 trace、provider usage 与延迟 | 主：两模式相同三项 QA 指标的配对差；trajectory 指标暂不启用 | 证据、引用、状态转移；单独比较延迟/调用/已观测 token | 增益原因与不必要步骤；公开 trace 不完整时 Task Completion/Step Efficiency 不适用；费用未知不填零 |
-| `behavior.clarify` 是否适时请求澄清 | 指代缺失题与明确对象对照题；人审可回答性、缺失信息和允许 action | 原生状态、错误栈/结构化原因、澄清消息、调用观测 | 可选 GEval 清晰度/帮助性，需新 rubric；普通 QA 指标跳过 | 主：期望 action 与实际 action 混淆矩阵；假阳性/漏澄清；输入适配问题单列 | 公开题移入 200 段库后是否失去指代；17 次历史拦截不能全算产品 bug；没有消息无法评帮助性 |
+| `behavior.clarify` 是否适时请求澄清 | 指代缺失题与明确对象对照题；人审可回答性、缺失信息和允许 action | 原生状态、错误栈/结构化原因、澄清消息、调用观测 | 可选 GEval 清晰度/帮助性，需新 rubric；普通 QA 指标跳过 | 主：期望 action 与实际 action 混淆矩阵；假阳性/漏澄清；输入适配问题单列 | 检查问题与实际资料范围是否保留指代；不能将所有拦截算作产品 bug；没有消息无法评帮助性 |
 | `behavior.abstain` 缺证据时是否承认不知道 | 语料内不可回答问题；事实冲突、范围排除的对照样本 | 答案/拒答消息、实际 scope/context、原生错误 | 可选 GEval 拒答解释；不能用 Relevancy 替代行为标签 | 主：应拒且拒/可答却拒/无证据仍答计数；服务商拒绝另列 | 判断拒答合理性、是否夹带编造事实；传输错误和 provider 拒绝不是产品有意拒答 |
 | `behavior.completeness` 是否诚实披露完整性边界 | 有限文档清单、小规模全量 gold；去重、分组、聚合等能力限制题 | `completeness_unavailable`、枚举/预览覆盖、终态 trace、回答限制说明 | 可选 GEval 限制披露，未接入 | 主：完整性声明与已知全集/覆盖一致；字段缺失记 unknown | 当前产品有部分精确枚举能力，不能一概预设拒答；区分目录完整、进入合成完整、答案语义完整。本阶段只定义与离线审阅，专项不扩展 |
 

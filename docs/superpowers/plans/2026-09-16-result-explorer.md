@@ -23,7 +23,7 @@
 
 - [x] 写可执行合成 run 回归：多 scorer 不膨胀问题数；漏评分仍有条目；完整记录 drilldown；错误 ledger 拒绝；发现目录不混入 input manifest。
 - [x] 提供 dashboard v2 数据：runs、entries、observations、catalog、summary、warnings；保留来源原始 case、request/response、context、citations、scores/details、匹配 model-events。
-- [x] 建立指标计算说明及四列表，纠正之前把 Answer Relevancy/Contextual 当成新十套默认输出、DROP Product 被说成自动数值 exact match 的表述。
+- [x] 建立指标计算说明，区分实际评分计划、指标公式和观测输入，避免将已实现指标误说成所有运行的默认输出。
 
 ## Task 2：浏览器探索界面
 
@@ -46,7 +46,7 @@ entry: {id, observation_id, run_key, run_id, suite, task, track, mode, scorer, s
 observation（字典，键 observation_id）: {case, output, events, warnings}。
 run: {key, path, run_id, suite, track, mode, phase, planned_predictions, planned_scores, saved_outputs, recorded_outputs, recorded_scores, warnings, manifest}。
 catalog（键 scorer）: {name, method, implementation, inputs, formula, limitations, code}。
-mode 的 Native 值为 native。scoring status 的缺失值为 missing。config_family 保留数据/模型/代码/配置/审计身份；非 selection 运行还保留完整 product_bundle。经过 loader 核验的 selection 运行以共同 partition_plan_sha256 等 selection_context 字段替代分区 product_bundle，仅移除 partition_id/case_ids。不同候选库或不同分区计划不能混算，具体配对仍必须匹配完整 pairing_id。此处按独立审阅修正了最初直接删除 product_bundle/selection_context 的定义。
+scoring status 的缺失值为 missing。config_family 保留数据/模型/代码/配置身份；具体配对必须匹配完整 pairing_id、bundle 与 scope。不同候选库或不同分区计划不能混算，不能为了扩大配对范围移除输入身份。
 
 ## 接口审阅
 

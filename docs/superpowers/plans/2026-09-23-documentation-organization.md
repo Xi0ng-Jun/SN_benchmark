@@ -69,7 +69,6 @@
 - Modify: `docs/notebook-data-corrections.md`
 - Modify: `docs/notebook-rescoring.md`
 - Modify: `docs/qmsum-bm25-baseline.md`
-- Modify: `docs/ifeval-direct-scoring.md`
 - Modify: `docs/agent-judge-input-inspection.md`
 - Modify: `docs/sn-execution-tracing.md`
 - Modify: `docs/qmsum-next-iteration.md`

@@ -127,10 +127,10 @@ def test_failed_hotpot_row_cannot_inject_supporting_facts():
 def test_full_sn_run_exports_replayable_support_and_keeps_failed_mapping_pending(tmp_path, monkeypatch, mapping_failure):
     from types import ModuleType
     import sys
-    from rag_eval import benchmark_runtime, starter_runtime, system_runtime
+    from rag_eval import benchmark_runtime, runtime_environment, system_runtime
     from rag_eval.notebook_runner import execute
     from rag_eval.notebook_bundle import prepare
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
     from rag_eval.benchmark_submission import export_sn_runs
     from rag_eval.benchmark_official import prepare_inputs
     data, repo, mapping, record = fixture(tmp_path)
@@ -155,8 +155,8 @@ def test_full_sn_run_exports_replayable_support_and_keeps_failed_mapping_pending
         assert 'hotpot_evidence' in saved
         assert 'gold' not in saved
     monkeypatch.setattr(system_runtime,'complete_evidence_checks',check_capture_before_gold)
-    monkeypatch.setattr(starter_runtime,'snapshot_sources',lambda *a:{'revision':'offline-fixture'})
-    monkeypatch.setattr(starter_runtime,'configure_environment',lambda project,run,**k:(
+    monkeypatch.setattr(runtime_environment,'snapshot_sources',lambda *a:{'revision':'offline-fixture'})
+    monkeypatch.setattr(runtime_environment,'configure_environment',lambda project,run,**k:(
         SimpleNamespace(db_path=run/'runtime/database.db'),dict(comparable_settings_sha256='settings',service_config_sha256='service')))
     run = tmp_path/'run'
     execute(root=Path(__file__).resolve().parents[1],project=tmp_path/'product',bundle_dir=tmp_path/'bundle',

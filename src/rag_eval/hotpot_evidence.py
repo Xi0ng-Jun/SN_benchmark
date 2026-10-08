@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 
 from .artifacts import digest
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 from . import qasper_evidence as source
 
 POLICY = 'sn-hotpot-final-citations-visible-sentences-v1'

@@ -10,8 +10,8 @@ import re
 
 from .artifacts import digest, save_json
 from .metric_catalog import describe_metric
-from .starter_protocol import fingerprint
-from .starter_report import load_run, read_journal
+from .identity import fingerprint
+from .run_report import load_run, read_journal
 
 ASSETS = Path(__file__).with_name("dashboard")
 _SECRET = re.compile(r"(?:api[_-]?key|authorization|password|secret|access[_-]?token|refresh[_-]?token|endpoint|base[_-]?url|service[_-]?url)$", re.I)
@@ -106,18 +106,11 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
             raise ValueError("Duplicate saved run identity; copied runs must not be counted twice")
         seen_runs.add(run_identity)
         config = dict(identity)
-        if identity.get("source", {}).get("selection_protocol"):
-            # The validated partition-plan hash identifies the shared corpus
-            # policy. Only members of that SAME plan may pool partitions.
-            config["selection_context"] = {
-                k: v for k, v in identity["selection_context"].items()
-                if k not in {"partition_id", "case_ids"}}
-            config.pop("product_bundle", None)
         if identity.get("source", {}).get("format") == "sn-notebook-benchmarks-v1":
             # load_run already verified complete source and indivisible scopes.
             config["notebook_context"] = {k: v for k, v in identity["notebook_context"].items() if k != "partition_id"}
             config.pop("product_bundle", None)
-        # Non-selection runs keep the full corpus/review identity; different
+        # Other runs keep the full corpus identity; different
         # distractors must never disappear into an apparently comparable mean.
         complete_identity = {"source", "models", "code", "runtime_settings", "product_services", "audits_sha256", "track"} <= config.keys()
         if manifest["track"] == "R" and not identity.get("product_bundle"):
@@ -153,8 +146,7 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
                     "case_id": case_id, "status": result["status"] if result else "missing",
                     "output_status": output["status"] if output else "missing",
                     "behavior": behavior.get("kind", "not_observed"),
-                    "partition": ((manifest.get("selection_context") or {}).get("partition_id")
-                                  or (identity.get("notebook_context") or {}).get("partition_id") or "unpartitioned"),
+                    "partition": ((identity.get("notebook_context") or {}).get("partition_id") or "unpartitioned"),
                     "phase": cell["phase"], "config_family": family,
                     "pairing_id": manifest.get("pairing_id"),
                     "score": result["score"] if result else None,
@@ -181,7 +173,7 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
                     "scored": sum(e["status"] == "scored" for e in entries),
                     "prediction_status": dict(status)},
         "audit": audit,
-        "limitations": ["范围为本次提供的 run；没有 run 的分区不在分母。全题单覆盖请使用 report_public_selection.py。",
+        "limitations": ["范围为本次提供的 run；没有 run 的分区不在分母。全范围覆盖须另对照 frozen bundle 题单与各 run 的 case IDs。",
                         "条目 = run × case × scorer；问题数按 run × case 去重，跨运行是尝试次数。",
                         "均值按 suite / task / track / mode / scorer / 配置身份分组；缺配置身份时按 run 分开，不生成综合质量总分。",
                         "这是运行产物的离线快照；未终止 run 的结果可能继续增长。刷新需要生成新报告。",

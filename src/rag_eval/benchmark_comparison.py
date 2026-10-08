@@ -19,7 +19,7 @@ from .artifacts import save_json
 from .benchmark_official import prepare_inputs, scorer_identity, validate_metrics
 from .benchmark_submission import validate_submission
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 FORMAT = 'benchmark-comparison-v1'

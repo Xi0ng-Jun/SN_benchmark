@@ -9,9 +9,9 @@ import shutil
 from .artifacts import digest, save_json, save_jsonl
 from .notebook_bundle import LEGACY_REQUEST_REVISION, load_bundle, partition_bundle
 from .notebook_data import VERSION
-from .starter_protocol import fingerprint
-from .starter_results import EventJournal, planned_result, result_record
-from .starter_runner import CITATIONS, _product_score, read_rows, update_state
+from .identity import fingerprint
+from .run_results import EventJournal, planned_result, result_record
+from .run_support import CITATIONS, citation_score, read_rows, update_state
 
 
 def load_case_ids_file(path):
@@ -187,7 +187,7 @@ def score_outputs(run, cases, planned, sink):
                     value = dict(status='error', score=None, reason='citation object checks failed after generation',
                                  details={'error_type': record.get('evidence_check_error')})
                 else:
-                    value = (_product_score(record, CITATIONS, None, plan['result_id']) if plan['scorer'] == CITATIONS
+                    value = (citation_score(record) if plan['scorer'] == CITATIONS
                              else score_case(cases[plan['case_id']], record, plan['scorer']))
             except Exception as exc:
                 value = dict(status='error', score=None, reason='scorer failed', details={'error_type': type(exc).__name__})
@@ -216,7 +216,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     cases = selected_cases(bundle, product, case_ids)
     if not cases:
         raise ValueError('Cannot execute an empty partition')
-    from .starter_runtime import configure_environment, snapshot_sources, resolve_models, make_adapter
+    from .runtime_environment import configure_environment, snapshot_sources, resolve_models, make_adapter
     resolved, models = {}, {}
     if agent_config is not None:
         if (not {'judge_config', 'trajectory'} <= set(agent_config)

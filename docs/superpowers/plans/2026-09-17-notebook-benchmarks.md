@@ -47,7 +47,7 @@ Files: `src/rag_eval/notebook_scoring.py`, `src/rag_eval/notebook_alce.py`, `tes
 
 ## Task 3: SN 执行与报告接通
 
-Files: `src/rag_eval/notebook_runner.py`, `scripts/run_notebook_benchmarks.py`, `src/rag_eval/starter_report.py`, `src/rag_eval/starter_results.py`, `src/rag_eval/metric_catalog.py`, `src/rag_eval/experiment_aggregation.py`, `tests/test_notebook_execution.py`。
+Files: `src/rag_eval/notebook_runner.py`, `scripts/run_notebook_benchmarks.py`, `src/rag_eval/run_report.py`, `src/rag_eval/run_results.py`, `src/rag_eval/metric_catalog.py`, `src/rag_eval/experiment_aggregation.py`, `tests/test_notebook_execution.py`。共享报告／工件职责于 2026-09-29 迁出旧套件模块。
 
 - [x] 用 fake SN 边界做执行→落盘→load_run→Dashboard 集成回归，正常/澄清/缺评分均有覆盖。
 - [x] 每个分区和 mode 单独进程、独立路径；资料容量显式配置并写入比较身份，runtime 实际容量不足即失败。

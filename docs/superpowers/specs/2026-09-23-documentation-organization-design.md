@@ -25,7 +25,7 @@
 
 ### 当前专题
 
-Dashboard、Notebook benchmark、原生 Agent、组件补评、指标实现、数据修正、Notebook 重评分、QMSum BM25 和 IFEval 说明继续留在 `docs/` 根目录。它们顶部增加状态标签，说明是当前协议、实现说明或服务器操作说明。
+Dashboard、Notebook benchmark、原生 Agent、组件补评、指标实现、数据修正、Notebook 重评分和 QMSum BM25 说明继续留在 `docs/` 根目录。它们顶部增加状态标签，说明是当前协议、实现说明或服务器操作说明。2026-09-29 已确定退役套件专属文档直接删除，不能转入另一个活跃归档。
 
 ### 历史归档
 

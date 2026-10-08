@@ -3,11 +3,11 @@
 > 历史设计：本页保留早期产品能力评测方案和限制，当前协议与实现以 [文档导航](README.md) 为准。
 
 
-> **最新优先级：先复用 DeepEval 公开评测。** 见[公开评测起步方案](deepeval-public-starter-plan.md)，先建立公开任务的模型参照与产品适配，再进入业务广度场景。
+> **当前范围：五套公开 benchmark。** 见[Notebook 实验计划](notebook-benchmark-experiment-plan.md)。本文保留共用能力与数据设计，2026-09-29 已移除退役套件实例；当前范围与授权以[当前状态](../CURRENT_STATE.md)为准。
 
 > **此前方向：广度优先。** 用户在本方案之后选择先扩展可评测的用户任务，并明确排除交互可靠性、资料更新后的知识一致性。后续业务设计见[能力广度扩展计划](product-capability-breadth-plan.md)，Memory 与 Agent 上下文见[专门说明](memory-and-agent-context.md)。本文保留为已有能力的深度设计依据，不再要求先完成全部协议/引用/报告改造才开始新增场景。在线暂停与生产只读边界继续有效。
 
-更新：2026-09-10。基于仓库已有详细草稿完成产品实现与官方文档核对；以下设计保持实验性，未固化产品契约或质量阈值。本次在 `docs/product-capability-evaluation` 分支交付文档与公开历史样例，未新增运行代码。
+原设计日期：2026-09-10。基于仓库已有详细草稿完成产品实现与官方文档核对；以下设计保持实验性，未固化产品契约或质量阈值。原阶段交付文档，未新增运行代码。
 
 ## 第一阶段已形成的交付
 
@@ -15,11 +15,9 @@
 |---|---|
 | [产品能力矩阵](product-capability-matrix.md) | 9 个能力条目，覆盖检索、事实、数值、引用、模式对比及澄清/拒答/完整性限制；逐项列出数据、观测、指标、确定性检查、人审与缺失条件 |
 | [统一数据协议草案](evaluation-data-contract.md) | Case/Run/Output/Assessment、历史字段映射、分母、状态、指标适用性、notebook/runtime 隔离；新字段尚未实现 |
-| [真实样本全链路说明](evaluation-case-walkthrough.md) | 一条已完成 DROP smoke 从原始 QA 到实际 context、引用及三项历史评分的解释 |
-| [可分发的公开样例](examples/drop-smoke-case.json) | 保存真实文档、QA、产品输出、全部实际上下文、评分与原工件哈希；人审仍 pending |
 | [后续最小实施计划](superpowers/plans/2026-09-10-product-capability-evaluation.md) | 离线协议、可追溯性检查、报告解释、人审及后续在线进入条件 |
 
-下文原有示例用于说明目标结构，不表示当前 API 已暴露这些字段。具体字段语义以本次数据协议草案与真实样例为准，不能把示意 JSON 当成历史观测或现有 runner 的输入契约。
+下文原有示例用于说明目标结构，不表示当前 API 已暴露这些字段。具体字段语义以数据协议草案及实际运行为准，不能把示意 JSON 当成历史观测或现有 runner 的输入契约。五套真实案例另见[比较案例复核](notebook-comparison-case-review-2026-09-28.md)。
 
 ### 核对后必须保留的区别
 
@@ -28,7 +26,7 @@
 - `context_supported=true` 只表示合成上下文可采集，不表示答案语义得到支持；分节合成当前不可用于普通 Faithfulness。
 - 原生 repository 澄清门抛 `ValueError`，不是已存在的 `clarification_required` 异常类。结构化行为分类是待实现协议；未观测模型调用不能默认填 false。
 - reasoning 无 KG 也可用；公开 trace 并非完整模型/工具调用轨迹。部分清单/计数已有精确枚举支持，完整性限制必须按请求与观测判断。
-- baseline 仍是 400 次 Ask、383 成功、17 次 reasoning 澄清拦截的未完成评分运行；smoke 完整性通过与语义质量达标是不同结论。人工校准仍待完成。
+- smoke 完整性通过与语义质量达标是不同结论。人工校准需要独立证据。
 
 ### 路线取舍
 
@@ -42,7 +40,7 @@
 2. 每项能力需要什么数据和产品观测；
 3. 评测结果如何定位到“检索、生成、引用、reasoning 或澄清”中的具体环节。
 
-公开 SQuAD / DROP 只作为通用能力和流程回归数据，不作为 Silicon Notebook 领域质量的唯一依据。当前未完成的 baseline 评分暂停，不作为后续设计的前置条件。
+公开任务覆盖不能作为 Silicon Notebook 领域质量的唯一依据。已有运行是否完成不作为后续设计的前置条件；数据与评分契约按当前五套标准判断。
 
 DeepEval 官方将评测分为端到端、trajectory、component-level 和 standalone 四种方式；RAG 指标又分为 retriever 与 generator。官方建议限制指标数量，优先组合 2–3 个通用系统指标与 1–2 个用例专用指标。[Metrics 文档](https://deepeval.com/docs/metrics-introduction) [Benchmarks 文档](https://deepeval.com/docs/benchmarks-introduction)
 
@@ -103,7 +101,7 @@ DeepEval 官方将评测分为端到端、trajectory、component-level 和 stand
 - 片段 Recall@K；
 - MRR / nDCG，只有产品暴露可比较排序时才启用；
 - Contextual Recall 作为辅助；
-- SQuAD 答案 span 是否进入最终生成上下文；
+- 有人工标注的答案／证据区间是否进入最终生成上下文；
 - 不把“命中文档”当成“命中答案片段”。
 
 ### 2. 事实回答
@@ -142,7 +140,7 @@ DeepEval 官方将评测分为端到端、trajectory、component-level 和 stand
 - 是否遗漏数字、日期、单位和限定条件；
 - 是否与参考答案矛盾；
 - 是否允许等价表达；
-- DROP 是否允许基于文档中的数字完成合理计算。
+- 任务是否允许基于文档中的数字完成计算，以及该规则是否有人审依据。
 
 ### 3. 数值、日期和多步推理
 
@@ -170,7 +168,7 @@ DeepEval 官方将评测分为端到端、trajectory、component-level 和 stand
 1. 确定性检查答案中的数值、日期、单位和最终结果；
 2. DeepEval GEval 判断解释和结论是否完整。
 
-DROP 没有完整的人工推理证据标注时，只报告：
+没有完整的人工推理证据标注时，只报告：
 
 - 最终答案正确性；
 - 上下文是否包含相关段落；
@@ -323,7 +321,7 @@ DeepEval 的 trajectory metrics 需要完整有序 trace；如果 Silicon Notebo
 
 ```json
 {
-  "case_id": "squad-001",
+  "case_id": "scenario-001",
   "dataset": "product-scenario-v1",
   "capability_id": "retrieval.single_doc_fact",
   "question": "Where did the event take place?",
@@ -353,7 +351,7 @@ DeepEval 的 trajectory metrics 需要完整有序 trace；如果 Silicon Notebo
 
 ```json
 {
-  "case_id": "squad-001",
+  "case_id": "scenario-001",
   "mode": "chunk",
   "status": "success",
   "answer": "The event took place in London.",
@@ -382,7 +380,7 @@ DeepEval 的 trajectory metrics 需要完整有序 trace；如果 Silicon Notebo
 
 ```json
 {
-  "case_id": "squad-001",
+  "case_id": "scenario-001",
   "mode": "chunk",
   "metric": "Answer Correctness",
   "repeat": 0,
@@ -422,10 +420,10 @@ missing
 例如：
 
 ```text
-SQuAD / chunk       → notebook A
-SQuAD / reasoning   → notebook B
-DROP / chunk        → notebook C
-DROP / reasoning    → notebook D
+场景组 A / chunk       → notebook A
+场景组 A / reasoning   → notebook B
+场景组 B / chunk        → notebook C
+场景组 B / reasoning    → notebook D
 ```
 
 同一 notebook 中：
@@ -496,7 +494,7 @@ Contextual Precision 只有在产品暴露可比较的检索排序时启用。�
 
 不将普通 Answer Correctness 作为澄清单元唯一指标。
 
-DeepEval 的标准 benchmark 仍单独保留。官方 benchmark 的标准 scorer 和输出格式用于评测模型通用能力；产品场景则使用自定义 `LLMTestCase` 和产品实际输出。两者在报告中分开，不能合并成一个分数。[官方 benchmark 说明](https://deepeval.com/docs/benchmarks-introduction)
+官方 benchmark scorer 与产品诊断分别标识。五套官方评分按[标准文档](notebook-benchmark-standards-and-conformance.md)执行；产品能力场景的自定义 `LLMTestCase` 不因此获得官方口径，不能合并成一个分数。[官方 benchmark 说明](https://deepeval.com/docs/benchmarks-introduction)
 
 ## 五、开发阶段与交付物
 
@@ -520,8 +518,8 @@ DeepEval 的标准 benchmark 仍单独保留。官方 benchmark 的标准 scorer
 
 交付：
 
-- `docs/evaluation-case-walkthrough.md`；
-- 选取一个已保存的真实 SQuAD 或产品场景样本；
+- 逐题讲解文档或案例复核工件；
+- 选取一个已保存的五套真实样本或经人审产品场景；
 - 展示原文、问题、产品请求、检索结果、实际上下文、答案、DeepEval test case、metric 输入、score 和汇总。
 
 验收：
@@ -639,9 +637,9 @@ DeepEval 的标准 benchmark 仍单独保留。官方 benchmark 的标准 scorer
 4. 正确文档命中但答案片段未进入上下文；
 5. 答案正确但引用对象不存在；
 6. 引用对象存在但引用语义不支持答案；
-7. DROP 数值计算正确；
-8. DROP 多 span 答案保持一个复合答案；
-9. SQuAD 多 annotator 答案保持多个可接受答案；
+7. 经人审数值场景的计算正确；
+8. 多项组成的答案保持一个完整答案；
+9. 多份完整可接受答案保持备选关系；
 10. Contextual Precision 无排序时明确跳过；
 11. judge 调用失败记录为 error，不填零；
 12. 产品重复运行和 judge 重评分分别统计；
@@ -653,7 +651,7 @@ DeepEval 的标准 benchmark 仍单独保留。官方 benchmark 的标准 scorer
 ## 七、默认决策和边界
 
 - 第一阶段评测对象是 Silicon Notebook 的文档问答和相关 reasoning 行为；
-- 公开 SQuAD / DROP 是补充数据，不代表领域质量；
+- 公开任务不代表领域质量的全部覆盖；
 - 先做产品场景集，再扩大公开 benchmark；
 - 每个数据集/模式/配置使用一个隔离 notebook；
 - 同一 notebook 中的问题独立调用；
@@ -676,10 +674,6 @@ DeepEval 的标准 benchmark 仍单独保留。官方 benchmark 的标准 scorer
 
 ## 九、第一阶段验证与后续边界
 
-2026-09-10 验证结果：
-
-- `.venv/bin/python scripts/check_public_benchmark_offline.py`：47 项测试通过，prepare/report/audit 三个 CLI 的帮助检查通过，退出码 0。首次运行被沙箱禁止 pytest-rerunfailures 创建本地 socket；经提升权限重跑通过，未改测试或产品代码。
-- 公开样例与本地原始 output/scores 逐字段一致；原工件 SHA-256、823 字符原文哈希、16 段完整 context、正文 k1 到 chunk/element 的映射、三项分数及 token 合计核对通过。离线构造 LLMTestCase，未调用 measure。
-- 62 个本地 Markdown 链接目标存在，13 个 JSON 代码块可解析；新增文档无尾随空白或未完成占位项，`git diff --check` 通过。未重新判分、刷新历史 run 产物或启动产品进程；生产仓库仍只有开始时已有的 `.deepeval/` 与 `results/` 未跟踪目录。
+原阶段只进行了文档、链接与示意 JSON 核对，未新增产品运行代码。退役套件样例及其专属验证台账已删除；这些历史检查不能作为当前五套实现的验收证据。当前实际验证见[评测状态](evaluation-status.md)。
 
 后续顺序：离线协议归一化 → 引用与证据来源审计 → 能力分桶和配对报告 → 真实人审及产品场景核验 → 用户明确恢复后才考虑新的在线小实验。协议/数据/配置变化需新运行身份；完整 baseline、人工校准和明确恢复意图满足前不恢复自动 timer。KG、重排、PDF/OCR、完整 UI、权限专项及完整性算法扩展仍不在本次范围。

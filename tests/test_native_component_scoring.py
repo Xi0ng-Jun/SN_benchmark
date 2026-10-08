@@ -78,7 +78,7 @@ def test_invalid_selection_fails_before_judge_and_creating_output(tmp_path, sdk,
 
 
 def test_judge_timing_and_metric_identity_and_http_status_do_not_leak_credentials(tmp_path, sdk):
-    from rag_eval.starter_model import ExplicitBenchmarkModel, ModelCallError
+    from rag_eval.model_adapter import ExplicitBenchmarkModel, ModelCallError
     from pydantic import BaseModel
     class Response(BaseModel):
         answer: str
@@ -116,7 +116,7 @@ def test_existing_native_sample_uses_recorded_span_status(tmp_path, sdk):
 
 
 def test_finalized_metric_blocks_late_calls_and_writes(tmp_path, sdk):
-    from rag_eval.starter_model import ExplicitBenchmarkModel, ModelCallError
+    from rag_eval.model_adapter import ExplicitBenchmarkModel, ModelCallError
     from pydantic import BaseModel
     class Response(BaseModel):
         answer: str

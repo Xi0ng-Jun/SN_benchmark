@@ -9,7 +9,6 @@ cd /home/wabiwabi/silicon-notebook/benchmark-deepeval
 .venv/bin/python lectures/lecture_01.py
 .venv/bin/python lectures/lecture_02.py
 .venv/bin/python lectures/lecture_03.py
-.venv/bin/python lectures/lecture_04.py
 ```
 
 ## 浏览器逐步阅读与运行
@@ -34,14 +33,13 @@ npm run --prefix=edtrace/frontend dev
 
 `edtrace` 的执行接口和前端流程遵循 Stanford CS336 官方仓库：`python -m edtrace.execute -m lecture_01` 生成 `var/traces/lecture_01.json`，前端通过 `?trace=...` 加载它。
 
-`lecture_01` 到 `lecture_02` 完全不需要外部模型。`lecture_03` 会尝试导入当前项目的 DeepEval metric 工厂，但在缺少可选依赖或模型服务时只显示环境状态。`lecture_04` 只读取已记录的公开检索 artifact。
+`lecture_01` 到 `lecture_02` 完全不需要外部模型。`lecture_03` 会尝试导入当前项目的 DeepEval metric 工厂，但在缺少可选依赖或模型服务时只显示环境状态。
 
 ## 课程顺序
 
 1. **对象与运行方式**：从 `LLMTestCase`、Dataset、Metric、Trace 建立心智模型。
 2. **RAG 数据协议**：区分 gold evidence、retrieved IDs 和实际上下文，并手算 Recall@K/MRR。
 3. **LLM judge**：理解五个 RAG metric 的问题边界、指标冲突和阈值校准。
-4. **公开 baseline**：复现实验材料中的 BM25 结果，并明确它不能代表线上 Silicon Notebook 质量。
 
 ## 与正式实验的边界
 

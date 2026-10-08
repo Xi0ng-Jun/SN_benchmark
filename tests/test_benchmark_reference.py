@@ -375,8 +375,8 @@ def test_strict_output_schema_rejects_malformed_model_answers(tmp_path, response
 
 def test_cli_runs_actual_adapter_with_only_external_client_replaced(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from rag_eval import starter_runtime
-    from rag_eval.starter_model import ExplicitBenchmarkModel
+    from rag_eval import runtime_environment
+    from rag_eval.model_adapter import ExplicitBenchmarkModel
     from rag_eval.benchmark_submission import validate_submission
     root = Path(__file__).parents[1]
     bundle = frozen(tmp_path/'data', 'alce')
@@ -397,7 +397,7 @@ def test_cli_runs_actual_adapter_with_only_external_client_replaced(tmp_path, mo
         return SimpleNamespace(), dict(settings_sha256=str(destination),
             comparable_settings_sha256=runtime_comparable['hash'], service_config_sha256=None,
             overrides={'DATABASE_URL': str(destination/'private')})
-    monkeypatch.setattr(starter_runtime, 'configure_environment', configure)
+    monkeypatch.setattr(runtime_environment, 'configure_environment', configure)
     client_response = {'value': {'answer': 'apple [2]'}}
     prompt_marker = {'value': '[2]'}
     class Client:
@@ -405,7 +405,7 @@ def test_cli_runs_actual_adapter_with_only_external_client_replaced(tmp_path, mo
             assert prompt_marker['value'] in messages[0]['content'] and 'GOLD_SECRET' not in messages[0]['content']
             assert kwargs['max_tokens'] == 100 and kwargs['bypass_cache'] is True
             return client_response['value']
-    monkeypatch.setattr(starter_runtime, 'make_adapter', lambda spec, role, settings, sink:
+    monkeypatch.setattr(runtime_environment, 'make_adapter', lambda spec, role, settings, sink:
         ExplicitBenchmarkModel(Client(), model_id=spec['model_id'], role=role, parameters=spec['parameters'],
                                config_sha256=spec['config_sha256'], sink=sink))
     monkeypatch.syspath_prepend(str(root))

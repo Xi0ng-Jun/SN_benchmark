@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from .artifacts import save_json
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 FORMAT = 'benchmark-submission-v1'
 STATUSES = ('success', 'no_answer', 'clarification', 'error', 'missing')
@@ -114,7 +114,7 @@ def write_submission(bundle_directory, output, *, method, predictions, case_ids=
 
 def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, qasper_evidence=False):
     from .notebook_bundle import load_bundle
-    from .starter_report import load_run
+    from .run_report import load_run
     bundle = load_bundle(bundle_directory)
     if qasper_evidence and not bundle.get('qasper_evidence_catalogues'):
         raise ValueError('Evidence recovery requires a QASPER v3 bundle')

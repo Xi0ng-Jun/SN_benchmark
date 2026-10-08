@@ -8,7 +8,7 @@ import shutil
 
 from .artifacts import digest, save_json
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 REVISION = '6c663ed61521dd0032ca41af3dc503e7c2e13dac'
 TEST_SHA256 = '0b5d84987791e9da68aa96605407cc887d777407d25a6a06ebd464600471ab66'

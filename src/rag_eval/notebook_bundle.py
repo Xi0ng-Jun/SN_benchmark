@@ -7,7 +7,7 @@ import shutil
 
 from .artifacts import digest, save_json, save_jsonl
 from .notebook_data import VERSION, SUITES, ADAPTATION_REVISION, LEGACY_ADAPTATION, adapt
-from .starter_protocol import fingerprint, require_text
+from .identity import fingerprint, require_text
 
 
 LEGACY_REQUEST_REVISION = 'notebook-request-v1'

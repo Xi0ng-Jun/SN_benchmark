@@ -26,7 +26,7 @@ def main(argv=None):
     os.environ.pop('CONFIDENT_API_KEY', None)
     from rag_eval.native_sdk import configure_local_sdk
     from rag_eval.native_component_scoring import rescore_components
-    from rag_eval.starter_runtime import resolve_models, configure_environment, make_adapter
+    from rag_eval.runtime_environment import resolve_models, configure_environment, make_adapter
     from rag_eval.artifacts import save_json, digest
 
     source, output, project = args.source_run.resolve(), args.output.resolve(), args.project_root.resolve()

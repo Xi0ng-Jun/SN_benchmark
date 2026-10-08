@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .artifacts import digest
 from .explorer_artifacts import _file, _json, _relative
-from .starter_report import read_journal
+from .run_report import read_journal
 
 
 def read_step_artifacts(run, manifest, warnings):

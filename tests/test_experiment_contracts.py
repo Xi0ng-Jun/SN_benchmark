@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from rag_eval.datasets import load_dataset, load_jsonl
+from rag_eval.datasets import load_jsonl
 from rag_eval.metrics import score_ranking
 from rag_eval.protocol import capture_context, validate_result
 from rag_eval.synthetic import validate_golden
@@ -54,13 +54,3 @@ def test_gold_is_labeled_model_generated_pending_human_review():
     item = {'question': 'Q', 'expected_answer': 'A', 'evidence': [{'id': 'c1', 'quote': 'evidence'}]}
     result = validate_golden(item, {'c1': 'real evidence'})
     assert result['review_status'] == 'model_verified_pending_human'
-
-
-def test_dataset_rejects_duplicate_ids(tmp_path):
-    root = tmp_path / 'scifact' / 'full'
-    root.mkdir(parents=True)
-    (root / 'questions.jsonl').write_text('{"id":"q","question":"Q"}\n{"id":"q","question":"Q2"}\n')
-    (root / 'annotations.jsonl').write_text('{"question_id":"q","relevance":{}}\n')
-    (root / 'documents.jsonl').write_text('')
-    with pytest.raises(ValueError, match='duplicate'):
-        load_dataset(root)

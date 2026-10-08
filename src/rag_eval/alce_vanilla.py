@@ -21,7 +21,7 @@ from .artifacts import digest, save_json
 from .benchmark_submission import build_submission
 from .notebook_alce import OFFICIAL_REVISION
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 def author_symbols(upstream):

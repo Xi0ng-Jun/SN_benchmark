@@ -11,7 +11,7 @@ import pytest
 from rag_eval import benchmark_official as official
 from rag_eval.benchmark_submission import build_submission
 from rag_eval.notebook_bundle import prepare
-from rag_eval.starter_protocol import fingerprint
+from rag_eval.identity import fingerprint
 
 
 def module():

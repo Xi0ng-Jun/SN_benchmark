@@ -8,9 +8,9 @@ from rag_eval.notebook_bundle import prepare, partition_bundle
 from rag_eval.notebook_runner import plan_rows
 from rag_eval.notebook_alce import OFFICIAL_REVISION
 from rag_eval.notebook_alce_results import export_run, attach_scores
-from rag_eval.starter_protocol import fingerprint
-from rag_eval.starter_results import result_record
-from rag_eval.starter_report import load_run
+from rag_eval.identity import fingerprint
+from rag_eval.run_results import result_record
+from rag_eval.run_report import load_run
 
 
 def saved_run(tmp_path):

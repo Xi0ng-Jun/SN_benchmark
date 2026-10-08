@@ -8,10 +8,8 @@ __pycache__/
 *.egg-info/
 edtrace/
 node_modules/
-data/crud-rag
-data/multihop-rag
-data/scifact
-data/public-benchmark-v1/raw/
+/data/*
+!/data/README.md
 results/domain-*
 results/experiment-report.md
 

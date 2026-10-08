@@ -127,7 +127,7 @@ python scripts/run_notebook_baseline.py \
   --top-k 8 --max-context-chars 12000
 ```
 
-模型配置文件需先从 `configs/public-starter-models.example.json` 复制并填写，只使用 `tested` 角色，不需要 judge。服务器应对齐 SN 最终回答角色的实际模型与采样设置；代码不会仅凭模型名称认定一致。这个 baseline 自行检索和生成，不创建 notebook、不调用 SN Ask，仅复用显式模型客户端。
+模型配置文件需先从 `configs/model-roles.example.json` 复制并填写，只使用 `tested` 角色，不需要 judge。服务器应对齐 SN 最终回答角色的实际模型与采样设置；代码不会仅凭模型名称认定一致。这个 baseline 自行检索和生成，不创建 notebook、不调用 SN Ask，仅复用显式模型客户端。
 
 结果可进入现有 Dashboard 查看和筛选。BM25 与 SN 使用不同配置族，不进入原来的严格 chunk/reasoning 配对；请用独立 `scripts/compare_notebook_baseline.py` 生成同题报告。完整命令、保存字段、预算和比较条件见 [QMSum BM25 对照](qmsum-bm25-baseline.md)。先完成单分区模型验收，再安排全量；本地实现未执行真实模型实验。
 
@@ -204,7 +204,7 @@ python scripts/build_experiment_dashboard.py \
 
 选择 suite/task/scorer，再比较 chunk/reasoning。同 source、资料范围、代码、模型配置及评分器身份才配对；不会拿原 run 和其补分派生 run 当成独立重复实验。生成 ALCE 总览时选择派生 run，避免同时纳入其原 run 造成两次尝试计数。
 
-单个 run 的 Markdown 显示全题单与分区数量；当前 Dashboard 发现的是**已保存运行**，未启动分区尚无 planned ledger，不会凭空出现在覆盖率分母。服务器必须用 bundle/partitions.jsonl 对账全部预期分区 × mode，再解释全套完成度；现有十套 public-selection 报告器不接受新协议。
+单个 run 的 Markdown 显示全题单与分区数量；当前 Dashboard 发现的是**已保存运行**，未启动分区尚无 planned ledger，不会凭空出现在覆盖率分母。服务器必须用 bundle/partitions.jsonl 对账全部预期分区 × mode，再解释全套完成度。
 
 当前新实验顺序以[实验计划](notebook-benchmark-experiment-plan.md)为准，不依赖历史服务器答卷。人工核验用于解释有效性，不是运行官方规则前的审批门槛。
 

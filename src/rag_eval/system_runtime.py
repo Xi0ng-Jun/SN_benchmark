@@ -7,7 +7,7 @@ import time
 from asyncio import CancelledError
 from uuid import uuid4
 
-from .public_expansion_protocol import TraceEnvelope
+from .trace_contract import TraceEnvelope
 
 
 def is_cancellation(error):

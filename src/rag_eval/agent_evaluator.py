@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from .agent_diagnostics import compare_modes, diagnose_execution, diagnose_trace
 from .agent_trace import AgentTraceEnvelope
 from .artifacts import save_json, save_jsonl
-from .starter_runner import read_rows
+from .run_support import read_rows
 
 
 def _record_parts(row: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:

@@ -25,8 +25,8 @@ from uuid import uuid4
 from .artifacts import save_json, save_jsonl
 from .benchmark_submission import build_submission
 from .notebook_bundle import load_bundle, partition_bundle, OFFICIAL_REQUEST_REVISION
-from .starter_protocol import fingerprint
-from .starter_results import EventJournal
+from .identity import fingerprint
+from .run_results import EventJournal
 
 VERSION = 'benchmark-reference-v1'
 STRATEGIES = ('bm25', 'full-context', 'candidate-topk')
@@ -466,7 +466,7 @@ def execute(*, root, project, bundle_dir, run, model_config, configuration, case
         if run.is_relative_to(forbidden) or forbidden.is_relative_to(run):
             raise ValueError('Run must be separate from code, product, input and model config')
     bundle = load_bundle(bundle_dir)
-    from .starter_runtime import configure_environment, make_adapter, resolve_models, snapshot_sources
+    from .runtime_environment import configure_environment, make_adapter, resolve_models, snapshot_sources
     resolved, public = resolve_models(model_config, ['tested'])
     with ExitStack() as resources:
         def initialize(destination):

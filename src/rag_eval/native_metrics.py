@@ -87,7 +87,7 @@ class CheckpointMetric(BaseMetric):
 
     def checkpoint(self, *, failure=None):
         """Also called after SDK returns, for metrics skipped by cancellation/deadline."""
-        from .starter_model import call_failure_details
+        from .model_adapter import call_failure_details
         with self._lock:
             if self.persisted:
                 return

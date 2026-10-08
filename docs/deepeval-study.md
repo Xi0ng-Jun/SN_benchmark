@@ -64,10 +64,8 @@ DeepEval 是一个开源的 LLM 应用评测框架：它用 pytest 风格的测�
 ### 已验证事实
 
 - 官方文档当前说明 DeepEval 支持 50+ metrics、端到端/轨迹/组件级评测，并可本地运行。[官方介绍](https://deepeval.com/docs/introduction)
-- 本仓库已有 CRUD-RAG、MultiHop-RAG、SciFact loader、BM25 baseline、内部 chunk adapter 和五个 DeepEval metric。
-- 历史全库 BM25 实验为每集前 50 条问题：MultiHop-RAG Hit@10=0.9512、Evidence Recall@10=0.7642；SciFact Hit@10=0.8000、Evidence Recall@10=0.7730。这些不是项目向量检索分数。
-- 2026-09-09 已完成两个公开集共 100 条问题的实际项目导入、向量检索、Ask 与 DeepEval：400 项评分中 394 项有效、6 项失败。候选库为所选问题的正证据文档并集，不能与历史全库 BM25 直接比较；详见[实际链路报告](../var/public-system-50/report.md)。
-- 早期曾遇到模型连接错误，后续领域候选试运行及上述公开集评分均已完成，不能继续把早期错误写成当前阻塞。未经人审的领域候选仍不是正式基准。
+- 本仓库当前保留 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA 的数据适配、官方评分和 Notebook／原生 Agent 入口，实际完成情况见[评测状态](evaluation-status.md)。
+- 候选库取所选问题的正证据文档并集时不能与全库检索直接比较。早期连接错误也不能自动成为当前阻塞，当前问题需核对实际工件。未经人审的领域候选仍不是正式基准。
 
 ### 当前判断
 
@@ -103,12 +101,6 @@ DeepEval 是一个开源的 LLM 应用评测框架：它用 pytest 风格的测�
 
 这一课逐项解释 Contextual Recall、Contextual Precision、Contextual Relevancy、Faithfulness 和 Answer Relevancy，展示“高召回但低忠实性”等指标组合。程序会尝试构造当前项目的 metric；若缺少 judge key 或服务不可达，会展示环境状态，不会把它当作零分。
 
-### Lecture 04：公开 baseline
-
-运行：`.venv/bin/python lectures/lecture_04.py`
-
-这一课读取 `results/public-retrieval-50.json`，展示历史 MultiHop-RAG 和 SciFact 的 BM25 结果，并解释 Hit@10 与完整证据集合率的差异。课件及 trace 保留教学阶段的观察；后续实际链路与 LLM judge 已完成，最新进度以[评测状态](evaluation-status.md)和[实验报告](../var/public-system-50/report.md)为准。
-
 每课末尾都有练习。练习不是正式测试，而是帮助讲解者把指标改动、失败模式和实验假设连接起来。
 
 ## 8. 第一阶段学习路径
@@ -116,7 +108,7 @@ DeepEval 是一个开源的 LLM 应用评测框架：它用 pytest 风格的测�
 1. 先运行 Lecture 01，建立对象和评测范围的心智模型。
 2. 再运行 Lecture 02，手算确定性指标并检查数据协议。
 3. 运行 Lecture 03，观察 judge 指标的互补关系和环境边界。
-4. 运行 Lecture 04，复现公开 baseline，再回到研究稿阅读项目内实验计划。
+4. 阅读[五套标准](notebook-benchmark-standards-and-conformance.md)和[比较案例复核](notebook-comparison-case-review-2026-09-28.md)，核对官方指标与实际答卷的关系。
 5. 最后用 HTML 索引页快速复习对象、指标侧重点和事实/判断/假设分层。
 
 ## 9. 官方材料索引
@@ -140,4 +132,4 @@ DeepEval 是一个开源的 LLM 应用评测框架：它用 pytest 风格的测�
 - `benchmark-deepeval/README.md`
 - `benchmark-deepeval/docs/evaluation-context.md`
 - `benchmark-deepeval/docs/evaluation-status.md`
-- `benchmark-deepeval/results/experiment-report.md`
+- [五套指标入口与读分规则](benchmark-metrics-reference.md)

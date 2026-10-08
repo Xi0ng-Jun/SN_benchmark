@@ -14,7 +14,7 @@ import shutil
 from .artifacts import digest, save_json
 from .external_submission_import import import_external_predictions
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 MODEL = 'Salesforce/socratic-pretraining-qmsum'

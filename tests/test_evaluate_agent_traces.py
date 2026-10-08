@@ -5,7 +5,7 @@ import sys
 
 from rag_eval.agent_evaluator import evaluate_run
 from rag_eval.artifacts import save_jsonl
-from rag_eval.starter_runner import read_rows
+from rag_eval.run_support import read_rows
 
 
 def partial_trace():

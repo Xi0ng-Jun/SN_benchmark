@@ -360,7 +360,7 @@
         "retriever": "BM25 turn selection; top-k and character budget are fixed per run",
         "input": "complete meeting transcript; no gold relevant span injected",
         "chunking_budget": "baseline configuration is part of method identity",
-        "prompt_or_config": "configs/public-starter-models.example.json-derived model config"
+        "prompt_or_config": "configs/model-roles.example.json-derived model config"
       },
       "condition_status": {
         "model": "missing",

@@ -271,7 +271,7 @@ def test_runtime_freezes_evidence_before_gold_join(tmp_path, monkeypatch):
 @pytest.mark.parametrize('recover', [False, True])
 def test_export_new_snapshot_or_explicit_readonly_old_recovery(tmp_path, monkeypatch, recover):
     from rag_eval.benchmark_submission import export_sn_runs
-    from rag_eval import starter_report
+    from rag_eval import run_report
     from rag_eval.benchmark_official import prepare_inputs
     from test_notebook_data_v3 import freeze
     from pathlib import Path
@@ -296,7 +296,7 @@ def test_export_new_snapshot_or_explicit_readonly_old_recovery(tmp_path, monkeyp
     original = deepcopy(loaded)
     hashes = lambda: {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in run.rglob('*') if p.is_file()}
     before = hashes()
-    monkeypatch.setattr(starter_report, 'load_run', lambda path: loaded)
+    monkeypatch.setattr(run_report, 'load_run', lambda path: loaded)
     result = export_sn_runs(tmp_path / 'input/bundle', [run], tmp_path / 'export', qasper_evidence=recover)
     submission = json.loads(Path(result).read_text())
     assert submission['method']['configuration']['qasper_evidence'] == api().identity()
@@ -435,9 +435,9 @@ def test_declared_new_run_snapshot_checked_by_saved_run_reader(tmp_path, monkeyp
 
 @pytest.mark.parametrize('mapping_failure', [False,True])
 def test_execute_records_policy_and_preserves_answer_on_mapping_failure(tmp_path, monkeypatch, mapping_failure):
-    from rag_eval import benchmark_runtime, starter_runtime, system_runtime
+    from rag_eval import benchmark_runtime, runtime_environment, system_runtime
     from rag_eval.notebook_runner import execute
-    from rag_eval.starter_report import load_run
+    from rag_eval.run_report import load_run
     from rag_eval.benchmark_submission import export_sn_runs
     from rag_eval.benchmark_official import prepare_inputs
     from test_notebook_data_v3 import freeze, REQUEST_V3
@@ -457,8 +457,8 @@ def test_execute_records_policy_and_preserves_answer_on_mapping_failure(tmp_path
     monkeypatch.setattr(benchmark_runtime,'prepare_notebook',lambda *a:('notebook',f[3]))
     monkeypatch.setattr(system_runtime,'run_system_question',lambda *a:deepcopy(f[4]))
     monkeypatch.setattr(system_runtime,'complete_evidence_checks',lambda *a,**k:None)
-    monkeypatch.setattr(starter_runtime,'snapshot_sources',lambda *a:{'revision':'offline-fixture'})
-    monkeypatch.setattr(starter_runtime,'configure_environment',lambda project,run,**k:(
+    monkeypatch.setattr(runtime_environment,'snapshot_sources',lambda *a:{'revision':'offline-fixture'})
+    monkeypatch.setattr(runtime_environment,'configure_environment',lambda project,run,**k:(
         SimpleNamespace(db_path=run/'runtime/database.db'),dict(comparable_settings_sha256='settings',service_config_sha256='service')))
     execute(root=Path(__file__).resolve().parents[1],project=tmp_path/'product',bundle_dir=tmp_path/'input/bundle',run=run,
             mode='chunk',partition_id=bundle['partitions'][0]['partition_id'],request_revision=REQUEST_V3)

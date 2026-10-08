@@ -14,7 +14,7 @@ from .artifacts import digest, save_json
 from .external_submission_import import import_external_predictions
 from .notebook_alce import OFFICIAL_REVISION, OFFICIAL_URL
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 SOURCE_PATH = 'human_eval/human_eval_citations_completed.json'

@@ -62,7 +62,7 @@ import sys
 from pathlib import Path
 from rag_eval.notebook_bundle import load_bundle, partition_bundle
 from rag_eval.notebook_runner import load_case_ids_file, selected_cases
-from rag_eval.starter_protocol import fingerprint
+from rag_eval.identity import fingerprint
 
 root = Path(sys.argv[1])
 lock = json.loads(Path('configs/comparison-scopes/multimeta-e77e4638-146.json').read_text())

@@ -19,8 +19,8 @@ from rag_eval.notebook_bundle import prepare, partition_bundle
 from rag_eval.notebook_data import VERSION
 from rag_eval.notebook_rescoring import rescore_run
 from rag_eval.notebook_runner import plan_rows, score_outputs
-from rag_eval.starter_protocol import fingerprint
-from rag_eval.starter_report import load_run
+from rag_eval.identity import fingerprint
+from rag_eval.run_report import load_run
 
 DEMO = 'Synthetic demonstration: no SN or judge was called. Not experimental evidence.'
 JUDGE = {'model': 'synthetic-judge', 'provider': 'none', 'synthetic': True}

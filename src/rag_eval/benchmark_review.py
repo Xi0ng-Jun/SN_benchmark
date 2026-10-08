@@ -17,7 +17,7 @@ from .artifacts import digest, save_json
 from .benchmark_comparison import _read, compare_submissions
 from .benchmark_official import prepare_inputs
 from .notebook_bundle import load_bundle
-from .starter_protocol import fingerprint
+from .identity import fingerprint
 
 
 def _stratum(left, right):

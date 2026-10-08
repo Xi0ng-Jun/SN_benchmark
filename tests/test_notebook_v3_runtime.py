@@ -13,7 +13,7 @@ from rag_eval.notebook_bundle import partition_bundle
 from rag_eval.notebook_data import adapt
 from rag_eval.notebook_runner import execute, predictions
 from rag_eval.notebook_scoring import metric_specs, score_case
-from rag_eval.starter_report import load_run
+from rag_eval.run_report import load_run
 from test_notebook_data_v3 import DATA_V3, REQUEST_V3, freeze, news_raw, qasper_raw
 
 
@@ -49,7 +49,7 @@ def test_v3_context_diagnostics_keep_whitespace_and_empty_turn_semantics():
 @pytest.fixture
 def native_boundary(tmp_path, monkeypatch):
     """Replace external SN/model infrastructure, retaining real capture and SQL checks."""
-    from rag_eval import benchmark_runtime, starter_runtime
+    from rag_eval import benchmark_runtime, runtime_environment
 
     class Logger:
         def log(self, record):
@@ -126,8 +126,8 @@ def native_boundary(tmp_path, monkeypatch):
     module = ModuleType('app.services.sqlite_repository')
     module.SQLiteRepository = Repository
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    monkeypatch.setattr(starter_runtime, 'snapshot_sources', lambda *a: {'revision': 'fixture'})
-    monkeypatch.setattr(starter_runtime, 'configure_environment', lambda project, run, **kwargs: (
+    monkeypatch.setattr(runtime_environment, 'snapshot_sources', lambda *a: {'revision': 'fixture'})
+    monkeypatch.setattr(runtime_environment, 'configure_environment', lambda project, run, **kwargs: (
         SimpleNamespace(db_path=run / 'runtime/database.db'),
         dict(comparable_settings_sha256='settings', service_config_sha256='services')))
     return SimpleNamespace(Repository=Repository, prepare=prepare_notebook, observed_requests=observed_requests)
