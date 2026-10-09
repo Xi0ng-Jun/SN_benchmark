@@ -8,7 +8,9 @@
 
 在预先固定的数据、输入权限、回答要求和评分规则下，运行 Silicon Notebook（SN）及对照方法，保存可检查的答卷，得到可解释的比较。这里要把模型服务分成三层记录：回答生成模型、检索/重排等方法组件、以及 AutoAIS/QA/MAUVE 等评分模型。评分模型由官方 scorer 固定，不属于被比较方法的模型优势。
 
-主比较（SN chunk/reasoning 与项目 BM25 或 full-context control）要求两边解析后的 `answer_generation` 身份一致：同一模型或服务版本、tokenizer、请求提示版本、temperature/top-p/max-tokens、超时、重试和随机性规则。`SN_MODEL_CONFIG` 与 `REFERENCE_MODEL_CONFIG` 可以是不同文件以适配两套 CLI，但提交前必须在 `experiment-manifest.json` 中证明解析后的身份相同。SN 额外使用的意图、embedding 或 reranker 仍要单独记录；只要回答模型或这些关键预算不一致，比较就标记为 `mixed-model-end-to-end`，不能把差值归因于检索器。
+外部比较先明确研究问题。论文或作者页面的汇总成绩可以直接引用；不要求先取得答卷或重跑所有外部模型。有公开答卷时，统一重评分可补充同题差异。只有研究主张需要控制方法变量时，才安排相应受控实验。BM25 是已登记的控制组，不是每套论文比较的通用必做项；完成若干固定方法行也不自动构成充分的论文证据。榜单、论文成绩和衍生版本入口见[官方资料手册](notebook-benchmark-official-resources.md)。
+
+若采用已登记的**同生成条件控制实验**（SN 与项目 BM25 或 full-context control），需核对两边解析后的 `answer_generation` 身份：模型或服务版本、tokenizer、提示、temperature/top-p/max-tokens、超时、重试和随机性规则。`SN_MODEL_CONFIG` 与 `REFERENCE_MODEL_CONFIG` 可以是不同文件以适配两套 CLI，但不能由文件名或同名模型推定条件一致。`experiment-manifest.json` 保存实际共同条件与差异；SN 内部提示与 reference 提示若不同，须明确披露。SN 额外使用的意图、embedding 或 reranker 也单独记录。回答模型或关键预算不一致时标记为 `mixed-model-end-to-end`；其他输入或提示差异同样限制模块归因。这些结果仍可作端到端系统比较。
 
 作者方法复现遵循作者要求的模型和组件，不能为了表面公平替换成 SN 模型；若替换或改写提示/预算，方法名必须带 `adapted`/`controlled`，只能作端到端或适配比较。已经发布的逐题答卷保留原始模型身份，只能作 `recomputed-subset` 或 `published-reference` 的描述性比较。服务器阶段的候选、smoke/full 顺序和回传工件见[外部比较 campaign 手册](notebook-external-campaign-runbook.md)；模板只冻结计划结构，实际环境身份仍须在服务器生成 `experiment-manifest.json` 后才能开始 full。
 

@@ -2,6 +2,8 @@
 
 文档状态：当前对照说明。BM25 是独立系统基线，不能把差值直接归因于检索变量。
 
+2026-10-09 比较范围澄清：BM25 用于检验 SN 相对朴素检索系统的收益，不是引用 QMSum 论文成绩或形成外部比较的通用前提。是否需要运行由研究主张决定，当前执行范围以 [CURRENT_STATE.md](../CURRENT_STATE.md) 为准。本文保留早期 Notebook baseline 的实现与诊断入口；正式论文主结果的固定 Perl ROUGE 协议见[实验计划](notebook-benchmark-experiment-plan.md)，不能把下文 Python ROUGE 诊断替代为官方主表分数。
+
 
 用户授权先实现 QMSum 的 BM25 + 显式生成模型对照。只在本地验证代码与合成数据，不运行产品或模型、不下载数据。复用冻结 QMSum bundle、scorer 和报告，使用独立 `sn-notebook-baseline-v1` 执行身份，`mode=bm25` 与 SN 两种模式区分。
 

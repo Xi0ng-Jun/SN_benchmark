@@ -78,6 +78,7 @@ Silicon Notebook 当前维护五套 benchmark：
 | MultiHop 的 QA 和检索分数有什么区别？ | [五套 benchmark 一览](02-benchmark-map.md#multihop-rag) |
 | ALCE 的 100 题和 948 题是什么关系？ | [五套 benchmark 一览](02-benchmark-map.md#alce) |
 | 哪些结果已经存在？ | [已有方法和结果](04-methods-and-results.md) |
+| 有榜单吗？必须重跑外部方法吗？ | [成绩入口与比较方式](04-methods-and-results.md#从哪里方便地查成绩) |
 | 本轮实验要产出哪些表？ | [整组结果表模板](../benchmark-result-tables.md) |
 | 如何让服务器 agent 按表交付？ | [填报指令](../server-benchmark-result-tables-prompt.md) |
 | 为什么不能直接说 SN 超过某方法？ | [如何解释分数](05-results-and-paper.md) |

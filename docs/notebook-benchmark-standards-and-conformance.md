@@ -420,9 +420,14 @@ QMSum 已跑各一题 SN/BM25 的真实生成与新评分/比较。SN 当时旧 
 
 本节是**本项目的实验与比较政策**。其中同题、披露条件等符合可复现研究的一般要求，但本比较器的严格拒绝行为不应冒称为五个 benchmark 官方统一强制规则。
 
+2026-10-09 澄清：论文或作者页面的汇总成绩可以直接引用为 `published-reference`。
+这条路径不要求公开答卷、统一重评分、BM25 控制组或外部模型重跑。
+同轨成绩可注明来源后并列；协议不同或关键条件未知时分组展示，并限制结论。
+下节严格检查适用于本项目的同题比较器，不是所有论文结果进入主表的门槛。
+
 ### 8.1 代码已经强制的检查
 
-主比较要求相同 frozen bundle、suite、scope、按冻结顺序排列的 case IDs、profile 与 scorer 内容身份；每种方法只选一个明确尝试，生成中没有 missing/error。只比较双方都已完成的指标，保留 pending 和独有指标。
+本项目同题比较器要求相同 frozen bundle、suite、scope、按冻结顺序排列的 case IDs、profile 与 scorer 内容身份；每种方法只选一个明确尝试，生成中没有 missing/error。只比较双方都已完成的指标，保留 pending 和独有指标。
 
 对每项共同指标，参与题目 ID 必须相同，不能只有分母数字相同。ALCE 如果两种方法的空答造成引用 eligible IDs 不同，双方原始官方分数仍可分别保存，但当前主比较拒绝直接作该范围下的比较。**不能为了通过检查，事后挑两边都有分的题或修改官方空答规则。** 如要做另一个预先声明的补充分析，需单独冻结范围、说明选择依据与选择偏差。
 
@@ -462,7 +467,9 @@ QMSum 已跑各一题 SN/BM25 的真实生成与新评分/比较。SN 当时旧 
 
 ALCE 人工评测样本缺完整引用映射时使用 `citation_mapping_status=unavailable`，`--alce-full` 明确拒绝；新增 `--alce-answer-only` 则仅关闭固定原版 CLI 的 citations，仍可运行 ASQA QA/MAUVE/ROUGE 或 ELI5 claims-NLI/MAUVE/ROUGE。ELI5 仍使用原 AutoAIS 模型判 claims。引用分数/分母保持不存在并标 pending，不填零。模式、模型及原命令属于 scorer 身份，两侧比较必须一致。批次模型指标不能作为逐题值重复填充，也不能用于现有逐题 bootstrap。代码已验证，真实模型执行尚未验收。
 
-框架内 BM25/full-context/candidate-topk 属于自建控制组，用于检查 SN 相对朴素方法的收益；它们不能代替 LED、MultiHop dense/hybrid、ALCE VANILLA/RERANK 或 QMSum 作者模型的复现。QASPER、ALCE、QMSum 当前未核实作者维护的独立在线榜单；MultiHop-RAG 有作者 HF Space 的静态结果表和邮件提交指南，但当前休眠且未验证自动评分/持续维护。无论是否存在榜单，都必须核对它是否使用同一协议。
+框架内 BM25/full-context/candidate-topk 属于自建控制组，用于检查 SN 相对朴素方法的收益；它们不能代替作者方法复现，也不是所有论文比较的必做前提。是否需要重跑或消融由研究主张决定。生成模型不同仍可支持端到端系统比较；要归因于某个模块，需固定其他关键因素。
+
+HotpotQA 有官方 distractor/fullwiki 榜单，MultiHop-RAG 有作者结果表与邮件指南，LongBench v1 有 Qasper/QMSum/HotpotQA 的衍生版本成绩。ALCE、QASPER、QMSum 的论文实验表也提供可引用成绩。没有独立在线提交榜单不能推出没有外部比较依据。已核实入口、采用实例和版本差异见[官方资料手册](notebook-benchmark-official-resources.md)。
 
 ## 9. 当前符合程度与服务器验收项
 
@@ -485,7 +492,7 @@ ALCE 人工评测样本缺完整引用映射时使用 `citation_mapping_status=u
 5. **选择可比较的外部方法。** 取得公开答卷/检查点，审核 ID、输入和预算，选择重评分还是重跑；条件不足就标论文参考值，不放进统一排名。
 6. **出具结论与限制。** 报告各套件独立主指标、失败覆盖、真实成本、配对分析及待验证项；不把五套不同任务压成一个无依据总分。
 
-QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照结果或映射错误批次只能比较已验证的答案指标。MultiHop SN 排名仍未接入。报告必须写明实际完成指标，不能用诊断分替代正式证据/排名指标。
+QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照结果或映射错误批次只能比较已验证的答案指标。MultiHop SN chunk 排名接入已实现，服务器完整快照仍须验收；reasoning 没有单一排名契约。报告必须写明实际完成指标，不能用诊断分替代正式证据/排名指标。
 
 ## 10. 可复查的版本与证据
 

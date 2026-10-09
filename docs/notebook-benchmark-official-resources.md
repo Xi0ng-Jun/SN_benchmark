@@ -1,6 +1,6 @@
 # QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA 官方资料手册
 
-资料检索：2026-09-23；完整文件与评分证据更新：2026-09-24；HotpotQA 资料与适配更新：2026-09-26；MultiHop-RAG 作者结果/提交入口补查：2026-10-09。文档状态：外部来源参考，供后续整理、论文阅读与实验设计使用。返回[文档导航](README.md)。
+资料检索：2026-09-23；完整文件与评分证据更新：2026-09-24；HotpotQA 资料与适配更新：2026-09-26；榜单入口、LongBench v1 结果和后续论文用例复核：2026-10-09。文档状态：外部来源参考，供后续整理、论文阅读与实验设计使用。返回[文档导航](README.md)。
 
 本页最初整理网页资料；随后已验证完整QASPER/QMSum文件、Perl评分校准与一题真实SN/BM25实验。2026-09-24又经代理下载并校验MultiHop/ALCE固定完整文件，完成真实数据及文本评分核查；ALCE大型评分模型尚未运行。下文区分**论文报告规模**、**发布页面记录单位**与**本项目实测口径**；链接状态是核查时观察，实际证据见[实验计划](notebook-benchmark-experiment-plan.md)和[MultiHop/ALCE验收](notebook-benchmark-real-data-validation.md)。
 
@@ -10,11 +10,11 @@
 
 | Benchmark | 主要任务 | 原始论文 | 作者 GitHub | 作者/发布机构 Hugging Face | 榜单情况 |
 | --- | --- | --- | --- | --- | --- |
-| QASPER | 基于一篇科研论文问答，并定位证据 | [NAACL 2021](https://aclanthology.org/2021.naacl-main.365/) | [allenai/qasper-led-baseline](https://github.com/allenai/qasper-led-baseline) | [allenai/qasper](https://huggingface.co/datasets/allenai/qasper) | 数据卡链接历史 Papers with Code；本次不能作为有效排名入口，详见 §2.4 |
+| QASPER | 基于一篇科研论文问答，并定位证据 | [NAACL 2021](https://aclanthology.org/2021.naacl-main.365/) | [allenai/qasper-led-baseline](https://github.com/allenai/qasper-led-baseline) | [allenai/qasper](https://huggingface.co/datasets/allenai/qasper) | 原论文和方法论文有成绩；LongBench v1 有 Qasper 结果表，但采用 200 题衍生版本；旧 Papers with Code 入口失效，见 §2.4、§7 |
 | MultiHop-RAG | 跨新闻文档的检索与多跳问答 | [arXiv:2401.15391](https://arxiv.org/abs/2401.15391)，作者仓库标明 COLM 2024 | [yixuantt/MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG) | [yixuantt/MultiHopRAG](https://huggingface.co/datasets/yixuantt/MultiHopRAG) | 作者 HF Space 提供结果表与邮件提交说明；当前休眠，未验证自动评分或持续维护，详见 §3.4 |
 | ALCE | 带引用生成：流畅性、答案正确性和引用支持 | [EMNLP 2023](https://aclanthology.org/2023.emnlp-main.398/) | [princeton-nlp/ALCE](https://github.com/princeton-nlp/ALCE) | [princeton-nlp/ALCE-data](https://huggingface.co/datasets/princeton-nlp/ALCE-data) | 在已查作者入口中未找到独立官方提交榜单；按三个子任务阅读论文结果 |
-| QMSum | 根据用户查询总结一场长会议的相关内容 | [NAACL 2021](https://aclanthology.org/2021.naacl-main.472/) | [Yale-LILY/QMSum](https://github.com/Yale-LILY/QMSum) | 未从原论文和作者仓库确认原作者维护的独立 HF 数据集；衍生版本见 §5.4 | 作者仓库提供实验结果；SCROLLS 等为衍生套件，旧网站存在访问异常 |
-| HotpotQA | 给定带干扰段落的多跳问答与句子级 supporting facts | [EMNLP 2018](https://aclanthology.org/D18-1259/) | [hotpotqa/hotpot](https://github.com/hotpotqa/hotpot) | [hotpotqa/hotpot_qa](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | 官方主页提供 Codalab test 提交流程；本项目不提交榜单，论文/主页结果按 setting 分开读取 |
+| QMSum | 根据用户查询总结一场长会议的相关内容 | [NAACL 2021](https://aclanthology.org/2021.naacl-main.472/) | [Yale-LILY/QMSum](https://github.com/Yale-LILY/QMSum) | 未从原论文和作者仓库确认原作者维护的独立 HF 数据集；衍生版本见 §5.4 | 作者仓库和后续论文提供成绩；LongBench v1 有 200 题版本结果表，见 §7 |
+| HotpotQA | 给定带干扰段落的多跳问答与句子级 supporting facts | [EMNLP 2018](https://aclanthology.org/D18-1259/) | [hotpotqa/hotpot](https://github.com/hotpotqa/hotpot) | [hotpotqa/hotpot_qa](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | [官方主页](https://hotpotqa.github.io/)有 distractor、fullwiki 榜单与 Codalab test 提交流程；本项目使用 distractor validation |
 
 | 比较项 | QASPER | MultiHop-RAG | ALCE | QMSum | HotpotQA |
 | --- | --- | --- | --- | --- | --- |
@@ -26,6 +26,47 @@
 | 主要评测入口 | Answer F1、Evidence F1 | 检索排名指标、QA 脚本成功比例 | 子任务正确性、MAUVE、引用 precision/recall | ROUGE-1/2/L | Answer、Supporting Fact、Joint EM/F1 |
 
 表中规模与任务分别依据 [QASPER 论文](https://aclanthology.org/2021.naacl-main.365.pdf)、[MultiHop-RAG 论文](https://arxiv.org/pdf/2401.15391)、[ALCE 论文 §2](https://aclanthology.org/2023.emnlp-main.398.pdf)、[QMSum 论文表 1](https://aclanthology.org/2021.naacl-main.472.pdf)。各套任务和评分单位不同，不据此计算跨 benchmark 总分。
+
+### 1.1 如何直接利用已有成绩
+
+有独立提交榜单、能读到公开成绩、能进行同题配对，是三件不同的事。
+论文实验表和作者结果页都是有效的发表参考来源。
+引用这些汇总值不要求取得逐题答卷，也不要求重新运行外部模型。
+先核对数据版本、split/setting、输入条件和指标口径。
+条件不同或关键字段未知时，分组展示并说明限制，不能据此宣称同轨排名或 SOTA。
+
+| 研究问题 | 合适的证据路径 | 需要保留的边界 |
+| --- | --- | --- |
+| SN 与已有系统相比处于什么水平？ | 引用论文或作者表格，标 `published-reference` | 模型可以不同；任务与评分差异须披露 |
+| 两个方法在相同题目上差多少？ | 有可对齐答卷时统一重评分，生成配对结果 | 需要相同 case IDs、scorer 和指标参与题目 |
+| 某个模块是否带来改进？ | 固定其他因素，进行有针对性的受控实验或消融 | 同模型本身不足以证明只有一个因素变化 |
+
+本项目比较器的严格工件检查适用于第二类路径。
+它不限制第一类文献引用。
+BM25 是检验相对朴素检索系统收益的控制组，不是每套 benchmark 必跑的通用前提。
+论文证据是否充分，取决于研究主张和实际结果，而不是填满了多少候选行。
+
+### 1.2 五套任务在研究中的位置
+
+这组任务覆盖多跳问答、有引用生成、科研文档问答和会议摘要。
+它们不是同一种 RAG 任务。
+下面的论文和套件提供具体采用证据；本表不按引用量推断热度排名。
+
+| 任务 | 研究定位与采用示例 | 可核实来源 |
+| --- | --- | --- |
+| HotpotQA | 多跳问答；KG²RAG 在其 distractor/fullwiki 及变体上比较多个 RAG 方法 | [KG²RAG，NAACL 2025，§3 与表1–2](https://aclanthology.org/2025.naacl-long.449.pdf) |
+| MultiHop-RAG | 专门面向多跳 RAG；后续问题分解方法同时评测它与 HotpotQA | [Question Decomposition for Retrieval-Augmented Generation，ACL 2025 SRW](https://aclanthology.org/2025.acl-srw.32/) |
+| ALCE-ASQA | 长答案及引用评测；Self-RAG 明确采用 ALCE 评测入口 | [Self-RAG，ICLR 2024，作者实现](https://github.com/AkariAsai/self-rag#long-form-asqa-factscore) |
+| QASPER | 科研论文问答；Qasper 被纳入 LongBench v1 的单文档 QA 任务 | [LongBench 任务定义](https://github.com/THUDM/LongBench/blob/main/LongBench/task.md) |
+| QMSum | 查询驱动摘要；后续摘要论文继续使用，LongBench v1 也将其纳入摘要任务 | [Learning to Rank Salient Content，EMNLP 2024](https://aclanthology.org/2024.emnlp-main.838/)、[LongBench 任务定义](https://github.com/THUDM/LongBench/blob/main/LongBench/task.md) |
+
+KG²RAG 在论文中固定主要模型组件，比较 Semantic RAG、Hybrid RAG、GraphRAG、LightRAG 等方法。
+这是在论文内组织统一比较的实例，不依赖一个覆盖所有 RAG 系统的中央榜单。
+
+**项目判断：** 这组任务适合解释 SN 的资料问答、跨文档推理、引用和摘要能力。
+若论文只主张检索算法改进，应让检索与问答证据承担主要论证；QMSum 提供摘要任务上的补充证据。
+榜单不活跃不足以说明任务没有研究价值。
+这些观察不改变当前五套范围，也不增加服务器实验。
 
 
 ## 2. QASPER
@@ -92,7 +133,7 @@
 
 [数据卡](https://huggingface.co/datasets/allenai/qasper) 将 Papers with Code 列为 leaderboard。它是被数据卡引用的第三方平台，不能据此推定为作者运营的提交服务器。本次访问[旧数据集地址](https://paperswithcode.com/dataset/qasper)跳到 HF 数据卡，[旧 QA 榜单](https://paperswithcode.com/sota/question-answering-on-qasper)跳到 HF Trending Papers；均未得到可核实的 QASPER 排名。数据卡中“active leaderboard”是残留说明，本手册不沿用为当前事实。
 
-可从论文实验表、官方基线和 §6 的衍生套件继续查结果，但须记录全文/短上下文、是否训练、Answer/Evidence 指标和划分。不能把 LongBench 的子集结果直接放入原版 QASPER 排名。
+可直接引用论文实验表、官方基线和 §7 的衍生套件成绩，并标明各自协议。LongBench v1 的[逐数据集结果表](https://github.com/THUDM/LongBench/blob/main/LongBench/README.md#-evaluation-result-on-each-dataset)可直接阅读 Qasper 分数；其 200 题范围不同于本项目完整 1,451 题，不能混成原版 QASPER 同轨排名。全文/短上下文、是否训练、Answer/Evidence 指标和划分均需记录。
 
 数据卡标注 **CC BY 4.0**；基线代码仓库为 **Apache-2.0**，分别见[数据卡](https://huggingface.co/datasets/allenai/qasper)与[代码 LICENSE](https://github.com/allenai/qasper-led-baseline/blob/main/LICENSE)。
 
@@ -269,7 +310,7 @@ ALCE论文§2称从每个上游数据集的development set选取1000例，并说
 
 优先保留有自身作者说明的衍生资源：[tau/scrolls](https://huggingface.co/datasets/tau/scrolls)、[tau/zero_scrolls](https://huggingface.co/datasets/tau/zero_scrolls)、[zai-org/LongBench](https://huggingface.co/datasets/zai-org/LongBench)。它们适合研究各自套件，但不是本项目读取原始 `meeting_transcripts` / 查询列表的直接替代品。
 
-未在 QMSum 作者仓库中确认独立在线提交榜单。论文与仓库实验表是原始结果来源；衍生套件的 leaderboard 状态见下一节。仓库 [LICENSE](https://github.com/Yale-LILY/QMSum/blob/main/LICENSE) 为 **MIT**；原始 AMI/ICSI/议会材料仍需保留来源信息。
+未在 QMSum 作者仓库中确认独立在线提交榜单。原论文、作者实验表和后续方法论文可直接提供发表参考；例如 [Socratic Pretraining，ACL 2023](https://aclanthology.org/2023.acl-long.713/) 和 [Learning to Rank Salient Content，EMNLP 2024](https://aclanthology.org/2024.emnlp-main.838/)。不要求先取得其逐题答卷才能引用。LongBench v1 还有[可读的 QMSum 结果表](https://github.com/THUDM/LongBench/blob/main/LongBench/README.md#-evaluation-result-on-each-dataset)，版本差异见 §7。仓库 [LICENSE](https://github.com/Yale-LILY/QMSum/blob/main/LICENSE) 为 **MIT**；原始 AMI/ICSI/议会材料仍需保留来源信息。
 
 ## 6. HotpotQA
 
@@ -319,11 +360,11 @@ HF Parquet/列式导出将 `context` 表示为 `{title: [...], sentences: [[...]
 
 对答案，官方 `normalize_answer` 小写、删除标点、去除冠词并压缩空白，然后计算 token EM、Precision、Recall、F1；`yes`、`no`、`noanswer` 与其他答案之间不做部分匹配。对 supporting facts，比较 `[title, sent_id]` 对的集合并计算 EM/Precision/Recall/F1。Joint 指标将答案与 supporting-fact 的 precision、recall 相乘，再计算 joint F1；Joint EM 要求两者同时 exact。
 
-这意味着“最终上下文包含 gold 段落”只能作为覆盖诊断，不能代替模型提交的 supporting-fact 预测。SN 当前正式 runner 会保存答案和最终引用/anchor 观测，但尚未自动把它们投影为 HotpotQA 官方 `[title, sent_id]` 字段；因此 SN 第一阶段正式报告 **Answer EM/F1/Precision/Recall**，Supporting Fact 与 Joint 保持 `pending`。`benchmark_reference.py` 的 reference JSON 契约已经可以生成显式 `evidence_unit_ids` 并投影 supporting facts，作为完整指标链路的控制组。
+这意味着“最终上下文包含 gold 段落”只能作为覆盖诊断，不能代替模型提交的 supporting-fact 预测。SN 最终引用到 `[title, sent_id]` 的投影已实现，并有离线校准；是否能报告本轮 Supporting Fact/Joint，仍须核实服务器整批观测与快照回放。缺少完整映射时，Answer 四项仍可评分，Supporting Fact 与 Joint 保持 `pending`。实现和验收边界见[标准说明 §6](notebook-benchmark-standards-and-conformance.md)。
 
 ### 6.4 Leaderboard、许可与本项目 setting
 
-官方主页提供 test 集下载与 Codalab submission guide；主页上的历史 leaderboard/snapshot 只能在记录其 setting（distractor 或 fullwiki）、split、模型和 supporting-fact 轨道后引用。不要把 fullwiki 的论文数字放入 distractor validation 的同条件表，也不要把没有逐题答卷的历史数字当成 SN 的 paired comparison。
+2026-10-09 复核[官方主页](https://hotpotqa.github.io/)，可以直接读取 **Leaderboard (Distractor Setting)** 和 **Leaderboard (Fullwiki Setting)** 两张榜单。主页另有 test 集与 Codalab submission guide；本次未验证提交流程仍可用。榜单值可直接标为发表参考，记录 setting、split、模型和指标。当前 SN 使用 distractor validation，不能把它当作该 test 榜单的新排名。只有取得同题答卷时才进一步讨论 paired comparison。
 
 HotpotQA 数据与处理后的 Wikipedia 语料按 **CC BY-SA 4.0** 发布；使用时保留数据集论文、主页和原始来源归属。官方仓库中的 baseline 代码和数据文件许可须按各自 LICENSE/README 读取，不能仅凭数据许可推断代码许可。
 
@@ -333,12 +374,18 @@ HotpotQA 数据与处理后的 Wikipedia 语料按 **CC BY-SA 4.0** 发布；使
 | --- | --- | --- | --- |
 | SCROLLS | 将 QASPER、QMSum 等统一为长文本 text-to-text 任务 | [作者 GitHub](https://github.com/tau-nlp/scrolls)、[HF](https://huggingface.co/datasets/tau/scrolls) | 属于 SCROLLS 团队的正式发布；不是原版任务所有证据字段/指标的替代 |
 | ZeroSCROLLS | 包含 QASPER、QMSum 的 zero-shot 长文本套件 | [作者 HF](https://huggingface.co/datasets/tau/zero_scrolls) | 按其自己的任务格式、抽样和评价协议解读 |
-| LongBench v1 | 包含 QASPER、QMSum 的长上下文评测任务 | [作者 GitHub](https://github.com/THUDM/LongBench)、[当前 HF](https://huggingface.co/datasets/zai-org/LongBench) | 原 HF `THUDM/LongBench` 本次重定向到 `zai-org/LongBench`；仓库同时介绍 v2，不能混用版本 |
+| LongBench v1 | 包含 QASPER、QMSum、HotpotQA 的长上下文任务 | [v1 README 与结果表](https://github.com/THUDM/LongBench/blob/main/LongBench/README.md)、[任务定义](https://github.com/THUDM/LongBench/blob/main/LongBench/task.md)、[当前 HF](https://huggingface.co/datasets/zai-org/LongBench) | 三个任务各 200 题；采用套件自己的输入与评分。仓库根目录同时介绍 v2，v1 文件已移入 `LongBench/` |
 | QASPER 数据卡中的 Papers with Code 链接 | 原数据卡引用的第三方聚合入口 | 见 §2.4 | 数据集链接跳 HF 数据卡，QA 榜单链接跳 HF Trending Papers；未取得实际排名 |
 | 历史 SCROLLS 网站 | 官方材料曾提供的榜单/提交入口 | 优先从上述 GitHub/HF 回溯 | `www.scrolls-benchmark.com/leaderboard` 本次重定向至无关站点，不作为可用榜单链接推荐 |
 | 历史 ZeroSCROLLS 网站 | 相关套件历史入口 | 优先使用其 HF 数据卡 | 本次访问 `www.zero.scrolls-benchmark.com` 未能取得页面，未验证在线提交功能 |
 
 本次没有向任何榜单提交结果、登录账户或验证提交流程。MultiHop-RAG 已确认作者结果表与邮件提交指南，状态与限制见 §3.4。对 ALCE、QMSum 的“未找到独立官方榜单”，含义仅是**已检查的论文、作者仓库和数据卡未提供可确认入口**，不是证明网上不存在任何相关榜单。
+
+LongBench v1 结果入口已在 2026-10-09 重新核实。
+其 Qasper、QMSum、HotpotQA 各 200 题，本项目分别为 1,451、281、7,405 题。
+QMSum 在 LongBench 表中使用该套件的 ROUGE-L，而本项目报告固定 Perl ROUGE-1/2/L。
+同名任务不保证相同题单、输入或评分；直接引用时保留版本标签。
+采用衍生套件协议通常更方便利用其已有表格，这是可比性与任务覆盖之间的设计取舍，不是当前切换协议的决定。
 
 ## 8. 与 Silicon Notebook 当前评测的对应关系
 
@@ -347,7 +394,7 @@ HotpotQA 数据与处理后的 Wikipedia 语料按 **CC BY-SA 4.0** 发布；使
 | Benchmark | SN 当前资料组织 | SN 当前主要分数 | 与原始定义的关键差异 |
 | --- | --- | --- | --- |
 | QASPER | v3一篇一个分区；标题、摘要、正文、caption；不按gold删题 | 官方Answer F1；显式预测才有Evidence F1 | 公共输入变体不同于原LED reader；最终上下文覆盖仅SN诊断 |
-| MultiHop-RAG | 完整 corpus 的独立分区，gold 留在评分侧 | 官方弱匹配答案分、上下文 fact 覆盖 | fact 覆盖不是 Hits/MAP/MRR；正文答案与宽松词匹配要结合案例解释 |
+| MultiHop-RAG | 完整 corpus 的独立分区，gold 留在评分侧 | 官方弱匹配答案分；chunk 真实排名可评 Hits/MAP/MRR | reasoning 无单一排名契约；上下文 fact 覆盖另作诊断 |
 | ALCE | 每题完整候选，区分task/retriever/ordinary-oracle | 字符串指标及显式官方CLI模型批评分 | 不重检全Wikipedia/Sphere；只认实际显示的引用，保留官方预处理和各指标实际分母 |
 | QMSum | 一场完整会议一个分区，区分general/specific | 新官方轨道Perl ROUGE-1/2/L；turn覆盖仅诊断 | 明确分句与题序，不声称复现历史279题表格 |
 | HotpotQA | 每题一个 distractor context 分区；句子保持 source unit | Answer EM/F1/Precision/Recall；Supporting Fact/Joint 需显式预测，当前 SN pending | 采用 distractor validation；fullwiki 检索与 test 提交另行处理 |
