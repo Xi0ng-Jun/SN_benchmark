@@ -27,6 +27,7 @@
 - [验证与实验记录](docs/evaluation-status.md)：代码快照、已有验证证据和阶段进展。
 - [稳定约束](docs/evaluation-context.md)：范围、证据分层、隔离和非目标。
 - [文档导航](docs/README.md)：当前协议、专题说明和历史归档的索引。
+- [Benchmark Wiki](docs/benchmark-wiki/README.md)：由浅入深了解 benchmark 来源、运行实现、方法比较和结果解释。
 - [历史归档](docs/archive/README.md)：五套与共用功能的旧交接和阶段性设计；退役套件专属文档已删除。
 
 ## 安装

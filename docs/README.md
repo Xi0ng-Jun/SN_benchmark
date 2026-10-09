@@ -12,6 +12,11 @@
 - [验证与实验记录](evaluation-status.md)：代码快照、本地验证、服务器转述和阶段进展。
 - [评测上下文](evaluation-context.md)：范围、证据分层、隔离规则、协议身份和非目标。
 
+## Wiki 入口
+
+- [Benchmark Wiki](benchmark-wiki/README.md)：从总体模型开始，逐步进入五套 benchmark、运行实现、已有方法、结果解释和论文写法。
+- [形式化评测流程](benchmark-evaluation-formal-workflow.md)：用统一符号描述无 gold 生成、观测保存、提交投影、评分和方法比较。
+
 ## 当前协议与操作入口
 
 - [项目执行指南 RUNBOOK](../RUNBOOK.md)：安装、启动、测试、构建与服务器交付、配置／外部服务和过时步骤；当前 SN-only 操作从这里开始。
