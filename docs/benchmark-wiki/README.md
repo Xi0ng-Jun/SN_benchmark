@@ -43,8 +43,9 @@ Silicon Notebook 当前维护五套 benchmark：
 
 4. [已有方法和结果](04-methods-and-results.md)
 5. [如何解释分数](05-results-and-paper.md)
+6. [实验结果表与填报协议](../benchmark-result-tables.md)
 
-读完这两页，你可以回答：
+读完这些页面，你可以回答：
 
 - 论文分数和重评分有什么区别。
 - 公开答卷是否可以和 SN 配对。
@@ -77,8 +78,10 @@ Silicon Notebook 当前维护五套 benchmark：
 | MultiHop 的 QA 和检索分数有什么区别？ | [五套 benchmark 一览](02-benchmark-map.md#multihop-rag) |
 | ALCE 的 100 题和 948 题是什么关系？ | [五套 benchmark 一览](02-benchmark-map.md#alce) |
 | 哪些结果已经存在？ | [已有方法和结果](04-methods-and-results.md) |
+| 本轮实验要产出哪些表？ | [整组结果表模板](../benchmark-result-tables.md) |
+| 如何让服务器 agent 按表交付？ | [填报指令](../server-benchmark-result-tables-prompt.md) |
 | 为什么不能直接说 SN 超过某方法？ | [如何解释分数](05-results-and-paper.md) |
-| 论文实验部分怎么写？ | [如何解释分数](05-results-and-paper.md#论文中的结果表)
+| 论文实验部分怎么写？ | [如何解释分数](05-results-and-paper.md#论文中的结果表) |
 
 ## 文档状态
 

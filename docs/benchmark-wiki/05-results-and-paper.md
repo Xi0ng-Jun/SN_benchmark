@@ -74,6 +74,11 @@ QMSum ROUGE 衡量词面重合。
 
 ## 论文中的结果表
 
+具体表格见[实验结果表与填报协议](../benchmark-result-tables.md)。
+该模板覆盖五套主结果、ALCE 固定100题样本、配对差异和运行质量。
+候选行不是新增执行授权。
+服务器填报使用[可转发指令](../server-benchmark-result-tables-prompt.md)。
+
 每行建议包含：
 
 1. 方法名和具体配置。
