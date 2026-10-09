@@ -1,6 +1,6 @@
 # 外部方法比较：公开答卷重评分与受控运行入口
 
-核实日期：2026-09-28。本页记录真实公开答卷在本项目固定评分协议下的结果与复现入口。已有一份 5 题 QASPER SN/BM25 smoke 配对工件，以及 MultiHop smoke 的成本与外部内容过滤诊断；这些历史 smoke 结果不代表完整 benchmark 成绩，也不等同于当前服务器 full run。
+实验快照：2026-09-28；来源与范围表述澄清：2026-10-09，未新增实验或复核服务器进度。本页记录真实公开答卷在本项目固定评分协议下的结果与复现入口。已有一份 5 题 QASPER SN/BM25 smoke 配对工件，以及 MultiHop smoke 的成本与外部内容过滤诊断；这些历史 smoke 结果不代表完整 benchmark 成绩，也不等同于当前服务器 full run。
 
 **当前已有两份完整 MultiHop 答卷、八份 ALCE 样本答卷、一份完整 QMSum Socratic SegEnc 答卷，以及 MultiHop 两方法和 ASQA 四方法的同题比较报告。QASPER 已有 5 题 SN/BM25 smoke 比较；其它 benchmark 的 SN 全量比较仍未完成。**
 
@@ -12,7 +12,9 @@
 
 题目与 scorer 相同，可以支持**公开答卷的描述性比较**。这并不证明生成时语料、模型、提示或预算相同。只有进一步核实并控制这些条件，才能支持同条件方法比较或算法归因。本次缺失条件明确保留；尤其不能把 ALCE 的样本答卷报告当作完整官方榜单、受控重跑或 SN 排名。
 
-现有机器标签 `recomputed-subset` 表示“公开逐题答卷重评分”这一来源类别，保留以兼容已有工件；范围以 `submission.scope` 和实际 case IDs 为准。本次 MultiHop 是 `full`，ALCE 是 `subset`。`full` 指覆盖冻结 bundle，不能据此宣称复现了论文所有实验。
+面向读者的类别名称使用“公开答卷重评分”；现有机器标签 `recomputed-subset` 保留以兼容已有工件，标签中的 subset 不限定实际范围。范围以 `submission.scope` 和实际 case IDs 为准：MultiHop 和 QMSum Socratic 是 `full`，ALCE human_eval 是每配置 100 题的 `subset`。`full` 指覆盖冻结 bundle，不能据此宣称复现了论文所有实验。
+
+论文/作者页面的汇总值另列为“发表参考值”（`published-reference`）。每个参考值记录模型/检查点、任务与 split/setting、输入条件、scorer/版本、指标尺度和实际分母；来源未提供的字段注明未知，不能从本项目重评分的范围反推。按本协议重新生成的结果才列为“受控重跑”（`controlled-rerun`），并披露作者配置的任何改动。
 
 ## 2. Multi-Meta-RAG：完整 2,556 题
 
@@ -185,7 +187,7 @@ ELI5 将 bundle 换为 `eli5-bm25/bundle` 并使用新目录；可完成导入�
 
 实际工件位于 `var/external-comparison/alce-human-246c476-20260928/{asqa,eli5}/{vanilla,interactive,rerank,vicuna}/`，包含原生来源、normalized、submission 和 scored；ASQA 比较为 `asqa/comparison/report.{json,md}`。工件在 Git 忽略的 `var/`，迁移机器须连同数据/来源另行搬运。
 
-## 4. QMSum：Socratic SegEnc 完整 281 条测试答案
+## 4. QMSum：281 条 Socratic SegEnc 公开预测（按公开代码顺序映射，原运行清单缺失）
 
 ### 来源、逐行映射及比较条件
 
@@ -203,7 +205,7 @@ ELI5 将 bundle 换为 `eli5-bm25/bundle` 并使用新目录；可完成导入�
 
 ### 实际重评分
 
-原发布附带的 `test.predictions.rouge` 报告 38.48 / 13.90 / 33.62，采用 Stanza + SummEval。这些数字仅为来源观测，不直接导入我们的得分。本次对原预测使用与 SN 一致的固定 Perl ROUGE-1.5.5 + HMNet regex 分句 profile 重新执行：
+原发布附带的 `test.predictions.rouge` 报告 38.48 / 13.90 / 33.62，采用 Stanza + SummEval。这些数字仅为来源报告的观测值；该历史评分的实际分母、输入清单与运行配置未恢复，不能因为预测文件有 281 行就替它补写分母，也不直接导入我们的得分。本次按上述公开代码顺序映射原预测，使用与 SN 一致的固定 Perl ROUGE-1.5.5 + HMNet regex 分句 profile 重新执行，以下分母仅属于本次重评分：
 
 | 指标 | 本次得分（0–1） | 百分制 | 分母 |
 | --- | ---: | ---: | ---: |

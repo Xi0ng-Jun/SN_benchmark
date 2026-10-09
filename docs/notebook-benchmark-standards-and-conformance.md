@@ -192,7 +192,7 @@ SN 的 `AnswerAnchor` 保存 object/source/element 标识，`EvidenceContextServ
 
 **评分失败语义：** 任一范围内题目缺少完整证据映射，整批 `evidence_supported=False`，输出 `evidence_mapping_errors` 与 pending 原因；不对“成功映射子集”报正式证据均值。答案按原范围继续评分。未知引用是模型错误，可正常计分；映射错误是观测/工程错误，两者不能互相代替。修复后应在原先声明范围上重新导出/评分，不按成绩挑题。缺失生成仍保留 missing 并阻止正式比较。
 
-**验收证据：** 416 篇的 23,111 个公开单位（19,817 个正文段落）经过真实 SN Markdown parser 和 chunk builder；11,065 个完整块、81,316 个选定截短边界全部完成映射，所有公共单位均可达，改写 qas 不改变目录。这是公共语料解析/边界探针，引用选择是人工构造；不是 1451 题生成，也不是枚举每一个可能字符截断。独立原版 CLI 校准包含重复、额外、无效、空证据、FLOAT 和缺失共 8 个手算样例，聚合 Evidence F1 为 0.625，与公式及桥接逐题结果一致。
+**验收证据：** 416 篇的 23,111 个公开单位（19,817 个正文段落）经过真实 SN Markdown parser 和 chunk builder；11,065 个完整块、81,316 个选定截短边界全部完成映射，所有公共单位均可达，改写 qas 不改变目录。这是公共语料解析/边界探针，引用选择是人工构造；不是 1451 题生成，也不是枚举每一个可能字符截断。独立原版 CLI 校准包含重复、额外、无效、空证据、FLOAT 和缺失共 8 个手算评分器校准反例，聚合 Evidence F1 为 0.625，与公式及桥接逐题结果一致；这些反例验证公式与实现，不是独立人工质量评测。
 
 保存的真实 ANTISCAM 一题恢复 `4:0` 后，原版 CLI 与框架均得到 Answer F1 `2/3`、Evidence F1 `1`，分母均为 1；SN/BM25 重评分共用 scorer 身份、比较链路成功。151 个旧运行及参考答卷文件 SHA256 前后一致。**这些数字只证明链路，不代表 SN 的总体成绩或优于其他方法。** 本地没有新模型调用，没有产品修改；服务器真实 reasoning（尤其生成式上下文精炼）、全量预测、外部方法同条件比较仍需执行。
 
@@ -448,11 +448,13 @@ QMSum 已跑各一题 SN/BM25 的真实生成与新评分/比较。SN 当时旧 
 
 ### 8.3 三种外部结果标签
 
-| 标签 | 可以做什么 | 不能暗示什么 |
-| --- | --- | --- |
-| `published-reference` | 引用论文/作者表格，逐项注明数据和条件差异 | 不是本项目在统一 scorer 下得到的成绩 |
-| `recomputed-subset` | 将可验证对齐的公开逐题答卷在明确范围上重评分；`scope=full/subset` 决定覆盖范围 | 标签本身不证明全量、原论文复现或同条件；不抹去原方法的 gold 输入条件 |
-| `controlled-rerun` | 按本次冻结协议重跑公开方法并统一评分 | 若改变作者 prompt/模型/输入，不能继续称完全复现原论文 |
+| 报告类别 | 机器标签 | 可以做什么 | 不能暗示什么 |
+| --- | --- | --- | --- |
+| 发表参考值 | `published-reference` | 引用论文/作者表格，逐项注明数据和条件差异 | 不是本项目在统一 scorer 下得到的成绩 |
+| 公开答卷重评分 | `recomputed-subset` | 将可验证对齐的公开逐题答卷在明确范围上重评分；`scope=full/subset` 决定覆盖范围 | 机器标签中的 subset 不限制实际覆盖范围；不证明原论文复现或同条件，不抹去原方法的 gold 输入条件 |
+| 受控重跑 | `controlled-rerun` | 按本次冻结协议重跑公开方法并统一评分 | 若改变作者 prompt/模型/输入，不能继续称完全复现原论文 |
+
+面向读者使用报告类别名称，机器标签保留以兼容已有工件。每行论文/作者页面参考值必须记录模型/检查点、任务与 split/setting、输入条件、scorer/版本、指标尺度和分母；缺失字段标未知，不从当前 bundle 题数推断历史分母。公开答卷重评分与受控重跑另附实际 case IDs、范围和来源身份。
 
 正式比较工件中的每个方法都必须显式声明 `configuration.comparison_category`；`kind=published` 只能标记为 `published-reference`，不能通过配置改写成受控重跑。SN 与本项目控制组由构造器写入 `controlled-rerun`，外部导入器只接受 `recomputed-subset` 或 `controlled-rerun`。
 
@@ -460,7 +462,7 @@ QMSum 已跑各一题 SN/BM25 的真实生成与新评分/比较。SN 当时旧 
 
 ALCE 人工评测样本缺完整引用映射时使用 `citation_mapping_status=unavailable`，`--alce-full` 明确拒绝；新增 `--alce-answer-only` 则仅关闭固定原版 CLI 的 citations，仍可运行 ASQA QA/MAUVE/ROUGE 或 ELI5 claims-NLI/MAUVE/ROUGE。ELI5 仍使用原 AutoAIS 模型判 claims。引用分数/分母保持不存在并标 pending，不填零。模式、模型及原命令属于 scorer 身份，两侧比较必须一致。批次模型指标不能作为逐题值重复填充，也不能用于现有逐题 bootstrap。代码已验证，真实模型执行尚未验收。
 
-框架内 BM25/full-context/candidate-topk 属于自建控制组，用于检查 SN 相对朴素方法的收益；它们不能代替 LED、MultiHop dense/hybrid、ALCE VANILLA/RERANK 或 QMSum 作者模型的复现。没有独立在线榜单，也仍可用公开答卷/检查点作可靠比较；有榜单则仍需核对它是否同一协议。
+框架内 BM25/full-context/candidate-topk 属于自建控制组，用于检查 SN 相对朴素方法的收益；它们不能代替 LED、MultiHop dense/hybrid、ALCE VANILLA/RERANK 或 QMSum 作者模型的复现。QASPER、ALCE、QMSum 当前未核实作者维护的独立在线榜单；MultiHop-RAG 有作者 HF Space 的静态结果表和邮件提交指南，但当前休眠且未验证自动评分/持续维护。无论是否存在榜单，都必须核对它是否使用同一协议。
 
 ## 9. 当前符合程度与服务器验收项
 
@@ -528,7 +530,7 @@ QASPER Evidence F1 只有该批全部映射完成时才可报告；旧无快照�
 | QMSum 独立校准 | `var/qmsum-official-calibration/verified-calibration/report.json`、`alignment-audit.json` | Perl/pyrouge 一致性、279/281 对齐差异与历史分数残差 |
 | 一题真实比较 | `var/benchmark-protocol-validation/comparison-qasper-validated-20260924/`、`comparison-qmsum-validated-20260924/` | SN/BM25 生成到比较链路；不支持整体性能结论 |
 
-协议修正阶段的 Python 基线为657项；2026-09-24 QASPER 证据接入回归为697项，2026-09-26 HotpotQA 适配后的阶段回归为 **704 passed、2 skipped**（当前最新为 749 passed、2 skipped，见[评测状态](evaluation-status.md)）。两个跳过项需要 sibling project/native judge 或显式本地 Perl ROUGE；Dashboard JavaScript 当前为 **34 passed、0 skipped**。没有新模型调用。命令与执行记录见[协议记录](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md#evidence-log)和[证据接入记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)。
+以下为历史回归快照：协议修正阶段的 Python 基线为 657 项；2026-09-24 QASPER 证据接入回归为 697 项，2026-09-26 HotpotQA 适配后的阶段回归为 **704 passed、2 skipped**，2026-09-28 的另一阶段记录为 **749 passed、2 skipped**。当时两个跳过项需要 sibling project/native judge 或显式本地 Perl ROUGE；Dashboard JavaScript 当时记录为 **34 passed、0 skipped**。这些数量不代表当前测试集合；后续最新已记录验证见[评测状态](evaluation-status.md)。上述校准没有新模型调用。命令与执行记录见[协议记录](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md#evidence-log)和[证据接入记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)。
 
 ### 10.3 回归测试保护哪些契约
 

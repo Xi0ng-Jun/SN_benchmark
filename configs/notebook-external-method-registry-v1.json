@@ -1,6 +1,6 @@
 {
   "format": "notebook-external-method-registry-v1",
-  "updated": "2026-09-28",
+  "updated": "2026-10-09",
   "status": "observed external rescoring: MultiHop full, ALCE ASQA samples and QMSum Socratic full; SN comparisons and remaining candidates pending",
   "protocol": {
     "bundle_revision": "notebook-data-v3",
@@ -52,7 +52,8 @@
       "source_revision": "HF revision 334fa2e7dd32040c3fef931a123c4be1a81e91a0",
       "planned_scope": "all cases in the frozen ordinary bundle for each task",
       "expected_count": null,
-      "count_status": "verify from the frozen bundle before execution",
+      "expected_count_by_task": {"asqa": 948, "qampari": 1000, "eli5": 1000},
+      "count_status": "verified frozen release counts by task; expected_count is null because tasks are separate scopes, not one pooled benchmark; recheck server bundles before execution",
       "primary_metrics": [
         "task-specific official text metric"
       ],

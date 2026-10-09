@@ -135,6 +135,8 @@ HMNet 资料的最终分类是：
 
 ## Multi-Meta-RAG：首个可重评分的外部逐题答卷
 
+**历史子集快照，已由完整范围结果替代：** 以下 146 题、97/146 和检索指标 pending 记录仅对应当时截断下载的工件。2026-09-28 已取得两模型各 2,556 题及真实排名；当前主结果与检索分母 2,255 见[最新结果 §2](notebook-external-results-2026-09-28.md#2-multi-meta-rag完整-2556-题)。保留本节用于旧工件回放，不代表当前下载或执行限制。
+
 ### 来源与条件
 
 在 Multi-Meta-RAG 提交 `e77e4638cbae16fa7a63f291e73230d5bb356081` 中，作者提供了 `qa_output/gpt-4-voyage-02-filtering.json` 和生成脚本 `qa_gpt.py`。脚本明确使用 `gpt-4-0613`、temperature `0.1`，从 `voyage-02_256_32_with_filtering.json` 的检索列表取前 6 条资料生成答案；该仓库的检索代码记录 Voyage-02 embedding、`BAAI/bge-reranker-large` 和 256/32 chunk 设置。每行同时保存 `query`、prompt、`model_answer`、`gold_answer` 和 `question_type`。`gold_answer` 是作者输出文件中的评测观察字段，不是导入的预测文本，也不在保存的 generation prompt 中作为答案输入；导入审计保留它以便核对来源。

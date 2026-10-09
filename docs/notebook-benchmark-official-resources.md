@@ -1,6 +1,6 @@
 # QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA 官方资料手册
 
-资料检索：2026-09-23；完整文件与评分证据更新：2026-09-24；HotpotQA 资料与适配更新：2026-09-26。文档状态：外部来源参考，供后续整理、论文阅读与实验设计使用。返回[文档导航](README.md)。
+资料检索：2026-09-23；完整文件与评分证据更新：2026-09-24；HotpotQA 资料与适配更新：2026-09-26；MultiHop-RAG 作者结果/提交入口补查：2026-10-09。文档状态：外部来源参考，供后续整理、论文阅读与实验设计使用。返回[文档导航](README.md)。
 
 本页最初整理网页资料；随后已验证完整QASPER/QMSum文件、Perl评分校准与一题真实SN/BM25实验。2026-09-24又经代理下载并校验MultiHop/ALCE固定完整文件，完成真实数据及文本评分核查；ALCE大型评分模型尚未运行。下文区分**论文报告规模**、**发布页面记录单位**与**本项目实测口径**；链接状态是核查时观察，实际证据见[实验计划](notebook-benchmark-experiment-plan.md)和[MultiHop/ALCE验收](notebook-benchmark-real-data-validation.md)。
 
@@ -11,7 +11,7 @@
 | Benchmark | 主要任务 | 原始论文 | 作者 GitHub | 作者/发布机构 Hugging Face | 榜单情况 |
 | --- | --- | --- | --- | --- | --- |
 | QASPER | 基于一篇科研论文问答，并定位证据 | [NAACL 2021](https://aclanthology.org/2021.naacl-main.365/) | [allenai/qasper-led-baseline](https://github.com/allenai/qasper-led-baseline) | [allenai/qasper](https://huggingface.co/datasets/allenai/qasper) | 数据卡链接历史 Papers with Code；本次不能作为有效排名入口，详见 §2.4 |
-| MultiHop-RAG | 跨新闻文档的检索与多跳问答 | [arXiv:2401.15391](https://arxiv.org/abs/2401.15391)，作者仓库标明 COLM 2024 | [yixuantt/MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG) | [yixuantt/MultiHopRAG](https://huggingface.co/datasets/yixuantt/MultiHopRAG) | 在已查作者入口中未找到独立官方提交榜单；论文提供结果表 |
+| MultiHop-RAG | 跨新闻文档的检索与多跳问答 | [arXiv:2401.15391](https://arxiv.org/abs/2401.15391)，作者仓库标明 COLM 2024 | [yixuantt/MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG) | [yixuantt/MultiHopRAG](https://huggingface.co/datasets/yixuantt/MultiHopRAG) | 作者 HF Space 提供结果表与邮件提交说明；当前休眠，未验证自动评分或持续维护，详见 §3.4 |
 | ALCE | 带引用生成：流畅性、答案正确性和引用支持 | [EMNLP 2023](https://aclanthology.org/2023.emnlp-main.398/) | [princeton-nlp/ALCE](https://github.com/princeton-nlp/ALCE) | [princeton-nlp/ALCE-data](https://huggingface.co/datasets/princeton-nlp/ALCE-data) | 在已查作者入口中未找到独立官方提交榜单；按三个子任务阅读论文结果 |
 | QMSum | 根据用户查询总结一场长会议的相关内容 | [NAACL 2021](https://aclanthology.org/2021.naacl-main.472/) | [Yale-LILY/QMSum](https://github.com/Yale-LILY/QMSum) | 未从原论文和作者仓库确认原作者维护的独立 HF 数据集；衍生版本见 §5.4 | 作者仓库提供实验结果；SCROLLS 等为衍生套件，旧网站存在访问异常 |
 | HotpotQA | 给定带干扰段落的多跳问答与句子级 supporting facts | [EMNLP 2018](https://aclanthology.org/D18-1259/) | [hotpotqa/hotpot](https://github.com/hotpotqa/hotpot) | [hotpotqa/hotpot_qa](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | 官方主页提供 Codalab test 提交流程；本项目不提交榜单，论文/主页结果按 setting 分开读取 |
@@ -109,6 +109,7 @@
 | COLM 会议页 | [OpenReview](https://openreview.net/forum?id=t4eB3zYWBK) | 本次返回浏览器验证页，未读取评审内容；论文可由 arXiv 阅读 |
 | 官方仓库 | [yixuantt/MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG) | 检索、问答、数据构建示例 |
 | 作者 HF 数据集 | [yixuantt/MultiHopRAG](https://huggingface.co/datasets/yixuantt/MultiHopRAG) | GitHub 直接指向的作者发布 |
+| 作者结果/提交入口 | [HF Space](https://huggingface.co/spaces/yixuantt/MultiHop-RAG)、[结果表](https://huggingface.co/spaces/yixuantt/MultiHop-RAG/blob/main/data.jsonl)、[邮件提交说明](https://huggingface.co/spaces/yixuantt/MultiHop-RAG/blob/main/note.py) | 作者账号托管；访问状态及比较限制见 §3.4 |
 | 题目文件 | [MultiHopRAG.json](https://huggingface.co/datasets/yixuantt/MultiHopRAG/blob/main/MultiHopRAG.json) | 问题、答案、题型和 evidence |
 | 语料文件 | [corpus.json](https://huggingface.co/datasets/yixuantt/MultiHopRAG/blob/main/corpus.json) | 文章正文和元数据 |
 | 语料预览 | [corpus/train](https://huggingface.co/datasets/yixuantt/MultiHopRAG/viewer/corpus/train) | 609 行，以文章为单位 |
@@ -146,7 +147,9 @@ HF 的两个 config 是 `MultiHopRAG` 和 `corpus`，发布预览均为 `train`�
 
 ### 3.4 Leaderboard 与许可
 
-在本次检查的作者仓库、HF 数据卡和论文入口中，未找到独立的官方在线提交榜单或明确的提交协议。可查论文检索/生成结果表及仓库示例；其他团队自建的 “MultiHop-RAG leaderboard” 不能自动视为作者统一验收的排名。
+2026-10-09 补查确认作者账号托管的 [HF Space](https://huggingface.co/spaces/yixuantt/MultiHop-RAG) 提供结果展示和提交说明。[`data.jsonl`](https://huggingface.co/spaces/yixuantt/MultiHop-RAG/blob/main/data.jsonl) 保存六条 `naive_RAG` 结果，记录生成模型、embedding、reranker、chunk size，以及 Accuracy、MRR@10、Hit@10；[`note.py`](https://huggingface.co/spaces/yixuantt/MultiHop-RAG/blob/main/note.py) 要求通过邮件提交指标、方法说明和逐查询检索/QA 记录。因此此前“未找到明确提交协议”的说明不完整。
+
+核查时 Space 显示 **Sleeping**；已确认的是作者结果表与邮件提交指南，未验证自动评分、提交流程是否仍接受结果或榜单是否持续维护。上述表格未给出精确 scorer 版本、完整分母或 null query 处理，不能直接等同于本项目固定脚本的重评分值。引用时标为作者页面参考值（`published-reference`），记录页面/文件版本、模型和条件，未知项保留；其他团队自建榜单也不能自动视为作者统一验收的排名。
 
 作者 [README](https://github.com/yixuantt/MultiHop-RAG#license) 和 [HF 数据卡](https://huggingface.co/datasets/yixuantt/MultiHopRAG/blob/main/README.md) 标注 **ODC-BY**。该标注不应改写成 MIT/Apache 代码许可，也不等于所有新闻原文都脱离其原有来源条款。
 
@@ -335,7 +338,7 @@ HotpotQA 数据与处理后的 Wikipedia 语料按 **CC BY-SA 4.0** 发布；使
 | 历史 SCROLLS 网站 | 官方材料曾提供的榜单/提交入口 | 优先从上述 GitHub/HF 回溯 | `www.scrolls-benchmark.com/leaderboard` 本次重定向至无关站点，不作为可用榜单链接推荐 |
 | 历史 ZeroSCROLLS 网站 | 相关套件历史入口 | 优先使用其 HF 数据卡 | 本次访问 `www.zero.scrolls-benchmark.com` 未能取得页面，未验证在线提交功能 |
 
-本次没有向任何榜单提交结果、登录账户或验证提交流程。对 MultiHop-RAG、ALCE、QMSum 的“未找到独立官方榜单”，含义仅是**已检查的论文、作者仓库和数据卡未提供可确认入口**，不是证明网上不存在任何相关榜单。
+本次没有向任何榜单提交结果、登录账户或验证提交流程。MultiHop-RAG 已确认作者结果表与邮件提交指南，状态与限制见 §3.4。对 ALCE、QMSum 的“未找到独立官方榜单”，含义仅是**已检查的论文、作者仓库和数据卡未提供可确认入口**，不是证明网上不存在任何相关榜单。
 
 ## 8. 与 Silicon Notebook 当前评测的对应关系
 

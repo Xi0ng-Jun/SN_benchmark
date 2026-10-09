@@ -134,4 +134,4 @@ results 带 compact 答卷、官方成绩/审计、scope/coverage/来源身份�
 - 失败/缺失/clarification/no_answer 的状态计数和 retry parent；
 - smoke gate 报告与 full gate 报告。
 
-收到这些工件前，只能说“入口已准备”或“smoke/full 正在服务器执行”，不能说候选方法已经复现，也不能声称 SN 超过任何外部方法。`published-reference`、`recomputed-subset`、`controlled-rerun` 必须在报告中保持三条独立轨道。
+收到这些工件前，只能说“入口已准备”或根据实际运行证据说“smoke/full 正在服务器执行”，不能说候选方法已经复现，也不能声称 SN 超过任何外部方法。报告分别使用“发表参考值”（`published-reference`）、“公开答卷重评分”（`recomputed-subset`）和“受控重跑”（`controlled-rerun`）三条轨道；机器标签保留，重评分范围单列为 full/subset。参考值逐项注明模型/检查点、split/setting、输入条件、scorer/版本与分母，来源缺项标未知。

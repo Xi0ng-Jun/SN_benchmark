@@ -1,6 +1,6 @@
 # Notebook Benchmark：正确评测与比较
 
-更新：2026-09-28。当前开发分支为 `feat/benchmark-protocol-correctness`，已推送远程。服务器执行时以实际 checkout SHA 为准。本页是新实验入口；[先前计划](archive/2026-09/notebook-benchmark-experiment-plan-pre-v3.md)保留历史背景。历史服务器结果不再是前置条件。正式模型实验只在服务器执行；本机已完成数据与评分适配核对，不再启动模型调用。生产部署、定时任务和远程发布不在本轮范围。
+实验进展快照：2026-09-28；事实与范围表述澄清：2026-10-09。开发分支为 `feat/benchmark-protocol-correctness`；服务器执行时以实际 checkout SHA 为准。本页保留实验协议与候选计划；当前执行范围以 [CURRENT_STATE.md](../CURRENT_STATE.md) 为准，服务器先做 SN-only，外部方法/reference 暂缓。[先前计划](archive/2026-09/notebook-benchmark-experiment-plan-pre-v3.md)保留历史背景。历史服务器结果不再是前置条件。正式模型实验只在服务器执行；本机已完成数据与评分适配核对，不再启动模型调用。生产部署、定时任务和远程发布不在本轮范围。
 
 ## 目标与流程
 
@@ -32,7 +32,7 @@ HotpotQA 第一版只进入 `distractor/validation`：每题的 context 是完�
 
 ## 实际验证与未完成项
 
-2026-09-28当前工作树回归为749项Python测试通过、2项因缺少显式可选环境而跳过；Dashboard JavaScript最近记录为34项通过，本轮未改动或重跑。跳过项不涉及 HotpotQA 适配。具体命令与本轮范围见[评测状态](evaluation-status.md)，此前审查修复见[协议实施记录](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md)与[QASPER证据接入记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)。测试通过不替代下表的真实数据、模型和外部方法验收。
+2026-09-28 入口补齐前的历史回归快照为 749 项 Python 测试通过、2 项因缺少显式可选环境而跳过；Dashboard JavaScript 当时最近记录为 34 项通过。跳过项不涉及 HotpotQA 适配。这些计数保留为阶段证据，不代表当前测试数量；后续最新已记录验证见[评测状态](evaluation-status.md)，此前审查修复见[协议实施记录](superpowers/plans/2026-09-23-benchmark-protocol-correctness.md)与[QASPER证据接入记录](superpowers/plans/2026-09-24-qasper-sn-evidence.md)。测试通过不替代下表的真实数据、模型和外部方法验收。
 
 | 验证 | 实际结果 | 结论范围 |
 | --- | --- | --- |
@@ -41,7 +41,7 @@ HotpotQA 第一版只进入 `distractor/validation`：每题的 context 是完�
 | HotpotQA 完整数据与评分 | HF 固定 7,405 题/73,700 段落已适配；49 个空白句位和一处越界 gold 原样保留；12 项评分与原版 CLI 在全量合成校准上误差小于 1e-12 | 校准不是模型成绩；SN 运行及 supporting-fact projection 仍 pending |
 | QMSum HMNet公开答卷校准 | 同序同分句时，当前SPL与独立pyrouge SEE均36.464/11.374/31.558 | 两种封装调用同一Perl一致；未严格复现README 36.51/11.41/31.60 |
 | QASPER一题新实验 | SN chunk与BM25真实生成、答卷导出、官方评分、比较CLI成功 | 链路smoke，不支持方法排名 |
-| QASPER最终引用证据 | 已保存一题只读恢复 `4:0`，原CLI与框架Evidence F1=1、Answer F1=2/3；416篇11,065块/81,316截短验收通过，8个人工评分反例校准 | 新快照与旧显式导出可用；无新生成，不代表全量或所有reasoning路径 |
+| QASPER最终引用证据 | 已保存一题只读恢复 `4:0`，原CLI与框架Evidence F1=1、Answer F1=2/3；416篇11,065块/81,316截短验收通过，8 个手算评分器校准反例 | 新快照与旧显式导出可用；校准反例不是独立人工评测；无新生成，不代表全量或所有reasoning路径 |
 | QMSum一题新实验 | SN chunk与BM25真实生成、Perl评分、比较CLI成功；SN原Python ROUGE诊断缺包error，未覆盖此错误 | 验证答卷独立于旧诊断保存，可单独重评分；不是正式全量实验 |
 | MultiHop完整适配与评分 | 固定官方下载校验成功；2556题/609文章/6084证据，0排除；独立BM25排名、全题正负QA校准和官方完整检索/QA CLI对齐 | 真实完整数据、输入隔离与评分桥接验收；无新SN生成 |
 | ALCE完整数据与文本评分 | 包SHA256匹配；ASQA948、QAMPARI1000、ELI51000；5个普通候选文件完整适配，原始CLI文本指标与预处理对齐 | 实际候选数/重复/空别名保留；具体输入隔离及oracle核验见[验收记录](notebook-benchmark-real-data-validation.md) |
@@ -176,8 +176,8 @@ QASPER LAB LongChat citation 与 HotpotQA KG2RAG 的独立运行入口分别为 
 | MultiHop | [作者检索+QA](https://github.com/yixuantt/MultiHop-RAG)，[Multi-Meta-RAG](https://github.com/mxpoliakov/Multi-Meta-RAG) | 固定提交 GPT-4/PaLM 各 2,556 题已完整导入和配对；官方 QA 分别 0.606025/0.607590，共享排名的 Hits@10=0.904213（2,255 题）。作者完整索引身份仍未证明；SN 答卷尚未生成 |
 | ALCE | [官方VANILLA/RERANK](https://github.com/princeton-nlp/ALCE)，[Self-RAG ASQA](https://github.com/AkariAsai/self-rag) | 官方 human_eval 的 ASQA/ELI5 各四配置、各100题已导入；ASQA 文本指标已配对。完整生成条件和显示文档列表缺失；仅答案模型评分入口已实现，真实模型执行与引用指标 pending |
 | QMSum | [Socratic SegEnc](https://github.com/salesforce/socratic-pretraining)、[SegEnc](https://github.com/salesforce/query-focused-sum)、[SummN](https://github.com/psunlpgroup/Summ-N) | Socratic 281 题已按公开代码顺序映射和 Perl 重评，原运行清单不可得；SegEnc 原链接 403；SummN 279 行未映射；HMNet gold-input 仅校准 |
-| HotpotQA | 官方 baseline / reader；BM25/full-context 控制组；future fullwiki retriever 单列 | [论文](https://aclanthology.org/D18-1259/)、[官方仓库](https://github.com/hotpotqa/hotpot) | distractor validation 可在固定 context 上受控重跑；论文 leaderboard/test 结果为 `published-reference`；fullwiki 不与本轨配对 | distractor/fullwiki；validation/test；句子级 supporting-fact 预测；Answer 与 Joint 分开；SN 当前 supporting projection pending |
+| HotpotQA | [官方 baseline / reader](https://github.com/hotpotqa/hotpot)、[论文](https://aclanthology.org/D18-1259/)，BM25/full-context 控制组；future fullwiki retriever 单列 | distractor validation 可在固定 context 上受控重跑；论文 leaderboard/test 结果为 `published-reference`；fullwiki 不与本轨配对。明确 distractor/fullwiki、validation/test、句子级 supporting-fact 预测；Answer 与 Supporting Fact/Joint 分开，SN 投影已离线校准，服务器真实回放待验收 |
 
-标签：`published-reference`为条件不同的论文值；`recomputed-subset`为题目对齐后的公开答卷重评分；`controlled-rerun`为本协议重新运行。论文或代码链接不能代替实际执行结果。
+报告类别使用“发表参考值”（`published-reference`）、“公开答卷重评分”（机器标签 `recomputed-subset`）和“受控重跑”（`controlled-rerun`）。公开答卷重评分可以覆盖 full 或 subset，必须另列实际范围和分母。论文或代码链接不能代替实际执行结果；参考值需注明模型/检查点、split/setting、输入条件、scorer/版本与分母，缺项明确标未知。
 
 下一步在服务器按固定官方文件准备运行环境、补齐ALCE评分模型，并扩大事前冻结的SN chunk/reasoning/BM25/full-context实验及核对外部答卷。MultiHop/ALCE下载阻塞已解除，本次真实数据证据见[验收记录](notebook-benchmark-real-data-validation.md)。五套正式全量和外部方法结论尚未产出；不要求用户找回旧run或代替开发者选择技术实现。

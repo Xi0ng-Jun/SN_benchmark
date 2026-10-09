@@ -35,7 +35,7 @@
     },
     "alce": {
       "bundle_names": ["alce-asqa-v3", "alce-qampari-v3", "alce-eli5-v3"],
-      "split": "eval",
+      "split": "task-specific development-set release files; ordinary variants",
       "expected_cases": {"asqa": 948, "qampari": 1000, "eli5": 1000},
       "primary_metrics": ["task_native_text_metrics"],
       "conditional_metrics": ["autoais", "claims_qa_nli", "mauve", "rouge_lsum"],
@@ -55,7 +55,7 @@
       "split": "validation",
       "expected_cases": 7405,
       "primary_metrics": ["answer_em", "answer_f1", "answer_precision", "answer_recall"],
-      "conditional_metrics": ["supporting_fact_em", "joint_em"],
+      "conditional_metrics": ["supporting_fact_em", "supporting_fact_f1", "supporting_fact_prec", "supporting_fact_recall", "joint_em", "joint_f1", "joint_prec", "joint_recall"],
       "diagnostics": ["context_coverage", "question_type", "level", "status_counts"],
       "smoke_case_file": "configs/comparison-scopes/smoke-hotpotqa.txt"
     }

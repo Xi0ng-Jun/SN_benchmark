@@ -54,7 +54,9 @@ ALCE VANILLA 新增 `scripts/run_alce_vanilla.py`，复用固定作者的两示�
 
 `scripts/run_notebook_agent.py` 使用 `sn-deepeval-native-v1`，默认评检索/合成组件；`--trajectory` 才评完整 Agent 轨迹。回答和组件先保存，judge 随后评分。`scripts/score_native_components.py` 可从已保存组件建立独立补评目录。入口、失败语义和超时边界见[原生 Agent](native-agent-evaluation.md)与[评分恢复](native-scoring-recovery.md)。
 
-## 验证证据
+## 历史验证证据
+
+以下 2026-09 阶段计数对应当时的测试集合；退役清理和后续存储改造已经改变集合，不能与当前数量混用。最新已记录离线验证见本页 2026-10-08 条目；本次文档澄清未重跑全量测试或核实服务器进度。
 
 2026-09-28 当前代码完整回归：**769 passed，2 skipped**。新增 SN MultiHop chunk native ranking capture、官方检索回放字段及 3 项定向测试；`sn_retrieval.py`、runner 接入、官方检索回放和既有 v3 runtime 共 47 项定向测试通过。题型自动汇总新增 2 项测试，review/comparison 合计 78 项通过；独立只读复核未发现实质问题。MultiHop/ALCE 已生成新汇总报告，原比较哈希、抽样选择及案例内容不变；MultiHop 2,556 题的四个题型统计与此前独立分析一致。两个跳过项仍需显式 native judge checkout 或本地 Perl ROUGE 环境；QMSum 的真实 Perl 重评分已另行完成。
 
