@@ -149,6 +149,30 @@ def test_shared_source_bytes_must_match_original_code_identity(tmp_path):
         reader.validate_sources(store, refs, code)
 
 
+def test_shared_captured_source_bytes_match_manifest_identity(tmp_path):
+    from rag_eval.artifact_store import write_run_refs
+    from rag_eval.identity import fingerprint
+    from rag_eval.run_reader import RunReadContext
+    store = ArtifactStore(tmp_path/'artifacts')
+    evaluator = store.install_bytes('evaluator', {'src/rag_eval/x.py': b'code'}, identity={})
+    archive = b'captured archive'
+    actual_manifest = {'backend/app/core/text_whitespace.py': {'sha256': 'a' * 64, 'size': 1}}
+    sn = store.install_bytes(
+        'sn', {'product-source.tar': archive},
+        identity={'source_format': 'sn-source-capture-v1',
+                  'source_manifest_sha256': fingerprint(actual_manifest),
+                  'actual_manifest': actual_manifest},
+    )
+    reader = RunReadContext()
+    refs = {'sources': {'evaluator': evaluator, 'sn': sn}}
+    code = {'benchmark_source_hashes': {'src/rag_eval/x.py': __import__('hashlib').sha256(b'code').hexdigest()},
+            'product_archive_sha256': __import__('hashlib').sha256(archive).hexdigest(),
+            'source_format': 'sn-source-capture-v1',
+            'actual_manifest': actual_manifest,
+            'source_manifest_sha256': fingerprint(actual_manifest)}
+    reader.validate_sources(store, refs, code)
+
+
 def test_publication_cannot_write_inside_shared_object(tmp_path):
     from rag_eval.benchmark_submission import write_submission
     from test_notebook_execution import bundle_fixture

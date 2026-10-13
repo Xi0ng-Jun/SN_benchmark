@@ -7,10 +7,20 @@
 - [删除记录 DELETION_LOG](../DELETION_LOG.md)：本轮实际删除、共用职责迁移、原因与验证。
 - [工程清理清单 TRIAGE](../TRIAGE.md)：清理后的保留／待删／未知；剩余旧假设、测试、兼容层、门禁和配置债务。
 
+- [目标与规划](goal-and-roadmap.md)：总体目标的精确表述、理想形态、现状能力表、与理想的差距、初版规划 R1 与减法清单；2026-10-13 起方向性问题以此页为准。
+- [R1 规划的 agent 执行 prompt](superpowers/plans/2026-10-13-roadmap-v1-agent-prompts.md)：按工作项给出 agent／模型选择、owned 范围、输入、交付与验收。
 - [当前状态 SPEC](../CURRENT_STATE.md)：当前目标、不变量、有效约束、废弃假设、暂缓债务与明确非目标；开发首读页。
 - [当前架构 ARCHITECTURE_CURRENT](../ARCHITECTURE_CURRENT.md)：代码入口、数据与调用关系、外部依赖、Git 演进及高风险边界。
 - [验证与实验记录](evaluation-status.md)：代码快照、本地验证、服务器转述和阶段进展。
 - [评测上下文](evaluation-context.md)：范围、证据分层、隔离规则、协议身份和非目标。
+
+## 产品规划（草案）
+
+- [评测与改进工作台 PRD v0.4](evaluation-improvement-workbench-prd.md)：workspace／Task／Agent 协作、手动选题评测、证据建议、有界改码与验证的需求和验收；待评审，不改变当前实验执行范围。
+- [评测与改进工作台技术方案 v0.4](superpowers/specs/2026-10-10-evaluation-improvement-workbench-design.md)：单服务器工作台、Paseo 公共SDK与对齐技术栈、Task／会话／Job 分层、源码运行绑定、改码验证时序与恢复；整体方案草案，实际实现范围见下方。
+
+- [设计与开发参考 v0.4](product/sn-workbench/README.md)：Paseo 选型及交互参考、接口事件草案、可点击原型和开发顺序建议；细节在开发中收敛。
+- [工作台使用与开发说明](../apps/sn-workbench/README.md)：本地切片的结果／案例、人评／笔记、A Agent 协作、B 计划草稿修订与 C 只读比较；Paseo 启动、CLI、备份、验收及已披露限制。
 
 ## Wiki 入口
 
@@ -59,3 +69,6 @@
 - [2026-10-08 保存／导出离线验证与合成规模记录](result-storage-export-verification-2026-10-08.md)
 
 - [已有完成实验的服务器导出升级指令](server-upgrade-running-export-prompt.md)
+## 服务器接入
+
+- [当前工作台服务器交接](server-workbench-handoff.md)：精确版本同步、独立安装、可信输入与 Agent 绑定、启动及离线验收。

@@ -1,0 +1,10 @@
+{
+  "config": {
+    "url": "ws://127.0.0.1:6767/ws",
+    "connectTimeoutMs": 10000
+  },
+  "command": {
+    "op": "readAgent",
+    "agentId": "agent-example"
+  }
+}

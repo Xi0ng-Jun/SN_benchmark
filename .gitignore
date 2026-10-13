@@ -8,6 +8,9 @@ __pycache__/
 *.egg-info/
 edtrace/
 node_modules/
+apps/sn-workbench/.expo/
+apps/sn-workbench/dist/
+apps/sn-workbench/test-results/
 /data/*
 !/data/README.md
 results/domain-*
@@ -33,3 +36,8 @@ var/**
 !var/README.md
 
 .worktrees/
+
+# Machine-owned configuration and disposable UI/bridge build probes
+configs/sn-workbench-local.json
+apps/sn-workbench/dist-*/
+apps/sn-agent-bridge/.send-test-*/

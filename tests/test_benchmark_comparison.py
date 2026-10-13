@@ -1,5 +1,6 @@
 """Comparison must reject incompatible artifacts before producing a result."""
 import copy
+import hashlib
 import importlib
 import json
 from pathlib import Path
@@ -92,6 +93,64 @@ def test_batch_metrics_are_preserved_while_paired_differences_keep_groups(tmp_pa
     assert pair['paired'][0]['group_id'] == bundle['cases'][0]['group_id']
     assert report['uncertainty']['computed'] is False
     assert set(report['method_differences']) >= {'model_identity', 'configuration'}
+
+
+def test_frozen_objects_use_same_comparison_as_paths_without_source_files(tmp_path):
+    compare = module()
+    _, entries, submissions, scores = examples(tmp_path)
+    expected = compare.compare_submissions(tmp_path / 'bundle', entries)
+    frozen = [{'submission': sub, 'scores': score,
+               'source': {'snapshot_id': fingerprint({'submission': sub, 'scores': score}),
+                          'source_hashes': {key: hashlib.sha256(Path(entry[key]).read_bytes()).hexdigest()
+                                            for key in ('submission', 'scores')}}}
+              for sub, score, entry in zip(submissions, scores, entries)]
+    before = copy.deepcopy(frozen)
+    for entry in entries:
+        for path in entry.values():
+            path.unlink()
+    actual = compare.compare_frozen_submissions(tmp_path / 'bundle', frozen)
+    assert frozen == before
+    for index, method in enumerate(actual['methods']):
+        assert method['files'] == frozen[index]['source']
+        assert 'path' not in method['files']
+        method['files'] = expected['methods'][index]['files']
+    actual.pop('report_id'); expected.pop('report_id')
+    assert actual == expected
+
+
+@pytest.mark.parametrize('mutation', ['incomplete', 'different_scorer', 'published', 'missing_category'])
+def test_frozen_objects_keep_formal_admission_checks(tmp_path, mutation):
+    compare = module()
+    bundle, _, submissions, scores = examples(tmp_path)
+    if mutation in ('published', 'missing_category'):
+        method = copy.deepcopy(submissions[1]['method'])
+        if mutation == 'published':
+            method['kind'] = 'published'; method['configuration']['comparison_category'] = 'published-reference'
+        else:
+            method['configuration'].pop('comparison_category')
+        submissions[1] = build_submission(bundle, method=method, predictions=submissions[1]['predictions'])
+    elif mutation == 'incomplete':
+        predictions = copy.deepcopy(submissions[1]['predictions'])
+        predictions[0].update(status='error', prediction='')
+        submissions[1] = build_submission(bundle, method=submissions[1]['method'], predictions=predictions)
+        scores[1]['submission_id'] = fingerprint(submissions[1])
+        scores[1]['coverage'] = submissions[1]['coverage']
+        scores[1]['per_case'][0]['status'] = 'error'
+        scores[1]['prepared_id'] = fingerprint(official.prepare_inputs(bundle, submissions[1]))
+        rehash(scores[1])
+    else:
+        scores[1]['dependencies']['python'] = 'different'
+        identity = official.scorer_identity(scores[1]['profile'], scores[1]['dependencies'])
+        scores[1]['scorer_identity'] = identity; scores[1]['scorer_id'] = fingerprint(identity)
+        rehash(scores[1])
+    frozen = [{'submission': sub, 'scores': score,
+               'source': {'snapshot_id': str(i) * 64,
+                          'source_hashes': {'submission': 'a' * 64, 'scores': 'b' * 64}}}
+              for i, (sub, score) in enumerate(zip(submissions, scores))]
+    expected_reason = {'incomplete': 'complete generation', 'different_scorer': 'different scorer_id',
+                       'published': 'published-reference cannot', 'missing_category': 'comparison_category is required'}
+    with pytest.raises(ValueError, match=expected_reason[mutation]):
+        compare.compare_frozen_submissions(tmp_path / 'bundle', frozen)
 
 
 def test_only_common_metrics_are_compared_and_pending_differences_are_explicit(tmp_path):

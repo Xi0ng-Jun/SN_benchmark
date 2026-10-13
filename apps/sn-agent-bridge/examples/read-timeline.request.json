@@ -1,0 +1,17 @@
+{
+  "config": {
+    "url": "ws://127.0.0.1:6767/ws",
+    "connectTimeoutMs": 10000
+  },
+  "command": {
+    "op": "readTimeline",
+    "agentId": "agent-example",
+    "direction": "before",
+    "cursor": {
+      "epoch": "epoch-example",
+      "seq": 14
+    },
+    "limit": 2,
+    "projection": "projected"
+  }
+}

@@ -95,12 +95,16 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
         # scores; an unfinished JSONL tail remains a disclosed missing record.
         loaded = load_run(path, context=context)
         manifest = loaded["manifest"]
+        if manifest is not None:
+            from .oracle_track import require_formal_run
+            require_formal_run(manifest)
         warnings = list(loaded["warnings"])
         key = fingerprint(str(path))
         cell = dict(key=key, path=str(path), run_id=path.name, suite=None, track=None, mode="native",
                     phase=loaded["state"].get("phase", "unknown"), planned_predictions=0,
                     planned_scores=0, saved_outputs=0, recorded_outputs=0, recorded_scores=0,
-                    warnings=warnings, manifest=manifest)
+                    warnings=warnings, manifest=manifest,
+                    scheduled_generation_audit=loaded.get('scheduled_generation_audit'))
         runs.append(cell)
         if manifest is None:
             audit.append({"run_key": key, "warnings": warnings})
@@ -110,7 +114,7 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
         if run_identity in seen_runs:
             raise ValueError("Duplicate saved run identity; copied runs must not be counted twice")
         seen_runs.add(run_identity)
-        config = dict(identity)
+        config = dict(loaded.get('comparison_identity', identity))
         if identity.get("source", {}).get("format") == "sn-notebook-benchmarks-v1":
             # load_run already verified complete source and indivisible scopes.
             config["notebook_context"] = {k: v for k, v in identity["notebook_context"].items() if k != "partition_id"}
@@ -128,6 +132,9 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
         results = {r["result_id"]: r for r in loaded["scores"]}
         events = defaultdict(list)
         for event in read_journal(_local_file(path, "model-events.jsonl"), warnings):
+            # Scheduled identities are run-level facts, never inferred cases.
+            if isinstance(event.get('kind'), str) and event['kind'].startswith('model_service_'):
+                continue
             if event.get("case_id"):
                 events[event["case_id"]].append(event)
         plans_by_case = defaultdict(list)
@@ -153,7 +160,7 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
                     "behavior": behavior.get("kind", "not_observed"),
                     "partition": ((identity.get("notebook_context") or {}).get("partition_id") or "unpartitioned"),
                     "phase": cell["phase"], "config_family": family,
-                    "pairing_id": manifest.get("pairing_id"),
+                    "pairing_id": loaded.get('comparison_pairing_id', manifest.get("pairing_id")),
                     "score": result["score"] if result else None,
                     "reason": result.get("reason") if result else "计划中存在，但尚未保存评分记录。",
                     "plan": plan, "result": result,

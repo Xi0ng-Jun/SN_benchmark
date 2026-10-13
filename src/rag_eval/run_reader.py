@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 
@@ -55,9 +56,23 @@ class RunReadContext:
             raise ValueError('Shared code requires both source artifact roles')
         objects = {role: json.loads((self.object(store, ref) / 'object.json').read_text())
                    for role, ref in sources.items()}
+        sn_identity = objects['sn']['identity']
+        source_files_match = objects['sn']['files'] == {
+            'product-source.tar': code.get('product_archive_sha256')
+        }
+        if sn_identity.get('source_format') == 'sn-source-capture-v1':
+            from .source_identity import captured_source_manifest
+            actual_manifest = captured_source_manifest(sn_identity)
+            recorded_manifest = captured_source_manifest(code)
+            source_binding_match = (
+                code.get('source_format') == sn_identity.get('source_format')
+                and code.get('source_manifest_sha256') == sn_identity.get('source_manifest_sha256')
+                and recorded_manifest == actual_manifest
+            )
+        else:
+            source_binding_match = sn_identity.get('product_revision') == code.get('product_revision')
         if (objects['evaluator']['files'] != code.get('benchmark_source_hashes')
-                or objects['sn']['files'] != {'product-source.tar': code.get('product_archive_sha256')}
-                or objects['sn']['identity'].get('product_revision') != code.get('product_revision')):
+                or not source_files_match or not source_binding_match):
             raise ValueError('Shared source artifacts differ from recorded code identity')
 
     def bundle(self, directory):
@@ -142,13 +157,15 @@ class RunReadContext:
             self._products[product_key] = self._lookups[key].partition(partition_id, request_revision)['product']
         return self._products[product_key]
 
-def read_journal(path, warnings):
+def _read_journal(path, warnings):
+    """Parse once and retain explicit file facts for model-event auditing."""
     if not path.exists():
         warnings.append(f"{path.name}: not created")
-        return []
+        return {'rows': [], 'journal_present': False, 'truncated_tail': False}
     content = path.read_text(encoding="utf-8")
     lines = content.splitlines()
     rows = []
+    truncated_tail = False
     for index, line in enumerate(lines):
         try:
             row = json.loads(line)
@@ -157,10 +174,101 @@ def read_journal(path, warnings):
             rows.append(row)
         except json.JSONDecodeError:
             if index == len(lines) - 1 and not content.endswith("\n"):
+                truncated_tail = True
                 warnings.append(f"{path.name}: incomplete final line ignored; run is incomplete")
             else:
                 raise ValueError(f"Corrupt journal: {path.name}, line {index + 1}") from None
-    return rows
+    return {'rows': rows, 'journal_present': True, 'truncated_tail': truncated_tail}
+
+
+def read_journal(path, warnings):
+    """Keep the existing row-only API and corruption/partial-tail behavior."""
+    return _read_journal(path, warnings)['rows']
+
+
+def read_model_events(path, warnings):
+    """Return saved rows and file facts without guessing from warning text."""
+    return _read_journal(path, warnings)
+
+
+def validate_runtime_dependencies(run, identity):
+    """Check saved startup observations offline, without inspecting this host."""
+    binding = identity.get('runtime_dependencies')
+    if binding is None:
+        return  # Historical runs did not declare this startup observation.
+    if (type(binding) is not dict
+            or set(binding) != {'format', 'observation_sha256', 'requirements_sha256',
+                               'environment_sha256', 'run_coordinate'}
+            or binding['format'] != 'sn-startup-binding-v1'):
+        raise ValueError('Invalid startup dependency reference')
+    runtime = json.loads((Path(run) / 'runtime-identity.json').read_text(encoding='utf-8'))
+    if type(runtime) is not dict or 'startup_dependencies' not in runtime:
+        raise ValueError('Missing startup dependency observation')
+    from .runtime_dependency_identity import (
+        DEFAULT_STARTUP_MODULES, parse_dependency_requirements, validate_startup_observation,
+    )
+    observation = validate_startup_observation(runtime['startup_dependencies'])
+    declarations = (Path(run) / 'dependency-requirements.txt').read_bytes()
+    if (fingerprint(observation) != binding['observation_sha256']
+            or observation['requirements']['sha256'] != binding['requirements_sha256']
+            or hashlib.sha256(declarations).hexdigest() != binding['requirements_sha256']
+            or observation['requirements']['size'] != len(declarations)):
+        raise ValueError('Saved startup dependency identity changed')
+    # Syntax parsing is host-neutral; marker truth remains validated against the
+    # saved marker_environment by the generic validator, never this reader's host.
+    entries = parse_dependency_requirements(declarations)['entries']
+    checked = [{key: value for key, value in row.items()
+                if key not in {'active', 'installed_version'}}
+               for row in observation['direct_requirements']]
+    if checked != entries:
+        raise ValueError('Saved declaration does not match startup checks')
+    if {row['module'] for row in observation['modules']} != set(DEFAULT_STARTUP_MODULES):
+        raise ValueError('Saved startup module set does not match runner contract')
+    from .runtime_dependency_comparison import startup_comparison_projection
+    environment = startup_comparison_projection(observation, run_coordinate=binding['run_coordinate'])
+    if fingerprint(environment) != binding['environment_sha256']:
+        raise ValueError('Saved startup environment comparison identity changed')
+    return {'format': environment['format'], 'sha256': binding['environment_sha256']}
+
+
+def validate_runtime_model_services(run, identity):
+    """Validate saved model startup facts without product/host configuration."""
+    binding = identity.get('runtime_model_services')
+    if binding is None:
+        return  # Runs preceding this observation retain their existing meaning.
+    if (type(binding) is not dict
+            or set(binding) != {'format', 'observation_sha256', 'source_modules_sha256'}
+            or binding['format'] != 'sn-loaded-model-services-binding-v1'):
+        raise ValueError('Invalid loaded model services binding')
+    runtime = json.loads((Path(run) / 'runtime-identity.json').read_text(encoding='utf-8'))
+    saved = runtime.get('loaded_model_services')
+    if type(saved) is not dict or set(saved) != {'observation', 'source_modules'}:
+        raise ValueError('Missing loaded model services observation')
+    from .runtime_model_identity import validate_loaded_model_identity
+    observation = validate_loaded_model_identity(saved['observation'])
+    if (fingerprint(observation) != binding['observation_sha256']
+            or observation['declared_config_sha256'] != identity.get('product_services')
+            or fingerprint(saved['source_modules']) != binding['source_modules_sha256']):
+        raise ValueError('Saved loaded model services identity changed')
+    manifest = identity.get('code', {}).get('actual_manifest', {})
+    modules = saved['source_modules']
+    if type(modules) is not list:
+        raise ValueError('Invalid model consumer source observations')
+    names = []
+    for item in modules:
+        if type(item) is not dict or set(item) != {'module', 'origin', 'sha256', 'size'}:
+            raise ValueError('Invalid model consumer source observation')
+        name, origin = item['module'], item['origin']
+        if not isinstance(name, str) or not (name == 'app' or name.startswith('app.')):
+            raise ValueError('Invalid model consumer source module')
+        base = 'backend/' + name.replace('.', '/')
+        if (origin not in {base + '.py', base + '/__init__.py'}
+                or manifest.get(origin) != {'sha256': item['sha256'], 'size': item['size']}):
+            raise ValueError('Model consumer source differs from capture')
+        names.append(name)
+    if (names != sorted(set(names)) or not {'app.core.event_logging',
+            'app.services.model_registry', 'app.services.model_provider'} <= set(names)):
+        raise ValueError('Missing model consumer source observations')
 
 
 def load_run(run, *, context=None, include_model_events=True):
@@ -176,6 +284,11 @@ def load_run(run, *, context=None, include_model_events=True):
         return {"path": str(run), "manifest": None, "state": state, "groups": [], "planned": [],
                 "outputs": [], "scores": [], "warnings": ["Initialization did not produce a complete run manifest"]}
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    from .oracle_track import RUN_FORMAT, read_oracle_run, require_formal_run
+    if manifest.get('format') == RUN_FORMAT:
+        return {**read_oracle_run(run), 'path': str(run), 'groups': [], 'scores': [],
+                'warnings': ['diagnostic/oracle: excluded from formal Notebook reports and official scoring']}
+    require_formal_run(manifest)
     artifacts = reference_identity(run)
     if manifest.get("artifact_identity") != artifacts.get("artifact_identity"):
         raise ValueError("Run artifact reference identity changed")
@@ -192,6 +305,21 @@ def load_run(run, *, context=None, include_model_events=True):
         raise ValueError("Protocol fingerprint does not match the recorded configuration")
     if manifest["track"] == "R" and fingerprint(manifest["identity"]) != manifest["pairing_id"]:
         raise ValueError("Product pairing identity does not match its configuration")
+    startup_comparison = validate_runtime_dependencies(run, manifest['identity'])
+    validate_runtime_model_services(run, manifest['identity'])
+    if 'feature_set' in manifest['identity']:
+        from .feature_identity import build_feature_identity, validate_feature_identity
+        saved = validate_feature_identity(manifest['identity']['feature_set'])
+        runtime = json.loads((run / 'runtime-identity.json').read_text(encoding='utf-8'))
+        if saved != build_feature_identity(runtime):
+            raise ValueError('Manifest features differ from saved runtime observations')
+    comparison = {}
+    if startup_comparison is not None:
+        comparison_identity = {**manifest['identity'], 'runtime_dependencies': startup_comparison}
+        # Exact manifest identity/pairing remain provenance; comparison uses
+        # vetted startup facts with only known audit coordinates normalized.
+        comparison = {'comparison_identity': comparison_identity,
+                      'comparison_pairing_id': fingerprint(comparison_identity)}
     if digest(run / "planned.jsonl") != manifest["planned_sha256"]:
         raise ValueError("Planned result ledger changed")
     planned = read_journal(run / "planned.jsonl", warnings)
@@ -248,10 +376,21 @@ def load_run(run, *, context=None, include_model_events=True):
         warnings.append("Prediction or score ledger incomplete; missing items remain in planned denominators")
     if state["phase"] not in {"finished", "finished_with_errors", "failed", "interrupted", "not_applicable"}:
         warnings.append("No terminal state recorded; the process may still be running or may have stopped")
-    events = read_journal(run / "model-events.jsonl", warnings) if include_model_events else []
+    events, generation_audit = [], None
+    if include_model_events:
+        from .scheduled_generation_audit import audit_scheduled_generation
+        journal = read_model_events(run / 'model-events.jsonl', warnings)
+        events = journal['rows']
+        generation_audit = audit_scheduled_generation(
+            events, journal_present=journal['journal_present'], truncated_tail=journal['truncated_tail'])
+        # Empty journals remain visible in the new projection. Preserve legacy
+        # run warnings while surfacing genuinely incomplete scheduled records.
+        if generation_audit['completeness']['pair_state'] == 'incomplete':
+            warnings.extend(generation_audit['warnings'])
     started = {e["call_id"] for e in events if e.get("event") == "started"}
     terminal = {e["call_id"] for e in events if e.get("event") in {"completed", "failed"}}
-    return {"path": str(run), "manifest": manifest, "state": state, "groups": groups,
+    return {**comparison, "path": str(run), "manifest": manifest, "state": state, "groups": groups,
             "planned": planned, "outputs": outputs, "scores": scores, "warnings": warnings,
             "unfinished_model_calls": len(started - terminal) if include_model_events else None,
+            "scheduled_generation_audit": generation_audit,
             "input_validation": "partition-capsule" if context.partition_only else "canonical-full"}

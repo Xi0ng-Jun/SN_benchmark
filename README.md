@@ -6,6 +6,8 @@
 
 先读 [CURRENT_STATE.md](CURRENT_STATE.md) 了解当前目标、不变量与执行范围；安装、启动、测试和服务器交付看 [RUNBOOK.md](RUNBOOK.md)，实现关系看[当前架构](ARCHITECTURE_CURRENT.md)，执行证据看[验证与实验记录](docs/evaluation-status.md)。当前主线已经合并 Dashboard 实验地图和原生评分恢复；Notebook 协议与比较实现位于 `feat/benchmark-protocol-correctness`，执行前核实实际 checkout，服务器状态以实际产物为准。
 
+2026-10-13源码执行切片已增加显式captured启动路径、正常provider的Settings／registry／scheduled Future代际观测，以及E4保存journal的run级结构审计，经独立审在披露范围闭合。完整reader、aggregation和report可见配对／pending／截断；不证明完整历史、HTTP／模型／scorer／Job完成，也不归入逐题事件。E3d原M1结论保留，逐题展示仍未接入；启动比较相同不证明后续调用代际相同。旧 Job v1 的意图记录仍为 `executable=false`；后续工作台 execution 层已接显式预算确认的 captured runner，已有固定三题闭环，但不代表正式成绩。源码执行阶段的范围与失败证据见[唯一源码执行记录](docs/superpowers/plans/2026-10-12-sn-workbench-source-execution.md)。
+
 外部方法比较的最新本地结果与重放命令见[外部答卷与受控方法](docs/notebook-external-results-2026-09-28.md)：Multi-Meta-RAG 两模型完整 2,556 题、ALCE 八份样本答卷及 ASQA 文本配对、QMSum Socratic SegEnc 的 281 题 Perl 重评分，以及 QASPER LAB、HotpotQA KG2RAG、ALCE VANILLA 受控运行入口；正式 SN 对外部方法的比较仍待服务器运行。
 
 当前主要命令：
@@ -55,3 +57,6 @@ node --test tests/dashboard_core.test.cjs tests/explorer_core.test.cjs tests/map
 大体量数据、原始运行目录、产品源码快照、数据库、模型日志和私有候选资料保留在本机隔离目录，不随 Git 上传。结果记录必须区分本地核实、服务器转述、人工判断和暂定假设；错误、缺失和不适用不补零。
 
 五套 benchmark 的官方成绩与 Agent／组件指标分别报告，不合成未经校准的总分或发布门槛。评测仓库地址为 [Xi0ng-Jun/SN_benchmark](https://github.com/Xi0ng-Jun/SN_benchmark)。
+## 服务器工作台交付
+
+在已有 SN 的服务器接入当前工作台，先读 [服务器 Agent 交接](docs/server-workbench-handoff.md)。Git 同步代码，数据、私有配置和运行 state 在服务器独立登记；`scripts/configure_workbench_server.py` 提供无模型初始化和本地检查。

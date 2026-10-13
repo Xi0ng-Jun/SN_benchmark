@@ -1,0 +1,89 @@
+{
+  "result": {
+    "status": "ok",
+    "agentId": "agent-example",
+    "direction": "before",
+    "projection": "projected",
+    "epoch": "epoch-example",
+    "reset": false,
+    "staleCursor": false,
+    "gap": false,
+    "window": {
+      "minSeq": 1,
+      "maxSeq": 20,
+      "nextSeq": 21
+    },
+    "startCursor": {
+      "epoch": "epoch-example",
+      "seq": 10
+    },
+    "endCursor": {
+      "epoch": "epoch-example",
+      "seq": 13
+    },
+    "hasOlder": true,
+    "hasNewer": true,
+    "mergeWindow": null,
+    "entries": [
+      {
+        "provider": "example",
+        "timestamp": "2026-10-11T00:00:00Z",
+        "seqStart": 10,
+        "seqEnd": 10,
+        "sourceSeqRanges": [
+          {
+            "startSeq": 10,
+            "endSeq": 10
+          }
+        ],
+        "collapsed": [],
+        "turnId": "turn-example",
+        "item": {
+          "type": "user_message",
+          "text": {
+            "value": "Read the example.",
+            "truncated": false,
+            "originalLength": 17,
+            "lengthUnit": "utf16"
+          },
+          "title": null,
+          "status": null
+        }
+      },
+      {
+        "provider": "example",
+        "timestamp": "2026-10-11T00:00:01Z",
+        "seqStart": 11,
+        "seqEnd": 13,
+        "sourceSeqRanges": [
+          {
+            "startSeq": 11,
+            "endSeq": 11
+          },
+          {
+            "startSeq": 13,
+            "endSeq": 13
+          }
+        ],
+        "collapsed": [
+          "assistant_merge"
+        ],
+        "turnId": "turn-example",
+        "item": {
+          "type": "assistant_message",
+          "text": {
+            "value": "Example read.",
+            "truncated": false,
+            "originalLength": 13,
+            "lengthUnit": "utf16"
+          },
+          "title": null,
+          "status": null
+        }
+      }
+    ]
+  },
+  "release": {
+    "status": "ok"
+  }
+}

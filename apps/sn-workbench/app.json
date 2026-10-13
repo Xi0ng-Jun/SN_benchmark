@@ -1,0 +1,8 @@
+{
+  "expo": {
+    "name": "Silicon Notebook 工作台",
+    "slug": "sn-workbench",
+    "platforms": ["web"],
+    "web": { "bundler": "metro", "output": "single" }
+  }
+}

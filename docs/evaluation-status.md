@@ -1,8 +1,107 @@
 # 评测状态
 
-核实基线：2026-09-28（北京时间）。本页是当前快照；详细历史、旧命令和交接上下文见[文档导航](README.md)和[历史归档](archive/README.md)。
+
+## 2026-10-14 · 假设卡独立 worktree 与固定三题闭环完成
+
+- **新增能力。** 已批准的假设卡可从可信 SN 原树的 committed HEAD 新建独立 Paseo worktree，保留卡片起始快照；更改页选择目录与各卡片、会话、捕获源码的身份分别保存。外部创建结果未知时只读协调，不重复派发。已在本地工作台启用并部署；随后用户具体批准后，真实 daemon 创建、基线／候选捕获与两次有效对照均已完成，原失败也有独立回执。
+- **审查修复。** 补齐派发复核中的卡片 ID、旧卡片 brief／泄漏扫描的历史绑定、旧 NULL-cwd 会话的切换前目录冻结，以及已捕获源码 A 在当前选择 B 时的真实来源标签。缺失、损坏或多目录同源码导致的来源歧义在派发前拒绝，不猜测当前目录。独立审查已复核四项修复，无未解决的 Important／Blocking；范围不含 provider、真实实验与全量历史实现。
+- **验证与部署。** 两组相关 Python 检查分别 66 passed、60 passed（有重叠，不合计为独立用例数）；1 条既有 Starlette 警告。TypeScript、Expo Web 构建及隔离 Chromium fixture 通过；fixture 包含创建独立目录、切换、实现者只收到工作说明、旧分析会话回访，并保留附件竞态场景。四个既有 execution 均为终态后重启受管工作台；HTTP 200、能力入口与草稿可读，首页／脚本和验证构建逐字节一致。保留旧静态资源与运行工件。
+- **真实分析与独立实现完成。** 新 task `da5e6fdf04504a1590ce3ed56282789e`；pi 分析 Agent 完成固定单篇三题观察并起草卡片。独立复核修正了“渲染前排序却声称预算结果不变”的设计，修正版只重排最终已发出的证据行，保留正文、截断、原引用键及映射。独立 pi 实现后，相关 271 项 SN 检查通过，独立 9,331 组排序性质检查通过，四个文件哈希复核一致、泄漏扫描 clean。全量 backend lane 中断且无结果，未宣称全量验收。
+- **第 1–3 步已完成并停止。** 用户先批准卡片及 ¥1，原基线因向量调用约 60 秒失败并熔断而在 importing 终止，三题 missing 保留，预算未触发。用户随后要求上调且低于 ¥8；总上限设 ¥7.50，恢复基线与候选各 ¥3，使用同一三题计划与原捕获基线源码。两次有效运行均 3/3 success，官方评分完成且配对 admitted。answer_f1 逐题为 0.256410→0.250000、0.237288→0.260870（guard）、0.117647→0.800000；三条预测兑现两条，目标题失败，本轮不采纳候选。均分 0.203782→0.436957、evidence_f1 0.133333→0.612795，但前两题改写与入选证据不同，原因未决。三次 SN 账本合计 ¥0.0437579（含原超时请求预留 ¥0.0110385；非供应商账单，不含 pi Agent 费用）。工作台卡片已结论，未合并、未追加 stage replay 或更多实验。详见[实验报告](experiments/2026-10-14-r1-ordering-loop.md)；全部回执在 `var/sn-eval/r1-loop-20261014/`，执行范围见[本轮计划](superpowers/plans/2026-10-14-hypothesis-worktree-loop.md)。
+
+核实基线：2026-10-14（北京时间）。本页是当前快照；详细历史、旧命令和交接上下文见[文档导航](README.md)、[历史归档](archive/README.md)和[源码执行与工作台历史记录](archive/2026-10-source-execution-history.md)。
 
 本页保留已记录的代码／实验事实及阶段进展；当前目标、不变量和执行范围以 [CURRENT_STATE.md](../CURRENT_STATE.md) 为阅读入口。下方历史数字不代表本次重新验收，服务器状态需读取实际工件确认。
+
+## 2026-10-14 Agent 角色、任务说明、读侧工具与假设卡
+
+按用户要求实现理想形态的前两项：Agent 自己取上下文；带预测的假设卡加分析者／实现者分离。
+
+- **角色与工作目录。** 会话记录 `role`、`cwd`、`hypothesis_id`（`task_sessions` 新增可空列；旧会话为空，沿用原规则：绑定 worktree，否则评测仓库）。从输入框菜单新建的是**分析 Agent**，工作目录为评测仓库，对 SN 只读；**实现 Agent** 只能在“更改”页从**已批准**的假设卡新建，工作目录为 Task 绑定的 SN worktree，卡片随即变为“实现中”。读会话、读时间线、发消息统一使用会话自己的 cwd。
+- **任务说明（`brief` 附件）。** 每个会话第一条消息自动附上按角色生成的说明，输入框里可见、可移除；是否已送达以服务端已确认的消息记录为准，不重复附加（任务运行摘要同理）。分析说明包括任务目标、评测仓库与 worktree 路径、`scripts/sn-eval` 命令、假设卡格式示例、10 份评测文档索引（CURRENT_STATE、路线图、评测状态、失败账本、假设卡目录、benchmark 协议符合性、结果表口径、比较复核、背景、sn-eval skill）和规则（引用具体 run／case；低词面 F1 不等于语义错；基础设施失败不算 SN 质量；不运行会调用模型的评测；不改 SN）。实现说明只含卡片的标题、组件、机制、实现说明、可能副作用、改动范围、worktree 起点 dirty 列表和规则，不含 case id、题面、gold、分数。
+- **读侧工具 `scripts/sn-eval`（`rag_eval.workbench.agent_tools`）。** `task / runs / cases / case / flips / hypotheses / docs / hypothesis-draft / leak-check`，实现角色只允许 `card / leak-check`。它和 `serve` 用同一套配置加载与 RunViews（含执行记录自动发现的 run）。已在真实库上对“测试4”跑通 `task / runs / cases`。
+- **假设卡。** 新表 `hypotheses`：草稿 → 批准／驳回（只能由人在界面操作）→ 实现中 → 已核对预测 → 已结论。卡片字段包括组件、机制、证据、替代解释、逐题预测（improve／unchanged／not_worse／worse，可标守护题）、否定条件、预期受益与可能受害、改动范围、实现说明。核对时选基线 run 和改动后 run，要求两者通过配对准入，再逐条判定预测是否兑现；效果（支持改善／未观察到改善／退化或取舍／证据不足）与原因（得到支持／被反证／未决）分开填写。每一步写入任务历史，记录页显示中文。待批准和待结论的卡片计入侧栏待决数，并在工作页显示提示行。
+- **隔离护栏。** 服务端拒绝把 `case`、`run_case`、`task_runs`、`result` 附件发给实现 Agent，也不允许把别的会话的说明发过去。泄漏扫描比对 worktree diff 新增行、实现说明，与本任务运行的题面（≥24 字符）、gold 答案／证据／参考答案的 8 词片段、case id；分析 Agent 提交草稿时若实现说明重叠即拒收，核对预测时把 diff 扫描结果写进验证记录。**限制**：读文件这一层没有沙箱，full-access 的实现 Agent 技术上仍能读到评测仓库；隔离依靠信息不下发、角色说明和事后泄漏扫描，不是强制隔离。
+- **验证。** 新增 `tests/test_workbench_roles_hypotheses.py`（6 项：角色 cwd 与实现者需已批准卡片、实现者拒收 benchmark 材料、两种说明内容、卡片生命周期与预测核对、泄漏扫描、工具角色限制与草稿泄漏拒收）；fixture 浏览器流程新增“说明只发一次”“摘要与说明同时附加”“更改页批准草稿、未绑定时不能建实现 Agent”。此前全量 Python 日志为 2157 passed、1 skipped（本地官方 ROUGE 未配置），不含下述后续前端修复。
+- **接手后补完附件竞态（2026-10-14）。** 运行列表晚于工作说明加载时，原先每份草稿只尝试一次的标记会阻止附加运行摘要。现在每种附件在条件就绪时各尝试一次，合并时工作说明保持在前，用户移除的附件在同一草稿内不自动补回。浏览器用请求门控推迟真实 fixture 的 run 列表，先观察旧代码在摘要附件处超时，再确认修复后的聊天、附件顺序、已送达去重和假设卡批准流程通过；不调用真实 provider。TypeScript 检查与 Expo Web 构建通过；角色／假设卡、消息、上下文和 R1/M2 接缝的 47 项 Python 检查通过（1 条既有 Starlette 弃用警告），本次未重跑全量。限定改动的独立只读审查无重要发现，移除与实现者边界由代码复核及相关后端测试覆盖，并非新增浏览器场景。已验证的前端构建更新到受管工作台，HTTP 200，实际返回的首页和脚本与测试构建逐字节一致；只更新静态文件，无服务重启、真实 Agent 消息或 SN 模型运行。
+- **过程中的一次失误。** `sn-eval` 第一版直接读取配置，把相对路径 `..` 按当前目录解析，向用户任务库误写入一个 location 为 `.worktrees` 的空 workspace。发现后改用 `load_config`，确认没有任务引用后删除了该行；原有 workspace 和任务未受影响。
+
+## 2026-10-14 工作页改为 Agent 对话，修复消息发送
+
+**界面真实运行（n=1，用户执行，本轮回读工件核实）。** 修复启动问题后，用户在任务“测试3”中从界面运行 QASPER chunk 固定 1 题（计划 `14b84613`，execution `3d2d7894…`）：状态 finished、exit 0，独立官方文本评分 answer_f1 0.464／1、evidence_f1 0.000／1（scores `4e853b27`），阶段诊断证据召回 2/2、上下文精度 2/16，scheduled 调用 19 次（chat 5、embedding 14），问答耗时 7.9s，已加载源码 HEAD `0680aa1`、ref `3bdc4b22`。这是界面生成→官方评分链路的第一份真实工件，不是成绩、比较或 R1 全闭环。该题因 answer_f1 < 0.5 进入待读，不是执行失败。
+
+**消息发送失败的根因。** 用户三次发送（“说明这次实验的结果”、两次“你好”）全部在服务端被 bridge 以 `not_attempted / SCOPE_MISMATCH` 拒绝，没有到达 Agent。原因：Task 绑定 SN worktree 后，Agent 创建（`agent_creations.py`）和会话读取（`sessions.py`）用的是绑定 worktree，而发送（`agent_messages.py`）仍用 workspace 原位置作为 `expectedCwd`。现在三处使用同一作用域；旧的三条拒绝记录保留不改。`tests/test_r1_m2_seams.py` 新增发送作用域断言。
+
+**工作页改动。** 按用户反馈对齐 Paseo：主区只有任务卡（目标、run 卡、SN 改动卡、待读行）和与当前 Agent 的对话；底部一个输入框，上面有“材料”和 Agent／模型选择。去掉工作页的调查笔记、会话管理面板、interrupt/steer 选择和“新消息草稿”。笔记 API 与历史记录保留。具体行为：
+- 打开任务时自动选中最近关联的 Agent 并读取对话；Agent 运行中和发送后 90 秒内每 3 秒静默刷新，不再需要手动“刷新只读消息”。
+- 发送默认 interrupt（Agent 运行中时输入框上方提示会打断当前一轮）；Enter 发送、Shift+Enter 换行；送达后自动开始下一条草稿；服务端确认未发出时显示原因并保留原文。
+- Agent 菜单列出本任务的 Agent，可按服务器允许的模型配置一键新建，并说明新 Agent 的工作目录（绑定 worktree 或评测仓库）；“关联已有 Agent ID”收进菜单。
+- “材料”菜单先预览 Agent 将收到的确切文本，再附加；工作页只说明“只收到你发送的文字和附加的材料”。
+- 记录页把事件名改成中文结果，隐藏 prepared/started 中间事件（导出仍完整）；侧栏去掉重复的“当前任务记录”，待读题改用琥珀色点；待读规则显示为中文；首次用访问链接打开时不再因请求先于登录而显示“run 视图接口不可用”；run 列表读取中显示“正在读取”；计划页去掉“选择输入 · N”“查询原 key 回执”“读取 head 并追加”等内部术语。
+
+**新增 run 案例附件。** 消息附件新增 `run_case`（已登记 run 的单题），内容包括问题、SN 答案、逐题官方分、阶段指标、gold 标注、引用、按排名的检索块（是否被引用／是否含 gold）、资料身份与 run 工件路径，并标明“仅供分析，从不进入 SN 生成”。论文全文不内联。原结果案例附件（`case`）仍只含问答与状态。run 案例证据页新增“附加到 Agent 消息”。这让分析 Agent 第一次能从界面拿到动态 run 的完整单题证据；是否足以支撑可行动诊断仍待真实使用判断。
+
+**验证。**
+- Python：消息、会话、上下文、RunViews、M2 接缝定向 104 passed；全量 `pytest tests` 2150 passed、1 skipped（QMSum 需本地官方 ROUGE）、1 条既有 Starlette 弃用警告。
+- 前端：TypeScript 检查、Expo Web 构建通过。新增 `apps/sn-workbench/tests/chat-browser-server.py` 与 `chat-browser.mjs`（合成 Agent，不调用 provider）：新建任务 → 菜单新建 Agent → Enter 发送 → 回复经轮询自动出现 → 附加任务目标再发 → 新建第二个 Agent 并切回 → 记录页显示中文结果，全部通过。
+- 真实 smoke（按用户要求用 pi，`pi/deepseek/deepseek-flash`，配置 `pi-flash`）：在“测试3”（绑定 `sn-eval-exp-1`）新建 pi Agent，第一条连通性消息送达并收到“收到”，provider 中途有一次超时重试；第二条附加该 run 案例证据，Agent 给出一句差异分析。该分析是模型候选，未经人工核验。
+- 受管服务在无活跃执行时经 `paseo script stop/start workbench` 重启，端口变为 44899，代理入口不变；重启前 dist 备份为 `apps/sn-workbench/dist-before-chat-20261014`。
+
+**同日后续：用户“测试4”暴露的两个问题。** 用户在“测试4”（QASPER chunk 3 题）问 Agent“这次实验的结果怎么样”，消息没有附件，Agent 只能自行翻仓库，答的是 H1 旧记录。另外这条消息显示在 Agent 回复下方：回复前有 49 项活动，原来的 50 条读取页装不下用户那条，界面就把本地“已送达”气泡排到了底部。修复：
+- 新增 `task_runs` 附件“本任务的评测运行”（每个关联 run 的状态、失败阶段、官方分与分母、阶段指标、待读题、源码 ref、run_dir）。每条新草稿自动附上它，输入框里可见、可移除；同一 Agent 已收到相同快照时不再附加（浏览器本地记录）。单题证据仍需在案例页附加 `run_case`。
+- 对话读取页从 50 条提到 bridge 上限 100 条；本地气泡按发送时已有的条目定位，始终在回复之前。
+- 验证：fixture 新增有 run 的任务、120 项活动挤出用户条目的场景，浏览器流程通过；全量 Python 2151 passed、1 skipped。正式服务上只读预览“测试4”摘要正确列出 3 个 run，没有向用户的 Agent 发消息。
+- “测试4”的 partition 0001 失败在导入阶段：DashScope `text-embedding-v4` 返回 `ModelServiceUnavailable`（`model-events.jsonl`），是外部服务失败，不是 SN 回答错误。摘要里只显示 `ValueError / importing`，根因需读 run_dir。
+
+**限制。** bridge 只投影工具名和固定活动标题（错误正文、工具参数不可见，界面显示“详情只在 Paseo 中可见”）；用户消息过长时 bridge 截断正文，界面从截断 JSON 中恢复输入文字与附件标题。旧浏览器脚本中依赖已删除控件的部分见 [TRIAGE](../TRIAGE.md)。对话与 run 卡不按时间交错（timeline 条目没有可用于跨源排序的时间戳投影）。假设卡仍无界面创建入口。
+
+## 2026-10-14 用户界面运行的启动失败与修复
+
+用户已从界面派发两次 QASPER Job（3题与1题），子进程均在 run-dir 创建之前因共享 store 与输入目录的隔离校验退出：工作台消费的是 store 内已经冻结的 bundle 对象，runner 将合法父子归属关系误判为输入／存储重叠。两次没有 manifest／答案／官方评分，预算 ledger 请求数均为 0；不是题单操作、预算不足或 SN 澄清造成。原失败 execution 与工件保留，没有自动重跑用户题目。
+
+修复落在 runner 隔离边界：只有 pinned index 与 bundle 校验通过且路径等于 store.resolve(bundle_ref) 的不可变已安装对象可重叠，其余输入／代码／产品／run 隔离仍要求。新增反例先失败后通过；对用户本次固定题单和冻结配置在临时目录做禁止网络的启动检查，成功完成实际源码／依赖／模型注册初始化并保存 manifest／planned，在 predictions（资料导入、模型请求）之前主动停止。第一次离线检查停止边界选晚，进入资料导入但 socket 连接全部被拦截，不能作为评测或模型结果；更正后没有调用资料导入和生成。
+
+修正计划页的说明，明确草稿意图不随 Job 改写，实际绑定／执行在更改页；工作页不再对已派发任务机械提示“仍需确认预算”；失败 run 从 batch plan 展示固定 suite／mode，同时不伪造已加载源码身份。相关 72 项 Python 回归、TypeScript 与 Expo 构建通过，1 条既有 Starlette 弃用警告；工作台在无活跃执行时重启应用修复。真实生成和官方评分仍需用户新的显式运行验证。
+
+## 2026-10-13 R1 M4 真实 runner 的界面接线
+
+当前本地配置已从无模型 smoke 切到可信的 captured Notebook runner。界面显式选择计划，准备时捕获输入／源码，确认费用上限与超时后按分区串行启动新进程，之后独立官方文本评分；执行历史自动发现关联 run，失败／取消／超时及原工件保留。未知响应保存原请求并允许同键恢复；明确匹配请求的领域拒绝可解除阻塞。取消与超时监督整个进程组，不只等待 leader。
+
+本轮未新增模型实验。独立 Chromium 验证使用 smoke executor；真实环境仅做捕获准备／argv 构造／分区展开／解释器核对（1题1分区，启动0进程）。真实 wrapper 以无凭据测试输入验证子进程失败保存；已有 E5 真实单题的官方分与案例回访经严格绑定读取。最终相关回归 102 passed、1 条弃用警告；TypeScript／Expo 构建、浏览器恢复场景和独立 28 项复核通过。受管服务 healthy、代理 HTTP 200，当前用户库既有 4 任务只读核对通过。详细入口、验证与局限见 [界面执行](workbench-execution.md)。下方为此前各阶段的历史证据；新 UI 的真实生成／评分仍待实际执行，不将 M4 或 R1 全闭环记为已验收。
+
+## 2026-10-13 R1 M4 执行层首版
+
+M4 首版加入 opt-in 的 Job execution record：旧 Job v1 receipt 保持只读，执行层要求 verified preparation 与显式预算确认，后端构造固定 argv，在独立 run-dir 中以进程组启动并保留 `state.json`、stdout/stderr；完成、失败、超时和取消均可查询，重复 request key 幂等。初版 HTTP／CLI 与更改页已接线，当时默认配置关闭执行；后续 UI smoke 接线和证据见下一节。本轮通过 5 个执行层测试及 107 个既有 Job／准备／RunViews 回归，尚未使用真实模型做 M4 smoke，因此不把它记为 R1 闭环完成。
+
+## 2026-10-13 R1 M4 UI 生命周期 smoke
+
+工作台更改页现可在可信配置下完成：绑定已登记 worktree → 从最新固定计划创建 Job → 服务端捕获当前输入与 SN 源码 → 显式确认预算 → 独立 run-dir 执行 → 轮询状态与取消。新增 preparation HTTP 接口只读取服务端 `job_preparation` 绑定，不接受前端命令或路径。`configs/sn-workbench-local.json` 的执行模板是本地 deterministic smoke executor；它只写 `state.json` 与 smoke marker，不加载 SN、不调用模型、不生成官方分数。
+
+独立临时 state 的 HTTP 彩排已通过，终态为 `finished`，run-dir、`execution-record.json`、`stdout.log`、`stderr.log`、`state.json` 和 smoke marker 均保留；相关 Python 定向回归为 121 passed、1 warning，前端 TypeScript 检查通过。该证据只证明 UI／Job 生命周期和隔离边界，真实 `run_notebook_benchmarks.py`、模型服务、官方评分与配对翻转仍待明确授权后的真实环境 smoke。
+
+## 2026-10-11 工作台首个开发切片
+
+工作台首个切片实现了 Expo Web 与 Python HTTP／CLI 的任务、冻结结果导入、成绩／案例阅读、人评笔记和修订历史；QMSum、MultiHop、ALCE 仅为历史工件，旧 QASPER 因身份不一致拒绝，不能据此视为当前服务器成绩。A 阶段随后接入 Paseo Task-session、候选与人工决定，保留 SDK ACK／执行完成分离和 unknown 不自动重发；工作台回归与浏览器验证通过，但没有 benchmark／judge、Job、SN 改码或正式模型成绩。原始过程和限制见[归档](archive/2026-10-source-execution-history.md)。
+
+## 2026-10-12 工作台 B／C 首切片
+
+B／C 首切片已在独立 canonical／state 范围闭合：持久计划草稿、固定修订回访和冻结结果只读比较可用，比较复用既有准入核心，保留失败诊断分类、左右不对称和写锁预算未测等限制；`execution=false`，没有执行 Job、模型或新增正式成绩。详细评审和限制见[归档](archive/2026-10-source-execution-history.md)。
+
+## 2026-10-13 源码执行 E3d
+
+E1/E2、E3a/b/c/d 在各自范围闭合，captured 启动消费者记录私有 TOML、有效 Settings、owned registry 和 scheduled Future 代际，仍保留原审查红灯、root 见证目录不符失败以及依赖／执行字节未冻结的限制；E3d 不调用真实模型，M1 仍未整体关闭，journal 配对、完整历史和逐题 Dashboard 待后续，Job 仍不可执行。证据和原限制见[归档](archive/2026-10-source-execution-history.md)。
+
+## 2026-10-13 E4 保存 journal 审计
+
+E4 完成保存 journal 的 run 级结构审计及 reader／aggregation／report 消费，保留配对、pending、截断、legacy 计数和拒绝歧义的原语义；结构审计的 `history_exhaustive=false`，不证明完整历史、HTTP／模型／scorer／Job 完成，也未接入逐题展示或 UI。原红灯、审查数字和 hash 证据见[归档](archive/2026-10-source-execution-history.md)。
+
+## 2026-10-13 E5 evidence-only 完整彩排
+
+E5 evidence-only 彩排用固定 S1 bundle/index/SN ref、公开依赖和 synthetic project 验证 owner/wrapper、network namespace guard、pidfd `waitid`、exit 0、输出排空及独立落盘，定向回归 7 项、相关源码执行／生命周期回归 125 项；状态保持 `diagnostic_complete`、`offline=true`、`evidence_only=true`、`job_executable=false`，诊断分不等于官方分。S3 readiness receipt 保留 `ready`／`blocked`／`unknown`、严格 binding 缺口和未观测 Settings／凭据／reachability，S3b 仅是显式 captured CLI 的可选启动前校验，不能提升 Job。详见[归档](archive/2026-10-source-execution-history.md)。
+
+## 2026-10-13 E5 真实固定单题链路（S3 生成＋S4 官方评分）
+
+实验配置下已完成一次固定单题 QASPER chunk 的真实 captured CLI 链路：零网络 preflight、ready receipt、owner helper、答案／evidence snapshot、20 次 scheduled 调用、独立 `export-sn`／`score`（answer_f1 0.6667、evidence_f1 1.0）和 `load_run` 回访均有工件；这是 n=1 的接缝事实，不是 benchmark 成绩或比较。原 SN 配置缺两个 strict chat binding，本次使用评测侧私有实验配置，原树／`.env`／数据库未改；owner 残留后代完整性 unknown，S2 对应复核未执行，Job 仍 `executable=false`，UI／preview／user state 未改。完整证据与限制见[归档](archive/2026-10-source-execution-history.md)。
 
 ## 2026-10-08 结果保存与导出改造
 

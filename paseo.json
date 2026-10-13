@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "workbench": {
+      "type": "service",
+      "command": "bash scripts/serve_workbench.sh"
+    }
+  }
+}

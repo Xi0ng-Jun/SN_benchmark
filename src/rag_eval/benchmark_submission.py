@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import Counter
 from copy import deepcopy
+import json
 from pathlib import Path
 
 from .artifacts import digest, save_json
@@ -50,6 +51,8 @@ def build_submission(bundle, *, method, predictions, case_ids=None):
     selected_ids = set(selected)
     if not isinstance(predictions, list):
         raise ValueError('Predictions must be a list')
+    from .oracle_track import require_formal_submission
+    require_formal_submission(method, predictions)
     by_id = {}
     for row in predictions:
         _public_json(row)
@@ -107,6 +110,16 @@ def write_submission(bundle_directory, output, *, method, predictions, case_ids=
     return output / 'submission.json'
 
 
+def sn_submission_identity(identity):
+    """Drop per-run input locations/scope from the actual SN method identity."""
+    config = deepcopy(identity)
+    config.pop('product_bundle', None)
+    if isinstance(config.get('notebook_context'), dict):
+        config['notebook_context'].pop('partition_id', None)
+        config['notebook_context'].pop('case_ids', None)
+    return config
+
+
 def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, qasper_evidence=False):
     from .run_reader import RunReadContext
     from .run_report import load_run
@@ -127,6 +140,13 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
     method = None
     predictions = []
     for path in paths:
+        # Diagnostic provenance must be checked before the formal run reader or
+        # any answer projection, including an otherwise valid Notebook run.
+        manifest_path = path / 'manifest.json'
+        if manifest_path.is_file():
+            saved_manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            from .oracle_track import require_formal_run
+            require_formal_run(saved_manifest)
         outputs_path = path / 'outputs.jsonl'
         outputs_hash = digest(outputs_path) if outputs_path.exists() else None
         run = load_run(path, context=context, include_model_events=False)
@@ -140,11 +160,7 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
             raise ValueError('Official SN submissions require gold-free notebook-request-v3 runs')
         if identity['source'] != bundle['manifest']:
             raise ValueError('SN run uses a different frozen bundle')
-        config = deepcopy(identity)
-        config.pop('product_bundle', None)
-        request_context = config['notebook_context']
-        request_context.pop('partition_id', None)
-        request_context.pop('case_ids', None)
+        config = sn_submission_identity(identity)
         evidence_policy = identity.get('qasper_evidence')
         recovering = qasper_evidence and evidence_policy is None
         if recovering:

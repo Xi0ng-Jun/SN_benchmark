@@ -106,6 +106,14 @@ QMSum 单会议 BM25 与统一 reference、ALCE 派生 run 评分与正式 submi
 
 lecture_01–03、`lectures/torch.py`／`sympy` 以及 `build_dashboard_demo.py` 保留通用教学／合成示例；读取退役结果的 lecture_04 已删除。其长期使用者仍待核实。教学替身只在讲义子进程路径中使用，不能放入正式 scorer 环境解决依赖问题。
 
+### T12 · 待改写：依赖旧工作页控件的浏览器脚本
+
+2026-10-14 工作页改为 Agent 对话后，删除了调查笔记输入、会话管理面板、interrupt/steer 选择和“新消息草稿”等控件（`TaskComposer`、`TaskSessionPanel`、`ContextPicker`）。`apps/sn-workbench/tests/` 中 `messages-browser.mjs`、`browser.mjs`、`creation-browser.mjs`、`context-browser.mjs`、`composer-behaviors-browser.mjs`、`sessions-browser.mjs`、`candidates-browser.mjs`、`agent-browser.mjs` 仍按旧 testID 操作，现在会失败。其中的边界场景（回执丢失后同键核对、unknown 锁、上下文 hash 变化拒发、多页面写锁、候选来源冻结）hook 层仍然实现，但没有新界面的浏览器覆盖。新对话主路径由 `chat-browser.mjs` 覆盖。改写时按新控件补这些边界，不恢复旧控件；`run-views-browser.mjs` 已改为从侧栏打开 run 目录。
+
+### T13 · 未知：实现 Agent 的读隔离只靠约定
+
+2026-10-14 起，实现 Agent 不会从工作台收到考题、案例或成绩（服务端拒收），实现说明和 diff 会做泄漏扫描。但它是 full-access 的本机进程，技术上仍能读评测仓库的 `var/`、失败账本和 run 目录；Agent 的工具调用只投影名称，看不到它读了哪些文件。可能的收敛方向：实现 Agent 使用只允许读写 worktree 的 provider 模式或沙箱，或在单独的用户/容器中运行。在此之前，结论里应写明隔离是约定加事后扫描，不是强制。另一个待做项是批准假设卡时自动从 SN HEAD 新开 worktree，而不是复用配置里登记的 `sn-eval-exp-1`。
+
 ## 5. 门禁与已复现的输入分叉
 
 | ID／分类 | 当前入口 | 保证和限制 |

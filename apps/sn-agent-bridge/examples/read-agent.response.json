@@ -1,0 +1,31 @@
+{
+  "result": {
+    "status": "ok",
+    "agent": {
+      "id": "agent-example",
+      "cwd": "/example/repo",
+      "workspaceId": "workspace-example",
+      "archivedAt": null,
+      "status": "idle",
+      "title": "Example investigation",
+      "provider": "example",
+      "model": "model-example",
+      "activeTurn": null,
+      "capabilities": {
+        "supportsStreaming": true,
+        "supportsSessionPersistence": true,
+        "supportsSessionListing": null,
+        "supportsDynamicModes": false,
+        "supportsMcpServers": false,
+        "supportsReasoningStream": true,
+        "supportsToolInvocations": true,
+        "supportsRewindConversation": null,
+        "supportsRewindFiles": null,
+        "supportsRewindBoth": null
+      }
+    }
+  },
+  "release": {
+    "status": "ok"
+  }
+}

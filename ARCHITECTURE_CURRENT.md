@@ -1,14 +1,22 @@
 # Silicon Notebook 评测项目：当前架构
 
-核实日期：2026-10-08。工作树：`feat/benchmark-protocol-correctness`；本文同步当前共享工件、reader、compact 导出和打包实现。执行时仍须记录实际提交与未提交源码身份。
+核实日期：2026-10-13。工作树：`feat/benchmark-protocol-correctness`；本文同步当前共享工件、reader、compact 导出和打包实现。执行时仍须记录实际提交与未提交源码身份。
 
 本文解释 **benchmark-deepeval 评测仓库目前怎样工作、数据由谁负责、修改会影响哪里**。安装与命令见 [RUNBOOK.md](RUNBOOK.md)，benchmark 评分定义见[标准与实现符合性](docs/notebook-benchmark-standards-and-conformance.md)。本文描述当前代码，不是目标架构或重构方案，也不展开 SN 产品自身的完整架构。
 
-核对依据为本地代码、测试用例、Git 历史及已有项目文档。未查询服务器、远程 Git、客户使用量或收入数据；历史验收记录不能自动视为当前部署事实。本机不执行真实 SN／模型实验，当前服务器计划仍是 SN-only。
+核对依据为本地代码、测试用例、Git 历史及已有项目文档。未查询服务器、远程 Git、客户使用量或收入数据；历史验收记录不能自动视为当前部署事实。本机仅有一次受控固定单题 SN 链路，当前服务器计划仍是 SN-only，不能外推为全量实验。
 
 **2026-09-29 仓内已收敛为 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA。** 旧套件专属路径已删除，共用职责已迁出，没有旧模块转发壳。实际删除见 [DELETION_LOG](DELETION_LOG.md)，五套内部仍待处理的版本默认／兼容见 [TRIAGE](TRIAGE.md)。
 
 ## 1. 系统定位与边界
+
+### 工作台与源码执行现状（核实 2026-10-13）
+
+**当前。** `apps/sn-workbench` 与 `src/rag_eval/workbench` 提供工作台的任务、结果、计划和记录视图；SQLite 保存本地意图与回执，Paseo 保存会话与执行状态，前端不重算官方分。显式 captured CLI 已能材料化当前工作树的 SN 源码对象，绑定私有配置、解释器、已加载依赖和 runtime／journal 观测；一次固定 QASPER 单题已完成答案保存、实际证据和独立官方文本评分，详细工件见[历史归档](docs/archive/2026-10-source-execution-history.md)。
+
+**待审。** 工作台比较仍使用既有准入核心，结果导入与人工记录可用，但 Job 仍 `executable=false`，没有真实 runner 派发、批量编排、run／失败账本、阶段指标、oracle 轨道、翻转表或 Task 更改验证页。文件与声明 hash 不代表完整执行字节、远端模型、凭据有效性或服务可达性；journal 结构审计的 `history_exhaustive=false`，不证明完整 HTTP／模型／scorer／Job 历史，owner 后代完整性仍有 unknown。
+
+**历史。** 2026-10-11 至 13 的 A/B/C、J01/J02、E3d、E4、E5 过程记录、原红灯、审查数字、失败证据和限制已集中保存在[2026-10 源码执行与工作台历史记录](docs/archive/2026-10-source-execution-history.md)；这些记录用于回溯，不改变当前入口或执行边界。
 
 这是以 **CLI 和文件工件为中心的评测工具集**。核心职责是把公开数据转成可追溯输入，调用被测系统，保存回答与过程观测，再分别计算官方任务成绩、Agent 过程分和诊断报告。
 
@@ -268,7 +276,7 @@ judge 超时与产品调用失败是不同事实。已完成指标保持落盘�
 
 ## 12. 文档核验与维护
 
-本轮已完成仓内源码、测试和文档清理；离线 Python 回归 **538 passed、1 skipped**，Node **34 passed**，详细验证和限制见 [DELETION_LOG](DELETION_LOG.md)。未运行真实 SN、judge、官方模型评分、timer 或部署；服务器状态保持未核实。
+仓内源码、测试和文档清理的既有离线回归为 **538 passed、1 skipped**，Node **34 passed**，详细验证和限制见 [DELETION_LOG](DELETION_LOG.md)；本次文档整理未重跑该矩阵。2026-10-13 仅新增一条固定单题 SN 链路与独立官方文本评分，未运行全量 SN、judge、官方模型评分、timer 或部署，服务器状态仍未核实。
 
 入口、文件链接和关键符号按清理后工作树核对。当前独立模块迁移没有更改五套已保存 run 的格式标记 `public-starter-run-v1`，避免单纯改名使保存身份无法回放；这不意味着继续接受退役套件。五套 v1/v2 默认与历史 reader 的长期收敛仍在 TRIAGE 中单列。
 

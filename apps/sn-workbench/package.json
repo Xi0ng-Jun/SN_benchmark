@@ -1,0 +1,27 @@
+{
+  "name": "sn-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "dev": "expo start --web",
+    "build": "expo export --platform web",
+    "typecheck": "tsc --noEmit",
+    "browser-test": "node tests/browser.mjs"
+  },
+  "dependencies": {
+    "expo": "54.0.33",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-web": "0.21.2",
+    "@expo/metro-runtime": "6.1.2",
+    "lucide-react-native": "0.577.0",
+    "react-native-svg": "15.12.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.0",
+    "typescript": "5.9.3",
+    "@playwright/test": "1.56.1"
+  }
+}

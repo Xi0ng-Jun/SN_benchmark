@@ -1,10 +1,12 @@
 # 当前状态
 
-更新：2026-10-09（比较证据表述澄清，执行范围不变）。适用范围：Silicon Notebook 评测仓库。本文记录当前决策依据；范围改变时更新对应条目，历史证据另存，不在这里追加交接流水账。
+更新：2026-10-14（UI01可用；E1/E2及E3a/b/c/d、E4在各自记录范围闭合；E4限保存journal的run级结构审计，不证明完整执行历史；E5 已于 2026-10-13 在实验配置下完成一次真实固定单题 captured CLI 生成、答案保存与独立官方 QASPER 文本评分，M4 已接真实 runner，已有真实界面生成与固定三题“假设→独立实现→同计划对照→结论”闭环证据（不代表正式成绩）；总体目标、差距与初版规划见 [目标与规划](docs/goal-and-roadmap.md)）。适用范围：Silicon Notebook 评测仓库。本文记录当前决策依据；范围改变时更新对应条目，历史证据另存，不在这里追加交接流水账。
 
 ## 目标
 
 正确使用 benchmark 评测[agentic支持以及展示支持] SN，正确地与已有方法比较，得到可追溯、可解释的结果，支撑算法迭代与论文实验。
+
+2026-10-13 起，总体目标的精确表述、理想形态、现状能力表、与理想的差距和初版规划统一维护在 [目标与规划](docs/goal-and-roadmap.md)；本文只保留决策依据与不变量。一句话目标：**让 SN 的每一次改动都能快速、可信地回答“答得更好了吗，好在哪、差在哪、为什么”。** 分数只负责发现问题和确认未退化，改什么由“失败归因到组件”的证据链决定。
 
 **只保留 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA 五套 benchmark。** 其他旧 benchmark 专属内容已从当前工作树删除，共用职责已分离，见 [删除记录](DELETION_LOG.md)；服务器与 Git 外私有工件未清理。协议、官方评分与比较入口已实现并有离线验证；**代码就绪不等于服务器全量实验通过**。当前先验收 SN 自身，服务器进度以实际工件为准，本次未复核。
 
@@ -20,12 +22,16 @@
 
 ## 活跃约束
 
-- 本机做开发、文档和不调用模型的离线检查／测试；实际 SN、生成模型、judge 和官方模型评分在服务器执行。当前整理任务不启动实验。
-- 当前服务器范围为 **SN-only**：五套 chunk，另加 MultiHop reasoning；先 smoke 后 full。外部方法／reference 暂缓，专门 Agent judge 评测需单独安排，不由普通 reasoning 运行自动产生。
-- 新正式 Notebook 运行使用 `notebook-data-v3`／`notebook-request-v3`；原生 Agent 使用 `sn-deepeval-native-v1` 和 DeepEval 4.2.2。Python API 部分旧默认仍存在，新调用显式选版本。
-- 一个 partition × mode × attempt 使用新进程、新 run-dir；当前入口不支持原目录隐式续跑。实际源码、模型、scorer 和依赖身份在服务器冻结，结构预检不能代替环境或模型对齐验收。
-- **共享输入／源码已实现，服务器迁移待验收。** `prepare --install-bundle ... --artifact-root ...` 安装已有 bundle，并将受信任输出 index ID 冻结到 campaign 配置；新 run 必须同时传 `--artifact-root`／`--artifact-index-id` 复用不可变 bundle/index/evaluator/SN 对象，不能每次从可变 pointer 重取预期 ID。runtime 仍独立；单 run 自动报告只校验所用 capsule，正式 export 完整校验 canonical bundle。
-- **完整审计与回传答卷分开。** outputs/Agent 工件保留完整事实；SN submission 使用五套 compact scoring projection，保留证据回放字段、状态与来源 hash。`package_benchmark_results.py --mode results|review` 按角色生成私有包；无自动删除、TTL、GC，不改原 run/runtime。具体边界见[结果存储与导出](docs/result-storage-and-export.md)。
+- **服务器工作台交付已整理，远端验收另计。** 当前工作台及其源码捕获、Agent bridge、执行与对照依赖一起交付；服务器以交接 SHA 为准，按[服务器接入](docs/server-workbench-handoff.md)新建 checkout、venv、私有配置和 state。初始化核验完整 bundle 并生成本机 ref，缺执行配置时不会启用模型。旧本机配置、历史 state、凭据和构建缓存不入 Git；现有服务器 bundle/scorer 先核验复用。本次范围为本机交付准备与无模型验证，没有查询/改动远端 SN 或运行新付费实验。
+
+- **真实链路已局部可用，不能外推为基准结果。** 2026-10-13 的固定单题 QASPER chunk run 已保存答案、实际证据、scheduled journal、独立官方文本评分和离线回访；它是 n=1 的接缝验证，不是成绩、比较或全量完成证明。原始过程、失败证据和限制见[源码执行与工作台历史记录](docs/archive/2026-10-source-execution-history.md)。
+- **源码与运行身份必须来自实际加载。** 显式 captured CLI 可绑定捕获的 SN 源码、私有配置、解释器和已加载依赖；文件 hash、声明配置和启动 receipt 不能证明完整执行字节、远端模型、凭据有效或服务可达。
+- **状态与证据按真实生命周期保存。** 答案先保存再评分；`success`、`no_answer`、`clarification`、`error`、`missing`、`pending` 和不适用各自保留，不能补零、筛题或把诊断分当官方分。journal 结构审计只能报告已保存的配对、pending 和截断事实，`history_exhaustive=false`。
+- **当前执行范围仍是 SN-only。** 五套 benchmark 先做 chunk，并另有 MultiHop reasoning；外部方法、专门 Agent judge、批量编排和服务器 full 运行仍待实际工件确认。旧 Job v1 保留只读意图；新 execution 层已支持明确预算确认后的真实 Notebook runner 派发，当前可信本地输入为 QASPER。用户最初两个 Job 在模型调用前的目录隔离校验失败（工件保留）；修复后用户在任务“测试3”从界面完成一次 QASPER chunk 1 题真实运行，生成与独立官方文本评分均落盘（answer_f1 0.464／1，n=1），这是链路证据而非成绩。
+- **协议和隔离边界保持不变。** 新正式 Notebook 运行使用 `notebook-data-v3`／`notebook-request-v3`，原生 Agent 使用 `sn-deepeval-native-v1` 与 DeepEval 4.2.2；一个 partition × mode × attempt 使用新进程和新 run-dir。实验数据库、存储、日志和配置使用专用目录，不触碰生产状态。
+- **共享输入与输出投影已有实现，成本仍未实测。** 新 run 可复用不可变 bundle/index/evaluator/SN 对象，完整审计工件与 compact scoring projection 分开，runtime 仍逐 run 隔离。服务器上的 I/O、RSS、证据体积、阶段耗时和全量迁移收益未核实，不能据离线样例宣称性能改善。
+- **工作台当前可读写记录、与 Agent 对话并通过界面执行 QASPER 评测。** 工作页是任务卡加 Agent 对话（Paseo 式单一输入框，含材料附件与 Agent／模型选择）；Agent 分两种角色：分析 Agent 在评测仓库工作、用 `scripts/sn-eval` 自取运行与案例证据并起草带逐题预测的假设卡；实现 Agent 只能从人批准的假设卡新建，在 SN worktree 改码，服务端不向它下发考题、案例或成绩，泄漏扫描检查该卡片的 diff。已部署从批准卡片创建独立 worktree 的入口，保存旧会话目录与历史绑定，未知创建只读协调；用户批准的首轮固定三题前后对照已完成并按要求停在第 3 步：真实独立目录创建、pi 分析／实现、源码捕获、官方评分和逐题核对均有回执。原基线导入失败保留，用户将预算提高至低于 ¥8 后使用原捕获源码新建恢复运行；SN 账本合计约 ¥0.043758（含超时预留）。读文件层面没有沙箱，隔离不是强制的。结果／计划／记录视图、冻结结果导入、案例阅读、人评和固定修订历史可用；更改页可绑定可信 worktree、创建固定 Job、捕获输入与源码、确认预算、运行并取消。前端不重算官方分；默认本地配置已接 captured Notebook runner、请求预算上限、总超时和独立官方文本评分，执行历史自动投影为关联 run。界面测试使用无模型 smoke 与合成 Agent fixture；真实 Agent smoke 用 pi（DeepSeek Flash），不用 Claude。用户启动失败的原工件保留；已有一次真实界面运行及三题“改 SN → 同计划重跑 → 翻转”闭环：两题升一题降，守护题未退化，但目标题预测失败，本轮不采纳候选；查询改写／证据集合有额外变化，原因保持未决。只证明这一小范围闭环，不能宣称 R1 全面验收或正式成绩完成，详见[实验报告](docs/experiments/2026-10-14-r1-ordering-loop.md)。操作与边界见 [界面执行](docs/workbench-execution.md)。
+- **不扩大本轮授权。** 不改 SN 原树、原数据库、原配置或生产 state，本轮可启动评测工作台供用户操作，不启动 SN 生产服务、不输出密钥；真实模型、judge、官方模型评分和服务器部署只在明确授权且有实际工件时记录。所有未验证项保持 pending／unknown，不因测试通过而补造完成状态。
 
 ## 已废弃假设
 
@@ -36,6 +42,7 @@
 
 ## 已知债务与暂缓原因
 
+- **scheduled审计不证明完整历史，逐题展示仍未接入。** E3d原M1报告与0 Blocking／0 Important／1 Minor结论保留，不将M1整体关闭。E4经Astra scope、Pi owned实现／指定Sol审（38passed、0B／0I／0M）、root共享接线及原5153仅共享delta审闭合；root红8fail／1pass→绿13pass，reviewer9pytest与10组完整消费者分别通过，4 reviewed＋3 protected hash匹配。保存journal的run级pair／unfinished／truncated投影已接完整reader、aggregation和report；legacy unfinished计数只覆盖显式adapter，includeFalse不读／不审新journal。history_exhaustive恒false，未记录／整对缺失不可推断，startup比较相同不证明后续每次generation相同，跨consumer增长journal不保证原子快照。新pairs不归case、不改UI／preview，不能据审计证明HTTP／模型／scorer／Job完成。真实owner、凭据／服务可达性、官方评分和依赖冻结仍未就绪；M4 执行层已实现为显式 `job_execution` 配置下的 opt-in，默认本地配置已接 captured Notebook runner 与官方文本评分；新 UI 已有实际模型运行和固定三题闭环回执，仍不以这些局部证据证明 E3/E4 未验收部分。原失败／审查／通知证据保留。
 - **五套内部版本默认与输入规则仍分散。** 旧 benchmark 专属路径已删除，共用职责已迁到独立模块；Python API 旧默认、五套历史 reader、预检与运行器的题单解析差异仍待收敛，见 [TRIAGE](TRIAGE.md)。
 - **重复不可变输入／源码已收敛，可变成本仍需实测。** 共享模式和 compact 导出已实现；旧物理副本仍逐份验证，导入／数据库／建索引仍按 run 隔离，campaign 靠执行者展开。服务器实际 runtime、证据体积、I/O、RSS 与阶段耗时尚未核实，不能据离线样例宣称全量性能收益。
 - **环境交付与报告分散。** SN／scorer／权重分别准备，Dashboard、官方比较和组件补评使用不同工件。暂不做统一平台，先明确身份及转换契约，避免重复计数或误合分数。

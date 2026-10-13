@@ -1,0 +1,15 @@
+{
+  "job_execution": {
+    "mode": "notebook",
+    "output_root": "/absolute/evaluator/var/sn-workbench-server/executions",
+    "python": "/absolute/evaluator/.venv/bin/python",
+    "artifact_root": "/absolute/evaluator/var/sn-workbench-server/artifacts",
+    "project_root": "/absolute/isolated/sn-eval-source",
+    "model_config": "/absolute/evaluator/var/sn-workbench-server/private/model-services.experiment.toml",
+    "dependency_requirements": "/absolute/evaluator/var/sn-workbench-server/private/dependency-requirements.txt",
+    "runtime_expectation": "/absolute/evaluator/var/sn-workbench-server/private/runtime-expectation.json",
+    "scorer_sources": "/absolute/evaluator/var/sn-workbench-server/scorers",
+    "max_limit_cny": 1,
+    "model_names": []
+  }
+}

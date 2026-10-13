@@ -10,6 +10,8 @@
 
 ## 1. 先确认目录、版本和任务
 
+本地 SN 工作台入口：[使用与开发说明](apps/sn-workbench/README.md)。Paseo workspace 的 `workbench` 服务或 Python CLI 提供同源页面／API；支持任务／人评／笔记、A Agent 协作，以及 2026-10-12 闭合的计划草稿修订／回访和只读冻结结果比较，不启动评测 Job、SN 或评分模型。浏览器写入验证使用独立 state，预览库保留真实材料；更新后关闭或刷新所有旧页。完整启动、访问码、CLI 与备份说明集中于该入口。
+
 本机当前实现位于：
 
 ```text
@@ -128,7 +130,9 @@ export EVAL_PYTHON=/path/to/new-server-eval-venv/bin/python
 
 ## 3. 怎么启动和执行
 
-### 3.1 项目没有必须常驻的 evaluator 服务
+### 3.1 CLI 与可选工作台
+
+当前工作台可通过 FastAPI 常驻服务操作；新服务器按[工作台接入交接](docs/server-workbench-handoff.md)安装、配置和启动。下述 CLI 路径仍可独立使用。
 
 本项目通过 CLI 执行任务。SN runner 直接调用所选 SN checkout 的 Python 业务实现，并创建独立数据库、notebook、存储与索引；**无需先启动 SN 前端或 HTTP 后端**。SN 配置引用的模型服务仍须可用。
 

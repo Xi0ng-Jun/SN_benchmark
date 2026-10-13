@@ -1,8 +1,8 @@
 # Benchmark 实验结果表与填报协议
 
-日期：2026-10-09。本文覆盖 QASPER、MultiHop-RAG、ALCE、QMSum 和 HotpotQA。
+日期：2026-10-13。本文覆盖 QASPER、MultiHop-RAG、ALCE、QMSum 和 HotpotQA。
 本文保存当前计划的结果表结构。
-本文不记录新的服务器成绩。
+本文只记录已跑出且有来源标记的成绩；服务器转述值不等同于本机工件验收。
 本次服务器任务仅根据已跑出的结果填报，不负责选择或安排实验。
 
 实验目标是获得可追溯的答案、证据、官方分数和比较结论。
@@ -85,16 +85,51 @@ full 覆盖不等于原论文复现。
 
 | 方法 / Row ID | 类别 | 范围 / N | Answer F1 ↑ | Evidence F1 ↑ | 计划状态 |
 | --- | --- | --- | --- | --- | --- |
-| SN chunk / `sn.qasper.chunk` | controlled-rerun | full / 1,451 | 待填 | 待填 / pending | 当前范围 |
+| SN chunk / `sn.qasper.chunk` | controlled-rerun | full / 1,451 | 0.31469† | 0.47451† | 服务器结果；本机待验收 |
 | BM25 control / `qasper.bm25.full_text.control` | controlled-rerun | full / 1,451 | 待填 | 待填 / pending | 暂缓 |
 | LAB LongChat citation / `qasper.lab.longchat.citation.control` | controlled-rerun | 实际验收范围待填 | 待填 | 待填 / pending | 候选；full 不由验收模板自动授权 |
+| Visconde / [Multi-document QA with GPT-3 and Neural Reranking](https://arxiv.org/abs/2212.09656) | published-reference | QASPER v0.3 test / 1,451 | 0.491 | 0.385 | 论文值；作者代码明确调用官方 evaluator，最接近直接 RAG 对照；条件仍不同 |
+| D3-BASE / [Drilling Down into the Discourse Structure](https://aclanthology.org/2023.findings-emnlp.972/) | published-reference | 150 随机论文；题数未报告；split 未命名 | 0.4745 | 0.4992 | 论文值；随机子集 |
+| CGSN / [Compressive Graph Selector Network](https://aclanthology.org/2022.emnlp-main.336/) | published-reference | QASPER v0.2 test / 1,451 | 0.3944 | 0.5398 | 论文值；gold-evidence 训练 reader |
+| RAPTOR + GPT-4 / [RAPTOR](https://proceedings.iclr.cc/paper_files/paper/2024/file/8a2acd174940dbca361a6398a4f9df91-Paper-Conference.pdf) | published-reference · non-comparable | QASPER 总计 5,049 问 / 1,585 篇；split 未说明 | 0.557‡ | N/A | 论文 F1-Match；无 Evidence F1 |
+| LongRAG / [LongRAG](https://arxiv.org/abs/2406.15319) | published-reference · non-comparable | 416 篇论文 / 371 text cases；split 未命名 | 0.259‡ | N/A | 论文 F1；重构为 RAG 任务 |
+| SAGE + GPT-4o-mini / [SAGE](https://arxiv.org/abs/2503.01713) | published-reference · non-comparable | QASPER 总计 5,049 问 / 1,585 篇；split 未说明 | 0.4123‡ | N/A | 论文 F1-Match；无 Evidence F1 |
+| Virtual Documents / [More Bang for your Context](https://openreview.net/pdf/94a2ae2d992473d09139baf64ff2f94ec5c9a9b0.pdf) | published-reference · derivative | ZeroSCROLLS Qasper validation / 500 | 0.507§ | N/A | ZeroSCROLLS F1；不是原版 QASPER test |
 
-Answer F1 使用固定官方多参考评分。
-Evidence F1 使用显式预测的原始段落。
+SN、BM25 和 LAB 受控行的 Answer F1 使用固定官方多参考评分；发表参考行保留论文自己的评分定义。
+受控行的 Evidence F1 使用显式预测的原始段落；发表参考行的证据指标沿用论文协议。
 任一范围内题目存在证据映射错误时，整批 Evidence F1 保留 pending。
 不得只对映射成功题计算正式证据成绩。
 上下文覆盖放入诊断，不填到 Evidence F1。
 LED 论文值可另列发表参考面板；输入差异须披露。
+
+† SN 数字来自用户提供的服务器 full-run 汇总（1,451 题）；本机尚未读取该批次的原始答卷、run manifest 和评分工件，因此当前属于“服务器转述”，不能据此补写 scorer、模型或输入身份。
+
+范围说明：Visconde 和 CGSN 的数字是论文报告值，保留论文各自的输入、版本和生成条件。Visconde 论文表格未写 split，但[作者代码](https://github.com/neuralmind-ai/visconde)的复现命令把 gold 固定为 `data/qasper-test-v0.3.json`；CGSN README 明确使用 QASPER v0.2 test。两者版本、输入材料和生成模型仍与 SN 不同。
+
+Split 说明：D3、RAPTOR、LongRAG 和 SAGE 的范围不能统一理解为“标准 QASPER test”：D3 只报告 150 篇随机论文且未给题数；RAPTOR 只写 QASPER 总规模而不写 split；LongRAG 给出 416 篇论文/371 个 text cases 但未命名 split，并将 QASPER 重构为 RAG 任务；SAGE 给出数据集总规模但未说明 end-to-end 表使用哪个 split。
+
+‡ 这些工作把 QASPER 的答案指标写成 F1-Match（或论文自定义 F1），没有报告官方 Evidence F1；数值只能作为 RAG 结果参考，不能与本表的 Answer F1 / Evidence F1 同轨排序。SAGE 的 0.4123 是 GPT-4o-mini、OpenAI Embedding + SAGE 配置；RAPTOR 的 0.557 是 GPT-4 配置。
+
+§ Virtual Documents 报告的是 ZeroSCROLLS 的 Qasper validation 结果（500 题），不是 QASPER v0.3 test，也不使用本表的官方 Evidence F1 scorer。
+
+LAB 论文中的 QASPER 配置使用作者自己的 citation/attribution 评测子集，当前没有可直接填入本表的完整 QASPER v0.3 官方 Answer F1 / Evidence F1；因此保留受控入口行，待实际运行工件产生同口径结果。
+
+### 3.1 官方协议证据与近似协议的区分
+
+这里需要区分“使用官方评测器”和“沿用官方指标名称”。目前已经核实存在前一类工作：Visconde 的作者仓库明确运行
+`python qasper_evaluator.py --predictions ... --gold data/qasper-test-v0.3.json --text_evidence_only`，因此它的 0.491 / 0.385 是本表中最有依据的外部 RAG 直接参考。官方 evaluator 本身声明输出 QASPER 的 Answer F1 和 Evidence F1；本仓库的
+`src/rag_eval/benchmark_official.py` 也固定了同一份 `allenai/qasper-led-baseline` evaluator 源码及 hash。
+
+| 工作 | 官方协议证据 | 可报告结果 | 与 SN 的关系 |
+| --- | --- | --- | --- |
+| Visconde | 作者代码显式调用 v0.3 `qasper_evaluator.py`，并使用 `--text_evidence_only` | Answer F1 0.491；Evidence F1 0.385 | 当前最接近的 RAG 直接比较；仍有 GPT-3、检索、提示和输入预处理差异 |
+| QASPER LED / 原始长文档基线 | 作者基线仓库提供官方 evaluator，并报告 Answer/Evidence F1 | 论文表中的 LED 基线可作为官方协议参考面板 | 长文档端到端 QA，不是 RAG；输入通常是整篇论文 |
+| CGSN | 论文和作者代码沿用 Answer F1 / Evidence F1 计算，明确使用 QASPER v0.2 test | Answer F1 0.3944；Evidence F1 0.5398 | 官方指标体系，但 reader 用 gold evidence 训练，不能与 SN 端到端等价 |
+| D3-BASE | 论文报告同名 Answer/Evidence F1，但只明确说明 150 篇随机文档；未核实其直接调用官方 evaluator | Answer F1 0.4745；Evidence F1 0.4992 | 官方指标近似的随机子集；不能当作完整 test 结果 |
+| Document Structure in Long-Document Transformers | 论文明确说“adapting”作者 evaluator | LED 最佳 0.3908 / 0.4464；LongT5 最佳 0.4676 / 0.5614 | 官方近似协议；证据按 ITG node，且输入丢弃 figures/tables；不是 RAG |
+
+因此，“没有官方协议工作”是不准确的；更准确的结论是：**明确给出官方 evaluator、完整 v0.3 test、RAG 端到端输入条件且同时报告 Answer/Evidence F1 的公开工作很少，Visconde 是目前最可靠的直接参考。** CGSN、D3 和 Document Structure 可以用于方法背景或分组参考，但不能和 SN 的 0.31469 / 0.47451 直接合并排序。
 
 ## 4. 表 3：MultiHop-RAG 答案与检索
 

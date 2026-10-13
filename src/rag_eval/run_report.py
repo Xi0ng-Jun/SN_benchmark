@@ -8,6 +8,7 @@ from pathlib import Path
 from .artifacts import digest, save_json
 from .identity import fingerprint
 from .run_results import GROUP_FIELDS, summarize
+from .stage_metrics import FORMAT as STAGE_FORMAT, compute_stage_metrics, summarize_cases
 
 from .notebook_data import SUITES as NOTEBOOK_SUITES, VERSION as NOTEBOOK_VERSION
 
@@ -24,7 +25,7 @@ def paired_modes(runs):
         if (manifest and manifest["track"] == "R" and manifest.get("pairing_id")
                 and manifest.get("execution_status") != "not_applicable"
                 and manifest["mode"] in {"chunk", "reasoning"}):
-            candidates[manifest["pairing_id"]].append(run)
+            candidates[run.get('comparison_pairing_id', manifest['pairing_id'])].append(run)
     pairs, warnings = [], []
     for identity, members in candidates.items():
         if len(members) != 2 or {m["manifest"]["mode"] for m in members} != {"chunk", "reasoning"}:
@@ -63,6 +64,25 @@ def write_report(run_dirs, output, *, partition_only=False):
         raise ValueError("Provide distinct Notebook run directories")
     context = RunReadContext(partition_only=partition_only)
     runs = [load_run(p, context=context) for p in paths]
+    from .oracle_track import require_formal_run
+    for loaded in runs:
+        if loaded['manifest'] is not None:
+            require_formal_run(loaded['manifest'])
+    stage_groups = defaultdict(list)
+    stage_unavailable = []
+    for run in runs:
+        manifest = run['manifest']
+        try:
+            if not manifest or not manifest.get('identity', {}).get('notebook_context'):
+                raise ValueError('No frozen Notebook scope')
+            metrics = compute_stage_metrics(run['path'], context=context)
+        except (OSError, ValueError, KeyError) as exc:
+            # Saved outputs and existing reports remain readable when diagnostics fail.
+            metrics = dict(metric_role='diagnostic', status='unavailable', reason=type(exc).__name__)
+            stage_unavailable.append(dict(run_path=run['path'], **metrics))
+        else:
+            stage_groups[(metrics['suite'], metrics['mode'])].extend(metrics['cases'])
+        run['stage_metrics'] = metrics
     pairs, pairing_warnings = paired_modes(runs)
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -96,12 +116,24 @@ def write_report(run_dirs, output, *, partition_only=False):
             missing = manifest["planned_predictions"] - len(run["outputs"])
             lines.extend(["", f"计划预测 {manifest['planned_predictions']} 题；预测错误 {errors}；预测不适用 {skipped}；缺失预测 {missing}。"])
             if manifest.get("product_protocol") in {NOTEBOOK_VERSION, "sn-notebook-baseline-v1"}:
-                context = manifest["identity"]["notebook_context"]
-                lines.extend(["", "Notebook 资料评测：本次为分区 " + context["partition_id"]
-                              + "；全题单 " + str(context["selected_cases"]) + " 题 / " + str(context["partition_count"]) + " 个资料分区。",
+                notebook_context = manifest["identity"]["notebook_context"]
+                lines.extend(["", "Notebook 资料评测：本次为分区 " + notebook_context["partition_id"]
+                              + "；全题单 " + str(notebook_context["selected_cases"]) + " 题 / " + str(notebook_context["partition_count"]) + " 个资料分区。",
                               "F1/ROUGE 等连续主分仅报告有效评分均值与覆盖率，不解释为答对率。ALCE 模型指标需要独立官方评分步骤；当前未评分保留 null。"])
-            lines.extend([f"路径：{manifest['track']}；模式：{manifest['mode'] or '不适用'}；显式模型适配器中未结束的调用记录：{run['unfinished_model_calls']}（不含产品内部全部请求）。",
-                          "", "| 指标 | 计划评分 | 已存输出 | 有效评分 | 均分（仅有效项） | 缺失评分 | 评分错误 | 不适用 | 未解析 | 未评分 |",
+            lines.append(f"路径：{manifest['track']}；模式：{manifest['mode'] or '不适用'}；显式模型适配器中未结束的调用记录：{run['unfinished_model_calls']}（不含产品内部全部请求）。")
+            audit = run.get('scheduled_generation_audit')
+            if audit is not None:
+                completeness = audit['completeness']
+                lines.extend([
+                    "scheduled-generation 日志审计：观测 " + audit['observation_state']
+                    + f"；提交记录 {audit['attempt_count']}；终态记录 {audit['terminal_count']}"
+                    + f"；已配对 {audit['paired_count']}；未配对 {len(audit['unfinished'])}"
+                    + "；配对状态 " + completeness['pair_state']
+                    + "；尾行截断 " + ('是' if completeness['truncated_tail'] else '否') + "。",
+                    "仅核已记录journal结构，不证明整次执行历史完整，也不代表HTTP、评分或Job完成。",
+                ])
+                lines.extend('scheduled-generation 说明：' + _cell(w) for w in audit['warnings'])
+            lines.extend(["", "| 指标 | 计划评分 | 已存输出 | 有效评分 | 均分（仅有效项） | 缺失评分 | 评分错误 | 不适用 | 未解析 | 未评分 |",
                           "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
             for group in run["groups"]:
                 counts = group["status_counts"]
@@ -114,6 +146,19 @@ def write_report(run_dirs, output, *, partition_only=False):
                               + "：不适用 " + str(group["non_applicable"])
                               + "；trace 完整度 " + _cell(group["trace_completeness"])
                               + "；Agent 指标尚未接入（trace 字段本身不是 Agent 评分）。"])
+            metrics = run['stage_metrics']
+            lines.extend(['', '### 阶段指标（diagnostic）', ''])
+            if 'summary' not in metrics:
+                lines.append('不可计算：' + metrics['reason'] + '；未补零。')
+            else:
+                stage = metrics['summary']
+                lines.extend(['| 指标 | 值 | 观测分子 / 分母 |', '|---|---:|---:|'])
+                for name in ('gold_evidence_recall', 'context_precision', 'citation_precision', 'refusal_rate'):
+                    value = stage[name]
+                    lines.append('| ' + ' | '.join(map(_cell, [name, _number(value['value']),
+                        f"{value['numerator']} / {value['denominator']} ({value['status']})"])) + ' |')
+                lines.extend(['', '调用与耗时：' + _cell(json.dumps(stage['model_usage'], ensure_ascii=False)),
+                    'scheduled journal 按保存的 Ask 时间窗口归因；provider 与 scheduled 分开报告，历史完整性未知。'])
             lines.extend(["", "逐题记录（含完整回答、上下文、引用对象、评分状态与原因）：", ""])
             outputs_by_case = {r["case_id"]: r for r in run["outputs"]}
             for case_id in dict.fromkeys(p["case_id"] for p in run["planned"]):
@@ -140,6 +185,9 @@ def write_report(run_dirs, output, *, partition_only=False):
                "runs": [{k: v for k, v in r.items() if k not in {"planned", "outputs", "scores"}} for r in runs],
                "paired_modes": pairs, "pairing_warnings": pairing_warnings}
     summary["input_validation"] = "partition-capsule; full canonical audit required before official export" if partition_only else "canonical-full"
+    summary['stage_metrics'] = dict(format=STAGE_FORMAT, metric_role='diagnostic',
+        groups=[dict(suite=suite, mode=mode, **summarize_cases(cases))
+                for (suite, mode), cases in stage_groups.items()], unavailable_runs=stage_unavailable)
     save_json(output / "summary.json", summary)
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return summary

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Agent read tools for a workbench Task; see `sn-eval --task <id> docs`.
+# Runs from the evaluation repository root so config and run paths resolve.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+PYTHONPATH="$ROOT/src" exec "${SN_WORKBENCH_PYTHON:-$ROOT/.venv/bin/python}" -m rag_eval.workbench.agent_tools "$@"

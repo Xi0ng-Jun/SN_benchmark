@@ -31,6 +31,8 @@ def _comparison_category(method):
     category = configuration.get('comparison_category') if isinstance(configuration, dict) else None
     if category is None:
         raise ValueError('Method configuration.comparison_category is required for formal comparison')
+    if not isinstance(category, str):
+        raise ValueError('Method configuration.comparison_category must be a string')
     if category not in COMPARISON_CATEGORIES:
         raise ValueError('Unknown comparison category: ' + str(category))
     if method.get('kind') == 'published' and category != 'published-reference':
@@ -178,7 +180,16 @@ def _read(path):
     return value, {'path': str(path), 'sha256': hashlib.sha256(payload).hexdigest()}
 
 
-def _validate_scores(bundle, submission, scores):
+def validate_scored_submission(bundle, submission, scores, *, require_complete_generation=False):
+    """Validate one score artifact against its frozen bundle and submission.
+
+    Returns per-case metric names, denominators, eligible case IDs and batch-only
+    names. Reading an incomplete result is allowed; formal comparison opts into
+    complete generation. All identity and metric coverage checks remain shared.
+    The submission itself is reconstructed here, so callers cannot bypass that
+    boundary by supplying a hand-built coverage record.
+    """
+    submission = validate_submission(bundle, submission)
     if scores.get('format') != 'benchmark-scored-submission-v1':
         raise ValueError('Unsupported benchmark score format')
     checksum = scores.get('scores_id')
@@ -310,7 +321,7 @@ def _validate_scores(bundle, submission, scores):
             raise ValueError('Metrics without per-case values require batch_only_metrics')
         if set(declared_batch_only) & per_case_metrics:
             raise ValueError('batch_only_metrics contains a metric with per-case values')
-    if not submission['coverage']['generation_complete']:
+    if require_complete_generation and not submission['coverage']['generation_complete']:
         raise ValueError('Main comparison requires complete generation; missing/error cases remain incomplete')
     return per_case_metrics or set(), denominators, metric_cases, set(declared_batch_only)
 
@@ -324,22 +335,56 @@ def compare_submissions(bundle_directory, entries):
     """
     if not isinstance(entries, (list, tuple)) or len(entries) < 2:
         raise ValueError('At least two scored submissions are required')
-    bundle_directory = Path(bundle_directory).resolve()
-    bundle = load_bundle(bundle_directory)
-    seen_submissions, seen_methods, loaded = set(), set(), []
+    objects = []
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != {'submission', 'scores'}:
             raise ValueError('Each comparison entry requires submission and scores file paths')
         saved, submission_file = _read(entry['submission'])
+        scores, score_file = _read(entry['scores'])
+        objects.append({'submission': saved, 'scores': scores,
+                        'source': {'submission': submission_file, 'scores': score_file}})
+    return _compare_objects(load_bundle(Path(bundle_directory).resolve()), objects)
+
+
+def compare_frozen_submissions(bundle_directory, entries):
+    """Compare immutable objects against a complete canonical bundle.
+
+    The trusted caller verifies each snapshot; this entry validates the same
+    submission/scorer/admission contracts as the path entry. Provenance names
+    the real snapshot and original byte hashes, without invented file paths.
+    """
+    if not isinstance(entries, (list, tuple)) or len(entries) < 2:
+        raise ValueError('At least two scored submissions are required')
+    objects = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {'submission', 'scores', 'source'}:
+            raise ValueError('Each frozen comparison entry requires submission, scores and source')
+        source = entry['source']
+        if (not isinstance(source, dict) or set(source) != {'snapshot_id', 'source_hashes'}
+                or not isinstance(source['source_hashes'], dict)
+                or set(source['source_hashes']) != {'submission', 'scores'}
+                or any(not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value)
+                       for value in [source['snapshot_id'], *source['source_hashes'].values()])
+                or not isinstance(entry['submission'], dict) or not isinstance(entry['scores'], dict)):
+            raise ValueError('Invalid frozen comparison objects or source identity')
+        objects.append(deepcopy(entry))
+    return _compare_objects(load_bundle(Path(bundle_directory).resolve()), objects)
+
+
+def _compare_objects(bundle, entries, *, allow_method_attempts=False):
+    """One admission and comparison implementation for both input transports."""
+    seen_submissions, seen_methods, loaded = set(), set(), []
+    for entry in entries:
+        saved, scores = entry['submission'], entry['scores']
         submission = validate_submission(bundle, saved)
         category = _comparison_category(submission['method'])
         if category == 'published-reference':
             raise ValueError('published-reference cannot enter paired comparison')
         submission_id = fingerprint(submission)
-        if submission_id in seen_submissions or submission['method_id'] in seen_methods:
+        if submission_id in seen_submissions or (submission['method_id'] in seen_methods and not allow_method_attempts):
             raise ValueError('Duplicate submission/method attempt; explicitly select one attempt per method')
-        scores, score_file = _read(entry['scores'])
-        per_metrics, denominators, metric_cases, batch_only = _validate_scores(bundle, submission, scores)
+        per_metrics, denominators, metric_cases, batch_only = validate_scored_submission(
+            bundle, submission, scores, require_complete_generation=True)
         if loaded:
             reference = loaded[0]['scores']
             for key in ('bundle_id', 'suite', 'scope', 'case_ids', 'profile', 'scorer_id', 'scorer_identity'):
@@ -351,7 +396,7 @@ def compare_submissions(bundle_directory, entries):
                        'denominators': denominators,
                        'metric_case_ids': metric_cases,
                        'batch_only_metrics': batch_only,
-                       'files': {'submission': submission_file, 'scores': score_file}})
+                       'files': deepcopy(entry['source'])})
     common = set.intersection(*(set(item['scores']['metrics']) for item in loaded))
     if not common:
         raise ValueError('No common scored metrics; pending metrics cannot produce a main comparison')
@@ -457,6 +502,26 @@ def compare_submissions(bundle_directory, entries):
                   'Observed differences do not establish causality or statistical significance.',
                   'This report covers one suite and scope; there is no cross-suite total or causal ranking.',
               ]}
+    # This opt-in is used only by the two-run flip entry. Ordinary multi-method
+    # comparisons still reject repeated attempts; method identities stay real.
+    if allow_method_attempts:
+        report['comparison_unit'] = 'explicit-run-attempts'
+        for pair, (left, right) in zip(report['comparisons'], combinations(loaded, 2)):
+            pair.update(left_submission_id=left['scores']['submission_id'],
+                        right_submission_id=right['scores']['submission_id'])
+    from .feature_identity import build_comparison_identity, compare_identity_tiers
+    identities = []
+    for item in loaded:
+        method = item['submission']['method']
+        config = method['configuration']
+        if method['kind'] == 'sn' and isinstance(config.get('identity'), dict):
+            identities.append(build_comparison_identity(
+                {'identity': config['identity'], 'mode': config.get('mode')},
+                case_ids=item['scores']['case_ids'], scorer_identity=item['scores']['scorer_identity']))
+        else:
+            identities.append(None)
+    report['identity_disclosures'] = [compare_identity_tiers(a, b) for a, b in combinations(identities, 2)
+                                      if a is not None and b is not None]
     report['report_id'] = fingerprint(report)
     return report
 
@@ -515,6 +580,9 @@ def _markdown(report):
             else:
                 lines.append(f'- {cell(metric)}: unavailable ({cell(detail["reason"])}); '
                              f'{detail["group_count"]} groups and {detail["case_count"]} eligible cases.')
+    from .feature_identity import disclosure_markdown
+    for disclosure in report.get('identity_disclosures', []):
+        lines += ['', disclosure_markdown(disclosure)]
     lines += ['', 'Per-case and group differences, source identity and artifact hashes are in [report.json](report.json).', '']
     lines += [f'- {message}' for message in report['interpretation']]
     lines += ['- Intervals resample group_id clusters and weight all eligible cases equally; no significance test was computed.', '']

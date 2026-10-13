@@ -197,7 +197,8 @@ def score_outputs(run, cases, planned, sink):
 
 
 def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
-            agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None):
+            agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
+            sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
@@ -205,31 +206,59 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     """
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Explicit chunk/reasoning mode required')
+    if ((dependency_requirements is None) != (expected_interpreter is None)
+            or (dependency_requirements is not None and sn_source_ref is None)):
+        raise ValueError('Startup dependency checks require an explicit captured source')
+    if task_worktree is not None:
+        if (not isinstance(task_worktree, dict)
+                or set(task_worktree) != {'task_id', 'worktree_path', 'paseo_workspace_id', 'source_ref'}
+                or not sn_source_ref or task_worktree.get('source_ref') != sn_source_ref.get('id')
+                or not isinstance(task_worktree.get('task_id'), str) or not task_worktree['task_id']
+                or not isinstance(task_worktree.get('worktree_path'), str)
+                or not Path(task_worktree['worktree_path']).is_absolute()):
+            raise ValueError('Task association must bind the actual captured source')
     root, project, bundle_dir, run = [Path(p).resolve() for p in (root, project, bundle_dir, run)]
+    shared_refs = None
     for forbidden in (root / 'src', root / 'scripts', project, bundle_dir):
         if run.is_relative_to(forbidden) or forbidden.is_relative_to(run):
             raise ValueError('Run must be separate from code/product/input')
     if artifact_root is not None:
         store_path = Path(artifact_root).resolve()
         if any(store_path.is_relative_to(p) or p.is_relative_to(store_path)
-               for p in (root / 'src', root / 'scripts', project, bundle_dir)):
+               for p in (root / 'src', root / 'scripts', project)):
             raise ValueError('Shared store must be separate from code/product/input')
+        if store_path.is_relative_to(bundle_dir) or bundle_dir.is_relative_to(store_path):
+            # An immutable installed bundle is an owned object of this store.
+            # Only that exact verified object may overlap; canonical inputs
+            # and arbitrary directories still require separate storage.
+            from .artifact_store import ArtifactStore
+            from .bundle_index import find_installed_bundle
+            shared_refs = find_installed_bundle(bundle_dir, artifact_root, expected_index_id=artifact_index_id)
+            if bundle_dir != ArtifactStore(store_path).resolve(shared_refs['bundle']):
+                raise ValueError('Shared input must be the verified installed bundle object')
         if run.is_relative_to(store_path) or store_path.is_relative_to(run):
             raise ValueError('Run must be separate from shared artifact store')
+    if sn_source_ref is not None and artifact_root is None:
+        raise ValueError('Captured SN source requires a shared artifact store')
     if run.exists():
         raise ValueError('Use a new run directory; no implicit resume')
-    shared_refs = None
     if artifact_root is None:
         bundle = load_bundle(bundle_dir)
         product = partition_bundle(bundle, partition_id, request_revision=request_revision)
     else:
         from .bundle_index import find_installed_bundle, load_partition
-        shared_refs = find_installed_bundle(bundle_dir, artifact_root, expected_index_id=artifact_index_id)
+        if shared_refs is None:
+            shared_refs = find_installed_bundle(bundle_dir, artifact_root, expected_index_id=artifact_index_id)
         capsule = load_partition(artifact_root, shared_refs, partition_id, request_revision)
         bundle = dict(capsule, partitions=[capsule['partition']])
         if not capsule.get('qasper_evidence_catalogues'):
             bundle.pop('qasper_evidence_catalogues', None)
         product = capsule['product']
+        if sn_source_ref is not None:
+            shared_refs = {
+                **shared_refs,
+                'sources': {**shared_refs.get('sources', {}), 'sn': dict(sn_source_ref)},
+            }
     cases = selected_cases(bundle, product, case_ids)
     if not cases:
         raise ValueError('Cannot execute an empty partition')
@@ -247,8 +276,11 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         resolved, models = resolve_models(Path(agent_config['judge_config']).resolve(), ['judge'])
     if model_config is not None:
         model_config = Path(model_config).resolve()
+    if dependency_requirements is not None:
+        dependency_requirements = Path(dependency_requirements).resolve()
     run.mkdir(parents=True, exist_ok=False)
     update_state(run, 'initializing')
+    observed_provider = None
     try:
         if shared_refs is None:
             shutil.copytree(bundle_dir, run / 'input')
@@ -258,10 +290,31 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             from .artifact_store import write_run_refs
             write_run_refs(run, artifact_root, shared_refs)
         save_json(run / 'product-bundle.json', product)
-        code = snapshot_sources(root, project, run, **({'artifact_root': artifact_root} if artifact_root is not None else {}))
-        settings, runtime = configure_environment(project, run, product_track=True,
-                                                   document_limit=bundle['manifest']['max_documents'],
-                                                   **({'model_config': model_config} if model_config is not None else {}))
+        source_kwargs = {'artifact_root': artifact_root} if artifact_root is not None else {}
+        if sn_source_ref is not None:
+            source_kwargs['captured_source_ref'] = sn_source_ref
+        code = snapshot_sources(root, project, run, **source_kwargs)
+        environment_kwargs = {
+            'document_limit': bundle['manifest']['max_documents'],
+        }
+        if model_config is not None:
+            environment_kwargs['model_config'] = model_config
+        if sn_source_ref is not None:
+            environment_kwargs.update(source_root=run / 'captured-source', source_identity=code)
+        if dependency_requirements is not None:
+            environment_kwargs.update(dependency_requirements=dependency_requirements,
+                                      expected_interpreter=expected_interpreter)
+        settings, runtime = configure_environment(project, run, product_track=True, **environment_kwargs)
+        if 'startup_dependencies' in runtime:
+            from .runtime_environment import initialize_captured_model_services
+            observed_provider, loaded_services = initialize_captured_model_services(
+                settings, run, source_identity=code)
+            runtime['loaded_model_services'] = loaded_services
+            save_json(run / 'runtime-identity.json', runtime)
+        from .feature_identity import FEATURE_SETTING_FIELDS, build_feature_identity
+        runtime['effective_settings'] = {name: getattr(settings, name) for name in FEATURE_SETTING_FIELDS
+                                         if hasattr(settings, name)}
+        save_json(run / 'runtime-identity.json', runtime)
         tracing = None
         if agent_config is not None:
             from .native_agent import NativeAgentEvaluation, require_native_tracing
@@ -272,6 +325,26 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         audits_sha256=fingerprint([]), track='R',
                         notebook_context=dict(partition_id=partition_id, selected_cases=bundle['manifest']['selected_cases'],
                                               partition_count=bundle['manifest']['partition_count']))
+        if task_worktree is not None:
+            identity['task_worktree'] = dict(task_worktree)
+        identity['feature_set'] = build_feature_identity(runtime)
+        identity['dotenv_sha256'] = runtime.get('dotenv_snapshot', {}).get('sha256')
+        if 'startup_dependencies' in runtime:
+            from .runtime_dependency_comparison import startup_comparison_projection
+            environment = startup_comparison_projection(
+                runtime['startup_dependencies'], run_coordinate=str(run))
+            identity['runtime_dependencies'] = {
+                'format': 'sn-startup-binding-v1',
+                'observation_sha256': fingerprint(runtime['startup_dependencies']),
+                'requirements_sha256': runtime['startup_dependencies']['requirements']['sha256'],
+                'environment_sha256': fingerprint(environment),
+                'run_coordinate': str(run),
+            }
+            identity['runtime_model_services'] = {
+                'format': 'sn-loaded-model-services-binding-v1',
+                'observation_sha256': fingerprint(runtime['loaded_model_services']['observation']),
+                'source_modules_sha256': fingerprint(runtime['loaded_model_services']['source_modules']),
+            }
         # Comparison cohorts drop per-partition product_bundle; keep the request
         # revision in notebook_context as well, so request versions cannot mix.
         if request_revision != LEGACY_REQUEST_REVISION:
@@ -306,11 +379,18 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                   planned_predictions=len(cases), planned_scores=len(planned), identity=identity,
                   human_calibration='pending', release_gate=False))
         with ExitStack() as stack:
-            stack.enter_context(EventJournal(run / 'model-events.jsonl'))
+            model_events = stack.enter_context(EventJournal(run / 'model-events.jsonl'))
             outputs = stack.enter_context(EventJournal(run / 'outputs.jsonl'))
             scores = stack.enter_context(EventJournal(run / 'scores.jsonl'))
+            if observed_provider is not None:
+                from .runtime_model_identity import capture_model_service_generations
+                stack.enter_context(capture_model_service_generations(observed_provider, model_events))
+                # Drain accepted futures while their observer and journal are
+                # still alive, including a repository-construction failure.
+                stack.callback(observed_provider.close)
             from app.services.sqlite_repository import SQLiteRepository
-            repo = SQLiteRepository(settings)
+            repo = (SQLiteRepository(settings, model_provider=observed_provider)
+                    if observed_provider is not None else SQLiteRepository(settings))
             stack.callback(repo.close)
             if repo.db_path.resolve() != run / 'runtime/database.db':
                 raise ValueError('Database isolation failed')
@@ -343,6 +423,45 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         update_state(run, 'interrupted' if is_cancellation(exc) else 'failed',
                      error_type=type(exc).__name__, failed_phase=previous.get('phase'), case_id=previous.get('case_id'))
         raise
+    finally:
+        if observed_provider is not None:
+            observed_provider.close()
+
+
+def execute_oracle(*, source_run, gold_evidence, run, synthesis_service, mode, case_ids=None, llm_client=None):
+    """Explicit diagnostic entry using SN's native chunk synthesis boundary.
+
+    The caller supplies a fresh, isolated initialized SN service and approved
+    model budget. This does not initialize providers, ingest or retrieve. Native
+    context budgeting still applies; intended gold units and observed synthesis
+    context are saved separately. Reasoning synthesis requires its own controlled
+    entry and is refused here rather than silently substituting chunk behavior.
+    """
+    if mode != 'chunk':
+        raise ValueError('Oracle native entry currently supports explicit chunk synthesis only')
+    if not callable(getattr(synthesis_service, '_answer_chunks', None)):
+        raise ValueError('Initialized native SN chunk synthesis service required')
+    from .oracle_track import execute_oracle_track
+    from app.domain.retrieval import RetrievedChunk
+    from dataclasses import asdict, is_dataclass
+
+    def generate(request):
+        chunks = [RetrievedChunk(chunk_id='oracle:' + fingerprint([u['document_id'], u['source_unit_id']]),
+                    source_id=u['document_id'], source_title=u['document_id'], section_path=u['source_unit_id'],
+                    text=u['text']) for u in request['context_units']]
+        sink = {}
+        answer, grounded, anchors = synthesis_service._answer_chunks(
+            request['question']['question'], chunks, history='', memory_hits=[], notebook_id='',
+            llm_client=llm_client, baseline_sink=sink)
+        serialized_anchors = [asdict(a) if is_dataclass(a) else a.model_dump(mode='json')
+                              if hasattr(a, 'model_dump') else dict(a) for a in anchors]
+        # Native ordered_handles are tuples; persisted captures are public JSON.
+        observed = json.loads(json.dumps(sink, ensure_ascii=False))
+        return dict(status='success' if str(answer or '').strip() else 'no_answer',
+                    prediction=str(answer or ''), grounded=grounded, anchors=serialized_anchors,
+                    synthesis_entry='SN._answer_chunks', synthesis_mode='chunk', captures=[observed])
+
+    return execute_oracle_track(source_run, gold_evidence, run, generate=generate, case_ids=case_ids)
 
 
 def validate_saved_run(run, manifest, planned, outputs, *, reader=None):

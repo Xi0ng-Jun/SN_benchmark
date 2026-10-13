@@ -1,0 +1,17 @@
+{
+  "name": "@silicon-notebook/sn-agent-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "README.md", "PROTOCOL.md", "examples"],
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "npm run build && tsc --noEmit",
+    "test": "npm run build && node --experimental-strip-types --test tests/*.test.ts",
+    "test:sdk": "node --test tests/sdk-smoke.mjs"
+  },
+  "dependencies": { "@getpaseo/client": "0.11.2" },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "5.9.3" }
+}

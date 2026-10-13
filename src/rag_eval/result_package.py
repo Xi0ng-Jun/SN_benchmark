@@ -31,7 +31,7 @@ ROOT_NAMES = frozenset({
     'provenance.json', 'comparison.json', 'report.json',
 })
 RUN_NAMES = frozenset({
-    'manifest.json', 'state.json', 'source-identity.json', 'runtime-identity.json',
+    'manifest.json', 'state.json', 'source-identity.json', 'runtime-identity.json', 'dependency-requirements.txt',
     'scope.json', 'coverage.json', 'provenance.json', 'preparation-usage.json',
 })
 REVIEW_NAMES = frozenset({

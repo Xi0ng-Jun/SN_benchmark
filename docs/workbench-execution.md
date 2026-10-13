@@ -1,0 +1,52 @@
+# 从界面执行 QASPER 评测
+
+2026-10-14：store 内冻结 bundle 隔离误判修复后，用户已从界面完成一次 QASPER chunk 1 题真实运行（任务“测试3”，生成与独立官方文本评分均落盘，n=1）；最初两次失败工件保留、未自动重跑。当前可信本地配置支持 QASPER；保存计划和准备不会启动模型，点击“确认预算并运行”才派发。工作页同日改为 Agent 对话，见下文。
+
+## 操作
+
+1. 打开工作台，使用原访问码。新建或选择任务，在“更改”页绑定已登记的 `sn-eval-exp-1` worktree。
+2. 在“计划”页选择 QASPER 输入、明确题单和 chunk／reasoning 模式，保存计划。建议先使用少量固定题目验证流程，不按答案是否成功筛选正式成绩。
+3. 回到“更改”页，点击要执行的计划，再点击“捕获源码并准备运行”。核对固定计划版本、题数、分区数、模式、模型和源码 ref。
+4. 填写费用上限（人民币，默认 1 元，当前配置最多 10 元）和总超时（秒），点击“确认预算并运行”。预算按物理请求预留估算，不是账户账单；未知模型／不支持的传输拒绝出网。当前模型为 qwen-turbo、text-embedding-v4、qwen3-rerank。
+5. 页面显示生成／官方文本评分阶段和执行终态。下方关联 run 可打开案例、待读题和官方评分；现有翻转视图可在满足同题与身份条件时配对。评分失败保持缺失，答案和错误工件保留。
+
+每个 partition 使用独立进程和新 run-dir；实验 runtime、预算 ledger、日志和评分目录位于 `var/sn-workbench/executions`。生成不读取 gold；官方评分在生成后独立执行。clarification、error、missing、pending 原样保存，不把进程 exit 0 解释为答案全部成功。
+
+取消／超时只终止该执行的进程组；宽限期后清理仍在运行的子进程，保留工件。未确认响应会按 Task 在当前浏览器会话保存原请求；刷新先查询执行记录，“核对／恢复原运行请求”使用原 key 与固定内容。页面不自动重发 POST。已执行 Job 不复用，重新捕获准备创建新的 Job。
+
+## 与 Agent 对话（工作页）
+
+一圈的分工：**分析 Agent** 读错题、提假设卡草稿 → **你**在“更改”页批准 → 从卡片新建 **实现 Agent** 改 SN → 你在“更改”页用同一计划重跑 → 在卡片上“核对预测” → 你写效果和原因两个结论。
+
+1. 打开任务，工作页上方是任务卡（目标、run 卡、SN 改动、待读题、待处理的假设卡），下方是与当前 Agent 的对话。没有 Agent 时点“新建分析 Agent”，或点输入框上的 Agent 按钮按模型新建。分析 Agent 的工作目录是评测仓库，对 SN 只读；它用 `scripts/sn-eval` 自己查运行、案例、翻转和文档，用 `hypothesis-draft` 提交假设卡草稿。
+2. 草稿出现在“更改”页的“假设卡”里：读组件、机制、证据、逐题预测和交给实现者的说明，批准或驳回。批准后在卡片上按模型新建实现 Agent（需要 Task 已绑定 SN worktree），界面自动切到与它的对话；它只拿到卡片的实现说明，看不到考题和 gold。
+3. 改完后在“更改”页运行同一计划，得到新 run；在卡片上选基线 run 和改动后 run，点“核对预测”，再选效果与原因结论保存。
+4. 输入后按 Enter 发送（Shift+Enter 换行）。Agent 运行时页面每 3 秒刷新对话，回复自动出现；Agent 运行中再发送会打断它当前这一轮。
+5. **Agent 只收到你发送的文字和输入框里列出的附件，以及它自己用工具读到的内容**。每个 Agent 的第一条消息自动附上它的工作说明；分析 Agent 在任务有 run 时还会附上“本任务的评测运行”摘要。已送达过的相同内容不再附加，附件都可以移除。实现 Agent 只能收到说明和仓库文件，服务端拒绝给它发案例、运行摘要和成绩。附加材料：点“材料”，选任务目标、成绩摘要、当前案例或仓库内文件，先读预览（就是 Agent 收到的原文）再附加；或在 run 案例证据页点“附加到 Agent 消息”。
+6. run 案例附件包含问题、SN 答案、逐题官方分、阶段指标、gold、引用、按排名的检索块（标注是否引用、是否含 gold）和 run 工件路径，标为“仅供分析”。论文全文不内联，Agent 可按给出的路径自行读取。gold 只交给分析 Agent，SN 生成进程从不读取。
+7. Agent 的回答是候选。需要留存时在回答下点“记为候选”，到“记录”页做人工判断；候选不改官方分。
+
+测试时请用 pi 配置（`pi-flash`，DeepSeek Flash），不要用 Claude；优先用合成 fixture：`WORKBENCH_STATIC_DIRECTORY=<dist> PYTHONPATH=src .venv/bin/python apps/sn-workbench/tests/chat-browser-server.py`，再运行 `node apps/sn-workbench/tests/chat-browser.mjs`。
+
+## 服务与配置
+
+`configs/sn-workbench-local.json` 使用 `mode=notebook`，绑定已存在的独立 SN worktree、artifact store、私有实验模型配置、解释器／依赖要求与官方 scorer。前端不接收任意命令、模型配置或路径。准备读取并捕获源码，运行时复制并核对 runtime 文件 hash；不修改 SN 原树、配置或数据库。
+
+```bash
+paseo script start workbench --cwd /home/wabiwabi/silicon-notebook/benchmark-deepeval/.worktrees/benchmark-protocol-correctness
+```
+
+也可使用 README 的本地 `serve` 命令。服务沿用 `var/sn-workbench` 的任务和访问码；浏览器测试必须使用独立 state 与无模型 smoke executor。
+
+## 实际验证与边界
+
+- 独立 state 的 Chromium 验证：计划选择、源码准备、零预算禁用、匹配请求的 422 拒绝可恢复、未知请求刷新后同键恢复、成功回执丢失恢复、单次执行与完成状态刷新恢复。测试用 smoke executor，不调用模型。
+- 真实 Notebook wrapper 用无凭据的测试输入执行子进程失败路径，保留 batch plan/report、原错误与空预算请求账本；没有通过替身伪造真实生成成功。
+- 当前可信环境对已成功的固定 QASPER 单题完成捕获准备、执行规格构造、分区展开和解释器身份核对，启动进程数为 0。
+- 已保存 E5 真实单题的答案、实际 evidence 与官方分经现有 RunViews 读取和严格绑定检查，非新增模型实验。
+
+最终相关回归：`PYTHONPATH=src .venv/bin/python -m pytest` 对计划 CLI、Job API／CLI、执行层、Notebook wrapper、RunViews 和配置等 102 项检查全部通过，1 条 Starlette 弃用警告；TypeScript 检查、Expo Web 构建和 `git diff --check` 通过。独立只读审查复核 28 项通过，当前范围 0 Blocking／0 Important。较广回归曾暴露 CLI 局部导入遮蔽问题，以及 CLI 子进程未传 `PYTHONPATH` 的测试命令问题；前者已加反例修复，后者用正式启动方式重跑上述集合，不以失败计数宣称全量通过。
+
+受管 `workbench` 服务已启动并通过健康检查，代理 HTTP 200；Chromium 只读核对当前真实执行配置、QASPER 入口、绑定控件与既有 4 个任务，页面无错误。沿用原任务库和访问码，没有在用户任务库写入测试题单或运行。
+
+界面真实生成到评分已有一次用户运行（n=1）；之后的对话改造没有新增 SN 评测运行，只用 pi 做了两条 Agent 消息 smoke。R1 全闭环、自动改 SN、自动 baseline 翻转和生产多用户部署不在本次完成声明内。执行监督句柄属于当前服务进程，服务崩溃后不按保存的 PID 杀进程或自动重派；运行中请保持该工作台服务。
