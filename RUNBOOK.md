@@ -308,6 +308,10 @@ ALCE 完整模型评分在已准备 §2.3 环境后执行：
 
 只评答案时将 `--alce-full` 换成 `--alce-answer-only`，另用新输出目录；二者互斥，引用分在 answer-only 保持 pending。full 还要求完整 shown-doc／引用映射。
 
+纯 CPU 评分显式增加 `--alce-device cpu`。默认 `default` 保留原版设备参数；CPU 模式先校验固定官方源码 SHA256，再仅适配 QA、MAUVE、AutoAIS 的设备／显存参数，AutoAIS 仍为 **bfloat16**，不自动切换 fp32 或量化。输出保留 `upstream-eval.py`、实际执行的 `eval.py` 和 `cpu-device.patch`；补丁 SHA256 与执行源码 SHA256 写入依赖及 `scorer_id`，评分工件和比较报告标注“官方脚本 + CPU 设备适配补丁”，不视为原版 GPU 环境的数值等价复现。
+
+服务器正式评分前须在同一 CPU 环境用原版 T5-XXL 权重完成公开／合成小样例 AutoAIS smoke，记录 bf16 推理耗时、内存及依赖，再估算批次 `--alce-timeout`。模型缓存校验和小替身模型的路径测试都不能替代此门槛；本机内存不足时，T5 验收留在服务器。离线资源、cp313 wheelhouse、安装说明与本机实际验证回执放在 Git 外的 `var/alce-scoring-assets/`；是否准备完成以该目录的 manifest、README 和验证记录为准。
+
 检查 `scores.json` 的 coverage、各指标实际分母和 `pending_metrics`。QASPER Evidence、Hotpot Supporting Fact/Joint 依赖显式完整投影；MultiHop chunk 依赖实际排名快照，reasoning 无单一排名契约，不能补造检索分。错误、缺失、不适用分别保留；适用指标中的真实零分仍是零分。
 
 ### 3.6 原生 Agent 评测：单独安排的服务器任务

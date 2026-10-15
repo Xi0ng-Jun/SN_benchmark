@@ -81,8 +81,9 @@ def compute_autoais(data, qampari=False):
     assert eligible(True) == [0, 1]
 
 
+@pytest.mark.parametrize('device', ['default', 'cpu'])
 @pytest.mark.parametrize('scoring_mode', ['full', 'answer-only'])
-def test_real_child_process_preserves_input_and_records_eligible_scope(tmp_path, monkeypatch, scoring_mode):
+def test_real_child_process_preserves_input_and_records_eligible_scope(tmp_path, monkeypatch, scoring_mode, device):
     """Exercise process/file boundaries, with no model implementation or inference."""
     from rag_eval import benchmark_official
     from rag_eval.alce_official_cli import score_alce_batch
@@ -132,6 +133,7 @@ if __name__ == '__main__': main()
         scores.pop('citation_rec')
         scores.pop('citation_prec')
         expected_args = ['--qa', '--mauve']
+    source += DEVICE_CALLS
     source = source.replace('SCORES', repr(scores)).replace('EXPECTED_ARGS', repr(expected_args))
     monkeypatch.setattr(benchmark_official, '_source', lambda directory, name: source if name == 'alce_eval.py' else '')
     nltk = tmp_path / 'nltk-resources'
@@ -144,7 +146,17 @@ if __name__ == '__main__': main()
     output = tmp_path / 'qampari-parent' / 'run'
     result = score_alce_batch(prepared, source_directory=tmp_path, output_dir=output,
                               hf_cache=tmp_path, nltk_data=nltk, python=sys.executable,
-                              scoring_mode=scoring_mode)
+                              scoring_mode=scoring_mode, alce_device=device)
+    if device == 'cpu':
+        import hashlib
+        deps = result['dependencies']
+        assert deps['device'] == 'cpu'
+        assert deps['device_patch']['sha256'] == hashlib.sha256((output / 'cpu-device.patch').read_bytes()).hexdigest()
+        assert (output / 'upstream-eval.py').read_text() == source
+        assert (output / 'eval.py').read_text() != source
+    else:
+        assert (output / 'eval.py').read_text() == source
+        assert 'device_patch' not in result['dependencies']
     if scoring_mode == 'full':
         assert result['metric_case_ids']['citation_rec'] == ['q1']
         assert result['metrics']['citation_prec'] == .85
@@ -169,3 +181,60 @@ def test_answer_only_asqa_does_not_require_citation_nli_model(tmp_path):
     assert set(models) == {'gaotianyu1350/roberta-large-squad', 'gpt2-large'}
     with pytest.raises(ValueError, match='cache reference'):
         inspect_cache(tmp_path, 'eli5', scoring_mode='answer-only')
+
+
+
+# Four device call sites from the pinned official script. These functions are
+# never invoked by the boundary-only child; the adapter must still account for all.
+DEVICE_CALLS = '\ndef qa_device():\n    return pipeline("question-answering", model=QA_MODEL, device=0)\ndef mauve_device():\n    return mauve.compute_mauve(device_id=0)\ndef claims_device():\n    return AutoModelForSeq2SeqLM.from_pretrained(AUTOAIS_MODEL, torch_dtype=torch.bfloat16, max_memory=get_max_memory(), device_map="auto")\ndef citation_device():\n    return AutoModelForSeq2SeqLM.from_pretrained(AUTOAIS_MODEL, torch_dtype=torch.bfloat16, max_memory=get_max_memory(), device_map="auto")\n'
+
+
+def test_cpu_device_adapter_preserves_bf16_and_never_queries_cuda():
+    from types import SimpleNamespace
+    from rag_eval.alce_official_cli import cpu_device_adapter
+    patched, patch = cpu_device_adapter(DEVICE_CALLS)
+    def forbidden():
+        raise AssertionError('CPU adapter called CUDA memory query')
+    scope = dict(QA_MODEL='qa', AUTOAIS_MODEL='nli',
+                 pipeline=lambda *a, **k: k,
+                 mauve=SimpleNamespace(compute_mauve=lambda **k: k),
+                 AutoModelForSeq2SeqLM=SimpleNamespace(from_pretrained=lambda *a, **k: k),
+                 torch=SimpleNamespace(bfloat16='bf16'), get_max_memory=forbidden)
+    exec(patched, scope)
+    assert scope['qa_device']()['device'] == -1
+    assert scope['mauve_device']()['device_id'] == -1
+    for name in ('claims_device', 'citation_device'):
+        assert scope[name]() == {'torch_dtype': 'bf16', 'device_map': {'': 'cpu'}}
+    # Applying the saved diff independently reproduces precisely the executed source.
+    import subprocess, tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory)
+        (path / 'eval.py').write_text(DEVICE_CALLS)
+        subprocess.run(['patch', '-p0'], input=patch, text=True, cwd=path, check=True, capture_output=True)
+        assert (path / 'eval.py').read_text() == patched
+
+
+def test_cpu_device_adapter_rejects_unexpected_call_site():
+    from rag_eval.alce_official_cli import cpu_device_adapter
+    with pytest.raises(ValueError, match='CPU adapter'):
+        cpu_device_adapter(DEVICE_CALLS.replace('device_id=0', 'device_id=1'))
+
+
+def test_cpu_mode_still_rejects_modified_upstream_source(tmp_path):
+    from rag_eval.alce_official_cli import score_alce_batch
+    (tmp_path / 'alce_eval.py').write_text(DEVICE_CALLS)
+    with pytest.raises(ValueError, match='Official source differs'):
+        score_alce_batch({'suite': 'alce', 'task': 'asqa'}, source_directory=tmp_path,
+                         output_dir=tmp_path/'out', hf_cache=tmp_path, nltk_data=tmp_path,
+                         alce_device='cpu')
+    assert not (tmp_path/'out').exists()
+
+
+def test_cpu_option_requires_explicit_model_scoring(tmp_path):
+    from scripts.benchmark_protocol import main
+    with pytest.raises(SystemExit) as exc:
+        main(['score', '--bundle', str(tmp_path/'bundle'), '--submission', str(tmp_path/'sub'),
+              '--sources', str(tmp_path/'sources'), '--output', str(tmp_path/'out'), '--alce-device', 'cpu'])
+    assert exc.value.code == 2
+    assert not (tmp_path/'out').exists()

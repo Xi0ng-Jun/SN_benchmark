@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import ast
+import difflib
 import json
 import math
 import os
@@ -20,6 +21,27 @@ from .artifacts import save_json
 AUTOAIS = 'google/t5_xxl_true_nli_mixture'
 QA = 'gaotianyu1350/roberta-large-squad'
 MAUVE = 'gpt2-large'
+
+
+def cpu_device_adapter(source):
+    """Adapt only device call arguments, after the caller verifies upstream SHA256.
+
+    Explicit CPU placement avoids the CUDA-only get_max_memory helper. Its
+    implementation and the official bfloat16 dtype remain unchanged.
+    """
+    patched = source
+    for before, after, count in (
+        ('model=QA_MODEL, device=0', 'model=QA_MODEL, device=-1', 1),
+        ('device_id=0', 'device_id=-1', 1),
+        ('max_memory=get_max_memory(), device_map="auto"', 'device_map={"": "cpu"}', 2),
+    ):
+        if patched.count(before) != count:
+            raise ValueError('CPU adapter call sites differ from pinned official script')
+        patched = patched.replace(before, after)
+    patch = ''.join(difflib.unified_diff(source.splitlines(keepends=True),
+                                       patched.splitlines(keepends=True),
+                                       fromfile='eval.py', tofile='eval.py'))
+    return patched, patch
 
 
 def alce_arguments(task, *, scoring_mode='full'):
@@ -116,10 +138,12 @@ def citation_eligibility_program(source):
 
 
 def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_data,
-                     python=sys.executable, timeout=3600, scoring_mode='full'):
+                     python=sys.executable, timeout=3600, scoring_mode='full', alce_device='default'):
     from .benchmark_official import _source, SOURCES
     if prepared.get('suite') != 'alce':
         raise ValueError('ALCE input required')
+    if alce_device not in {'default', 'cpu'}:
+        raise ValueError('ALCE device must be default or cpu')
     task = prepared['task']
     arguments = alce_arguments(task, scoring_mode=scoring_mode)
     if scoring_mode == 'full' and prepared.get('citation_mapping_supported') is False:
@@ -128,6 +152,10 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
         raise ValueError('Positive ALCE batch timeout required')
     sources = {local: _source(source_directory, public) for local, public in
                [('eval.py', 'alce_eval.py'), ('utils.py', 'alce_utils.py')]}
+    upstream_eval = sources['eval.py']
+    patch = None
+    if alce_device == 'cpu':
+        sources['eval.py'], patch = cpu_device_adapter(upstream_eval)
     models = inspect_cache(hf_cache, task, scoring_mode=scoring_mode)
     nltk_data = Path(nltk_data).resolve()
     if not (nltk_data / 'tokenizers').is_dir():
@@ -137,6 +165,9 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
     destination.mkdir(parents=True, exist_ok=False)
     for name, source in sources.items():
         (destination / name).write_text(source, encoding='utf-8')
+    if patch is not None:
+        (destination / 'upstream-eval.py').write_text(upstream_eval, encoding='utf-8')
+        (destination / 'cpu-device.patch').write_text(patch, encoding='utf-8')
     save_json(destination / (task + '.json'), {'data': prepared['data']})
     # Seed the original evaluator's bootstrap without modifying its source.
     eligibility = ''
@@ -157,6 +188,8 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
                        TRANSFORMERS_CACHE=str(Path(hf_cache).resolve()),
                        HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
                        NLTK_DATA=str(nltk_data), PYTHONHASHSEED='0', TOKENIZERS_PARALLELISM='false')
+    if alce_device == 'cpu':
+        environment['CUDA_VISIBLE_DEVICES'] = ''
     packages_code = ('import importlib.metadata as m,json,sys; '
                      'print(json.dumps({"python":sys.version,"packages":'
                      '{d.metadata["Name"]:d.version for d in m.distributions()}}))')
@@ -169,6 +202,12 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
                     'sources': {k: SOURCES[k] for k in ('alce_eval.py', 'alce_utils.py')},
                     'launcher_sha256': hashlib.sha256(launcher.encode()).hexdigest(),
                     'bridge_sha256': _file_hash(Path(__file__))}
+    if patch is not None:
+        dependencies.update(device='cpu', scorer_label='官方脚本 + CPU 设备适配补丁',
+                            device_patch={'id': 'alce-cpu-device-v1',
+                                          'sha256': hashlib.sha256(patch.encode('utf-8')).hexdigest()},
+                            executed_sources={name: hashlib.sha256(source.encode('utf-8')).hexdigest()
+                                              for name, source in sources.items()})
     command = [str(python), 'launch.py', *arguments]
     save_json(destination / 'invocation.json', {'command': command, 'dependencies': dependencies,
               'hf_cache': str(Path(hf_cache).resolve()), 'nltk_data': str(nltk_data), 'timeout': timeout,

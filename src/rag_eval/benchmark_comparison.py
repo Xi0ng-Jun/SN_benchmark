@@ -534,6 +534,10 @@ def _markdown(report):
              'Batch scores retain the original scorer estimates (native metric units).', '',
              '| Method | ' + ' | '.join(cell(k) for k in report['common_metrics']) + ' |',
              '| --- | ' + ' | '.join('---:' for _ in report['common_metrics']) + ' |']
+    alce = report.get('scorer_identity', {}).get('dependencies', {}).get('alce_batch', {})
+    if alce.get('device_patch'):
+        lines[4:4] = [f'Scorer: {cell(alce["scorer_label"])}; patch SHA256: '
+                      f'`{cell(alce["device_patch"]["sha256"])}`.', '']
     for entry in report['methods']:
         lines.append('| ' + cell(entry['method']['name']) + ' | ' +
                      ' | '.join(f'{entry["metrics"][k]:.6f}' for k in report['common_metrics']) + ' |')

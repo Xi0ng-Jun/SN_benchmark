@@ -56,6 +56,8 @@ def main(argv=None):
     score.add_argument('--alce-hf-cache', type=Path)
     score.add_argument('--alce-nltk-data', type=Path)
     score.add_argument('--alce-timeout', type=float, default=3600)
+    score.add_argument('--alce-device', choices=['default', 'cpu'], default='default',
+                       help='cpu: official script + explicit CPU device patch (AutoAIS remains bfloat16)')
     args = parser.parse_args(argv)
     if getattr(args, 'case_id_file', None) is not None:
         from rag_eval.notebook_runner import load_case_ids_file
@@ -93,8 +95,9 @@ def main(argv=None):
                 parser.error('ALCE model scoring requires --alce-hf-cache and --alce-nltk-data')
             runtime = dict(python=str(args.alce_python.resolve()), hf_cache=args.alce_hf_cache,
                            nltk_data=args.alce_nltk_data, timeout=args.alce_timeout,
+                           alce_device=args.alce_device,
                            scoring_mode='answer-only' if args.alce_answer_only else 'full')
-        elif args.alce_hf_cache or args.alce_nltk_data:
+        elif args.alce_hf_cache or args.alce_nltk_data or args.alce_device != 'default':
             parser.error('ALCE model resources require explicit --alce-full or --alce-answer-only')
         bundle = load_bundle(args.bundle)
         submission = validate_submission(bundle, json.loads(args.submission.read_text()))
