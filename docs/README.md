@@ -27,6 +27,8 @@
 - [Benchmark Wiki](benchmark-wiki/README.md)：从总体模型开始，逐步进入五套 benchmark、运行实现、已有方法、结果解释和论文写法。
 - [形式化评测流程](benchmark-evaluation-formal-workflow.md)：用统一符号描述无 gold 生成、观测保存、提交投影、评分和方法比较。
 - [实验结果表与填报协议](benchmark-result-tables.md)：五套主结果、ALCE full/100题面板、配对差异、运行质量及每个数值的来源账本。
+- [已有SN结果与外部工作对照（2026-10-14）](external-result-comparison-2026-10-14.md)：ALCE100、QASPER、QMSum、HotpotQA的实数表、一手论文来源和协议差异；SN为服务器转述，外部公开答卷历史评分另有本轮回读账本。
+- [ASQA 近期论文对照与100题范围复核（2026-10-15）](research/2026-10-15-asqa-comparison-selection.md)：区分 ALCE 100题公开答卷与948题主实验；推荐 InstructRAG、Think&Cite，补充2026工作，记录公开预测检查和无需外部重跑的交付边界。
 - [服务器结果表填报指令](server-benchmark-result-tables-prompt.md)：供用户转发；从真实工件填表，保留缺口，不从候选表扩大运行范围。
 
 ## 当前协议与操作入口

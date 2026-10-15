@@ -1,9 +1,13 @@
 # Benchmark 实验结果表与填报协议
 
-日期：2026-10-13。本文覆盖 QASPER、MultiHop-RAG、ALCE、QMSum 和 HotpotQA。
+日期：2026-10-14。本文覆盖 QASPER、MultiHop-RAG、ALCE、QMSum 和 HotpotQA。
 本文保存当前计划的结果表结构。
 本文只记录已跑出且有来源标记的成绩；服务器转述值不等同于本机工件验收。
 本次服务器任务仅根据已跑出的结果填报，不负责选择或安排实验。
+
+2026-10-14 已按用户最新汇总填入 ALCE100、QASPER、QMSum、HotpotQA 的已报分数。下文 `‡` 是本次服务器转述，未完成本机工件验收；产物位置与外部工作实数对照见[四套比较表](external-result-comparison-2026-10-14.md)。本文保持0–1尺度，比较报告统一为百分制。
+
+2026-10-15 补入表 4f 的近期 ASQA 发表参考，并澄清表 4d 的四份答卷来自同一篇 ALCE 2023 论文。948 题论文值不能与 SN 的 100 题值排序；选型与预测可用性见[ASQA 专项复核](research/2026-10-15-asqa-comparison-selection.md)。
 
 实验目标是获得可追溯的答案、证据、官方分数和比较结论。
 下列表格是这些证据的论文呈现形式。
@@ -202,9 +206,11 @@ ELI5 的主要 correctness 是 claims-NLI recall，ROUGE 是辅助词面指标�
 
 **Table 4d. Text correctness on the fixed public ASQA human-evaluation sample.**
 
+下列四个外部配置均来自 ALCE（EMNLP 2023）同一篇论文，不能视为四篇近期方法。它们的输入段数、推理预算不同；同题文本重评分不意味着同条件受控实验。SN 的题单与 scorer 仍待服务器工件核对。
+
 | 方法配置 | 类别 | Scope N | STR-EM ↑ | STR-HIT ↑ | Citation P/R |
 | --- | --- | ---: | --- | --- | --- |
-| SN chunk（同一固定题单） | controlled-rerun | 100 | 待填 | 待填 | 与外部共同指标 unavailable |
+| SN chunk（计划同一固定题单，服务器身份待核） | controlled-rerun | 100 | 0.44433‡ | 0.13000‡ | 与外部共同指标 unavailable |
 | GPT-3.5 VANILLA | recomputed-subset | 100 | 0.353000† | 0.090000† | unavailable |
 | GPT-3.5 interactive summary | recomputed-subset | 100 | 0.382000† | 0.090000† | unavailable |
 | GPT-3.5 sample4 RERANK | recomputed-subset | 100 | 0.365500† | 0.110000† | unavailable |
@@ -250,13 +256,31 @@ ALCE 评分模式必须单独记录：
 此时可以分别保留官方分数，但当前正式配对入口拒绝该指标比较。
 MAUVE 等批量指标不虚构逐题值。
 
+### 表 4f：近期论文的 ASQA 发表参考
+
+**Table 4f. Published ALCE-ASQA results from recent RAG papers.**
+
+全部为 `published-reference`，本表仍用 **0–1** 尺度。这些论文明确报告 948 题；不将表 4d 的 SN 100 题分数填入本表，也不由跨范围分数推断高低。外部模型无需重跑。
+
+| 方法／模型 | 发表 | N | STR-EM ↑ | Citation P ↑ | Citation R ↑ | 定位／输入和训练 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| InstructRAG-ICL / Llama-3-Instruct-8B | ICLR 2025 | 948 | 0.447 | 0.709 | 0.741 | 优先；GTR top-5，rationale 示例，不做参数微调 |
+| InstructRAG-FT / Llama-3-Instruct-8B | ICLR 2025 | 948 | 0.476 | 0.657 | 0.705 | 优先；GTR top-5，ASQA 专项训练 |
+| Think&Cite / Llama-3.1-8B-Instruct | ACL 2025 主会 | 948 | 0.452 | 0.806 | 0.823 | 优先；GTR top-100 内多步搜索，DPO/NLI reward |
+| Think&Cite / GPT-4o | ACL 2025 主会 | 948 | 0.501 | 0.871 | 0.895 | 优先；同方法较强配置，额外搜索成本 |
+| Cooperative CoRAG / Llama-3-Instruct-8B | Findings ACL 2026 | 948 | 0.458 | 0.549 | 0.489 | 可选扩展；联合训练 reranker/generator，只在 PopQA 训练，推理选 3 段 |
+
+来源：[InstructRAG 正式版表 2/3](https://proceedings.iclr.cc/paper_files/paper/2025/file/cdce0de17dc3cf97019a35baa65aebd0-Paper-Conference.pdf)、[Think&Cite 表 1/附录 A](https://aclanthology.org/2025.acl-long.490.pdf)、[Cooperative CoRAG 表 1/2](https://aclanthology.org/2026.findings-acl.2157.pdf)。引用列已统一成 P 在前、R 在后。这些行未提供 STR-HIT，不以引用 recall 替代它。
+
+论文主表建议在此基础上保留 ALCE Vanilla、Self-RAG 经典参照，并填入 SN 的同范围 full 结果。不同 backbone、训练、实际检索段数和调用预算允许作为系统比较并披露，不据此直接归因某个 SN 模块。本轮未取得上述近期方法的完整测试预测；不承诺可以免生成导出它们的 100 题成绩。CoRAG 指 Cooperative 论文，详细取舍见[专项复核](research/2026-10-15-asqa-comparison-selection.md)。
+
 ## 6. 表 5：QMSum 查询驱动摘要
 
 **Table 5. Query-focused summarization performance on the frozen 281-query QMSum test collection.**
 
 | 方法 / Row ID | 类别 | ROUGE-1 F1 ↑ | ROUGE-2 F1 ↑ | ROUGE-L F1 ↑ | N | 计划状态 |
 | --- | --- | --- | --- | --- | ---: | --- |
-| SN chunk / `sn.qmsum.chunk` | controlled-rerun | 待填 | 待填 | 待填 | 281 | 当前范围；用户转述生成完成，待工件验收 |
+| SN chunk / `sn.qmsum.chunk` | controlled-rerun | 0.27746‡ | 0.09039‡ | 0.24247‡ | 281 | 服务器结果；本机待工件验收 |
 | BM25 / `qmsum.bm25.control` | controlled-rerun | 待填 | 待填 | 待填 | 281 | 暂缓；已有专项授权另记 |
 | Socratic SegEnc / `qmsum.socratic.segenc.author_test` | recomputed-subset | 0.38955† | 0.13960† | 0.33942† | 281 | 历史公开答卷 |
 
@@ -280,7 +304,7 @@ SummN 的 279 行未取得可靠映射，原 SegEnc checkpoint 的可用性仅�
 
 | 方法 / Row ID | 类别 / 状态 | EM ↑ | F1 ↑ | Precision ↑ | Recall ↑ | N |
 | --- | --- | --- | --- | --- | --- | ---: |
-| SN chunk / `sn.hotpotqa.chunk` | controlled-rerun / 当前范围 | 待填 | 待填 | 待填 | 待填 | 7,405 |
+| SN chunk / `sn.hotpotqa.chunk` | controlled-rerun / 服务器转述 | 0.2998‡ | 0.4811‡ | 待填 | 待填 | 7,405 |
 | BM25 / `hotpotqa.bm25.distractor_control` | controlled-rerun / 暂缓 | 待填 | 待填 | 待填 | 待填 | 实际范围待填 |
 | KG2RAG adapted / `hotpotqa.kg2rag.adapted.control` | controlled-rerun / 候选 | 待填 | 待填 | 待填 | 待填 | 实际验收范围待填 |
 
@@ -296,7 +320,7 @@ SummN 的 279 行未取得可靠映射，原 SegEnc checkpoint 的可用性仅�
 
 | 方法 | Joint EM ↑ | Joint F1 ↑ | Joint Precision ↑ | Joint Recall ↑ | N / 投影状态 |
 | --- | --- | --- | --- | --- | --- |
-| SN chunk | 待填 / pending | 待填 / pending | 待填 / pending | 待填 / pending | 待填 |
+| SN chunk | 待填 / pending | 0.1868‡ | 待填 / pending | 待填 / pending | 7,405（转述）；实际投影待验收 |
 | BM25 | 待填 | 待填 | 待填 | 待填 | 待填 |
 | KG2RAG adapted | 待填 | 待填 | 待填 | 待填 | 待填 |
 
