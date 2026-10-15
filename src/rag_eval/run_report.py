@@ -15,6 +15,18 @@ from .notebook_data import SUITES as NOTEBOOK_SUITES, VERSION as NOTEBOOK_VERSIO
 ALL_SUITES = NOTEBOOK_SUITES
 
 
+def _reasoning_protocol(manifest):
+    value = (manifest.get("identity", {}).get("reasoning_protocol")
+             if isinstance(manifest, dict) else None)
+    return value.get("name") if isinstance(value, dict) else "reasoning-v1"
+
+
+def _mode_label(manifest):
+    if manifest.get("mode") == "reasoning" and _reasoning_protocol(manifest) != "reasoning-v1":
+        return _reasoning_protocol(manifest)
+    return manifest.get("mode")
+
+
 from .run_reader import RunReadContext, load_run, read_journal
 
 
@@ -24,7 +36,8 @@ def paired_modes(runs):
         manifest = run["manifest"]
         if (manifest and manifest["track"] == "R" and manifest.get("pairing_id")
                 and manifest.get("execution_status") != "not_applicable"
-                and manifest["mode"] in {"chunk", "reasoning"}):
+                and manifest["mode"] in {"chunk", "reasoning"}
+                and _reasoning_protocol(manifest) == "reasoning-v1"):
             candidates[run.get('comparison_pairing_id', manifest['pairing_id'])].append(run)
     pairs, warnings = [], []
     for identity, members in candidates.items():
@@ -120,7 +133,7 @@ def write_report(run_dirs, output, *, partition_only=False):
                 lines.extend(["", "Notebook 资料评测：本次为分区 " + notebook_context["partition_id"]
                               + "；全题单 " + str(notebook_context["selected_cases"]) + " 题 / " + str(notebook_context["partition_count"]) + " 个资料分区。",
                               "F1/ROUGE 等连续主分仅报告有效评分均值与覆盖率，不解释为答对率。ALCE 模型指标需要独立官方评分步骤；当前未评分保留 null。"])
-            lines.append(f"路径：{manifest['track']}；模式：{manifest['mode'] or '不适用'}；显式模型适配器中未结束的调用记录：{run['unfinished_model_calls']}（不含产品内部全部请求）。")
+            lines.append(f"路径：{manifest['track']}；模式：{_mode_label(manifest) or '不适用'}；显式模型适配器中未结束的调用记录：{run['unfinished_model_calls']}（不含产品内部全部请求）。")
             audit = run.get('scheduled_generation_audit')
             if audit is not None:
                 completeness = audit['completeness']

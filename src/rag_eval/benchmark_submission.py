@@ -171,14 +171,21 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
         if family is not None and family != current:
             raise ValueError('SN submissions cannot mix modes, models, requests or source revisions')
         family = current
-        method = dict(name='sn-' + manifest['mode'], kind='sn', citation_style='sn',
+        protocol_info = identity.get('reasoning_protocol')
+        method_name = 'sn-' + (
+            protocol_info.get('name') if isinstance(protocol_info, dict) else manifest['mode']
+        )
+        method_configuration = {'mode': manifest['mode'], 'identity': config,
+                                'scoring_projection': PROJECTION_PROTOCOL,
+                                'comparison_category': 'controlled-rerun'}
+        if isinstance(protocol_info, dict):
+            method_configuration['reasoning_protocol'] = deepcopy(protocol_info)
+        method = dict(name=method_name, kind='sn', citation_style='sn',
                       model_identity={'service_config_sha256': identity['product_services'],
                                       'runtime_settings_sha256': identity['runtime_settings'],
                                       'verification': 'configuration-hashes; not matched to reference model'},
                       input_policy='frozen-source-documents',
-                      configuration={'mode': manifest['mode'], 'identity': config,
-                                     'scoring_projection': PROJECTION_PROTOCOL,
-                                     'comparison_category': 'controlled-rerun'})
+                      configuration=method_configuration)
         if evidence_policy is not None:
             method['configuration']['qasper_evidence'] = evidence_policy
         if identity.get('hotpot_evidence') is not None:

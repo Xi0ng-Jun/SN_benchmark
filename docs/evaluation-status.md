@@ -1,5 +1,11 @@
 # 评测状态
 
+## 2026-10-15 · reasoning-no-clarification-v1 评测侧协议
+
+- 已实现一个显式 opt-in 的强制作答变体：先调用 SN intent preview，再用固定 `cover-all-options-v1` 策略回答每个 `required != false` 的 ambiguity；非空 options 按原顺序拼接为“同时考虑以下所有可能：A；B”，无 options 时使用 `resolved_question`。每题保存原始 contract、`preview_needs_clarification`、自动确认项、答案来源和 policy 版本。
+- 该协议保持 SN 生产代码和标准 reasoning 不变，使用独立 `reasoning-no-clarification-v1` identity；比较层拒绝把它与标准 reasoning 混入同一 SN reasoning comparison。生成阶段继续使用无 gold 的 `notebook-request-v3`。
+- 本机只完成离线实现与测试，未运行真实模型、未运行 ASQA 生成、未修改 SN 主仓库或创建 SN worktree。下一批服务器实验固定 ordinary ASQA 全量 948 题，与 chunk 948 使用相同题单和输入；不跑标准 reasoning。ALCE 模型评分命令和环境留作后续占位，不能把本记录当作实验成绩。
+
 ## 2026-10-15 · 服务器模型接入、目录选择与失败诊断
 
 - **费用策略按用户决定调整。** 工作台移除强制金额输入，新请求只冻结总超时，不创建预算账本、不安装固定价格表的模型拦截器；内部模型名直接由 SN 私有配置决定。保留超时、取消、固定题单与源码、未知请求原样恢复。旧 API 显式 `limit_cny`／CLI `--budget-ledger` 仍可使用旧费用保护，仍受旧价格表限制；未知价格不报告为零。操作者仍需明确授权新的模型实验，取消金额控件不等于自动授权运行。

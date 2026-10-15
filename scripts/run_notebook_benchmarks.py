@@ -76,6 +76,8 @@ def main():
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--partition-id', required=True)
     parser.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
+    parser.add_argument('--reasoning-protocol', choices=('reasoning-v1', 'reasoning-no-clarification-v1'),
+                        default='reasoning-v1', help='Explicit reasoning protocol variant')
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
@@ -160,7 +162,8 @@ def main():
             execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
                     mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
                     case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root,
-                    artifact_index_id=args.artifact_index_id, **startup_kwargs)
+                    artifact_index_id=args.artifact_index_id, reasoning_protocol=args.reasoning_protocol,
+                    **startup_kwargs)
     except BaseException as exc:
         details = getattr(exc, '_rag_eval_diagnostic_details', None) or exception_details(
             exc, phase='validation', sensitive_values=config_sensitive_values(args.model_config))

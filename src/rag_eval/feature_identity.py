@@ -152,14 +152,38 @@ def build_feature_identity(runtime_identity: dict, *, effective_settings: dict |
     """
     features, sources = _project(runtime_identity, effective_settings)
     record = {'format': FORMAT, 'feature_set': features, 'sources': sources}
+    # Protocol is an experiment dimension alongside the effective feature
+    # switches.  Keep it optional so historical standard runs retain their
+    # byte-compatible feature identity, while explicit variants are visible
+    # to readers and included in the fingerprint.
+    protocol = runtime_identity.get('reasoning_protocol')
+    if protocol is not None:
+        if (not isinstance(protocol, dict) or
+                not isinstance(protocol.get('name'), str) or
+                not protocol['name'] or
+                not isinstance(protocol.get('comparison_category'), str) or
+                not protocol['comparison_category']):
+            raise ValueError('Invalid reasoning protocol identity')
+        record['reasoning_protocol'] = deepcopy(protocol)
     return {**record, 'fingerprint': _digest(record)}
 
 
 def validate_feature_identity(record: dict) -> dict:
     """Check a saved record offline; malformed facts raise a redacted ValueError."""
     _object(record, 'feature identity')
-    if set(record) != {'format', 'feature_set', 'sources', 'fingerprint'} or record['format'] != FORMAT:
+    required = {'format', 'feature_set', 'sources', 'fingerprint'}
+    if (not required.issubset(record) or
+            set(record) - required - {'reasoning_protocol'} or
+            record['format'] != FORMAT):
         raise ValueError('Invalid feature identity schema')
+    if 'reasoning_protocol' in record:
+        protocol = record['reasoning_protocol']
+        if (not isinstance(protocol, dict) or
+                not isinstance(protocol.get('name'), str) or
+                not protocol['name'] or
+                not isinstance(protocol.get('comparison_category'), str) or
+                not protocol['comparison_category']):
+            raise ValueError('Invalid reasoning protocol identity')
     if _optional_hash(record['fingerprint']) != _digest({k: v for k, v in record.items() if k != 'fingerprint'}):
         raise ValueError('Feature identity fingerprint mismatch')
     features, sources = record['feature_set'], record['sources']

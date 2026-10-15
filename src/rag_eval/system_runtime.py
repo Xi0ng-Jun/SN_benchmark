@@ -22,13 +22,26 @@ def is_cancellation(error):
 
 
 def submit_system_question(repo, notebook, question, mode, *, diagnostic_directory=None,
-                           diagnostic_sensitive_values=()):
+                           diagnostic_sensitive_values=(), protocol="reasoning-v1"):
     """Follow the native clear-intent confirmation path with a fresh conversation."""
     from app.models.ask import AskRequest, AskIntentConfirmation
 
+    from .reasoning_protocol import (
+        AUTO_CONFIRM_POLICY, NO_CLARIFICATION_PROTOCOL, STANDARD_REASONING_PROTOCOL,
+        auto_confirm_contract,
+    )
+    if protocol not in {STANDARD_REASONING_PROTOCOL, NO_CLARIFICATION_PROTOCOL}:
+        raise ValueError("Unknown reasoning protocol: " + str(protocol))
+    if mode != "reasoning" and protocol != STANDARD_REASONING_PROTOCOL:
+        raise ValueError("Reasoning protocol variants require reasoning mode")
     record = {"status": "error", "answer": "", "response": {},
               "intent_preview": None, "request": {"question": question, "mode": mode,
-                                                  "conversation_id": None}}
+                                                  "conversation_id": None},
+              "reasoning_protocol": protocol,
+              "preview_needs_clarification": None,
+              "auto_confirmed_ambiguities": [],
+              "auto_confirm_policy": (dict(AUTO_CONFIRM_POLICY)
+                                      if protocol == NO_CLARIFICATION_PROTOCOL else None)}
     phase = "request_validation"
     try:
         if mode not in {"chunk", "reasoning"}:
@@ -39,11 +52,19 @@ def submit_system_question(repo, notebook, question, mode, *, diagnostic_directo
             phase = "intent_preview"
             contract = repo.preview_reasoning_intent(notebook, question.strip(), "")
             record["intent_preview"] = contract.model_dump(mode="json")
+            record["preview_needs_clarification"] = bool(contract.needs_clarification)
             if contract.needs_clarification:
-                record.update(status="clarification", reason="native intent requires clarification; no answers supplied")
-                return record
-            payload.intent = AskIntentConfirmation(contract=contract,
-                resolved_question=contract.resolved_question, answers=[])
+                if protocol == STANDARD_REASONING_PROTOCOL:
+                    record.update(status="clarification", reason="native intent requires clarification; no answers supplied")
+                    return record
+                auto = auto_confirm_contract(contract)
+                record["auto_confirmed_ambiguities"] = auto.decisions
+                record["auto_confirm_policy"] = auto.policy
+                payload.intent = AskIntentConfirmation(contract=contract,
+                    resolved_question=contract.resolved_question, answers=auto.answers)
+            else:
+                payload.intent = AskIntentConfirmation(contract=contract,
+                    resolved_question=contract.resolved_question, answers=[])
         phase = "ask"
         response = repo.ask(notebook, payload)
         record.update(answer=response.answer, response=response.model_dump(mode="json"))
@@ -115,7 +136,7 @@ def complete_evidence_checks(repo, record, mapping, *, gold_document_ids=None):
 
 
 def run_system_question(repo, notebook, question, mode, mapping, *, diagnostic_directory=None,
-                        diagnostic_sensitive_values=()):
+                        diagnostic_sensitive_values=(), protocol="reasoning-v1"):
     """Capture the actual product response, final context and citation objects."""
     from app.core.llm_logging import LLMInteractionLogger
     from .system_capture import capture_synthesis, final_context
@@ -124,7 +145,8 @@ def run_system_question(repo, notebook, question, mode, mapping, *, diagnostic_d
     started = time.monotonic()
     with capture_usage(LLMInteractionLogger) as usage, capture_synthesis(repo._runtime.ask_component) as calls:
         observed = submit_system_question(repo, notebook, question["question"], mode,
-            diagnostic_directory=diagnostic_directory, diagnostic_sensitive_values=diagnostic_sensitive_values)
+            diagnostic_directory=diagnostic_directory, diagnostic_sensitive_values=diagnostic_sensitive_values,
+            protocol=protocol)
     record = {**question, **observed, "mode": mode, "attempt_id": uuid4().hex,
               "captures": calls, "usage": usage, "latency_seconds": time.monotonic() - started}
     try:

@@ -77,7 +77,7 @@ def _anchor_documents(repo, record, mapping):
 
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
                 qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
-                diagnostic_sensitive_values=()):
+                diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1'):
     update_state(run, 'importing')
     from .benchmark_runtime import prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
@@ -110,7 +110,8 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                             [documents[did] for did in question['material_document_ids']], mapping))
                     try:
                         record = run_system_question(repo, notebook, question, mode, mapping,
-                            diagnostic_directory=run, diagnostic_sensitive_values=diagnostic_sensitive_values)
+                            diagnostic_directory=run, diagnostic_sensitive_values=diagnostic_sensitive_values,
+                            protocol=reasoning_protocol)
                     except Exception as exc:
                         if is_cancellation(exc):
                             raise
@@ -221,7 +222,8 @@ def _saved_failures(run):
 
 def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
             agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
-            sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None):
+            sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
+            reasoning_protocol='reasoning-v1'):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
@@ -229,6 +231,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     """
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Explicit chunk/reasoning mode required')
+    from .reasoning_protocol import protocol_identity
+    protocol_info = protocol_identity(reasoning_protocol)
+    if mode != 'reasoning' and reasoning_protocol != 'reasoning-v1':
+        raise ValueError('Reasoning protocol variants require reasoning mode')
     if ((dependency_requirements is None) != (expected_interpreter is None)
             or (dependency_requirements is not None and sn_source_ref is None)):
         raise ValueError('Startup dependency checks require an explicit captured source')
@@ -345,6 +351,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         from .feature_identity import FEATURE_SETTING_FIELDS, build_feature_identity
         runtime['effective_settings'] = {name: getattr(settings, name) for name in FEATURE_SETTING_FIELDS
                                          if hasattr(settings, name)}
+        if reasoning_protocol != 'reasoning-v1':
+            runtime['reasoning_protocol'] = protocol_info
         save_json(run / 'runtime-identity.json', runtime)
         tracing = None
         if agent_config is not None:
@@ -356,6 +364,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         audits_sha256=fingerprint([]), track='R',
                         notebook_context=dict(partition_id=partition_id, selected_cases=bundle['manifest']['selected_cases'],
                                               partition_count=bundle['manifest']['partition_count']))
+        if reasoning_protocol != 'reasoning-v1':
+            identity['reasoning_protocol'] = protocol_info
         if task_worktree is not None:
             identity['task_worktree'] = dict(task_worktree)
         identity['feature_set'] = build_feature_identity(runtime)
@@ -437,7 +447,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             predictions(run, cases, product, mode, repo, outputs, agent_evaluation=agent_evaluation,
                         session_factory=tracing.evaluation_session if tracing is not None else None,
                         qasper_catalogues=qasper_catalogues, hotpot_evidence=hotpot_evidence,
-                        multihop_retrieval=multihop_retrieval, diagnostic_sensitive_values=generation_private_values)
+                        multihop_retrieval=multihop_retrieval, diagnostic_sensitive_values=generation_private_values,
+                        reasoning_protocol=reasoning_protocol)
             score_outputs(run, cases, planned, scores)
         errors, failures = _saved_failures(run)
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)

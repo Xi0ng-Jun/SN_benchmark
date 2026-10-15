@@ -397,6 +397,8 @@ def _compare_objects(bundle, entries, *, allow_method_attempts=False):
                        'metric_case_ids': metric_cases,
                        'batch_only_metrics': batch_only,
                        'files': deepcopy(entry['source'])})
+    from .reasoning_protocol import ensure_comparable_reasoning_protocols
+    ensure_comparable_reasoning_protocols([item['submission']['method'] for item in loaded])
     common = set.intersection(*(set(item['scores']['metrics']) for item in loaded))
     if not common:
         raise ValueError('No common scored metrics; pending metrics cannot produce a main comparison')
