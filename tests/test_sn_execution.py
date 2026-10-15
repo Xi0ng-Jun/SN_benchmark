@@ -2,6 +2,7 @@
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
 import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -46,6 +47,40 @@ def test_streaming_cancellation_is_propagated_unchanged(request_types):
     with pytest.raises(StreamingCancelled) as caught:
         submit_system_question(Repo(), 'notebook', 'Who?', 'chunk')
     assert caught.value is original
+
+
+def test_generation_failure_retains_message_traceback_without_question_or_credentials(request_types, tmp_path):
+    from rag_eval.system_runtime import submit_system_question
+    class Repo:
+        def ask(self, notebook, payload):
+            try:
+                raise ConnectionError('connection refused https://model.private.invalid')
+            except ConnectionError as cause:
+                raise RuntimeError('generation failed for ' + payload.question + '; api_key=hidden') from cause
+    row = submit_system_question(Repo(), 'notebook', 'PRIVATE-QUESTION', 'chunk', diagnostic_directory=tmp_path)
+    assert row['status'] == 'error' and row['error_phase'] == 'ask'
+    assert row['failed_phase'] == 'ask' and 'generation failed' in row['error_message']
+    saved = Path(row['diagnostic_path']).read_text()
+    assert 'ConnectionError: connection refused' in saved and 'RuntimeError: generation failed' in saved
+    assert 'in ask' in saved
+    for private in ('PRIVATE-QUESTION', 'model.private.invalid', 'hidden', 'raise RuntimeError'):
+        assert private not in saved + row['error_message']
+
+
+def test_persistence_failure_diagnostics_scrub_observed_answer_but_keep_answer_artifact(request_types, tmp_path):
+    from rag_eval.system_runtime import submit_system_question
+    class Repo:
+        def ask(self, notebook, payload):
+            return SimpleNamespace(answer='PRIVATE-ANSWER', mode='chunk', answer_id='answer',
+                model_dump=lambda **kw: {'answer': 'PRIVATE-ANSWER', 'body': 'PRIVATE-BODY'})
+        def _connect(self):
+            raise RuntimeError('cannot persist PRIVATE-ANSWER PRIVATE-BODY')
+    row = submit_system_question(Repo(), 'notebook', 'PRIVATE-QUESTION', 'chunk', diagnostic_directory=tmp_path)
+    assert row['answer'] == 'PRIVATE-ANSWER'
+    assert row['failed_phase'] == 'persistence'
+    saved = Path(row['diagnostic_path']).read_text()
+    assert 'cannot persist' in saved
+    assert 'PRIVATE-ANSWER' not in saved and 'PRIVATE-BODY' not in saved
 
 
 def test_reasoning_confirms_exact_preview_and_never_supplies_gold(request_types):
@@ -120,7 +155,7 @@ def test_context_capture_failure_does_not_erase_persisted_answer(monkeypatch):
         raise KeyError("id_map")
     monkeypatch.setattr(system_capture, "final_context", broken_context)
     monkeypatch.setattr(benchmark_runtime, "evidence_checks", lambda *args: None)
-    monkeypatch.setattr(system_runtime, "submit_system_question", lambda *args: {
+    monkeypatch.setattr(system_runtime, "submit_system_question", lambda *args, **kwargs: {
         "status": "success", "answer": "Final answer: B", "persistence_verified": True,
         "response": {"answer": "Final answer: B", "citations": [{"id": "k1"}]}})
     repo = SimpleNamespace(_runtime=SimpleNamespace(ask_component=object()))

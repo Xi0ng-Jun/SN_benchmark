@@ -23,6 +23,7 @@ import re
 import shlex
 import subprocess
 from typing import Any
+from ..execution_diagnostics import sanitize_diagnostic
 
 FORMAT = 'sn-workbench-run-views-v1'
 TERMINAL = {'finished', 'finished_with_errors', 'failed', 'interrupted', 'cancelled', 'not_applicable'}
@@ -110,6 +111,7 @@ class RunEntry:
     execution_state: str | None = None
     suite: str | None = None
     mode: str | None = None
+    failure: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -164,7 +166,8 @@ class RunViews:
             if entry.id in self._runs:
                 raise ValueError('Duplicate run ID')
             self._runs[entry.id] = RunEntry(entry.id, Path(entry.run_dir).resolve(),
-                                            Path(entry.scores).resolve() if entry.scores else None, entry.title, entry.task_id)
+                Path(entry.scores).resolve() if entry.scores else None, entry.title, entry.task_id,
+                entry.case_ids, entry.execution_state, entry.suite, entry.mode, entry.failure)
         self._worktrees = {}
         for entry in worktrees:
             _registered_id(entry.id, 'worktree')
@@ -190,6 +193,9 @@ class RunViews:
                 continue
             try:
                 jobs = _json(plan)
+                run_state = record.get('run_state') or {}
+                failures = [*run_state.get('generation_failures', []),
+                            *run_state.get('scoring_failures', [])]
                 for ordinal, job in enumerate(jobs, 1):
                     path = Path(job['run_dir'])
                     relative = path.relative_to(root)
@@ -203,7 +209,8 @@ class RunViews:
                     self._runs[identity] = RunEntry(identity, path.resolve(), scores,
                         task_id=record['task_id'], case_ids=tuple(job['case_ids']),
                         execution_state=record.get('state') if record.get('terminal') else None,
-                        suite=job.get('suite'), mode=job.get('mode'))
+                        suite=job.get('suite'), mode=job.get('mode'),
+                        failure=next((row for row in failures if row.get('run_dir') == str(path)), None))
             except (OSError, ValueError, KeyError, TypeError):
                 continue
 
@@ -248,6 +255,7 @@ class RunViews:
             files.append(entry.scores.parent / 'submission.json')
         signature = _signature(*files, *( [entry.scores] if entry.scores else []))
         signature += (entry.execution_state, entry.case_ids, entry.suite, entry.mode)
+        signature += (json.dumps(entry.failure, sort_keys=True),)
         cached = self._cache.get(run_id)
         if cached and cached[0] == signature:
             return cached[1]
@@ -314,6 +322,9 @@ class RunViews:
             partition_id=(manifest or {}).get('identity', {}).get('notebook_context', {}).get('partition_id'),
             state=dict(phase=phase, terminal=phase in TERMINAL, updated_at=state.get('updated_at'),
                        **(dict(runner_phase=runner_phase) if phase != runner_phase else {})),
+            failure={key: sanitize_diagnostic(value) for key, value in
+                     {**(entry.failure or {}), **state}.items() if key in
+                     ('error_type', 'error_message', 'failed_phase', 'diagnostic_path') and value} or None,
             progress=dict(planned=len(scope), outputs=len(outputs), runtime_scores=len(runtime_scores),
                           status_counts=_count(c['status'] for c in cases)),
             official={k: v for k, v in official.items() if k != 'per_case'},
@@ -539,12 +550,10 @@ class RunViews:
         runs = []
         for run_id in ids:
             view = self.run(run_id)
-            state_file = Path(view['run_dir']) / 'state.json'
-            state = _json(state_file) if state_file.is_file() else {}
             stage = view.get('stage') or {}
             runs.append(dict(
                 id=run_id, title=view.get('title'), suite=view.get('suite'), mode=view.get('mode'),
-                phase=view['state'].get('phase'), failure={k: state[k] for k in ('error_type', 'failed_phase') if state.get(k)} or None,
+                phase=view['state'].get('phase'), failure=view.get('failure'),
                 progress=view.get('progress'),
                 official={k: view['official'].get(k) for k in ('status', 'scope', 'metrics', 'metric_denominators', 'pending_metrics', 'reason')},
                 stage={k: {f: (stage.get(k) or {}).get(f) for f in ('numerator', 'denominator', 'status')}
@@ -749,11 +758,11 @@ class RunViews:
             argv.append('--' + flag.replace('_', '-') + ' ' + quote(placeholders[flag]))
         smoke = self._execution_config is not None and self._execution_config.get('mode') == 'smoke'
         commands = (dict(dry_run='本地 smoke executor（不加载 SN、不调用模型、不生成官方分数）',
-                         run='本地 smoke executor（确认预算后写入独立 run-dir）') if smoke else
+                         run='本地 smoke executor（确认运行后写入独立 run-dir）') if smoke else
                     dict(dry_run=' \\\n  '.join(argv + ['--dry-run']), run=' \\\n  '.join(argv)))
         budget_note = ('当前配置是本地 smoke executor；不会加载 SN、调用模型或生成官方评分。'
-                       '仍需确认本次运行的隔离目录与预算记录。' if smoke else
-                       '会调用模型并产生费用；先 --dry-run 核对 argv，再写预算卡由人确认后执行')
+                       '确认本次运行的隔离目录与超时。' if smoke else
+                       '会调用已配置的模型服务；先核对题单、源码与超时，费用由操作者在运行前自行估算')
         return dict(stage='R1', executable=self._execution_enabled,
                     capture_note=('运行前对该 worktree 重新捕获源码（TaskWorktreeService.run_argv），'
                                   '得到 --sn-source-ref；--project-root 仍指原 project，只读其 .env'),
@@ -763,7 +772,7 @@ class RunViews:
                                 estimate='not_computed',
                                 reference_runs=[dict(id=r['id'], suite=r['suite'], mode=r['mode']) for r in runs],
                                 fields=['suite', 'partition 数', '题数', 'mode', '预计 embedding/chat/rerank 调用',
-                                        '模型服务代际', '超时', '费用上限']))
+                                        '模型服务代际', '超时']))
 
     # --------------------------------------------------------------- sidebar
     def task_overview(self, task_id: str) -> dict:

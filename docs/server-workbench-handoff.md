@@ -2,9 +2,15 @@
 
 目标：在已有 SN 的实验服务器上运行本仓库当前工作台，完成“选题 → 评测 → 分析 → 批准假设 → 独立 SN worktree 修改 → 同计划对照”的操作入口。仓库：`git@github.com:Xi0ng-Jun/SN_benchmark.git`；分支：`feat/benchmark-protocol-correctness`。**交接消息给出的完整 SHA 是本次目标版本**，不要使用旧协议 SHA 或随时间变化的 branch HEAD 代替。后续修订必须另外记录。
 
-当前授权是代码同步、安装、配置、离线验收和启动工作台。服务器 Agent 可完成这些操作；新的真实模型运行仍需用户给出题单和预算。不要自动延续本机已结束的三题实验。证据排序候选未采纳，也未包含在这次 SN 生产代码交付中。
+当前授权是代码同步、安装、配置、离线验收和启动工作台。服务器 Agent 可完成这些操作；新的真实模型运行需明确的运行任务与题单。2026-10-15 用户取消界面的强制金额限制：开发环境自行估算，服务器使用公司模型资源。不要自动延续本机已结束的三题实验。证据排序候选未采纳，也未包含在这次 SN 生产代码交付中。
 
 本机交付检查结果与限制见[验证记录](server-workbench-verification-2026-10-14.md)，不等于远端验收。
+
+## 已部署实例更新（2026-10-15 反馈修复）
+
+从 GitHub 取得本次交接的精确提交，保留服务器私有 config、state、artifact store 和历史 run。先检查没有活跃执行，再停止受管工作台；重新安装当前 checkout 的 editable 包并执行 `npm --prefix apps/sn-workbench run build`，用原配置和 state 重启。代码不会自动重放旧失败实验，也不会修改 SN clone。若换新 checkout，重新设置环境中的绝对路径，不运行 `init` 覆盖旧配置。此次无需重新安装 bridge 依赖。
+
+升级后在新任务上检查：多个登记目录可选，第二条可绑定；源码准备后只有超时设置和“运行评测”按钮；新 run 的 `invocation/` 无默认 budget.json。旧待恢复请求若含金额，仍按原内容恢复。服务器实际 SN `970b6793`、Paseo `0.11.2`、pi `1.1.0` 来自用户转述，本机离线测试不能证明该组合及内部模型服务已通过真实评测。
 
 ## 给服务器 Agent 的任务
 
@@ -13,7 +19,7 @@
 1. 盘点现有 SN、评测 checkout、运行中的实验和待提交修改。通过 GitHub 在**新目录**取得交接 SHA；保留旧 checkout、进程、结果和生产配置。
 2. 建独立评测环境，构建 Web 与 Agent bridge，生成本机私有配置。先通过无模型启动验收。
 3. 核验并登记服务器已有 frozen bundle/scorer、SN Git 源码、Paseo workspace、pi profile 和独立实验模型配置。准备全新基线 worktree，完成本文离线接线检查。
-4. 启动只监听 loopback 的工作台，给用户 SSH 隧道或 Paseo 代理入口。回传版本、验证结果、当前能做的操作和剩余缺项。**停在首个付费运行之前**；不以旧预算作为新服务器运行授权。
+4. 启动只监听 loopback 的工作台，给用户 SSH 隧道或 Paseo 代理入口。回传版本、验证结果、当前能做的操作和剩余缺项。交付验收停在真实模型运行之前；不自动执行旧题单。
 
 ## 1. 取得精确版本
 
@@ -69,7 +75,7 @@ SN_WORKBENCH_STATE=var/setup-smoke/state bash scripts/serve_workbench.sh
 
 本轮先接通 **QASPER chunk**（本机有实际闭环证据）。其他四套可按原协议登记；它们各自的运行和官方依赖验收另行报告，尤其 QMSum Perl ROUGE、ALCE 模型评分，不能从 Web 启动成功推断可用。
 
-`SN_ROOT` 应是服务器现有 SN Git 仓库的**独立评测 clone**，由服务器 Agent 按生产 checkout 的已提交 SHA 检出。不得将生产原树登记为实现 Agent 的编辑目录。记录 SN remote、SHA、dirty 状态及是否与当前生产版本一致；不要带入本机未采纳的排序候选。本机已验证闭环的 SN 基线为 `0680aa12313a5d3e67f4e0a4be94144a5b6af28c`，服务器版本不同则重新检查 captured runner 兼容性，不自动替换生产版本。runner 直接加载捕获的源码，无需 SN HTTP API。模型服务可能与已有 SN 共用，但数据库、存储、日志、配置和预算必须独立。
+`SN_ROOT` 应是服务器现有 SN Git 仓库的**独立评测 clone**，由服务器 Agent 按生产 checkout 的已提交 SHA 检出。不得将生产原树登记为实现 Agent 的编辑目录。记录 SN remote、SHA、dirty 状态及是否与当前生产版本一致；不要带入本机未采纳的排序候选。本机已验证闭环的 SN 基线为 `0680aa12313a5d3e67f4e0a4be94144a5b6af28c`，服务器版本不同则重新检查 captured runner 兼容性，不自动替换生产版本。runner 直接加载捕获的源码，无需 SN HTTP API。模型服务可能与已有 SN 共用，但数据库、存储、日志和配置必须独立。
 
 ## 4. Paseo 和可信注册
 
@@ -104,7 +110,7 @@ paseo workspace create --isolation worktree --path "$SN_ROOT" \
 将返回值写到 `task_worktrees.registrations`：
 
 ```json
-[{"id":"server-baseline","path":"/actual/returned/worktree","paseo_workspace_id":"actual-returned-id"}]
+[{"id":"server-baseline","title":"服务器 SN 基线","path":"/actual/returned/worktree","paseo_workspace_id":"actual-returned-id"}]
 ```
 
 在任务“更改”页选择该基线目录。首次运行不能省略可信绑定/捕获；之后批准假设才通过卡片新建独立实现目录。工作台配置 `project_root` 指向独立 clone，registration 指向其 linked worktree；不要混淆。
@@ -115,7 +121,7 @@ paseo workspace create --isolation worktree --path "$SN_ROOT" \
 
 建立 `var/sn-workbench-server/private/`，目录 0700：
 
-- `model-services.experiment.toml`：从实际 SN 支持的 schema 制作独立实验配置，明确 chat/embedding/rerank 和调用价格、超时、重试；检查全部 workload bindings。只按需要引用模型凭据环境变量，在工作台进程环境注入，不把凭据放进 Git。server-only `model_names` 是展示标签，必须与真实配置一致。
+- `model-services.experiment.toml`：从实际 SN 支持的 schema 制作独立实验配置，明确 chat/embedding/rerank、超时、重试；检查全部 workload bindings。只按需要引用模型凭据环境变量，在工作台进程环境注入，不把凭据放进 Git。server-only `model_names` 是展示标签，必须与真实配置一致。
 - `dependency-requirements.txt`：所选 SN 的实际声明（普通 PEP508 行；不支持 `-r`、editable、URL）。若原始声明含这些项，显式形成并审查普通声明清单；不要删掉不满足的依赖来通过检查。另保存 `pip freeze` 作为实际环境快照，两个文件职责不同。
 - `runtime-expectation.json`：用 **job_execution.python 对应解释器**生成，不能复制本机 executable/prefix。
 
@@ -164,7 +170,7 @@ npm --prefix apps/sn-agent-bridge run typecheck
 npm --prefix apps/sn-agent-bridge test
 ```
 
-`check --execution` 只校验配置/工件、路径隔离、解释器身份和声明语法；不连接 Paseo、不检验密钥/模型可达性、不声称实际 SN import、官方评分或预算计价已通过。运行前仍由现有 captured runner 作启动核验。成本上限是 SN 账本估算及调用前准入，不是 provider 账单的强制封顶，也不包含 pi Agent 费用。
+`check --execution` 只校验配置/工件、路径隔离、解释器身份和声明语法；不连接 Paseo、不检验密钥/模型可达性，不声称实际 SN import 或官方评分已通过。运行前仍由现有 captured runner 作启动核验。工作台默认不设置费用上限，不使用 `model_budget.RATES` 限制模型名；无需为内部模型伪造公共模型别名。保留实际调用和用量记录，缺少价格不表示零费用。旧显式 `limit_cny`／`--budget-ledger` 仍是受限价格表下的可选保护，详见[执行说明](workbench-execution.md)。
 
 ## 6. 启动与验收
 
@@ -187,7 +193,7 @@ ssh -N -L 8091:127.0.0.1:8091 <user>@<server>
 
 浏览器打开 `http://127.0.0.1:8091/`。访问码在服务器 `var/sn-workbench-server/state/access-token`，仅由用户在本机终端读取并输入 UI；不要提交、贴进公共报告或带 token 截图。不要简单改成 `0.0.0.0` 暴露服务。
 
-验收：页面加载 → 输入访问码 → 新建任务 → 可读取 QASPER 题单 → 可选择基线 worktree → 可保存固定计划和捕获准备。Agent providers/models 的目录读取可验证 bridge 连接但不会产生对话费用。真正创建并发送 Agent 消息、点击确认预算运行，都另行取得用户的当前预算与题单授权。
+验收：页面加载 → 输入访问码 → 新建任务 → 可读取 QASPER 题单 → 按名称及路径选择基线 worktree → 可保存固定计划和捕获准备。多条登记时验证选择第二条，不能默认取第一条。Agent providers/models 的目录读取可验证 bridge 连接但不会产生对话费用。真正发送 Agent 消息或点击“运行评测”属于另行指定的真实实验任务。
 
 不要搬运本机 SQLite/task IDs/workspace IDs/执行绝对路径来伪造服务器历史。旧历史如需阅读，另做只读结果导入；不是复制整个 state 后改字符串。本机实验报告可见 `docs/experiments/2026-10-14-r1-ordering-loop.md`。
 
@@ -195,4 +201,4 @@ ssh -N -L 8091:127.0.0.1:8091 <user>@<server>
 
 在服务器私有运行目录保存 `setup-report.md`，回传脱敏摘要：evaluator SHA/import 路径、SN SHA、Python/Node/Paseo 版本、依赖检查/测试/构建结果、输入 bundle ID、scorer 校验、服务访问方式、baseline workspace 绑定、各能力 ready/pending。不得回传凭据、完整配置或私有源资料。
 
-说明未做真实生成与端到端官方评分；用户确认新题单和预算后才进入第一轮服务器 smoke，失败保存原工件且不自动重跑。若接入被版本/依赖/数据缺失阻塞，报告确切层次，保留已完成的离线验收，不能通过省略校验或改分母推进。
+说明是否做过真实生成与端到端官方评分；收到新运行任务与题单后才进入服务器 smoke，失败保存原工件且不自动重跑。失败先读界面的原因与诊断路径、执行目录 `state.json` 和 `batch-report.json`；每个分区的 `stderr_path` 与 `diagnostic_path` 指向脱敏日志。若接入被版本/依赖/数据缺失阻塞，报告确切层次，保留已完成的离线验收，不能通过省略校验或改分母推进。

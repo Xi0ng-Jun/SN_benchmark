@@ -40,29 +40,53 @@ def spec(tmp_path, code='from pathlib import Path; Path("state.json").write_text
     if code.startswith('from pathlib import Path; Path("state.json")'):
         code = f'from pathlib import Path; p=Path({str(run)!r}); p.mkdir(); (p / "state.json").write_text("{{\\"phase\\": \\"finished\\", \\"terminal\\": true}}")'
     return dict(argv=[sys.executable, '-c', code], run_dir=str(run),
-                budget=dict(confirmed=True, max_cost='smoke'), preparation_id='p' * 64)
+                budget=dict(timeout_seconds=30), preparation_id='p' * 64)
 
 
-def test_run_requires_explicit_budget_and_uses_independent_run_dir(tmp_path):
+def test_run_without_cost_limit_uses_independent_run_dir_and_freezes_timeout(tmp_path):
     repo, task, job = fixture(tmp_path)
     executions = JobExecutionStore(repo)
     with pytest.raises(ExecutionRejected, match='budget'):
         executions.run(task['id'], job['job_id'], expected_state_version=1,
-                       execution_spec={**spec(tmp_path), 'budget': {'confirmed': False}},
+                       execution_spec={**spec(tmp_path), 'budget': {
+                           'confirmed': False, 'limit_cny': 1, 'timeout_seconds': 30}},
                        actor='alice', request_key='run')
     assert list((tmp_path / 'run').parent.glob('run')) == []
 
+    execution = spec(tmp_path)
     started = executions.run(task['id'], job['job_id'], expected_state_version=1,
-                             execution_spec=spec(tmp_path), actor='alice', request_key='run')
+                             execution_spec=execution, actor='alice', request_key='run')
+    execution['budget']['timeout_seconds'] = 120
+    assert started['budget'] == {'timeout_seconds': 30}
     assert started['state'] == 'running' and started['terminal'] is False
     assert started['argv'][0] == sys.executable
     finished = wait_terminal(executions, task['id'], started['execution_id'])
     assert finished['state'] == 'finished' and finished['exit_code'] == 0
+    assert finished['budget'] == {'timeout_seconds': 30}
     assert Path(started['run_dir']).is_dir()
     assert json.loads((Path(started['run_dir']) / 'execution-record.json').read_text())['terminal'] is True
     assert json.loads((Path(started['run_dir']) / 'state.json').read_text())['phase'] == 'finished'
     assert executions.run(task['id'], job['job_id'], expected_state_version=1,
                           execution_spec=spec(tmp_path), actor='alice', request_key='run') == started
+
+
+@pytest.mark.parametrize('budget', [
+    dict(confirmed=True, limit_cny=None, timeout_seconds=30),
+    dict(confirmed=True, limit_cny=0, timeout_seconds=30),
+    dict(confirmed=True, limit_cny=True, timeout_seconds=30),
+    dict(confirmed=True, limit_cny=float('inf'), timeout_seconds=30),
+    dict(confirmed=True, limit_cny=1, timeout_seconds=True),
+    dict(confirmed=True, timeout_seconds=0),
+    dict(confirmed=True),
+])
+def test_invalid_budget_is_rejected_without_dispatch_or_receipt(tmp_path, budget):
+    repo, task, job = fixture(tmp_path)
+    executions = JobExecutionStore(repo)
+    with pytest.raises(ExecutionRejected):
+        executions.run(task['id'], job['job_id'], 1,
+            execution_spec={**spec(tmp_path), 'budget': budget}, actor='alice', request_key='invalid')
+    assert executions.latest_for_job(task['id'], job['job_id']) is None
+    assert not (tmp_path / 'run').exists()
 
 
 def test_cancel_preserves_terminal_execution_and_run_artifacts(tmp_path):
@@ -122,9 +146,10 @@ def test_http_run_uses_trusted_template_and_retries_by_request_key(tmp_path, mon
                         lambda self, task_id, job_id: [{'preparation': {'preparation_id': 'a' * 64}}])
     path = f"/api/tasks/{task['id']}/jobs/{job['job_id']}/run"
     payload = {'expected_state_version': 1, 'preparation_id': 'a' * 64,
-               'budget': {'confirmed': True}, 'request_key': 'run'}
+               'budget': {'timeout_seconds': 30}, 'request_key': 'run'}
     first = client.post(path, json=payload, headers=headers)
     assert first.status_code == 200, first.text
+    assert first.json()['record']['budget'] == {'timeout_seconds': 30}
     second = client.post(path, json=payload, headers=headers)
     assert second.status_code == 200 and second.json() == first.json()
 

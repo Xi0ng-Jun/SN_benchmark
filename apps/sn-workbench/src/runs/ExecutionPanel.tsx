@@ -6,15 +6,17 @@ import { Button, Copy, useTheme } from '../ui';
 type Job = { job_id: string; state_version: number; plan_id: string; plan_revision: string };
 type Preparation = { preparation: { preparation_id: string; source: { artifact_ref: { id: string } } } };
 type Execution = { execution_id: string; job_id: string; state: string; terminal: boolean; exit_code: number | null;
-  run_state: { stage?: string; planned?: number } | null };
-type RunCommand = { expected_state_version: number; preparation_id: string; budget: { confirmed: boolean; limit_cny: number; timeout_seconds: number }; request_key: string };
+  run_state: { stage?: string; planned?: number; error_type?: string | null; error_message?: string | null;
+    failed_phase?: string | null; diagnostic_path?: string | null } | null };
+type RunCommand = { expected_state_version: number; preparation_id: string;
+  budget: { timeout_seconds: number; confirmed?: boolean; limit_cny?: number }; request_key: string };
 type Pending = { jobId: string; command: RunCommand };
 function isRunRejection(error: unknown, key: string) {
   if (!(error instanceof ApiError) || !error.value || typeof error.value !== 'object') return false;
   const value = error.value as Record<string, unknown>;
   return value.code === 'JOB_COMMAND_REJECTED' && value.request_key === key && value.operation === 'run';
 }
-type Profile = { mode: string; models: string[]; max_limit_cny: number; input_ids: string[] };
+type Profile = { mode: string; models: string[]; input_ids: string[] };
 
 // Mounted separately per Task. No mutation is automatically retried after an uncertain response.
 export function ExecutionPanel({ taskId, onRefresh }: { taskId: string; onRefresh: () => void }) {
@@ -35,7 +37,6 @@ export function ExecutionPanel({ taskId, onRefresh }: { taskId: string; onRefres
   const [execution, setExecution] = useState<Execution | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [limit, setLimit] = useState('1');
   const [timeout, setTimeoutValue] = useState('3600');
   const [uncertain, setUncertain] = useState(false);
   const [reload, setReload] = useState(0);
@@ -101,7 +102,7 @@ export function ExecutionPanel({ taskId, onRefresh }: { taskId: string; onRefres
       if (alive.current) {
         if (record) { persistPending(null); setExecution(record); setPrepared(null); setUncertain(false); refresh.current(); }
         else if (isRunRejection(cause, original.command.request_key)) {
-          persistPending(null); setUncertain(false); setError(`运行被拒绝：${String(cause)}。请核对预算或重新准备。`);
+          persistPending(null); setUncertain(false); setError(`运行被拒绝：${String(cause)}。请核对运行设置或重新准备。`);
         } else setError(`运行响应未确认：${String(cause)}。可核对或恢复原请求；不会自动重发。`);
       }
     } finally { if (alive.current) setBusy(false); }
@@ -110,7 +111,7 @@ export function ExecutionPanel({ taskId, onRefresh }: { taskId: string; onRefres
     if (!prepared || busy || uncertain) return;
     await dispatch({ jobId: prepared.job.job_id, command: {
       expected_state_version: prepared.job.state_version, preparation_id: prepared.receipt.preparation.preparation_id,
-      budget: { confirmed: true, limit_cny: Number(limit), timeout_seconds: Number(timeout) }, request_key: requestKey(),
+      budget: { timeout_seconds: Number(timeout) }, request_key: requestKey(),
     }});
   };
   const cancel = async () => {
@@ -123,8 +124,8 @@ export function ExecutionPanel({ taskId, onRefresh }: { taskId: string; onRefres
     finally { if (alive.current) setBusy(false); }
   };
   const live = !!execution && !execution.terminal;
-  const validBudget = Number.isFinite(Number(limit)) && Number(limit) > 0 && Number(limit) <= (profile?.max_limit_cny ?? 10)
-    && Number.isInteger(Number(timeout)) && Number(timeout) > 0 && Number(timeout) <= 86400;
+  const failure = execution?.terminal && execution.state !== 'finished' ? execution.run_state : null;
+  const validTimeout = Number.isInteger(Number(timeout)) && Number(timeout) > 0 && Number(timeout) <= 86400;
   const inputStyle = { borderWidth: 1, borderColor: theme.line, borderRadius: 6, padding: 8, color: theme.text, width: 140 };
   return <View testID="execution-panel" style={{ gap: 10 }}>
     <Copy small muted>选择已保存计划，准备时固定题单并捕获当前源码。确认运行后启动独立评测，生成结束后进行官方文本评分。</Copy>
@@ -134,22 +135,25 @@ export function ExecutionPanel({ taskId, onRefresh }: { taskId: string; onRefres
       label={`${selected === p.revision ? '已选 · ' : ''}${p.title} · ${p.content.selection.case_ids.length} 题 · ${p.content.execution_intent.mode}`}
       disabled={busy || live || uncertain} onPress={() => { setSelected(p.revision); setPrepared(null); }} />)}
     {plan && <Copy small>固定版本 {plan.revision.slice(0, 12)} · {plan.content.input.suite} · {plan.content.selection.case_ids.length} 题 · {plan.content.selection.partition_ids.length} 分区 · {plan.content.execution_intent.mode}</Copy>}
-    {profile && <Copy small muted>{profile.mode === 'smoke' ? '测试配置：无模型 smoke，不生成评测成绩。' : `模型：${profile.models.join('、')}；费用按请求预留估算，非账户账单。`}</Copy>}
+    {profile && <Copy small muted>{profile.mode === 'smoke' ? '测试配置：无模型 smoke，不生成评测成绩。' : `模型：${profile.models.join('、')}`}</Copy>}
     <Button label={busy ? '处理中…' : '捕获源码并准备运行'} testID="verify-prepare" onPress={prepare}
       disabled={busy || live || uncertain || !plan || !profile?.input_ids.includes(plan.content.input.input_id)} />
     {plan && profile && !profile.input_ids.includes(plan.content.input.input_id) && <Copy small muted>此输入尚未配置可信执行环境；当前支持 QASPER。</Copy>}
     {prepared && <View testID="verify-prepared" style={{ gap: 8 }}>
       <Copy small>准备完成 · {prepared.plan.content.selection.case_ids.length} 题 · {prepared.plan.content.selection.partition_ids.length} 分区 · 源码 {prepared.receipt.preparation.source.artifact_ref.id.slice(0, 12)}</Copy>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Copy small>费用上限（元，最多 {profile?.max_limit_cny}）</Copy>
-        <TextInput testID="verify-budget" value={limit} onChangeText={setLimit} editable={!busy && !uncertain} style={inputStyle} />
         <Copy small>总超时（秒）</Copy>
         <TextInput testID="verify-timeout" value={timeout} onChangeText={setTimeoutValue} editable={!busy && !uncertain} style={inputStyle} />
       </View>
-      <Button label="确认预算并运行" testID="verify-run-button" onPress={run} disabled={busy || live || uncertain || !validBudget} />
+      <Button label="运行评测" testID="verify-run-button" onPress={run} disabled={busy || live || uncertain || !validTimeout} />
     </View>}
     {execution && <View testID="verify-status" style={{ gap: 6 }}>
       <Text style={{ color: theme.text, fontSize: 12 }}>执行状态：{execution.state}{execution.run_state?.stage ? ` · ${execution.run_state.stage}` : ''}{execution.exit_code !== null ? ` · 退出码 ${execution.exit_code}` : ''}</Text>
+      {failure && <View testID="verify-failure" style={{ gap: 4 }}>
+        {(failure.failed_phase || failure.error_type) && <Copy small muted>{[failure.failed_phase, failure.error_type].filter(Boolean).join(' · ')}</Copy>}
+        {failure.error_message && <Text selectable style={{ color: theme.error, fontSize: 12 }}>{failure.error_message}</Text>}
+        {failure.diagnostic_path && <Text selectable style={{ color: theme.muted, fontFamily: 'monospace', fontSize: 11 }}>诊断日志：{failure.diagnostic_path}</Text>}
+      </View>}
       {live ? <Button label="取消运行" testID="verify-cancel" onPress={cancel} disabled={busy} />
         : <Copy small muted>已保存执行记录。下方关联 run 可查看答案、待读题和官方评分；评分缺失会保持未知。</Copy>}
     </View>}

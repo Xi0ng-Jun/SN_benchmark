@@ -123,7 +123,29 @@ def test_append_failure_and_spawn_failure_are_local_facts_and_do_not_stop_other_
     rows = [json.loads(line) for line in (tmp_path / 'batch/runs.local.jsonl').read_text().splitlines()]
     assert {r['exit_code'] for r in rows} == {None, 0}
     assert all(r['ledger_append_error'] == 'ValueError' for r in rows)
-    assert next(r for r in rows if r['exit_code'] is None)['execution_status'] == 'spawn_failed'
+    failed = next(r for r in rows if r['exit_code'] is None)
+    assert failed['execution_status'] == 'spawn_failed'
+    assert failed['failed_phase'] == 'spawn'
+    assert 'No such file' in failed['error_message']
+    assert 'FileNotFoundError' in Path(failed['stderr_path']).read_text()
+    assert not Path(failed['run_dir']).exists()
+
+
+def test_batch_preserves_full_sanitized_stderr_when_child_does_not_initialize_run(tmp_path):
+    from rag_eval.notebook_batch import execute_batch
+    jobs, _ = plan(tmp_path)
+    job = jobs[0]
+    job['argv'] = [sys.executable, '-c',
+        'import sys; print("first failure line\\n" + "detail\\n" * 2000 + '
+        '"https://private.invalid api_key=hidden\\nlast failure line", file=sys.stderr); raise SystemExit(2)']
+    result = execute_batch([job], output_root=tmp_path / 'batch', append_run=lambda row: None)
+    row, = result['runs']
+    assert row['state'] is None and not Path(job['run_dir']).exists()
+    saved = Path(row['stderr_path']).read_text()
+    assert 'first failure line' in saved and 'last failure line' in saved
+    assert len(saved) > 4096 and len(row['stderr_tail']) <= 4096
+    assert 'last failure line' in row['stderr_tail']
+    assert 'private.invalid' not in saved and 'hidden' not in saved
 
 
 def test_cli_dry_run_and_metrics_only_never_invoke_models(tmp_path):

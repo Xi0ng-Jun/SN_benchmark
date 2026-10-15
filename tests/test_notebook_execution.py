@@ -58,7 +58,7 @@ def test_execution_preserves_clarification_and_dashboard_pairing(tmp_path, monke
         assert 'What flies?' not in docs[0]['text']
         return 'notebook', {docs[0]['id']: {'source_id':'source', 'chunk_ids':['chunk']}}
     monkeypatch.setattr(benchmark_runtime, 'prepare_notebook', prepare_notebook)
-    def ask(repo, notebook, question, mode, mapping):
+    def ask(repo, notebook, question, mode, mapping, **diagnostics):
         assert notebook == 'notebook'
         assert question['question'].startswith('What flies?')
         success = question['sample_id'] == '0'

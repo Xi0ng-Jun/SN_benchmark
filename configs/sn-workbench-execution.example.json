@@ -9,7 +9,6 @@
     "dependency_requirements": "/absolute/evaluator/var/sn-workbench-server/private/dependency-requirements.txt",
     "runtime_expectation": "/absolute/evaluator/var/sn-workbench-server/private/runtime-expectation.json",
     "scorer_sources": "/absolute/evaluator/var/sn-workbench-server/scorers",
-    "max_limit_cny": 1,
     "model_names": []
   }
 }

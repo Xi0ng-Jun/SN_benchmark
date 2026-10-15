@@ -26,10 +26,11 @@ def settings(tmp_path, args):
         model_names=['qwen-turbo', 'text-embedding-v4', 'qwen3-rerank'])
 
 
-def test_notebook_spec_binds_fixed_selection_source_and_budget_without_writes(tmp_path):
+@pytest.mark.parametrize('budget', [dict(timeout_seconds=600),
+    dict(confirmed=True, limit_cny=1, timeout_seconds=600)])
+def test_notebook_spec_binds_fixed_selection_source_and_budget_without_writes(tmp_path, budget):
     jobs, job, prep, args = prepared(tmp_path)
     config = settings(tmp_path, args)
-    budget = dict(confirmed=True, limit_cny=1, timeout_seconds=600)
     spec = build_execution_spec(jobs, job['task_id'], job['job_id'], prep['preparation_id'],
                                 config, request_key='run', budget=budget)
     payload = json.loads(spec['argv'][-1])
@@ -37,15 +38,23 @@ def test_notebook_spec_binds_fixed_selection_source_and_budget_without_writes(tm
     assert payload['sn_ref'] == prep['source']['artifact_ref']
     assert payload['bundle_ref'] == prep['input']['bundle_ref']
     assert payload['budget'] == budget
+    budget['timeout_seconds'] = 1
+    assert spec['budget']['timeout_seconds'] == 600
     assert not Path(spec['run_dir']).exists()
     assert '--payload' in spec['argv']
 
 
 @pytest.mark.parametrize('budget', [dict(confirmed=False, limit_cny=1, timeout_seconds=600),
+    dict(limit_cny=1, timeout_seconds=600),
+    dict(confirmed=True, limit_cny=None, timeout_seconds=600),
     dict(confirmed=True, limit_cny=0, timeout_seconds=600),
+    dict(confirmed=True, limit_cny=float('nan'), timeout_seconds=600),
+    dict(confirmed=True, limit_cny=float('inf'), timeout_seconds=600),
     dict(confirmed=True, limit_cny=11, timeout_seconds=600),
     dict(confirmed=True, limit_cny=True, timeout_seconds=600),
-    dict(confirmed=True, limit_cny=1, timeout_seconds=0)])
+    dict(confirmed=True, limit_cny=1, timeout_seconds=0),
+    {}, dict(timeout_seconds=0), dict(timeout_seconds=True),
+    dict(timeout_seconds='600'), dict(timeout_seconds=86401)])
 def test_notebook_budget_rejects_before_creating_execution(tmp_path, budget):
     jobs, job, prep, args = prepared(tmp_path)
     with pytest.raises(ExecutionRejected):
@@ -62,12 +71,14 @@ def test_notebook_spec_rejects_unknown_preparation(tmp_path):
                              budget=dict(confirmed=True, limit_cny=1, timeout_seconds=600))
 
 
-def test_notebook_execution_retains_real_child_failure_without_model_calls(tmp_path):
+@pytest.mark.parametrize('budget', [dict(timeout_seconds=10),
+    dict(confirmed=True, limit_cny=1, timeout_seconds=10)])
+def test_notebook_execution_retains_real_child_failure_without_model_calls(tmp_path, budget):
     from rag_eval.workbench.notebook_job import execute
     jobs, job, prep, args = prepared(tmp_path)
     config = settings(tmp_path, args)
     spec = build_execution_spec(jobs, job['task_id'], job['job_id'], prep['preparation_id'],
-        config, request_key='failed-child', budget=dict(confirmed=True, limit_cny=1, timeout_seconds=10))
+        config, request_key='failed-child', budget=budget)
     payload = json.loads(spec['argv'][-1])
     assert execute(payload) == 1
     root = Path(spec['run_dir'])
@@ -75,7 +86,15 @@ def test_notebook_execution_retains_real_child_failure_without_model_calls(tmp_p
     report = json.loads((root / 'batch-report.json').read_text())
     assert len(report['runs']) == len(prep['input']['selection']['partition_ids'])
     assert all(row['exit_code'] != 0 for row in report['runs'])
-    assert json.loads((root / 'invocation/budget.json').read_text())['requests'] == {}
+    plan = json.loads((root / 'batch-plan.json').read_text())
+    ledger = root / 'invocation/budget.json'
+    if 'limit_cny' in budget:
+        assert json.loads(ledger.read_text())['requests'] == {}
+        assert all(row['argv'][row['argv'].index('--budget-ledger') + 1] == str(ledger)
+                   for row in plan)
+    else:
+        assert not ledger.exists()
+        assert all('--budget-ledger' not in row['argv'] for row in plan)
 
 
 def test_notebook_spec_rejects_output_inside_source_before_any_writes(tmp_path):

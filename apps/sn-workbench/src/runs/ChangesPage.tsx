@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Platform, Pressable, Text, View } from 'react-native';
 import { ChevronDown, ChevronRight, Copy as CopyIcon, FolderGit2, Lightbulb, Play } from 'lucide-react-native';
 import { Button, Copy, fmt, Pill, StatusDot, useTheme, hover } from '../ui';
 import { diffCounts, phaseLabels, short, TaskChanges, WorktreeFile } from './contracts';
-import { api } from '../contracts';
+import { api, ExecutionWorktree } from '../contracts';
 import { ExecutionPanel } from './ExecutionPanel';
 
 // Association comes only from trusted registration or saved Task provenance; never inferred from HEAD.
@@ -78,16 +78,18 @@ function CommandBlock({ label, text, testID }: { label: string; text: string; te
 }
 
 export function ChangesPage({ taskId, changes, error, executionWorktrees, onRefresh, onOpenRun, hypotheses }: { taskId: string; changes: TaskChanges | undefined; error?: string;
-  executionWorktrees: { id: string }[]; onRefresh: () => void; onOpenRun: (id: string) => void; hypotheses?: React.ReactNode }) {
+  executionWorktrees: ExecutionWorktree[]; onRefresh: () => void; onOpenRun: (id: string) => void; hypotheses?: React.ReactNode }) {
   const theme = useTheme();
   const [runError, setRunError] = useState<string | null>(null);
   const [binding, setBinding] = useState(false);
+  const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
+  const selectedWorktree = executionWorktrees.find(worktree => worktree.id === selectedWorktreeId)
+    ?? (executionWorktrees.length === 1 ? executionWorktrees[0] : undefined);
   const bindExecutionWorktree = async () => {
-    const worktree = executionWorktrees[0];
-    if (!worktree) return;
+    if (!selectedWorktree || binding) return;
     setBinding(true); setRunError(null);
     try {
-      await api(`/tasks/${encodeURIComponent(taskId)}/worktree`, { worktree_id: worktree.id });
+      await api(`/tasks/${encodeURIComponent(taskId)}/worktree`, { worktree_id: selectedWorktree.id });
       onRefresh(); setBinding(false);
     } catch (cause) { setRunError(cause instanceof Error ? cause.message : '绑定执行 worktree 失败'); setBinding(false); }
   };
@@ -97,8 +99,17 @@ export function ChangesPage({ taskId, changes, error, executionWorktrees, onRefr
     <Header title="更改" />
     <Copy small muted>该任务尚未绑定 SN worktree。绑定后可以捕获源码、准备并执行固定评测计划。</Copy>
     {executionWorktrees.length > 0 && <View style={{ gap: 8 }}>
-      <Button label={binding ? '正在绑定并捕获…' : `绑定可信执行 worktree · ${executionWorktrees[0].id}`} onPress={bindExecutionWorktree}
-        disabled={binding} testID="bind-execution-worktree" />
+      <Copy small muted>{executionWorktrees.length === 1 ? '已选择唯一登记目录：' : '选择本任务的执行目录：'}</Copy>
+      {executionWorktrees.map(worktree => <Pressable key={worktree.id} testID={`execution-worktree-option-${worktree.id}`}
+        accessibilityRole="radio" accessibilityState={{ checked: selectedWorktree?.id === worktree.id, disabled: binding }}
+        disabled={binding} onPress={() => setSelectedWorktreeId(worktree.id)}
+        style={{ gap: 4, padding: 10, borderWidth: 1, borderRadius: 8,
+          borderColor: selectedWorktree?.id === worktree.id ? theme.text : theme.line }}>
+        <Copy small>{selectedWorktree?.id === worktree.id ? '已选 · ' : ''}{worktree.title} · {worktree.id}</Copy>
+        <Text selectable style={{ color: theme.muted, fontFamily: 'monospace', fontSize: 11 }}>{worktree.path}</Text>
+      </Pressable>)}
+      <Button label={binding ? '正在绑定并捕获…' : '绑定所选执行目录'} onPress={bindExecutionWorktree}
+        disabled={binding || !selectedWorktree} testID="bind-execution-worktree" />
       {runError && <Text testID="verify-error" style={{ color: theme.error, fontSize: 12 }}>{runError}</Text>}
     </View>}
     <Header title="假设卡" />

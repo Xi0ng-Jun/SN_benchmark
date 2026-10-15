@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 import time
@@ -19,6 +18,7 @@ import time
 from .run_results import EventJournal
 from .artifacts import digest
 from .identity import fingerprint
+from .execution_diagnostics import exception_details, persist_stderr, sanitize_diagnostic
 
 
 def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
@@ -84,22 +84,29 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
 
 def _safe_tail(value):
     """Child stderr is untrusted; never expose service URLs or token values."""
-    value = re.sub(r'(?i)\b(?:https?|wss?)://\S+', '[redacted-address]', value)
-    value = re.sub(r'(?im)\b(?:authorization|api[_-]?key|token|password|secret|credential)\b[^\n]*',
-                   '[redacted-credential]', value)
-    return value[-4096:]
+    return sanitize_diagnostic(value)[-4096:]
 
 
-def _run_job(job):
+def _run_job(job, diagnostic_directory):
     started = datetime.now(timezone.utc).isoformat()
     clock = time.monotonic()
+    details = {}
     try:
         child = subprocess.run(job['argv'], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                text=True, encoding='utf-8', errors='replace', check=False)
-        code, tail = child.returncode, _safe_tail(child.stderr)
+        code, stderr = child.returncode, sanitize_diagnostic(child.stderr)
         error_type = None
     except OSError as exc:
-        code, tail, error_type = None, '', type(exc).__name__
+        code, error_type = None, type(exc).__name__
+        details = exception_details(exc, phase='spawn', directory=diagnostic_directory)
+        stderr = (Path(details['diagnostic_path']).read_text(encoding='utf-8') if details['diagnostic_path']
+                  else details['error_type'] + ': ' + details['error_message'])
+    stderr_path = None
+    try:
+        stderr_path = str(persist_stderr(stderr, directory=diagnostic_directory))
+    except OSError as exc:
+        details['diagnostic_write_error'] = type(exc).__name__
+    tail = _safe_tail(stderr)
     run = Path(job['run_dir'])
     state = None
     if (run / 'state.json').is_file():
@@ -111,8 +118,9 @@ def _run_job(job):
     row.update(format='sn-notebook-batch-run-v1', started_at=started,
                finished_at=datetime.now(timezone.utc).isoformat(), exit_code=code,
                execution_status='exited' if code is not None else 'spawn_failed',
-               error_type=error_type, stderr_tail=tail, state=state,
+               error_type=error_type, stderr_path=stderr_path, stderr_tail=tail, state=state,
                latency_seconds=time.monotonic() - clock)
+    row.update(details)
     if (run / 'outputs.jsonl').is_file() and (run / 'manifest.json').is_file():
         try:
             from .stage_metrics import write_stage_metrics
@@ -158,12 +166,14 @@ def execute_batch(jobs, *, output_root, parallel=1, append_run=None, ledger_path
                               exit_code=row['exit_code'], stderr_summary=row['stderr_tail'])
             backend = 'M0-B append_run'
     output_root.mkdir(parents=True, exist_ok=False)
+    diagnostic_directory = output_root / 'diagnostics'
+    diagnostic_directory.mkdir(mode=0o700)
     executions = EventJournal(output_root / 'batch-executions.jsonl')
     local = None
     rows, bookkeeping_failed = [], False
     try:
         with ThreadPoolExecutor(max_workers=parallel) as pool:
-            futures = [pool.submit(_run_job, j) for j in jobs]
+            futures = [pool.submit(_run_job, j, diagnostic_directory) for j in jobs]
             for future in as_completed(futures):
                 row = future.result()
                 if append_run is not None:

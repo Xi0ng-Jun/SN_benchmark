@@ -194,11 +194,13 @@ def test_v3_full_run_joins_scoring_metadata_after_generation_and_exports_submiss
     original = system_runtime.run_system_question
     seen_questions = []
 
-    def checked_generation(repo, notebook, question, mode, mapping):
+    def checked_generation(repo, notebook, question, mode, mapping, **diagnostics):
         assert not FORBIDDEN.intersection(question)
         assert question['task'] == 'qa'
+        # Diagnostics must not make scoring-only values visible to generation.
+        assert 'SECRET-GOLD' not in repr(diagnostics)
         seen_questions.append(deepcopy(question))
-        return original(repo, notebook, question, mode, mapping)
+        return original(repo, notebook, question, mode, mapping, **diagnostics)
 
     monkeypatch.setattr(system_runtime, 'run_system_question', checked_generation)
     run = tmp_path / 'run'
@@ -228,6 +230,40 @@ def test_v3_full_run_joins_scoring_metadata_after_generation_and_exports_submiss
     assert submission['coverage']['success'] == submission['coverage']['planned'] == 1
     assert submission['predictions'][0]['prediction'] == 'Alpha [k1]'
     assert submission['method']['configuration']['identity']['notebook_context']['request_revision'] == REQUEST_V3
+
+
+def test_actual_generation_failure_is_visible_in_terminal_state(tmp_path, native_boundary, monkeypatch):
+    bundle = news_bundle(tmp_path / 'input')
+    def fail(self, notebook, payload):
+        raise RuntimeError('provider failed for ' + payload.question + '; api_key=hidden')
+    monkeypatch.setattr(native_boundary.Repository, 'ask', fail)
+    run = tmp_path / 'run'
+    execute(root=ROOT, project=tmp_path / 'product', bundle_dir=tmp_path / 'input/bundle', run=run,
+            mode='chunk', partition_id=bundle['partitions'][0]['partition_id'], request_revision=REQUEST_V3)
+    state = json.loads((run / 'state.json').read_text())
+    assert state['phase'] == 'finished_with_errors'
+    assert state['failed_phase'] == 'ask'
+    assert state['case_id'] == bundle['cases'][0]['case_id']
+    assert 'provider failed' in state['error_message']
+    diagnostics = Path(state['diagnostic_path']).read_text() + json.dumps(state)
+    assert 'SECRET-GOLD' not in diagnostics and 'hidden' not in diagnostics
+    assert bundle['cases'][0]['question'] not in diagnostics
+
+
+def test_scoring_failure_redacts_gold_without_sending_it_to_generation(tmp_path, native_boundary, monkeypatch):
+    from rag_eval import notebook_runner
+    bundle = news_bundle(tmp_path / 'input')
+    def fail_after_generation(run, cases, planned, scores):
+        assert (run / 'outputs.jsonl').read_text()
+        raise RuntimeError('scoring failed for SECRET-GOLD')
+    monkeypatch.setattr(notebook_runner, 'score_outputs', fail_after_generation)
+    run = tmp_path / 'run'
+    with pytest.raises(RuntimeError):
+        execute(root=ROOT, project=tmp_path / 'product', bundle_dir=tmp_path / 'input/bundle', run=run,
+                mode='chunk', partition_id=bundle['partitions'][0]['partition_id'], request_revision=REQUEST_V3)
+    state = json.loads((run / 'state.json').read_text())
+    saved = Path(state['diagnostic_path']).read_text() + json.dumps(state)
+    assert 'scoring failed' in saved and 'SECRET-GOLD' not in saved
 
 
 def test_old_request_on_v3_data_cannot_be_exported_as_official_submission(tmp_path, native_boundary):

@@ -116,7 +116,7 @@ def main():
             command.add_argument('--state-version', type=int, required=True)
             command.add_argument('--preparation-id', required=True)
             command.add_argument('--budget', type=Path, required=True,
-                                 help='JSON budget receipt with confirmed=true')
+                                 help='JSON execution options: timeout_seconds; optional limit_cny requires confirmed=true')
         if name in ('job-status', 'job-execution-status'):
             command.add_argument('--job', required=True)
             command.add_argument('--execution', required=True)

@@ -85,8 +85,9 @@ export type AgentMessageRecord = { id: string; task_id: string; actor: string; s
   status: 'prepared' | 'unknown' | 'acknowledged' | 'not_attempted'; prepared_at: string; started_at: string | null; finished_at: string | null;
   envelope: { result: { status: string; agentId?: string; messageId?: string; code?: string; cause?: string; observed?: { sdkResolved: true } };
     release: BridgeRelease } | null };
+export type ExecutionWorktree = { id: string; title: string; path: string };
 export type Bootstrap = { workspaces: Workspace[]; sources: Source[]; inputs?: Source[]; actor: string;
-  execution_worktrees?: { id: string }[];
+  execution_worktrees?: ExecutionWorktree[];
   capabilities?: WorkbenchCapabilities; creation_profiles?: CreationProfile[] };
 export type Packet = {
   result_id: string; case_id: string; task: string; question: string; status: string;

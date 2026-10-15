@@ -8,6 +8,7 @@ from asyncio import CancelledError
 from uuid import uuid4
 
 from .trace_contract import TraceEnvelope
+from .execution_diagnostics import exception_details, sensitive_strings
 
 
 def is_cancellation(error):
@@ -20,7 +21,8 @@ def is_cancellation(error):
         base.__name__ == 'AskCancelled' for base in type(error).__mro__)
 
 
-def submit_system_question(repo, notebook, question, mode):
+def submit_system_question(repo, notebook, question, mode, *, diagnostic_directory=None,
+                           diagnostic_sensitive_values=()):
     """Follow the native clear-intent confirmation path with a fresh conversation."""
     from app.models.ask import AskRequest, AskIntentConfirmation
 
@@ -64,9 +66,12 @@ def submit_system_question(repo, notebook, question, mode):
     except Exception as exc:
         if is_cancellation(exc):
             raise
-        # Preserve already observed response, never print provider error bodies.
+        # Preserve the observed answer separately from sanitized failure evidence.
+        details = exception_details(exc, phase=phase, directory=diagnostic_directory,
+            sensitive_values=(*diagnostic_sensitive_values, question,
+                              *sensitive_strings(record['response']), record['answer']))
         record.update(status="error", reason="native request, intent, Ask or persistence error",
-                      error_phase=phase, error_type=type(exc).__name__,
+                      error_phase=phase, **details,
                       error_support_id=str(getattr(exc, "support_id", "")))
     return record
 
@@ -109,7 +114,8 @@ def complete_evidence_checks(repo, record, mapping, *, gold_document_ids=None):
         record.update(evidence_check_status='error', evidence_check_error=type(exc).__name__)
 
 
-def run_system_question(repo, notebook, question, mode, mapping):
+def run_system_question(repo, notebook, question, mode, mapping, *, diagnostic_directory=None,
+                        diagnostic_sensitive_values=()):
     """Capture the actual product response, final context and citation objects."""
     from app.core.llm_logging import LLMInteractionLogger
     from .system_capture import capture_synthesis, final_context
@@ -117,7 +123,8 @@ def run_system_question(repo, notebook, question, mode, mapping):
 
     started = time.monotonic()
     with capture_usage(LLMInteractionLogger) as usage, capture_synthesis(repo._runtime.ask_component) as calls:
-        observed = submit_system_question(repo, notebook, question["question"], mode)
+        observed = submit_system_question(repo, notebook, question["question"], mode,
+            diagnostic_directory=diagnostic_directory, diagnostic_sensitive_values=diagnostic_sensitive_values)
     record = {**question, **observed, "mode": mode, "attempt_id": uuid4().hex,
               "captures": calls, "usage": usage, "latency_seconds": time.monotonic() - started}
     try:

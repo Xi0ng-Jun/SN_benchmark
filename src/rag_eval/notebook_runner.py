@@ -10,6 +10,7 @@ from .artifacts import digest, save_json, save_jsonl
 from .notebook_bundle import LEGACY_REQUEST_REVISION, load_bundle, partition_bundle
 from .notebook_data import VERSION
 from .identity import fingerprint
+from .execution_diagnostics import config_sensitive_values, exception_details, sensitive_strings
 from .run_results import EventJournal, planned_result, result_record
 from .run_support import CITATIONS, citation_score, read_rows, update_state
 
@@ -75,7 +76,9 @@ def _anchor_documents(repo, record, mapping):
 
 
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
-                qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False):
+                qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
+                diagnostic_sensitive_values=()):
+    update_state(run, 'importing')
     from .benchmark_runtime import prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
     from .usage_capture import capture_usage
@@ -83,7 +86,6 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
     cell = run / 'product-artifacts'
     cell.mkdir()
     usage = {}
-    update_state(run, 'importing')
     try:
         with capture_usage(LLMInteractionLogger) as usage:
             notebook, mapping = prepare_notebook(repo, cell, product['documents'], product['manifest']['suite'])
@@ -107,12 +109,15 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                             repo, notebook, question,
                             [documents[did] for did in question['material_document_ids']], mapping))
                     try:
-                        record = run_system_question(repo, notebook, question, mode, mapping)
+                        record = run_system_question(repo, notebook, question, mode, mapping,
+                            diagnostic_directory=run, diagnostic_sensitive_values=diagnostic_sensitive_values)
                     except Exception as exc:
                         if is_cancellation(exc):
                             raise
+                        details = exception_details(exc, phase='asking', directory=run,
+                                                    sensitive_values=diagnostic_sensitive_values)
                         record = dict(question, status='error', answer='', response={},
-                                      reason='native invocation/capture failed', error_type=type(exc).__name__)
+                                      reason='native invocation/capture failed', **details)
                 if multihop_retrieval:
                     record['retrieval'] = ranking
                 if qasper_catalogues is not None:
@@ -278,10 +283,18 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         model_config = Path(model_config).resolve()
     if dependency_requirements is not None:
         dependency_requirements = Path(dependency_requirements).resolve()
+    generation_private_values = (*sensitive_strings([question.get('question') for question in product['questions']]),
+                                 *sensitive_strings([doc.get('text') for doc in product['documents']]),
+                                 *config_sensitive_values(model_config))
+    # Scoring labels stay at the runner boundary, including for diagnostics.
+    # Only already-public inputs are supplied to the generation call below.
+    private_values = (*generation_private_values,
+                      *sensitive_strings([{key: case.get(key) for key in ('question', 'gold', 'references')}
+                                          for case in cases]))
     run.mkdir(parents=True, exist_ok=False)
-    update_state(run, 'initializing')
     observed_provider = None
     try:
+        update_state(run, 'initializing')
         if shared_refs is None:
             shutil.copytree(bundle_dir, run / 'input')
             if load_bundle(run / 'input') != bundle:
@@ -406,7 +419,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             predictions(run, cases, product, mode, repo, outputs, agent_evaluation=agent_evaluation,
                         session_factory=tracing.evaluation_session if tracing is not None else None,
                         qasper_catalogues=qasper_catalogues, hotpot_evidence=hotpot_evidence,
-                        multihop_retrieval=multihop_retrieval)
+                        multihop_retrieval=multihop_retrieval, diagnostic_sensitive_values=generation_private_values)
             score_outputs(run, cases, planned, scores)
         errors = any(row['status'] == 'error' for name in ('outputs.jsonl', 'scores.jsonl') for row in read_rows(run / name))
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)
@@ -416,12 +429,25 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                                for row in read_rows(run / 'outputs.jsonl'))
         errors = errors or any(row.get('product_record', {}).get('retrieval', {}).get('status') == 'error'
                                for row in read_rows(run / 'outputs.jsonl'))
-        update_state(run, 'finished_with_errors' if errors else 'finished')
+        failures = [dict(case_id=row['case_id'], **{key: row['product_record'][key] for key in
+                    ('error_type', 'error_message', 'failed_phase', 'diagnostic_path', 'diagnostic_write_error')
+                    if key in row['product_record']}) for row in read_rows(run / 'outputs.jsonl')
+                    if row.get('product_record', {}).get('error_type')]
+        update_state(run, 'finished_with_errors' if errors else 'finished',
+                     **(dict(failures=failures, **failures[0]) if failures else {}))
     except BaseException as exc:
         from .system_runtime import is_cancellation
-        previous = json.loads((run / 'state.json').read_text(encoding='utf-8'))
-        update_state(run, 'interrupted' if is_cancellation(exc) else 'failed',
-                     error_type=type(exc).__name__, failed_phase=previous.get('phase'), case_id=previous.get('case_id'))
+        try:
+            previous = json.loads((run / 'state.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            previous = {'phase': 'initializing'}
+        details = exception_details(exc, phase=previous.get('phase', 'initializing'), directory=run,
+                                    sensitive_values=private_values)
+        try:
+            update_state(run, 'interrupted' if is_cancellation(exc) else 'failed',
+                         **details, case_id=previous.get('case_id'))
+        except OSError as state_error:
+            details['state_write_error'] = type(state_error).__name__
         raise
     finally:
         if observed_provider is not None:

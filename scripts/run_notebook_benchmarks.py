@@ -68,6 +68,7 @@ def _consume_readiness_receipt(path, expected_scope):
 
 def main():
     from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
+    from rag_eval.execution_diagnostics import exception_details, failure_summary, config_sensitive_values
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--artifact-root', type=Path, help='Campaign immutable store; bundle must be installed before running')
@@ -91,6 +92,13 @@ def main():
     parser.add_argument('--readiness-receipt', type=Path,
                         help='Sealed sn-e5-s3-readiness-receipt-v1 for this exact captured single-case smoke')
     args = parser.parse_args()
+
+    def input_failure(exc, phase):
+        details = exception_details(exc, phase=phase,
+                                    sensitive_values=config_sensitive_values(args.model_config))
+        print('Execution failed: ' + failure_summary(details), file=sys.stderr)
+        return 2
+
     if (args.artifact_root is None) != (args.artifact_index_id is None):
         parser.error('--artifact-root and --artifact-index-id must be supplied together')
     startup_args = (args.sn_source_ref, args.dependency_requirements, args.runtime_expectation)
@@ -101,8 +109,8 @@ def main():
         try:
             source_ref = json.loads(args.sn_source_ref.read_text(encoding='utf-8'))
             expectation = json.loads(args.runtime_expectation.read_text(encoding='utf-8'))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            parser.error('Unable to read captured startup inputs')
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return input_failure(exc, 'startup_inputs')
         if (type(source_ref) is not dict or set(source_ref) != {'kind', 'id', 'manifest_sha256'}
                 or source_ref.get('kind') != 'sn' or type(expectation) is not dict
                 or set(expectation) != {'executable', 'prefix'}
@@ -115,16 +123,16 @@ def main():
     if args.task_worktree_ref:
         try:
             association = json.loads(args.task_worktree_ref.read_text())
-        except (OSError, ValueError):
-            parser.error('Invalid Task capture association')
+        except (OSError, ValueError) as exc:
+            return input_failure(exc, 'task_association')
         startup_kwargs['task_worktree'] = association
     from rag_eval.notebook_runner import execute, load_case_ids_file
     case_ids = list(args.case_ids or [])
     if args.case_id_file is not None:
         try:
             case_ids.extend(load_case_ids_file(args.case_id_file))
-        except ValueError as exc:
-            parser.error(str(exc))
+        except (OSError, ValueError) as exc:
+            return input_failure(exc, 'case_selection')
     if not case_ids:
         case_ids = None
     if startup_kwargs and args.readiness_receipt is not None:
@@ -134,15 +142,17 @@ def main():
                 artifact_index_id=args.artifact_index_id, source_ref=source_ref,
                 case_ids=case_ids, partition_id=args.partition_id,
                 request_revision=args.request_revision)
-        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            parser.error('Unable to derive captured readiness identity')
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            return input_failure(exc, 'readiness_identity')
         try:
             _consume_readiness_receipt(args.readiness_receipt, expected_scope)
         except _ReadinessError as exc:
             print('Readiness failed: ' + exc.category, file=sys.stderr)
             return 2
     from rag_eval.run_report import write_report
+    from rag_eval.system_runtime import is_cancellation
     run = args.run_dir.resolve()
+    run_existed = run.exists()
     code = 0
     try:
         from rag_eval.model_budget import install_budget_guard
@@ -151,19 +161,23 @@ def main():
                     mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
                     case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root,
                     artifact_index_id=args.artifact_index_id, **startup_kwargs)
-    except KeyboardInterrupt:
-        code = 130
-    except Exception as exc:
-        print('Execution failed: ' + type(exc).__name__ + '; inspect saved state/artifacts', file=sys.stderr)
-        code = 2
-    if (run / 'state.json').exists():
+    except BaseException as exc:
+        details = getattr(exc, '_rag_eval_diagnostic_details', None) or exception_details(
+            exc, phase='validation', sensitive_values=config_sensitive_values(args.model_config))
+        interrupted = is_cancellation(exc)
+        print(('Execution interrupted: ' if interrupted else 'Execution failed: ') + failure_summary(details),
+              file=sys.stderr)
+        code = 130 if interrupted else 2
+    if not run_existed and (run / 'state.json').exists():
         try:
             report = write_report([run], run / 'report', partition_only=args.artifact_root is not None)
             if any(r['state']['phase'] != 'finished' or r['warnings'] for r in report['runs']):
                 code = code or 2
             print(run / 'report/report.md')
         except Exception as exc:
-            print('Report failed: ' + type(exc).__name__, file=sys.stderr)
+            details = exception_details(exc, phase='reporting', directory=run,
+                                        sensitive_values=config_sensitive_values(args.model_config))
+            print('Report failed: ' + failure_summary(details), file=sys.stderr)
             code = code or 2
     return code
 

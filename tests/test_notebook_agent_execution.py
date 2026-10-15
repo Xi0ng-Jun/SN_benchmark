@@ -73,7 +73,7 @@ def test_native_scoring_runs_after_durable_answer_without_changing_corpus(tmp_pa
         pass
     cancellation = StreamingCancelled('stop')
 
-    def ask(repo, notebook, question, mode, mapping):
+    def ask(repo, notebook, question, mode, mapping, **diagnostics):
         if cancelled:
             raise cancellation
         return dict(question, status='success', answer='Red birds', response={'anchors': [], 'citations': []},

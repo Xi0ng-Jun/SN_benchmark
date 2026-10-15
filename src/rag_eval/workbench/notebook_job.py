@@ -3,28 +3,19 @@
 One execution supervises serial partition subprocesses. Each partition retains
 its own runtime and original state; official scoring happens after generation.
 """
-from copy import deepcopy
 import hashlib
 import json
-import math
 from pathlib import Path
 import sys
 
 from ..artifact_store import ArtifactStore
 from ..artifacts import digest, save_json
-from .job_execution import ExecutionRejected
+from ..execution_diagnostics import exception_details, sanitize_diagnostic, sensitive_strings
+from .job_execution import ExecutionRejected, validate_execution_budget
 
 
 def validate_budget(budget, config):
-    if type(budget) is not dict or budget.get('confirmed') is not True:
-        raise ExecutionRejected('Explicit budget confirmation is required')
-    limit = budget.get('limit_cny')
-    timeout = budget.get('timeout_seconds')
-    if (type(limit) not in (int, float) or not math.isfinite(limit)
-            or not 0 < limit <= config.get('max_limit_cny', 10)
-            or type(timeout) is not int or not 1 <= timeout <= 86400):
-        raise ExecutionRejected('A positive allowed cost limit and timeout are required')
-    return deepcopy(budget)
+    return validate_execution_budget(budget, max_limit_cny=config.get('max_limit_cny', 10))
 
 
 def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key, budget):
@@ -71,18 +62,18 @@ def execute(payload):
     """Run existing partition CLI and independent official scoring; never retry."""
     from ..benchmark_official import prepare_inputs, score_prepared
     from ..benchmark_submission import export_sn_runs
-    from ..model_budget import ModelBudget
     from ..notebook_batch import plan_batch, execute_batch
     from ..notebook_bundle import load_bundle
     run = Path(payload['run_dir']).resolve()
     # Check before publishing runtime artifacts or starting any child.
     for file in payload['files'].values():
         if digest(file['path']) != file['sha256']:
-            raise ValueError('Runtime file changed after budget confirmation')
+            raise ValueError('Runtime file changed after execution was prepared')
     run.mkdir(parents=True, exist_ok=False, mode=0o700)
     def state(phase, **details):
         save_json(run / 'state.json', dict(phase=phase, terminal=phase != 'running', **details))
-    state('running', stage='preparing', planned=len(payload['selection']['case_ids']))
+    stage = 'preparing'
+    state('running', stage=stage, planned=len(payload['selection']['case_ids']))
     try:
         inputs = run / 'invocation'
         inputs.mkdir(mode=0o700)
@@ -99,7 +90,11 @@ def execute(payload):
         save_json(inputs / 'sn-source-ref.json', payload['sn_ref'])
         ids_file = inputs / 'case-ids.txt'
         ids_file.write_text('\n'.join(payload['selection']['case_ids']) + '\n')
-        ModelBudget.create(inputs / 'budget.json', limit_cny=payload['budget']['limit_cny'])
+        budget_ledger = None
+        if 'limit_cny' in payload['budget']:
+            from ..model_budget import ModelBudget
+            budget_ledger = inputs / 'budget.json'
+            ModelBudget.create(budget_ledger, limit_cny=payload['budget']['limit_cny'])
         association = None
         if payload.get('task_worktree'):
             association = inputs / 'task-worktree.json'
@@ -112,22 +107,42 @@ def execute(payload):
             sn_source_ref=inputs / 'sn-source-ref.json',
             dependency_requirements=frozen_files['dependency_requirements'],
             runtime_expectation=frozen_files['runtime_expectation'],
-            budget_ledger=inputs / 'budget.json', task_worktree_ref=association)
+            budget_ledger=budget_ledger, task_worktree_ref=association)
         if [j['partition_id'] for j in jobs] != payload['selection']['partition_ids']:
             raise ValueError('Partition expansion differs from the fixed plan')
         save_json(run / 'batch-plan.json', jobs)
-        state('running', stage='generating', planned=len(payload['selection']['case_ids']))
+        stage = 'generating'
+        state('running', stage=stage, planned=len(payload['selection']['case_ids']))
         report = execute_batch(jobs, output_root=run / 'partitions', parallel=1,
                                ledger_path=run / 'runs.jsonl')
         save_json(run / 'batch-report.json', report)
-        state('running', stage='scoring', planned=len(payload['selection']['case_ids']))
+        generation_failures = []
+        for row in report['runs']:
+            saved = row.get('state') or {}
+            if row.get('exit_code') == 0 and not row.get('stage_metrics_error') and not row.get('ledger_append_error'):
+                continue
+            details = dict(error_type=saved.get('error_type') or row.get('error_type') or
+                row.get('stage_metrics_error') or row.get('ledger_append_error') or 'child_exit',
+                error_message=saved.get('error_message') or row.get('error_message') or
+                    row.get('stderr_tail') or f"Partition process exited with code {row.get('exit_code')}",
+                failed_phase=saved.get('failed_phase') or row.get('failed_phase') or saved.get('phase') or stage,
+                diagnostic_path=saved.get('diagnostic_path') or row.get('diagnostic_path') or row.get('stderr_path'))
+            details = {key: sanitize_diagnostic(value)[:2048] if isinstance(value, str) else value
+                       for key, value in details.items()}
+            generation_failures.append(dict(run_dir=row['run_dir'], **details))
+        stage = 'scoring'
+        state('running', stage=stage, planned=len(payload['selection']['case_ids']),
+              generation_failures=generation_failures)
         bundle = load_bundle(payload['bundle'])
         failures = []
         for job in jobs:
             partition = Path(job['run_dir'])
             if not (partition / 'manifest.json').is_file():
-                failures.append(dict(run_dir=str(partition), error_type='missing_manifest'))
+                failures.append(dict(run_dir=str(partition), error_type='missing_manifest',
+                    error_message='Partition did not save a manifest; official scoring is unavailable',
+                    failed_phase=stage, diagnostic_path=None))
                 continue
+            submission = None
             try:
                 official = run / 'official' / partition.name
                 submission_path = export_sn_runs(payload['bundle'], [partition], official / 'submission',
@@ -136,12 +151,17 @@ def execute(payload):
                 score_prepared(bundle, submission, prepare_inputs(bundle, submission),
                                source_directory=payload['scorer_sources'], output_dir=official / 'scores')
             except Exception as exc:
-                failures.append(dict(run_dir=str(partition), error_type=type(exc).__name__))
+                failures.append(dict(run_dir=str(partition), **exception_details(exc, phase=stage, directory=run,
+                    sensitive_values=(*sensitive_strings(bundle.get('cases', [])),
+                                      *sensitive_strings(submission)))))
         save_json(run / 'scoring-status.json', dict(failures=failures))
+        first_failure = next(iter(generation_failures + failures), {})
         state('finished_with_errors' if report['exit_code'] or failures else 'finished',
-              stage='complete', planned=len(payload['selection']['case_ids']), scoring_failures=failures)
+              stage='complete', planned=len(payload['selection']['case_ids']), scoring_failures=failures,
+              generation_failures=generation_failures,
+              **{key: value for key, value in first_failure.items() if key != 'run_dir'})
         return 1 if report['exit_code'] or failures else 0
     except BaseException as exc:
         state('interrupted' if isinstance(exc, KeyboardInterrupt) else 'failed',
-              stage='execution', error_type=type(exc).__name__)
+              stage=stage, **exception_details(exc, phase=stage, directory=run))
         raise

@@ -3,7 +3,7 @@ import { useResource } from '../materials';
 import type { RunList, TaskChanges, TaskOverview } from './contracts';
 
 // Run views remain read-only for scores/cases; the Changes page owns the
-// explicit, budget-confirmed Job execution action.
+// explicit Job execution action.
 // `enabled` waits for the authenticated bootstrap so the first read cannot 401.
 export function useRunViews(taskIds: string[], taskId: string | null, refresh: number, enabled = true) {
   const [tick, setTick] = useState(0);

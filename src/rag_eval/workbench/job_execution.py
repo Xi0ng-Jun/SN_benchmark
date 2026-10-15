@@ -2,13 +2,14 @@
 
 The legacy Job record remains a closed intention.  This module owns the
 runtime record and the process handle that belongs to one isolated run
-directory.  Callers provide a server-built argv and an explicit budget receipt;
+directory.  Callers provide a server-built argv and a frozen execution budget;
 HTTP input is never treated as an executable command.
 """
 from __future__ import annotations
 
 from copy import deepcopy
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +17,7 @@ import threading
 import time
 
 from .evaluation_jobs import _text, _version
+from ..execution_diagnostics import exception_details, sanitize_diagnostic
 from .repository import Conflict, UnknownIdentity, now, uid
 
 
@@ -31,6 +33,24 @@ class ExecutionRejected(ValueError):
     """The execution contract or current lifecycle state is invalid."""
 
 
+def validate_execution_budget(budget, *, max_limit_cny=None):
+    """Keep a timeout for every run; cost enforcement is explicitly optional."""
+    if type(budget) is not dict:
+        raise ExecutionRejected('Invalid execution budget')
+    timeout = budget.get('timeout_seconds')
+    if type(timeout) is not int or not 1 <= timeout <= 86400:
+        raise ExecutionRejected('A timeout between 1 and 86400 seconds is required')
+    if 'limit_cny' in budget:
+        if budget.get('confirmed') is not True:
+            raise ExecutionRejected('Explicit budget confirmation is required for a cost limit')
+        limit = budget['limit_cny']
+        if (type(limit) not in (int, float) or limit <= 0
+                or (type(limit) is float and not math.isfinite(limit))
+                or (max_limit_cny is not None and limit > max_limit_cny)):
+            raise ExecutionRejected('A positive allowed cost limit is required')
+    return deepcopy(budget)
+
+
 def _validate_spec(spec):
     if type(spec) is not dict or set(spec) != {'argv', 'run_dir', 'budget', 'preparation_id'}:
         raise ExecutionRejected('Invalid execution specification')
@@ -44,12 +64,10 @@ def _validate_spec(spec):
     path = Path(run_dir).resolve()
     if not path.is_absolute() or path.exists():
         raise ExecutionRejected('Execution run directory must be new')
-    budget = spec['budget']
-    if type(budget) is not dict or budget.get('confirmed') is not True:
-        raise ExecutionRejected('Explicit budget confirmation is required')
+    budget = validate_execution_budget(spec['budget'])
     if type(spec['preparation_id']) is not str or len(spec['preparation_id']) != 64:
         raise ExecutionRejected('Verified preparation is required')
-    return dict(argv=list(argv), run_dir=str(path), budget=deepcopy(budget),
+    return dict(argv=list(argv), run_dir=str(path), budget=budget,
                 preparation_id=spec['preparation_id'])
 
 
@@ -189,8 +207,9 @@ class JobExecutionStore:
         try:
             self._start(record)
         except BaseException as exc:
+            details = exception_details(exc, phase='launching')
             self._finish(record['execution_id'], state='failed', exit_code=None,
-                         error_type=type(exc).__name__, run_state=None)
+                         error_type=type(exc).__name__, run_state=dict(phase='failed', **details))
             return self.get(task_id, record['execution_id'])
         return record
 
@@ -284,6 +303,20 @@ class JobExecutionStore:
                 run_state = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
             except (OSError, ValueError):
                 run_state = {'phase': 'unreadable'}
+            if run_state is not None and not isinstance(run_state, dict):
+                run_state = {'phase': 'unreadable'}
+            if code != 0 and not (run_state or {}).get('error_message'):
+                log = Path(current['run_dir']) / 'stderr.log'
+                try:
+                    # Redact before truncating: a sliced traceback loses the
+                    # header needed to identify source lines and credentials.
+                    tail = sanitize_diagnostic(log.read_text(encoding='utf-8', errors='replace'))[-2048:]
+                except OSError:
+                    tail = ''
+                run_state = dict(run_state or {}, error_type='child_exit',
+                    error_message=tail.strip() or f'Execution process exited with code {code}',
+                    failed_phase=(run_state or {}).get('stage') or (run_state or {}).get('phase') or 'launching',
+                    diagnostic_path=str(log))
             self._finish(execution_id, state=state, exit_code=code,
                          error_type=None if code == 0 else 'child_exit', run_state=run_state)
         except Exception:

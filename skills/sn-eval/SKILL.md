@@ -1,3 +1,8 @@
+---
+name: sn-eval
+description: Use when reading Silicon Notebook evaluation runs, inspecting benchmark evidence, drafting hypotheses, or operating the repository's evaluation CLI.
+---
+
 # Silicon Notebook 评测工具
 
 这套工具只消费已经冻结的输入和运行工件。运行时生成不读取 gold；答案先写入 run，再单独导出和评分。当前实现是实验工具，正式 benchmark 题单和模型调用仍需人工核验。
@@ -44,9 +49,11 @@ export EVAL_PYTHON="$EVAL_ROOT/.venv/bin/python"
 
 假设卡的逐题预测（`expect`: improve / unchanged / not_worse / worse，`guard` 表示守护题）在验证时按配对翻转表逐条核对；效果与原因结论由人分别填写。
 
-## 付费边界
+## 模型运行边界
 
-会启动 SN、访问模型服务并产生费用的只有 `run_notebook_benchmarks.py`，以及显式选择 ALCE 模型模式的 `score`。运行前必须先写一张预算卡并由人确认：suite、partition、case 数、mode、预计 embedding/chat/rerank 调用数、模型服务代际、超时和费用上限。没有确认就停在 prepare、离线检查、export、普通文本 score、load_run 或 ledger query。
+`run_notebook_benchmarks.py`、调用它的 batch／工作台运行入口，以及显式选择 ALCE 模型模式的 `score` 会访问模型服务。2026-10-15 用户决定：开发环境由操作者在实际运行前自行估算费用，评测服务器使用公司提供的模型资源；工作台不再强制填写金额或确认预算卡，默认不安装费用／模型名拦截器。题单、源码、模型配置和超时仍需明确；读工具、准备和离线评分不授权 Agent 自行开始新的模型实验。
+
+工作台确认运行只提交 `budget={"timeout_seconds": 3600}`，保留超时、取消和原请求恢复。需要复用旧显式费用保护时，API 可提交 `limit_cny` 和 `confirmed=true`，或 CLI 显式传 `--budget-ledger`；这一路仍使用旧实验模型价格表，不适用于未知的内部模型，不要为通过准入把模型冒充为表内名称。没有费用账本不代表费用为零；调用与用量观测仍按实际记录呈现。
 
 ## 禁止事项
 
@@ -86,7 +93,7 @@ export EVAL_PYTHON="$EVAL_ROOT/.venv/bin/python"
    PY
    ```
 
-3. 在预算卡获人确认后，通过 reviewed owner 启动唯一 captured 单题 attempt；`launch_attempt.py` 会调用 `run_notebook_benchmarks.py`，并消费 readiness receipt：
+3. 在操作者确认本次题单和运行后，通过 reviewed owner 启动唯一 captured 单题 attempt（旧实验的预算回执仅保留为历史记录）；`launch_attempt.py` 会调用 `run_notebook_benchmarks.py`，并消费 readiness receipt：
 
    ```bash
    "$EVAL_PYTHON" "$EVIDENCE_ROOT/launch_attempt.py" \
