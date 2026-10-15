@@ -69,3 +69,29 @@ def test_incomplete_plan_identity_is_rejected(field):
     del planned[field]
     with pytest.raises(ValueError, match='Incomplete planned identity'):
         summarize([planned], [])
+
+
+def test_journal_unicode_line_separators_stay_one_row_for_line_readers(tmp_path):
+    from rag_eval.artifacts import save_jsonl
+    from rag_eval.run_support import read_rows
+    value = {'answer': 'a\u2028b\u2029c\x85d'}
+    with EventJournal(tmp_path / 'outputs.jsonl') as sink:
+        sink(value)
+    save_jsonl(tmp_path / 'planned.jsonl', [value, value])
+    for name, count in (('outputs.jsonl', 1), ('planned.jsonl', 2)):
+        text = (tmp_path / name).read_text(encoding='utf-8')
+        assert len(text.splitlines()) == count
+        assert [json.loads(line)['answer'] for line in text.splitlines()] == [value['answer']] * count
+    assert read_rows(tmp_path / 'planned.jsonl') == [value, value]
+
+
+def test_read_rows_splits_only_on_newline_for_previously_written_rows(tmp_path):
+    from rag_eval.run_support import read_rows
+    path = tmp_path / 'outputs.jsonl'
+    raw = [json.dumps({'answer': 'x\u2028y'}, ensure_ascii=False), json.dumps({'answer': 'z'})]
+    path.write_text('\n'.join(raw) + '\n', encoding='utf-8')
+    assert read_rows(path) == [{'answer': 'x\u2028y'}, {'answer': 'z'}]
+    path.write_text('\n'.join(raw), encoding='utf-8')  # missing final newline
+    assert read_rows(path) == [{'answer': 'x\u2028y'}, {'answer': 'z'}]
+    path.write_text('', encoding='utf-8')
+    assert read_rows(path) == []

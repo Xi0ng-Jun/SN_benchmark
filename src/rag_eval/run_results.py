@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from threading import Lock
 
+from .artifacts import jsonl_line
 from .identity import fingerprint, require_text
 from .notebook_data import VERSION, SUITES
 from .trace_contract import TraceEnvelope
@@ -28,7 +29,7 @@ class EventJournal:
 
     def __call__(self, event):
         row = {**event, "recorded_at": datetime.now(timezone.utc).isoformat()}
-        encoded = json.dumps(row, ensure_ascii=False, allow_nan=False)
+        encoded = jsonl_line(row)
         with self._lock:
             self._handle.write(encoded + "\n")
             self._handle.flush()

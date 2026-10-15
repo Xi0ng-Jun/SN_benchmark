@@ -92,3 +92,46 @@ def test_query_filters_and_table_are_stable(tmp_path):
     assert [row["run_dir"] for row in rows] == [str(first.resolve())]
     table = render_table(rows)
     assert "suite" in table and "qasper" in table and "finished" in table
+
+
+def test_batch_appender_matches_append_run_and_sees_external_rows(tmp_path):
+    from rag_eval.run_ledger import LedgerAppender
+    first = _run(tmp_path)
+    second = tmp_path / "other" / "qasper--p1--attempt-1"
+    second.parent.mkdir()
+    first.rename(second)
+    first = _run(tmp_path)
+    ledger = tmp_path / "runs.jsonl"
+    appender = LedgerAppender(ledger)
+
+    row = appender.append(first, exit_code=0, stderr_summary="line one\u2028line two")
+    assert ledger.read_text().splitlines() == [json.dumps(row, ensure_ascii=False).replace("\u2028", "\\u2028")]
+    with pytest.raises(ValueError, match="duplicate run_dir"):
+        appender.append(first)
+    # A row added by another writer after the cache was filled is still seen.
+    append_run(ledger, second)
+    with pytest.raises(ValueError, match="duplicate run_dir"):
+        appender.append(second)
+    with pytest.raises(ValueError, match="duplicate run_dir"):
+        append_run(ledger, first)
+    assert [r["run_dir"] for r in query_runs(ledger)] == [str(first.resolve()), str(second.resolve())]
+
+
+def test_batch_appender_rejects_corrupt_appended_line_and_rereads_replaced_file(tmp_path):
+    from rag_eval.run_ledger import LedgerAppender
+    run = _run(tmp_path)
+    ledger = tmp_path / "runs.jsonl"
+    appender = LedgerAppender(ledger)
+    ledger.write_text("")
+    appender.append(run)
+    with ledger.open("a") as handle:
+        handle.write("{not json\n")
+    other = tmp_path / "second"
+    other.mkdir()
+    import shutil
+    shutil.copytree(run, other / run.name)
+    with pytest.raises(ValueError, match=r"invalid ledger JSON at .*:2"):
+        appender.append(other / run.name)
+    # A replaced (shorter) ledger is parsed from the start again.
+    ledger.write_text("")
+    assert appender.append(run)["run_dir"] == str(run.resolve())

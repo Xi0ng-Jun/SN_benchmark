@@ -12,7 +12,7 @@ from .notebook_data import VERSION
 from .identity import fingerprint
 from .execution_diagnostics import config_sensitive_values, exception_details, sensitive_strings
 from .run_results import EventJournal, planned_result, result_record
-from .run_support import CITATIONS, citation_score, read_rows, update_state
+from .run_support import CITATIONS, citation_score, iter_rows, read_rows, update_state
 
 
 def load_case_ids_file(path):
@@ -199,6 +199,24 @@ def score_outputs(run, cases, planned, sink):
         sink(result_record(plan, status=value['status'], score=value.get('score'), reason=value.get('reason'),
                            details=value.get('details'), output_available=available,
                            trace=(output or {}).get('trace')))
+
+
+FAILURE_FIELDS = ('error_type', 'error_message', 'failed_phase', 'diagnostic_path', 'diagnostic_write_error')
+
+
+def _saved_failures(run):
+    """One streaming pass over saved journals for the terminal error summary."""
+    errors, failures = False, []
+    for row in iter_rows(run / 'outputs.jsonl'):
+        record = row.get('product_record', {})
+        errors = (errors or row['status'] == 'error'
+                  or any(record.get(key, {}).get('status') == 'error'
+                         for key in ('qasper_evidence', 'hotpot_evidence', 'retrieval')))
+        if record.get('error_type'):
+            failures.append(dict(case_id=row['case_id'],
+                                 **{key: record[key] for key in FAILURE_FIELDS if key in record}))
+    errors = errors or any(row['status'] == 'error' for row in iter_rows(run / 'scores.jsonl'))
+    return errors, failures
 
 
 def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
@@ -421,18 +439,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         qasper_catalogues=qasper_catalogues, hotpot_evidence=hotpot_evidence,
                         multihop_retrieval=multihop_retrieval, diagnostic_sensitive_values=generation_private_values)
             score_outputs(run, cases, planned, scores)
-        errors = any(row['status'] == 'error' for name in ('outputs.jsonl', 'scores.jsonl') for row in read_rows(run / name))
+        errors, failures = _saved_failures(run)
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)
-        errors = errors or any(row.get('product_record', {}).get('qasper_evidence', {}).get('status') == 'error'
-                               for row in read_rows(run / 'outputs.jsonl'))
-        errors = errors or any(row.get('product_record', {}).get('hotpot_evidence', {}).get('status') == 'error'
-                               for row in read_rows(run / 'outputs.jsonl'))
-        errors = errors or any(row.get('product_record', {}).get('retrieval', {}).get('status') == 'error'
-                               for row in read_rows(run / 'outputs.jsonl'))
-        failures = [dict(case_id=row['case_id'], **{key: row['product_record'][key] for key in
-                    ('error_type', 'error_message', 'failed_phase', 'diagnostic_path', 'diagnostic_write_error')
-                    if key in row['product_record']}) for row in read_rows(run / 'outputs.jsonl')
-                    if row.get('product_record', {}).get('error_type')]
         update_state(run, 'finished_with_errors' if errors else 'finished',
                      **(dict(failures=failures, **failures[0]) if failures else {}))
     except BaseException as exc:

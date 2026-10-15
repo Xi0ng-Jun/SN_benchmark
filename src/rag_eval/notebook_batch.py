@@ -155,14 +155,17 @@ def execute_batch(jobs, *, output_root, parallel=1, append_run=None, ledger_path
     backend = 'external-append' if append_run else None
     if append_run is None:
         try:
-            from .run_ledger import append_run as ledger_append
+            from .run_ledger import LedgerAppender
         except ModuleNotFoundError as exc:
             if exc.name != 'rag_eval.run_ledger':
                 raise
         else:
             ledger_path = Path(ledger_path).resolve() if ledger_path else output_root / 'runs.jsonl'
+            # Same checks as run_ledger.append_run, without re-parsing the
+            # whole ledger for every finished partition.
+            ledger_append = LedgerAppender(ledger_path).append
             def append_run(row):
-                ledger_append(ledger_path, row['run_dir'], stage_metrics_path=row.get('stage_metrics_path'),
+                ledger_append(row['run_dir'], stage_metrics_path=row.get('stage_metrics_path'),
                               exit_code=row['exit_code'], stderr_summary=row['stderr_tail'])
             backend = 'M0-B append_run'
     output_root.mkdir(parents=True, exist_ok=False)

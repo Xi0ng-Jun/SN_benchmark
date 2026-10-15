@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
+from .artifacts import jsonl_line
+
 
 FIELDS = (
     "run_dir",
@@ -219,12 +221,16 @@ def _read_rows(ledger: str | Path) -> list[dict[str, Any]]:
     path = Path(ledger).expanduser()
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"unable to read ledger: {path}") from exc
-    for line_number, line in enumerate(lines, 1):
+    return _parse_rows(path, text)
+
+
+def _parse_rows(path: Path, text: str, first_line: int = 1) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(text.splitlines(), first_line):
         if not line.strip():
             continue
         try:
@@ -250,9 +256,69 @@ def append_run(ledger: str | Path, run_dir: str | Path, *,
         raise ValueError(f"duplicate run_dir: {row['run_dir']}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=False) + "\n")
+        handle.write(jsonl_line(row) + "\n")
         handle.flush()
     return row
+
+
+class LedgerAppender:
+    """append_run for one long-lived writer, e.g. a batch coordinator.
+
+    append_run re-parses the whole ledger per call, which is quadratic over a
+    batch. This keeps the parsed run_dir set and reads only bytes appended since
+    the last call, so other appenders are still seen and every line is still
+    validated once. A shrunk or replaced file is re-read in full. It assumes the
+    documented append-only use; in-place rewrites of earlier rows are not
+    re-validated.
+    """
+
+    def __init__(self, ledger: str | Path):
+        self.path = Path(ledger).expanduser()
+        self._identity: tuple[int, int] | None = None
+        self._offset = 0
+        self._lines = 0
+        self._run_dirs: set[Any] = set()
+
+    def _refresh(self) -> None:
+        try:
+            info = self.path.stat()
+        except FileNotFoundError:
+            self._identity, self._offset, self._lines, self._run_dirs = None, 0, 0, set()
+            return
+        identity = (info.st_dev, info.st_ino)
+        if identity != self._identity or info.st_size < self._offset:
+            self._identity, self._offset, self._lines, self._run_dirs = identity, 0, 0, set()
+        if info.st_size == self._offset:
+            return
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(self._offset)
+                data = handle.read()
+        except OSError as exc:
+            raise ValueError(f"unable to read ledger: {self.path}") from exc
+        try:
+            text = data.decode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError(f"unable to read ledger: {self.path}") from exc
+        # As in _read_rows, an incomplete tail line is rejected, not skipped.
+        rows = _parse_rows(self.path, text, self._lines + 1)
+        self._run_dirs.update(item.get("run_dir") for item in rows)
+        self._lines += len(text.splitlines())
+        self._offset += len(data)
+
+    def append(self, run_dir: str | Path, *, scores_path: str | Path | None = None,
+               stage_metrics_path: str | Path | None = None,
+               exit_code: int | None = None, stderr_summary: str | None = None) -> dict[str, Any]:
+        row = derive_run(run_dir, scores_path=scores_path, stage_metrics_path=stage_metrics_path,
+                         exit_code=exit_code, stderr_summary=stderr_summary)
+        self._refresh()
+        if row["run_dir"] in self._run_dirs:
+            raise ValueError(f"duplicate run_dir: {row['run_dir']}")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(jsonl_line(row) + "\n")
+            handle.flush()
+        return row
 
 
 def query_runs(ledger: str | Path, *, suite: str | None = None,

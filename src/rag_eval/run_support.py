@@ -8,8 +8,15 @@ from .artifacts import save_json
 CITATIONS = "product.citation_object.existence_ratio"
 
 
+def iter_rows(path):
+    """Stream JSONL rows; only '\\n' ends a row, unlike str.splitlines()."""
+    with Path(path).open(encoding="utf-8", newline="\n") as handle:
+        for line in handle:
+            yield json.loads(line[:-1] if line.endswith("\n") else line)
+
+
 def read_rows(path):
-    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
+    return list(iter_rows(path))
 
 def update_state(run, phase, **fields):
     save_json(run / "state.json", {"phase": phase, "updated_at": time.time(), **fields})
