@@ -13,6 +13,7 @@
 | [接口与事件草案](api-and-events.md) | 数据由谁产生？更新、重连和取消如何保持事实一致？ |
 | [开发顺序建议](../../superpowers/plans/2026-10-10-sn-workbench-first-slice.md) | 怎样尽早走通完整工作路径，再补齐能力？ |
 | [可点击设计原型](prototype/index.html) | workspace、任务、会话与材料如何配合？ |
+| [迭代与候选树（2026-10-15 草案）](iteration-tree-design.md)、[原型](prototype/iteration-tree.html) | 用“迭代 → 候选树”取代 Task 五页签后，对象、身份、比较与界面怎样组织？ |
 
 原型是离线 HTML/CSS/JS，直接打开 `prototype/index.html`。全部为构造数据，操作只改变本页内存；没有服务器保存、Agent 推理或正式评测。它用于讨论，不是生产界面的逐像素规格；生产技术和视觉细节按实际接入调整。未进行浏览器渲染、点击流或可用性验收。
 

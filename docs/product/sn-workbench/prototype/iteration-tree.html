@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SN 工作台 · 迭代与候选树（低保真原型）</title>
+<style>
+  :root { --bg:#fff; --side:#f7f7f8; --line:#e4e4e7; --text:#18181b; --muted:#71717a; --sel:#ececef;
+          --up:#15803d; --down:#b91c1c; --warn:#b45309; --run:#2563eb; --mono: ui-monospace, Menlo, monospace; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 13px/1.5 system-ui, sans-serif; color:var(--text); background:var(--bg); height:100vh; display:flex; flex-direction:column; }
+  .banner { padding:4px 12px; background:#fef3c7; color:#78350f; font-size:12px; }
+  .head { height:36px; display:flex; align-items:center; gap:10px; padding:0 12px; border-bottom:1px solid var(--line); }
+  .head .meta { color:var(--muted); font-size:12px; }
+  .head .k { margin-left:auto; border:1px solid var(--line); border-radius:6px; padding:2px 8px; color:var(--muted); cursor:pointer; }
+  .main { flex:1; display:flex; min-height:0; }
+  .side { width:230px; background:var(--side); border-right:1px solid var(--line); padding:8px; overflow:auto; }
+  .side h4 { margin:12px 8px 4px; font-size:11px; color:var(--muted); font-weight:500; }
+  .row { padding:5px 8px; border-radius:6px; cursor:pointer; display:flex; gap:8px; align-items:center; }
+  .row:hover { background:var(--sel); } .row.sel { background:var(--sel); }
+  .dot { width:7px; height:7px; border-radius:50%; background:#d4d4d8; flex:none; }
+  .dot.run { background:var(--run); } .dot.warn { background:var(--warn); } .dot.ok { background:#a1a1aa; }
+  .center { flex:1; display:flex; flex-direction:column; min-width:0; border-right:1px solid var(--line); }
+  .toolbar { display:flex; gap:6px; padding:8px 12px; border-bottom:1px solid var(--line); align-items:center; }
+  .btn { border:1px solid var(--line); background:#fff; border-radius:6px; padding:2px 8px; cursor:pointer; font-size:12px; }
+  .btn.on { background:var(--sel); } .btn.primary { background:#18181b; color:#fff; border-color:#18181b; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; font-weight:500; color:var(--muted); font-size:11px; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:5px 8px; border-bottom:1px solid #f1f1f3; white-space:nowrap; }
+  tr.node { cursor:pointer; } tr.node:hover td { background:#fafafa; } tr.node.sel td { background:var(--sel); }
+  tr.ghost td { color:var(--muted); font-style:italic; }
+  .rail { font-family:var(--mono); color:#a1a1aa; }
+  .num { font-variant-numeric: tabular-nums; text-align:right; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  .pill { font-size:11px; border:1px solid var(--line); border-radius:999px; padding:0 6px; color:var(--muted); }
+  .pill.warn { color:var(--warn); border-color:#fcd34d; } .pill.run { color:var(--run); border-color:#bfdbfe; }
+  .detail { width:360px; overflow:auto; padding:12px; }
+  .detail h3 { margin:0 0 2px; font-size:14px; }
+  details { border-top:1px solid var(--line); padding:6px 0; } summary { cursor:pointer; font-weight:500; }
+  .mono { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .scroll { overflow:auto; flex:1; }
+  .drawer { height:34px; border-top:1px solid var(--line); display:flex; gap:4px; padding:4px 8px; align-items:center; }
+  .drawer.open { height:180px; align-items:flex-start; flex-direction:column; }
+  .tab { border:1px solid var(--line); border-radius:6px; padding:1px 8px; cursor:pointer; font-size:12px; }
+  .scope { font-size:11px; color:var(--muted); margin-left:4px; }
+  .palette { position:fixed; inset:0; background:rgba(0,0,0,.25); display:none; align-items:flex-start; justify-content:center; padding-top:12vh; }
+  .palette.open { display:flex; }
+  .palette .box { width:520px; background:#fff; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.2); overflow:hidden; }
+  .palette input { width:100%; border:0; border-bottom:1px solid var(--line); padding:12px; font-size:14px; outline:none; }
+  .palette .item { padding:7px 12px; cursor:pointer; display:flex; justify-content:space-between; }
+  .palette .item:hover, .palette .item.hl { background:var(--sel); }
+  .disabled { opacity:.45; cursor:not-allowed; }
+</style>
+</head>
+<body>
+<div class="banner">低保真原型 · 全部为构造数据，操作只改变本页内存 · 用于讨论 <a href="../iteration-tree-design.md">迭代与候选树设计草案</a>，不是成绩或生产规格</div>
+<div class="head">
+  <b>SN</b><span>▸</span><b id="it-title"></b><span class="meta" id="it-meta"></span>
+  <span class="k" onclick="openPalette()">Ctrl+K 搜索 / 操作</span>
+</div>
+<div class="main">
+  <div class="side">
+    <div class="row" onclick="newIteration()">＋ 新建迭代</div>
+    <h4>迭代</h4>
+    <div id="iterations"></div>
+    <h4>待处理</h4>
+    <div id="pending"></div>
+  </div>
+  <div class="center">
+    <div class="toolbar">
+      <span class="btn on" id="v-tree" onclick="setView('tree')">候选谱系</span>
+      <span class="btn" id="v-matrix" onclick="setView('matrix')">逐题比较所选</span>
+      <span class="meta" style="margin-left:8px">指标 answer_f1 ↑ · 勾选候选后比较</span>
+      <span style="margin-left:auto" class="btn" onclick="toggleRejected()" id="rej-btn">显示已放弃</span>
+    </div>
+    <div class="scroll" id="center"></div>
+    <div class="drawer" id="drawer"></div>
+  </div>
+  <div class="detail" id="detail"></div>
+</div>
+<div class="palette" id="palette" onclick="if(event.target===this)closePalette()">
+  <div class="box"><input id="pal-in" placeholder="跳到候选、比较、派生、批准、运行…" oninput="renderPalette()" onkeydown="palKey(event)"><div id="pal-list"></div></div>
+</div>
+<script>
+// ---- 构造数据（不是实验结果） ----
+const cases = ['q01','q02','q03','q04','q05','q06'];
+const S = {
+  iterations: [
+    { id:'I3', title:'QASPER 6题 · 证据呈现', base:'0680aa1', plan:'5cb19a(冻结)', mode:'chunk', scorer:'qasper-official',
+      nodes: [
+        { id:'C0', parent:null, title:'基线', state:'evaluated', src:'81a682…', scores:[.26,.24,.12,.50,.70,.33] },
+        { id:'A',  parent:'C0', title:'证据按阅读顺序排列', state:'evaluated', decision:'undecided', src:'aa7a40…', files:2,
+          pred:{q01:'improve',q02:'not_worse',q03:'not_worse'}, scores:[.25,.26,.80,.50,.65,.40] },
+        { id:'A1', parent:'A', title:'排序时保留标题行', state:'running', src:'—' },
+        { id:'B',  parent:'C0', title:'查询改写加入标题', state:'evaluated', decision:'rejected', src:'3c19e2…', files:1, scores:[.20,.24,.10,.44,.70,.30] },
+        { id:'P1', parent:'A', title:'缩小 chunk 到 256 token', state:'proposed' },
+        { id:'P2', parent:'C0', title:'对表格单独分块', state:'proposed' },
+      ]},
+    { id:'I2', title:'HotpotQA 20题 · 多跳检索', base:'052b737', plan:'91ad0e(冻结)', mode:'chunk', scorer:'hotpot-official', archived:true, nodes:[
+        { id:'C0', parent:null, title:'基线', state:'evaluated', src:'77e1f0…', scores:[.4,.5,.3,.6,.2,.5] } ]},
+  ],
+  it:'I3', sel:'A', view:'tree', picked:new Set(['A']), showRejected:false, drawer:null,
+};
+const it = () => S.iterations.find(i => i.id === S.it);
+const node = id => it().nodes.find(n => n.id === id);
+const kids = id => it().nodes.filter(n => n.parent === id && (S.showRejected || n.decision !== 'rejected'));
+const mean = a => a ? a.reduce((x,y)=>x+y,0)/a.length : null;
+const fmt = v => v == null ? '—' : v.toFixed(3);
+const delta = (a,b) => (a && b) ? mean(a.scores ?? null) - mean(b.scores ?? null) : null;
+const dfmt = d => d == null ? '<span class="meta">—</span>' : `<span class="${d>0?'up':d<0?'down':''}">${d>0?'+':''}${d.toFixed(3)}</span>`;
+function flips(n, ref) {
+  if (!n?.scores || !ref?.scores) return null;
+  let up=0, down=0; n.scores.forEach((v,i)=>{ if (v>ref.scores[i]+1e-9) up++; else if (v<ref.scores[i]-1e-9) down++; });
+  return {up, down};
+}
+const stateLabel = n => n.state==='proposed' ? '<span class="pill warn">提议·待批</span>'
+  : n.state==='running' ? '<span class="pill run">运行中</span>'
+  : n.decision==='rejected' ? '<span class="pill">已放弃</span>' : n.decision==='adopted' ? '<span class="pill">已采纳</span>'
+  : n.parent ? '<span class="pill warn">已评测·待决定</span>' : '<span class="pill">基线</span>';
+
+function render() {
+  const I = it();
+  document.getElementById('it-title').textContent = `迭代 ${I.id}：${I.title}`;
+  document.getElementById('it-meta').textContent = `起点 ${I.base} · 题单 ${I.plan} · ${I.mode} · scorer ${I.scorer}`;
+  document.getElementById('iterations').innerHTML = S.iterations.map(i => {
+    const pend = i.nodes.filter(n => n.state==='proposed' || (n.parent && n.state==='evaluated' && n.decision==='undecided')).length;
+    const tone = i.nodes.some(n=>n.state==='running') ? 'run' : pend ? 'warn' : 'ok';
+    return `<div class="row ${i.id===S.it?'sel':''}" onclick="selectIteration('${i.id}')"><span class="dot ${tone}"></span>${i.id} ${i.title}${i.archived?' <span class="pill">归档</span>':''}</div>`;
+  }).join('');
+  const pending = I.nodes.filter(n => n.state==='proposed');
+  const undecided = I.nodes.filter(n => n.parent && n.state==='evaluated' && n.decision==='undecided');
+  document.getElementById('pending').innerHTML =
+    pending.map(n => `<div class="row" onclick="select('${n.id}')"><span class="dot warn"></span>批准？${n.id} ${n.title}</div>`).join('') +
+    undecided.map(n => `<div class="row" onclick="select('${n.id}')"><span class="dot warn"></span>决定？${n.id}</div>`).join('') ||
+    '<div class="row meta">无</div>';
+  document.getElementById('v-tree').classList.toggle('on', S.view==='tree');
+  document.getElementById('v-matrix').classList.toggle('on', S.view==='matrix');
+  document.getElementById('rej-btn').textContent = S.showRejected ? '隐藏已放弃' : '显示已放弃';
+  S.view === 'tree' ? renderTree() : renderMatrix();
+  renderDetail(); renderDrawer();
+}
+
+function renderTree() {
+  const rows = [];
+  const walk = (n, prefix, last, root) => {
+    rows.push({ n, rail: root ? '' : prefix + (last ? '└─' : '├─') });
+    const ks = kids(n.id); ks.forEach((k,i) => walk(k, root ? '' : prefix + (last ? '  ' : '│ '), i===ks.length-1, false));
+  };
+  walk(node('C0'), '', true, true);
+  const root = node('C0');
+  document.getElementById('center').innerHTML = `<table><tr><th></th><th>候选</th><th>状态</th><th class="num">answer_f1</th><th class="num">Δ父</th><th class="num">Δ根</th><th>对父翻转</th></tr>` +
+    rows.map(({n, rail}) => {
+      const p = n.parent ? node(n.parent) : null, f = flips(n, p);
+      const ghost = n.state === 'proposed';
+      return `<tr class="node ${ghost?'ghost':''} ${n.id===S.sel?'sel':''}" onclick="select('${n.id}')">
+        <td><input type="checkbox" ${S.picked.has(n.id)?'checked':''} ${n.scores?'':'disabled'} onclick="event.stopPropagation();pick('${n.id}')"></td>
+        <td><span class="rail">${rail}${ghost?'◌':'●'}</span> <b>${n.id}</b> ${n.title}</td>
+        <td>${stateLabel(n)}</td>
+        <td class="num">${fmt(mean(n.scores))}</td>
+        <td class="num">${p && p.id!=='C0' ? dfmt(delta(n,p)) : '<span class="meta">'+(p?'同Δ根':'—')+'</span>'}</td>
+        <td class="num">${p ? dfmt(delta(n,root)) : '—'}</td>
+        <td>${f ? `<span class="up">↑${f.up}</span> <span class="down">↓${f.down}</span>` : ''}</td></tr>`;
+    }).join('') + '</table>';
+}
+
+function renderMatrix() {
+  const root = node('C0'), cols = [root, ...[...S.picked].map(node).filter(n => n && n.id!=='C0' && n.scores)];
+  document.getElementById('center').innerHTML = `<div style="padding:8px 12px" class="meta">固定根 C0 · 箭头相对根 · 状态差异按原样显示，不补零</div>
+  <table><tr><th>题</th>${cols.map(c=>`<th class="num">${c.id}</th>`).join('')}</tr>` +
+    cases.map((q,i) => `<tr><td class="mono">${q}</td>${cols.map(c => {
+      const v = c.scores[i], r = root.scores[i];
+      const arrow = c===root ? '' : v>r+1e-9 ? ' <span class="up">↑</span>' : v<r-1e-9 ? ' <span class="down">↓</span>' : '';
+      return `<td class="num">${fmt(v)}${arrow}</td>`; }).join('')}</tr>`).join('') + '</table>';
+}
+
+function renderDetail() {
+  const n = node(S.sel), p = n.parent ? node(n.parent) : null, root = node('C0'), el = document.getElementById('detail');
+  if (n.state === 'proposed') {
+    el.innerHTML = `<h3>${n.id}：${n.title}</h3><div class="meta">提议 · 父 ${n.parent} · 由分析 Agent 起草</div>
+      <p><span class="btn primary" onclick="approve('${n.id}')">批准并建候选</span> <span class="btn" onclick="reject('${n.id}')">驳回</span></p>
+      <details open><summary>假设与逐题预测</summary><p class="meta">观察、机制、预计改善／不应退化的题、否定条件（构造示例）。批准时将保存此修订与父 ${n.parent} 的冻结 commit，并从该 commit 创建 worktree。</p></details>`;
+    return;
+  }
+  const f = p ? flips(n, p) : null;
+  el.innerHTML = `<h3>${n.id}：${n.title}</h3>
+    <div class="meta">${stateLabel(n)} ${p?'· 父 '+p.id:''} · source ${n.src}</div>
+    ${p && n.state==='evaluated' && n.decision==='undecided' ? `<p><span class="btn" onclick="derive('${n.id}')">派生提议</span> <span class="btn primary" onclick="decide('${n.id}','adopted')">采纳</span> <span class="btn" onclick="decide('${n.id}','rejected')">放弃</span></p>` : n.state==='evaluated' ? `<p><span class="btn" onclick="derive('${n.id}')">派生提议</span></p>` : ''}
+    ${n.pred ? `<details open><summary>假设与逐题预测</summary>${Object.entries(n.pred).map(([q,pr])=>{
+        const i=cases.indexOf(q), d=n.scores[i]-p.scores[i], ok = pr==='improve' ? d>1e-9 : d>-1e-9;
+        return `<div class="mono">${q} 预测 ${pr} → ${dfmt(d)} ${ok?'兑现':'<span class="down">未兑现</span>'}</div>`;}).join('')}</details>` : ''}
+    ${f ? `<details open><summary>对父 ${p.id} 的翻转 ↑${f.up} ↓${f.down}</summary>${cases.map((q,i)=>`<div class="mono">${q} ${fmt(p.scores[i])} → ${fmt(n.scores[i])} ${dfmt(n.scores[i]-p.scores[i])}${root.scores[i]>n.scores[i]+1e-9?' <span class="down">低于根（守护）</span>':''}</div>`).join('')}</details>` : ''}
+    ${n.files ? `<details><summary>代码差异（${n.files} 文件）· 相对父 ${p.id}</summary><div class="mono">backend/app/services/evidence_context.py +41 −6<br>backend/app/services/ask_service.py +3 −1</div></details>` : ''}
+    <details><summary>运行与评分记录</summary><div class="mono">${n.state==='running'?'attempt 1 · 运行中':'attempt 1 · 6/6 success · 官方 scorer · 配对准入 admitted'}</div></details>`;
+}
+
+function renderDrawer() {
+  const d = document.getElementById('drawer'), n = node(S.sel);
+  const tabs = [['analyst','分析 Agent','可见：题面·gold·成绩'], ['impl', n.parent ? `实现 Agent·${n.id}` : null, '可见：假设卡·代码'], ['term', n.parent ? `终端·${n.id} worktree` : null, ''], ['log','日志','']]
+    .filter(t => t[1]);
+  d.className = 'drawer' + (S.drawer ? ' open' : '');
+  d.innerHTML = `<div style="display:flex;gap:4px">${tabs.map(t => `<span class="tab ${S.drawer===t[0]?'on':''}" onclick="toggleDrawer('${t[0]}')">${t[1]}<span class="scope">${t[2]}</span></span>`).join('')}</div>` +
+    (S.drawer==='impl' ? `<div style="padding:6px" class="meta">附加材料：<span class="btn disabled" title="实现 Agent 不接收题面、gold 或成绩">题面／gold／成绩（不可附加）</span> <span class="btn">假设卡 ${n.id}</span></div>` :
+     S.drawer==='analyst' ? `<div style="padding:6px" class="meta">分析 Agent 对话（构造）：针对选中节点 ${n.id} 分析，产出挂在其下的提议节点。</div>` :
+     S.drawer==='term' ? `<div style="padding:6px" class="mono">$ cwd ~/.paseo/worktrees/…/sn-cand-${n.id}  (候选 ${n.id})</div>` :
+     S.drawer==='log' ? `<div style="padding:6px" class="mono">构造日志…</div>` : '');
+}
+
+// ---- 操作（只改内存） ----
+function select(id) { S.sel = id; render(); }
+function selectIteration(id) { S.it = id; S.sel = 'C0'; S.picked = new Set(); render(); }
+function setView(v) { S.view = v; render(); }
+function pick(id) { S.picked.has(id) ? S.picked.delete(id) : S.picked.add(id); render(); }
+function toggleRejected() { S.showRejected = !S.showRejected; render(); }
+function toggleDrawer(t) { S.drawer = S.drawer === t ? null : t; render(); }
+function approve(id) { const n = node(id); n.state = 'running'; n.src = '—'; n.title += '（已批准，worktree 自父 commit 创建）'; render(); }
+function reject(id) { it().nodes = it().nodes.filter(n => n.id !== id); S.sel = 'C0'; render(); }
+function decide(id, d) { node(id).decision = d; render(); }
+function derive(id) { const k = 'P' + (it().nodes.length + 1); it().nodes.push({ id:k, parent:id, title:'新提议（由分析 Agent 起草）', state:'proposed' }); S.sel = k; render(); }
+function newIteration() { alert('原型：选择起点 commit 与冻结题单 → 自动建 C0 并跑基线。'); }
+
+// ---- Ctrl+K ----
+let palIdx = 0;
+function commands() {
+  const n = node(S.sel), list = [];
+  it().nodes.forEach(x => list.push([`跳到 ${x.id} ${x.title}`, () => select(x.id)]));
+  S.iterations.forEach(i => list.push([`切换迭代 ${i.id} ${i.title}`, () => selectIteration(i.id)]));
+  list.push(['逐题比较所选', () => setView('matrix')], ['候选谱系', () => setView('tree')]);
+  if (n.state === 'evaluated') list.push([`从 ${n.id} 派生提议`, () => derive(n.id)]);
+  if (n.state === 'proposed') list.push([`批准 ${n.id}`, () => approve(n.id)]);
+  if (n.parent) list.push([`打开 ${n.id} 的终端`, () => toggleDrawer('term')]);
+  return list;
+}
+function openPalette() { document.getElementById('palette').classList.add('open'); const i = document.getElementById('pal-in'); i.value=''; palIdx=0; renderPalette(); i.focus(); }
+function closePalette() { document.getElementById('palette').classList.remove('open'); }
+function filtered() { const q = document.getElementById('pal-in').value.trim().toLowerCase(); return commands().filter(c => c[0].toLowerCase().includes(q)); }
+function renderPalette() { const f = filtered(); palIdx = Math.min(palIdx, Math.max(0, f.length-1));
+  document.getElementById('pal-list').innerHTML = f.map((c,i) => `<div class="item ${i===palIdx?'hl':''}" onclick="runCmd(${i})">${c[0]}</div>`).join(''); }
+function runCmd(i) { const c = filtered()[i]; closePalette(); c && c[1](); }
+function palKey(e) { const f = filtered();
+  if (e.key==='ArrowDown') { palIdx=Math.min(palIdx+1,f.length-1); renderPalette(); e.preventDefault(); }
+  if (e.key==='ArrowUp') { palIdx=Math.max(palIdx-1,0); renderPalette(); e.preventDefault(); }
+  if (e.key==='Enter') runCmd(palIdx); if (e.key==='Escape') closePalette(); }
+document.addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k') { e.preventDefault(); openPalette(); } });
+render();
+</script>
+</body>
+</html>
