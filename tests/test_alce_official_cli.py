@@ -128,6 +128,7 @@ def main():
 if __name__ == '__main__': main()
 '''
     scores = asqa_scores()
+    scores['mauve'] = 100.00000000000004
     expected_args = ['--citations', '--at_most_citations', '3', '--qa', '--mauve']
     if scoring_mode == 'answer-only':
         scores.pop('citation_rec')
@@ -164,6 +165,11 @@ if __name__ == '__main__': main()
         assert 'citation_rec' not in result['metrics']
         assert 'citation_prec' not in result['metric_case_ids']
         assert not (output / 'citation-eligible-indices.json').exists()
+    saved = json.loads((output / 'result.json').read_text())
+    assert saved['metrics']['mauve'] == 1.
+    assert saved['raw_metrics']['mauve'] == scores['mauve']
+    assert saved['metric_normalizations']['mauve']['normalized_percent'] == 100.
+    assert saved['dependencies']['percent_upper_tolerance'] == 1e-9
     assert result['metric_case_ids']['mauve'] == ['q1', 'q2']
     assert json.loads((output / 'asqa.json').read_text())['data'] == prepared['data']
 

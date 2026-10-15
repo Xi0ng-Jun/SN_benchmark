@@ -14,9 +14,13 @@ def test_cpu_patch_changes_scorer_identity_and_survives_score_export(tmp_path, m
     dep = {'device': 'cpu', 'scorer_label': '官方脚本 + CPU 设备适配补丁',
            'device_patch': {'id': 'alce-cpu-device-v1', 'sha256': 'a'*64}}
     monkeypatch.setattr('rag_eval.alce_official_cli.score_alce_batch', lambda *a, **k: {
+        'raw_metrics': {'str_em': 100.00000000000004},
+        'metric_normalizations': {'str_em': {'normalized_percent': 100.}},
         'metrics': {'str_em': 1.}, 'metric_case_ids': {'str_em': ['alce:q1']}, 'dependencies': dep})
     result = official.score_prepared(b, sub, prepared, source_directory=tmp_path,
                                     output_dir=tmp_path/'score', alce_runtime={'alce_device': 'cpu'})
+    assert result['raw_metrics']['str_em'] == 100.00000000000004
+    assert result['metric_normalizations']['str_em']['normalized_percent'] == 100.
     assert result['scorer_label'] == '官方脚本 + CPU 设备适配补丁'
     assert result['scorer_identity']['dependencies']['alce_batch']['device_patch']['sha256'] == 'a'*64
     modified = copy.deepcopy(result['scorer_identity'])

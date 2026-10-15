@@ -461,6 +461,9 @@ def score_prepared(bundle, submission, prepared, *, source_directory, output_dir
                   metric_denominators={name: len(metric_case_ids[name]) for name in metrics},
                   batch_only_metrics=batch_only_metrics,
                   official_paper_reproduction=False)
+    if suite == 'alce' and alce_runtime is not None:
+        result['raw_metrics'] = batch.get('raw_metrics', {})
+        result['metric_normalizations'] = batch.get('metric_normalizations', {})
     alce_label = dependencies.get('alce_batch', {}).get('scorer_label')
     if alce_label:
         result['scorer_label'] = alce_label

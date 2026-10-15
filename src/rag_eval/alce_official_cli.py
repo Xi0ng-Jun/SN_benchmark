@@ -22,6 +22,10 @@ AUTOAIS = 'google/t5_xxl_true_nli_mixture'
 QA = 'gaotianyu1350/roberta-large-squad'
 MAUVE = 'gpt2-large'
 
+# Upstream floating arithmetic can produce 100.00000000000004 percent.
+# Permit only absolute upper-bound roundoff; the lower bound stays strict.
+PERCENT_UPPER_TOLERANCE = 1e-9
+
 
 def cpu_device_adapter(source):
     """Adapt only device call arguments, after the caller verifies upstream SHA256.
@@ -78,10 +82,18 @@ def parse_metrics(task, values, *, scoring_mode='full'):
         raise ValueError('Official ALCE output has missing or unexpected metrics')
     if any(type(v) not in (float, int) or not math.isfinite(v) or v < 0 for v in values.values()):
         raise ValueError('Official ALCE output must contain finite nonnegative numbers')
-    if any(values[k] > 100 for k in required):
+    bounded = required | (diagnostics & {'str_em', 'str_hit'})
+    if any(values[k] - 100 > PERCENT_UPPER_TOLERANCE for k in bounded):
         raise ValueError('Official ALCE percent metric is outside 0..100')
-    return ({k: values[k] / 100 for k in sorted(required)},
-            {k: values[k] for k in sorted(diagnostics)})
+    return ({k: min(values[k], 100) / 100 for k in sorted(required)},
+            {k: min(values[k], 100) if k in bounded else values[k] for k in sorted(diagnostics)})
+
+
+def metric_normalizations(metrics, raw):
+    """Record upper-bound repairs after parse_metrics has validated the batch."""
+    return {k: {'raw_percent': raw[k], 'normalized_percent': 100.,
+                'reason': 'upper-bound floating-point roundoff'}
+            for k in sorted(metrics) if k not in {'length', 'num_preds'} and raw[k] > 100}
 
 
 def _file_hash(path):
@@ -198,6 +210,7 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
     dependencies = {'models': models, 'nltk_files': nltk_hashes,
                     'runtime': json.loads(runtime.stdout), 'numpy_seed': 0, 'torch_seed': 0,
                     'scoring_mode': scoring_mode,
+                    'percent_upper_tolerance': PERCENT_UPPER_TOLERANCE,
                     'at_most_citations': 3 if scoring_mode == 'full' else None, 'arguments': arguments,
                     'sources': {k: SOURCES[k] for k in ('alce_eval.py', 'alce_utils.py')},
                     'launcher_sha256': hashlib.sha256(launcher.encode()).hexdigest(),
@@ -234,6 +247,8 @@ def score_alce_batch(prepared, *, source_directory, output_dir, hf_cache, nltk_d
               'metric_case_ids': {name: [prepared['case_ids'][i] for i in eligible]
                                   if name in {'citation_rec', 'citation_prec'} else prepared['case_ids']
                                   for name in metrics},
-              'raw_metrics': raw, 'metric_scope': 'official-batch; no inferred per-case model scores'}
+              'raw_metrics': raw,
+              'metric_normalizations': metric_normalizations({**metrics, **diagnostics}, raw),
+              'metric_scope': 'official-batch; no inferred per-case model scores'}
     save_json(destination / 'result.json', result)
     return result
