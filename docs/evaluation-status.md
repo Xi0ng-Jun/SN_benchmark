@@ -1,5 +1,11 @@
 # 评测状态
 
+## 2026-10-16 续跑合并修正
+
+用户指出初版“切换准备策略就不能合并”妨碍快速完成实验。已撤回此限制：同一 frozen bundle、SN 源码、模型/设置、请求和 mode 的已完成结果可与优化后剩余题一起导出；无需重跑 948 题。准备策略、评测器源码哈希与包含 checkout 路径的启动观测保留在原始 run 来源中，不再作为合并门槛；依赖声明和安装版本仍比较。每题新增原始 identity/评测器哈希及实际策略，方法配置汇总涉及的策略/评测器版本；旧工件不改写，错误/空答案及完整分母保留，重复题仍拒绝。旧答卷的比较入口同步使用相同归一化，保持可读。
+
+本次离线回归 **252 passed（6.94s）**，包含真实 runner/reader 的不同策略分题合并、旧无策略字段与不同评测器版本续跑、错误保留、来源与顺序稳定性，以及模型/SN/模式/请求差异、重复题拒绝；覆盖 submission、Notebook v3、准备与 batch、比较/flip、feature identity、强制作答和官方评分。两项新增行为先确认在旧实现失败，再实现通过。无真实模型调用，未操作服务器。服务器按[续跑交接文本](server-asqa-continuation-prompt.md)停派、等待在途结束、只续跑剩余题；不增加快照功能或另开旧题对照批次。下方初版记录中的“异策略不可混合导出”已由本条修正。
+
 ## 2026-10-16 · 导入完成后统一刷新 notebook metadata
 
 - **开发侧实现。** 评测准备流程增加 `--preparation-policy deferred-notebook-metadata-v1`，同步导入期间仅暂停 SN notebook metadata 刷新，全部资料完成 chunk/embedding 校验及建索引后调用一次最终刷新，再进入 Ask。默认 `per-source-metadata-v1` 保留；单次、batch、native Agent CLI 已接，工作台仍走默认。策略写入 runtime/manifest/state、batch argv 和提交身份，异策略不可混合导出。

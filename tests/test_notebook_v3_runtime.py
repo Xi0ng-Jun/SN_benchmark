@@ -164,12 +164,12 @@ def test_cli_preparation_policy_reaches_runtime_identity_and_submission(tmp_path
         assert policy in (run / 'report/report.md').read_text()
         submission = export_sn_runs(tmp_path / 'input/bundle', [run], tmp_path / ('submission-' + policy))
         configuration = json.loads(submission.read_text())['method']['configuration']
-        assert configuration['identity']['preparation_policy'] == policy
+        assert configuration['preparation_policies'] == [policy]
         paths.append(run)
     identities = [load_run(path)['manifest'] for path in paths]
     assert identities[0]['pairing_id'] != identities[1]['pairing_id']
     assert identities[0]['protocol_id'] != identities[1]['protocol_id']
-    with pytest.raises(ValueError, match='cannot mix'):
+    with pytest.raises(ValueError, match='Duplicate prediction'):
         export_sn_runs(tmp_path / 'input/bundle', paths, tmp_path / 'mixed')
 
 
@@ -178,6 +178,26 @@ def test_unknown_preparation_policy_rejected_before_run_creation(tmp_path):
         execute(root=ROOT, project=tmp_path / 'project', bundle_dir=tmp_path / 'missing-bundle',
                 run=tmp_path / 'run', mode='chunk', partition_id='p', preparation_policy='typo')
     assert not (tmp_path / 'run').exists()
+
+
+def test_disjoint_preparation_runs_export_through_real_run_reader(tmp_path, native_boundary):
+    from rag_eval.benchmark_submission import export_sn_runs
+    raw, corpus = news_raw()
+    raw.append({**raw[0], 'query': 'What other fact was reported?'})
+    bundle = freeze(tmp_path / 'input', 'multihop_rag', raw, corpus=corpus)
+    paths = []
+    for case, policy in zip(bundle['cases'], ('per-source-metadata-v1', 'deferred-notebook-metadata-v1')):
+        run = tmp_path / policy
+        execute(root=ROOT, project=tmp_path / 'product', bundle_dir=tmp_path / 'input/bundle',
+                run=run, mode='chunk', partition_id=bundle['partitions'][0]['partition_id'],
+                request_revision=REQUEST_V3, case_ids=[case['case_id']], preparation_policy=policy)
+        paths.append(run)
+    result = export_sn_runs(tmp_path / 'input/bundle', paths, tmp_path / 'combined')
+    saved = json.loads(result.read_text())
+    assert saved['scope'] == 'full'
+    assert saved['coverage']['planned'] == saved['coverage']['success'] == 2
+    assert {row['run_provenance']['preparation_policy'] for row in saved['predictions']} == {
+        'per-source-metadata-v1', 'deferred-notebook-metadata-v1'}
 
 
 def test_cli_file_selection_runs_and_exports_only_selected_case_with_full_corpus(tmp_path, native_boundary, monkeypatch):

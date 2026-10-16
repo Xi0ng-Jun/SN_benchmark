@@ -111,9 +111,18 @@ def write_submission(bundle_directory, output, *, method, predictions, case_ids=
 
 
 def sn_submission_identity(identity):
-    """Drop per-run input locations/scope from the actual SN method identity."""
+    """Keep answer conditions together; retain execution details on each run."""
     config = deepcopy(identity)
     config.pop('product_bundle', None)
+    config.pop('preparation_policy', None)
+    if isinstance(config.get('code'), dict):
+        config['code'].pop('benchmark_source_hashes', None)
+    if isinstance(config.get('runtime_dependencies'), dict):
+        # Startup hashes include timestamps and evaluator checkout/search paths.
+        # load_run validates the original observation; dependency declarations
+        # and code.versions still distinguish the environment used for answers.
+        for key in ('observation_sha256', 'environment_sha256', 'run_coordinate'):
+            config['runtime_dependencies'].pop(key, None)
     if isinstance(config.get('notebook_context'), dict):
         config['notebook_context'].pop('partition_id', None)
         config['notebook_context'].pop('case_ids', None)
@@ -139,6 +148,8 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
     family = None
     method = None
     predictions = []
+    preparation_policies = set()
+    evaluator_sources = set()
     for path in paths:
         # Diagnostic provenance must be checked before the formal run reader or
         # any answer projection, including an otherwise valid Notebook run.
@@ -161,6 +172,14 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
         if identity['source'] != bundle['manifest']:
             raise ValueError('SN run uses a different frozen bundle')
         config = sn_submission_identity(identity)
+        preparation_policy = identity.get('preparation_policy', 'per-source-metadata-v1')
+        evaluator_hashes = identity.get('code', {}).get('benchmark_source_hashes')
+        evaluator_source = fingerprint(evaluator_hashes) if evaluator_hashes is not None else None
+        provenance = dict(identity_sha256=fingerprint(identity), preparation_policy=preparation_policy,
+                          evaluator_source_sha256=evaluator_source)
+        preparation_policies.add(preparation_policy)
+        if evaluator_source is not None:
+            evaluator_sources.add(evaluator_source)
         evidence_policy = identity.get('qasper_evidence')
         recovering = qasper_evidence and evidence_policy is None
         if recovering:
@@ -169,7 +188,7 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
             config['qasper_evidence_recovery'] = dict(origin='saved-run-readonly-export', **evidence_policy)
         current = fingerprint({'identity': config, 'mode': manifest['mode']})
         if family is not None and family != current:
-            raise ValueError('SN submissions cannot mix modes, models, requests, preparation policies or source revisions')
+            raise ValueError('SN submissions cannot mix modes, models, requests or SN source revisions')
         family = current
         protocol_info = identity.get('reasoning_protocol')
         method_name = 'sn-' + (
@@ -209,6 +228,9 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
             text = row.get('prediction', '')
             predictions.append(dict(case_id=row['case_id'], status=status,
                                     prediction=text if status in {'success', 'error'} else '',
-                                    record=record, run_id=manifest['run_id'], outputs_sha256=outputs_hash))
+                                    record=record, run_id=manifest['run_id'], outputs_sha256=outputs_hash,
+                                    run_provenance=provenance))
+    method['configuration']['preparation_policies'] = sorted(preparation_policies)
+    method['configuration']['evaluator_source_sha256s'] = sorted(evaluator_sources)
     return write_submission(bundle_directory, output, method=method,
                             predictions=predictions, case_ids=case_ids, context=context)

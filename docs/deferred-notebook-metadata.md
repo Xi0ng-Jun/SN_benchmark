@@ -47,17 +47,21 @@ PYTHONPATH="$EVAL_CANDIDATE/src:$EVAL_CANDIDATE" "$EVAL_PYTHON" -m pytest -q \
 
 SN 必须提供上述上下文与刷新入口；缺失时直接失败，不能静默回退。SN `970b679304a216c280b720666f18c4802065028f` 已用离线真实仓库 probe 验证。导入异常/取消会恢复上下文并保留已保存 mapping；不会合成半份语料的最终元数据，也不会进入 Ask。原来的新目录规则不变；这不是恢复旧 run 的机制。
 
-SN 的最终刷新本身 best-effort：模型出错时可能发布 fallback，因此记录“调用返回”不能解释为“模型成功”。该优化减少中间调用，未证明真实答案逐字相同；准备策略必须作为方法条件披露。
+SN 的最终刷新本身 best-effort：模型出错时可能发布 fallback，因此记录“调用返回”不能解释为“模型成功”。该优化减少中间调用，未证明随机模型的答案逐字相同；实际策略保留在运行记录与答卷披露中。
 
 ## 身份与回执
 
-- `manifest.json: identity.preparation_policy`、`runtime-identity.json: preparation_policy`：明确策略；参与 protocol/pairing identity 和提交 method identity，报告显示策略名。
+- `manifest.json: identity.preparation_policy`、`runtime-identity.json: preparation_policy`：明确策略；原始 protocol/pairing identity 保留，报告显示策略名。导出时不再要求所有题使用同一种准备策略。
 - batch dry-run/job 行包含策略及子进程参数；`--dry-run` 可离线核对，不写 run、不调用模型。
 - `product-artifacts/state.json: preparation_policy`：已有 notebook 的策略不匹配会被拒绝；旧无字段状态按默认策略处理。
 - 新策略的 `final_metadata_refresh`：`invoked`、`call_returned`、`source_count`、`elapsed_seconds`；边界抛错或取消时保留 `call_returned=false`，不标记 prepared。
 - `document-map.json` 的 `ingest_seconds` 只覆盖各篇上传；最终刷新时间另见上述回执。准备全过程的 usage 仍在 `preparation-usage.json`，包含最终刷新。模型用途/重试需结合 scheduled 及物理日志，不能把调度层事件差值当作物理重试证据。
 
-新旧策略不能混入同一个 `export-sn` 提交。已完成的旧批次结果保留原身份，不回填新策略标签；如服务器后续改用新策略，应单独记录实验范围和缺失项，不能拼成同一种方法的全量成绩。
+**可以保留旧结果，用优化策略跑剩余题，再一起 `export-sn`。不需要重跑完整 948 题。** 这是 2026-10-16 根据用户“尽快完成实验”的反馈对初版过度限制的修正。
+
+导出按相同 frozen bundle、SN 源码、模型/设置、请求和问答模式合并；准备策略、评测器文件哈希以及包含时间/checkout 路径的启动观测哈希不再阻止续跑合并。依赖声明和已安装包版本仍保留在共同条件中，原始启动观测仍由 run reader 校验。评测器哈希不同不自动证明行为等价；本轮沿用已核对的准备优化发布版本，其他评测器行为改动仍须按实验内容判断。
+
+每题保留 `run_id`、`outputs_sha256`，新增 `run_provenance`（原始 identity 哈希、准备策略、评测器源码集合哈希）；方法配置汇总 `preparation_policies` 和 `evaluator_source_sha256s`。旧 run 缺策略字段时按原默认解释，不改写旧 manifest。重复题仍要求明确选择一次尝试，error/空答案照常保留，缺失题不会被删除。
 
 ## 证据和预期
 
@@ -85,8 +89,8 @@ SN_PREPARATION_BACKEND=/absolute/path/to/sn/backend \
 
 按服务器所报平均时延，减少 440 次 × 5.25 秒 ≈ 38.5 分钟；约 51–52 分钟可能降到约 13 分钟。这是推算，不是服务器测量，也不是端到端质量验收。
 
-## 服务器下一步验证
+## 服务器续跑
 
-沿用已有 captured source ref、frozen bundle/index、题单、模型配置与缓存关闭设置，在新的诊断 run 目录加上述一个参数。先固定少量样本核对源文档数量与文本哈希、chunk/embedding 全覆盖、metadata 用途调用数及最终刷新回执，记录准备和 Ask 墙钟；如调用仍近 448 次，检查实际 evaluator SHA、子进程 argv 和 identity，再决定是否扩批。
+按[服务器续跑交接文本](server-asqa-continuation-prompt.md)执行：安装新 checkout；停止旧 orchestrator 派发并等待在途 runner 完成；汇总所有已尝试题（包括错误），只运行剩余题。沿用原 captured SN ref、frozen bundle/index、候选资料、模型配置、cache=false 和题间并发 8，加 `--preparation-policy deferred-notebook-metadata-v1`。
 
-质量验证需另行对照检索、答案和最终元数据；离线假模型只证明接线及调用路径，不能替代真实模型实验。此次未更改在跑服务器进程、并发/恢复脚本，也未重跑 13 道答案合成失败题。服务器私有 orchestrator 尚缺源码及进程托管信息，不能凭当前说明实施 drain 或热切换。
+从第一批剩余题观察 metadata 调用数、最终刷新、文档/chunk/embedding 覆盖和耗时；这些题直接计入实验，不另外重跑旧题作验收。最后使用新版本导出全部旧/新 run，统一做官方评分，并披露准备策略在续跑时切换。此次开发没有执行服务器模型调用、修改在跑任务或重跑 13 道合成失败题。私有 orchestrator 的停派/跳过已完成目录逻辑由服务器 agent 根据其实际脚本做最小修改；本仓库没有替它实现 drain。

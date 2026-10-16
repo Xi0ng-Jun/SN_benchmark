@@ -1,5 +1,7 @@
 # Deferred notebook metadata implementation plan
 
+> 2026-10-16 后续修正：用户要求优先快速完成实验。下文初版“不同策略不能合并”的设计已撤回；原始运行记录保留，导出允许旧结果与提速后剩余题合并。当前行为及服务器续跑见 `docs/deferred-notebook-metadata.md`。
+
 **Goal:** 减少每题资料准备期间重复的整本元数据合成，保留完整语料和 SN 单篇处理流程。
 
 **Architecture:** 在评测 runner 的串行上传循环内使用 SN 现有 metadata-only suppression context；全部资料完成 chunk/embedding 校验及索引构建后，在该 context 外调用一次 `repo._augment_notebook_meta(notebook_id)`。旧策略仍默认；新策略显式 opt-in，进入运行与提交身份。

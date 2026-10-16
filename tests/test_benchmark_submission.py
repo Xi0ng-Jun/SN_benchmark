@@ -202,3 +202,82 @@ def test_sn_export_does_not_copy_discarded_full_audit_values(tmp_path, monkeypat
     run, _, _ = export_fixture(tmp_path, monkeypatch, discarded=AuditContext(trace=['large audit']))
     result = submissions.export_sn_runs(tmp_path / 'bundle', [run], tmp_path / 'submission')
     assert json.loads(result.read_text())['predictions'][0]['record'] == dict(status='success', answer='Falcon')
+
+
+def continuation_runs(tmp_path, monkeypatch):
+    from rag_eval import run_report
+    first, outputs, _ = export_fixture(tmp_path, monkeypatch)
+    template = run_report.load_run(first, include_model_events=False)
+    second = tmp_path / 'continued'
+    second.mkdir()
+    runs = {}
+    for index, path in enumerate((first, second)):
+        run = copy.deepcopy(template)
+        run['outputs'] = [copy.deepcopy(outputs[index])]
+        run['manifest']['run_id'] = path.name
+        identity = run['manifest']['identity']
+        identity['notebook_context'].update(partition_id=path.name, case_ids=[outputs[index]['case_id']])
+        identity['code'] = dict(product_archive_sha256='same-sn', versions={'package': '1.0'},
+                                benchmark_source_hashes={'src/rag_eval/notebook_runner.py': str(index)})
+        identity['runtime_dependencies'] = dict(
+            format='sn-startup-binding-v1', requirements_sha256='same-requirements',
+            observation_sha256=f'observation-{index}', environment_sha256=f'checkout-{index}',
+            run_coordinate=str(path))
+        if index:
+            identity['preparation_policy'] = 'deferred-notebook-metadata-v1'
+            run['outputs'][0].update(prediction='', product_record=dict(status='error', answer=''))
+        # The old run intentionally has no preparation_policy field.
+        (path / 'outputs.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in run['outputs']))
+        runs[path] = run
+    monkeypatch.setattr(run_report, 'load_run', lambda path, **kwargs: runs[path])
+    return runs
+
+
+def test_sn_export_combines_completed_and_optimized_remaining_cases(tmp_path, monkeypatch):
+    from rag_eval.artifacts import digest
+    from rag_eval.identity import fingerprint
+    runs = continuation_runs(tmp_path, monkeypatch)
+    original = copy.deepcopy(runs)
+    before = {path: digest(path / 'outputs.jsonl') for path in runs}
+    result = submissions.export_sn_runs(tmp_path / 'bundle', list(runs), tmp_path / 'submission')
+    saved = json.loads(result.read_text())
+    assert saved['scope'] == 'full'
+    assert saved['coverage']['planned'] == 2
+    assert saved['coverage']['success'] == saved['coverage']['error'] == 1
+    assert saved['coverage']['missing'] == 0
+    assert saved['predictions'][1]['prediction'] == ''
+    assert saved['method']['configuration']['preparation_policies'] == [
+        'deferred-notebook-metadata-v1', 'per-source-metadata-v1']
+    for row, (path, run) in zip(saved['predictions'], runs.items()):
+        identity = run['manifest']['identity']
+        assert row['run_id'] == path.name
+        assert row['outputs_sha256'] == before[path]
+        assert row['run_provenance'] == dict(
+            identity_sha256=fingerprint(identity),
+            preparation_policy=identity.get('preparation_policy', 'per-source-metadata-v1'),
+            evaluator_source_sha256=fingerprint(identity['code']['benchmark_source_hashes']))
+    reversed_result = submissions.export_sn_runs(tmp_path / 'bundle', list(reversed(runs)), tmp_path / 'reversed')
+    assert json.loads(reversed_result.read_text()) == saved
+    assert runs == original
+    assert {path: digest(path / 'outputs.jsonl') for path in runs} == before
+
+
+@pytest.mark.parametrize('difference', ['mode', 'model', 'settings', 'sn', 'dependencies', 'request'])
+def test_continuation_still_rejects_changed_answer_conditions(tmp_path, monkeypatch, difference):
+    runs = continuation_runs(tmp_path, monkeypatch)
+    manifest = list(runs.values())[1]['manifest']
+    identity = manifest['identity']
+    if difference == 'mode':
+        manifest['mode'] = 'reasoning'
+    elif difference == 'model':
+        identity['product_services'] = 'other-model'
+    elif difference == 'settings':
+        identity['runtime_settings'] = 'other-settings'
+    elif difference == 'sn':
+        identity['code']['product_archive_sha256'] = 'other-sn'
+    elif difference == 'dependencies':
+        identity['code']['versions']['package'] = '2.0'
+    else:
+        identity['notebook_context']['request_revision'] = 'notebook-request-v2'
+    with pytest.raises(ValueError, match='cannot mix|gold-free'):
+        submissions.export_sn_runs(tmp_path / 'bundle', list(runs), tmp_path / 'submission')

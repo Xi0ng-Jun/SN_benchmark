@@ -96,6 +96,8 @@ def _read_side(value, scores_path, submission_path):
                 raise ValueError('Input SN run identity unavailable')
             expected = sn_submission_identity(identity)
             claimed = configuration.get('identity')
+            if isinstance(claimed, dict):
+                claimed = sn_submission_identity(claimed)
             if isinstance(claimed, dict) and 'qasper_evidence_recovery' in claimed and identity.get('qasper_evidence') is None:
                 from .qasper_evidence import identity as evidence_identity
                 expected['qasper_evidence_recovery'] = dict(origin='saved-run-readonly-export', **evidence_identity())
