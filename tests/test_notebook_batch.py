@@ -180,13 +180,18 @@ def test_cli_dry_run_and_metrics_only_never_invoke_models(tmp_path):
         '--project-root', str(tmp_path / 'nonexistent-project'), '--dry-run'], capture_output=True, text=True)
     assert result.returncode == 0 and len(json.loads(result.stdout)['jobs']) == 2
     assert not (tmp_path / 'batch').exists()
-    from test_stage_metrics import REAL_RUN
-    before = {p.name: p.stat().st_mtime_ns for p in REAL_RUN.iterdir()}
+    from test_stage_metrics import saved_run
+    run = saved_run(tmp_path, 'metrics-fixture', 'success')
+    output = dict(case_id='qasper:q', status='success', product_record=dict(
+        context_supported=True, retrieval_context=['Birds fly.', 'Unrelated.'],
+        response=dict(anchors=[])))
+    (run / 'outputs.jsonl').write_text(json.dumps(output) + '\n')
+    before = {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
     result = subprocess.run([sys.executable, str(root / 'scripts/run_notebook_batch.py'), 'metrics',
-        '--run-dir', str(REAL_RUN), '--no-write'], capture_output=True, text=True)
+        '--run-dir', str(run), '--no-write'], capture_output=True, text=True)
     assert result.returncode == 0
-    assert json.loads(result.stdout)['groups'][0]['context_precision']['value'] == 1 / 16
-    assert {p.name: p.stat().st_mtime_ns for p in REAL_RUN.iterdir()} == before
+    assert json.loads(result.stdout)['groups'][0]['context_precision']['value'] == .5
+    assert {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()} == before
 
 
 @pytest.mark.parametrize('parallel', [1, 2])

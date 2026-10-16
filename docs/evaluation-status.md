@@ -7,6 +7,7 @@
 - **本地实测边界。** 真实 SN repository + 离线假模型，各策略导入 100 篇合成短资料，notebook_metadata **448→8 次**，source_summary、paper_metadata、source_element_embedding、chunk_embedding 均各 **100 次**；100 篇均有 chunk，embedding 覆盖完整，摘要/论文元数据标记与最终 purpose 均落库、全部标题参与 metadata 提示。该 probe 在本地 SN `0680aa12` 及从 Git 提取的服务器同提交 `970b679304a216c280b720666f18c4802065028f` 均通过；未调用真实模型，未修改 SN 原树源码/配置/数据。
 - **回归。** 准备策略初始红灯 8 项、CLI/身份接线红灯 4 项均确认；最终 Notebook、batch、submission、identity、阶段诊断、证据投影、源码加载、reasoning 协议、工作台 runner 和真实 SN probe 合计 **364 passed（30.62s）**。另一次精确服务器 SN SHA probe **1 passed（13.76s）**，与前项覆盖有重叠，不相加。修复旧源码加载测试未清理 `sys.path/app.*` 导致的顺序污染；未调整产品行为来迁就测试。`git diff --check` 通过。
 - **服务器仍待验证。** 用户转述的旧样本约 51–52 分钟准备，按减少 440 × 5.25 秒推算约 13 分钟；这不是新策略服务器实测。实际分组、模型输出和质量效果需固定样本核对。本次未修改在跑任务、缓存、题间并发或私有 orchestrator，也未处理/重跑 13 道合成失败题。操作与证据边界见[准备优化说明](deferred-notebook-metadata.md)。
+- **交付验证补充。** 将代码包还原到只含服务器旧基线的临时仓库时，发现 batch CLI 的只读 metrics 测试依赖 Git 外本机历史 run（70 passed / 1 failed）。该 CLI 测试改为自建合成资料与保存输出，并验证整份运行目录逐文件内容保持不变；真实历史观测验证仍留在原 stage metrics 测试中，不把本机历史数据打进交付包。交付回执单独记录固定 SHA、远端分支、包校验及还原后验收结果。
 
 ## 2026-10-15 · reasoning-no-clarification-v1 评测侧协议
 
