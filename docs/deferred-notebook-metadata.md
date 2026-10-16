@@ -6,32 +6,32 @@
 
 交付仓库为 `Xi0ng-Jun/SN_benchmark`，独立分支为 `feat/deferred-notebook-metadata`。使用交付回执中的完整 evaluator SHA 固定版本，不以分支名称代替版本身份。服务器原基线为 `dfb7c51c2ea890f105189f8e30255a2e289a492e`；交付版本还包含其后的既有 workbench 设计文档、ALCE CPU 评分适配/浮点上界处理和显式 reasoning-no-clarification 协议。这些不是本次准备优化的一部分，相关选项按原默认保留。
 
-先在服务器已有评测仓库 fetch，再创建独立 checkout；`EVAL_REPO` 指原评测仓库，`EVAL_CANDIDATE` 必须是尚不存在的新目录，`EVAL_RELEASE_SHA` 来自交付回执：
+本次按用户选择，立即停止旧 orchestrator 和当前尚未完成的在途 runner，不等待题目完成；确认进程退出后在原评测目录更新，不新建 worktree。保留本地脚本、未提交修改、runs/store、配置和虚拟环境。完整步骤见[首次执行交接](server-asqa-continuation-prompt.md)。`EVAL_REPO` 指原评测仓库，`EVAL_RELEASE_SHA` 来自交付回执；以下命令只在上述进程全部停稳后执行：
 
 ```bash
 git -C "$EVAL_REPO" fetch origin refs/heads/feat/deferred-notebook-metadata
 git -C "$EVAL_REPO" cat-file -e "${EVAL_RELEASE_SHA}^{commit}"
-git -C "$EVAL_REPO" worktree add --detach "$EVAL_CANDIDATE" "$EVAL_RELEASE_SHA"
-git -C "$EVAL_CANDIDATE" rev-parse HEAD
-git -C "$EVAL_CANDIDATE" status --porcelain
+git -C "$EVAL_REPO" switch --detach "$EVAL_RELEASE_SHA"
+git -C "$EVAL_REPO" rev-parse HEAD
+git -C "$EVAL_REPO" status --porcelain
 ```
 
-如服务器不能访问远端，交付包中的 `evaluator.bundle` 包含从上述原基线到固定交付版本的 Git 对象。先在包目录运行 `sha256sum -c SHA256SUMS`，再执行 `git -C "$EVAL_REPO" bundle verify /absolute/path/evaluator.bundle`，通过后用 `git -C "$EVAL_REPO" fetch /absolute/path/evaluator.bundle refs/heads/feat/deferred-notebook-metadata` 代替上面的远端 fetch。已有仓库必须包含原基线对象；不对活动目录执行 checkout/reset/clean/pull。
+如服务器不能访问远端，交付包中的 `evaluator.bundle` 包含从上述原基线到固定交付版本的 Git 对象。先在包目录运行 `sha256sum -c SHA256SUMS`，再执行 `git -C "$EVAL_REPO" bundle verify /absolute/path/evaluator.bundle`，通过后用 `git -C "$EVAL_REPO" fetch /absolute/path/evaluator.bundle refs/heads/feat/deferred-notebook-metadata` 代替上面的远端 fetch。已有仓库必须包含原基线对象；同样先等进程停稳，再在原目录切换版本。不使用 reset --hard 或 clean。
 
-在新 checkout 用现有评测解释器完成离线检查，显式把新源码置于导入路径，避免解释器的 editable install 指向旧仓库：
+更新后用现有评测解释器核对导入路径与 CLI 参数。以下测试是可用的离线检查入口，不调用模型：
 
 ```bash
-cd "$EVAL_CANDIDATE"
-PYTHONPATH="$EVAL_CANDIDATE/src:$EVAL_CANDIDATE" "$EVAL_PYTHON" -c \
+cd "$EVAL_REPO"
+PYTHONPATH="$EVAL_REPO/src:$EVAL_REPO" "$EVAL_PYTHON" -c \
   'import rag_eval.notebook_runner as runner; print(runner.__file__)'
-PYTHONPATH="$EVAL_CANDIDATE/src:$EVAL_CANDIDATE" "$EVAL_PYTHON" -m pytest -q \
+PYTHONPATH="$EVAL_REPO/src:$EVAL_REPO" "$EVAL_PYTHON" -m pytest -q \
   tests/test_notebook_preparation.py tests/test_notebook_batch.py \
   tests/test_notebook_v3_runtime.py tests/test_benchmark_submission.py
 "$EVAL_PYTHON" scripts/run_notebook_benchmarks.py --help
 "$EVAL_PYTHON" scripts/run_notebook_batch.py run --help
 ```
 
-测试依赖使用服务器已有 dev/评测环境，不为此次交付更换模型服务或重建 frozen bundle。真实 SN 离线 probe 见下方专用入口。安装与离线检查不需要停止现有 orchestrator；新旧 Python 进程不会因为 fetch 自动换代码。后续真实诊断沿用用户已授权的运行范围；本文本身不扩大题单或自动切换全量批次。
+测试依赖使用服务器已有 dev/评测环境，不为此次交付更换模型服务或重建 frozen bundle。真实 SN 离线 probe 见下方专用入口。这次是在原目录切换，先终止旧评测进程；用户已授权统一放弃并重新运行当前在途题。已完成结果保留，中断目录留作记录且不进入最终答卷。
 
 ## 策略与行为
 
@@ -91,6 +91,6 @@ SN_PREPARATION_BACKEND=/absolute/path/to/sn/backend \
 
 ## 服务器续跑
 
-按[服务器续跑交接文本](server-asqa-continuation-prompt.md)执行：安装新 checkout；停止旧 orchestrator 派发并等待在途 runner 完成；汇总所有已尝试题（包括错误），只运行剩余题。沿用原 captured SN ref、frozen bundle/index、候选资料、模型配置、cache=false 和题间并发 8，加 `--preparation-policy deferred-notebook-metadata-v1`。
+按[服务器续跑交接文本](server-asqa-continuation-prompt.md)执行：立即停止旧调度和当前在途 runner；在原代码目录更新；保留已完成题（包括错误），把本次中断题及其余未完成题用新目录重跑。中断旧 run 保留但不参与最终导出。沿用原 captured SN ref、frozen bundle/index、候选资料、模型配置、cache=false 和题间并发 8，加 `--preparation-policy deferred-notebook-metadata-v1`。
 
 从第一批剩余题观察 metadata 调用数、最终刷新、文档/chunk/embedding 覆盖和耗时；这些题直接计入实验，不另外重跑旧题作验收。最后使用新版本导出全部旧/新 run，统一做官方评分，并披露准备策略在续跑时切换。此次开发没有执行服务器模型调用、修改在跑任务或重跑 13 道合成失败题。私有 orchestrator 的停派/跳过已完成目录逻辑由服务器 agent 根据其实际脚本做最小修改；本仓库没有替它实现 drain。
