@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 
 def main(argv=None):
+    from rag_eval.benchmark_runtime import DEFAULT_PREPARATION_POLICY, PREPARATION_POLICIES
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     run = commands.add_parser('run', help='Calls models unless --dry-run is supplied')
@@ -18,6 +19,7 @@ def main(argv=None):
     run.add_argument('--artifact-root', '--store', dest='artifact_root', type=Path, required=True)
     run.add_argument('--artifact-index-id', '--index', dest='artifact_index_id', required=True)
     run.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
+    run.add_argument('--preparation-policy', choices=PREPARATION_POLICIES, default=DEFAULT_PREPARATION_POLICY)
     run.add_argument('--reasoning-protocol', choices=('reasoning-v1', 'reasoning-no-clarification-v1'),
                      default='reasoning-v1')
     run.add_argument('--parallel', type=int, default=1)

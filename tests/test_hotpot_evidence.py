@@ -149,7 +149,7 @@ def test_full_sn_run_exports_replayable_support_and_keeps_failed_mapping_pending
     repository.SQLiteRepository = lambda settings: SimpleNamespace(
         db_path=settings.db_path,_connect=repo._connect,close_local=lambda:None,close=lambda:None)
     monkeypatch.setitem(sys.modules,repository.__name__,repository)
-    monkeypatch.setattr(benchmark_runtime,'prepare_notebook',lambda *a:('notebook',mapping))
+    monkeypatch.setattr(benchmark_runtime,'prepare_notebook',lambda *a, **kw:('notebook',mapping))
     monkeypatch.setattr(system_runtime,'run_system_question',lambda *a, **kw:deepcopy(record))
     def check_capture_before_gold(repo, saved, mapping, **kwargs):
         assert 'hotpot_evidence' in saved

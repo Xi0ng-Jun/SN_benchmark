@@ -60,7 +60,7 @@ def test_native_scoring_runs_after_durable_answer_without_changing_corpus(tmp_pa
     native.require_native_tracing = lambda: tracing
     monkeypatch.setitem(sys.modules, native.__name__, native)
 
-    def prepare(repo, cell, documents, suite):
+    def prepare(repo, cell, documents, suite, *, preparation_policy='per-source-metadata-v1'):
         assert len(documents) == 1
         assert 'Red birds fly.' in documents[0]['text']
         return 'notebook', {documents[0]['id']: {'source_id': 'source', 'chunk_ids': ['chunk']}}

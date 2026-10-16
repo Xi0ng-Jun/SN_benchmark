@@ -111,7 +111,10 @@ def native_boundary(tmp_path, monkeypatch):
             self.connection.commit()
             return SimpleNamespace(**response, model_dump=lambda **_: deepcopy(response))
 
-    def prepare_notebook(repo, cell, documents, suite):
+    observed_policies = []
+
+    def prepare_notebook(repo, cell, documents, suite, *, preparation_policy='per-source-metadata-v1'):
+        observed_policies.append(preparation_policy)
         assert len(documents) == 2  # The distractor stays in every run.
         assert 'SECRET-GOLD' not in json.dumps(documents)
         mapping = {}
@@ -130,12 +133,51 @@ def native_boundary(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_environment, 'configure_environment', lambda project, run, **kwargs: (
         SimpleNamespace(db_path=run / 'runtime/database.db'),
         dict(comparable_settings_sha256='settings', service_config_sha256='services')))
-    return SimpleNamespace(Repository=Repository, prepare=prepare_notebook, observed_requests=observed_requests)
+    return SimpleNamespace(Repository=Repository, prepare=prepare_notebook, observed_requests=observed_requests,
+                           observed_policies=observed_policies)
 
 
 def news_bundle(tmp_path):
     raw, corpus = news_raw()
     return freeze(tmp_path, 'multihop_rag', raw, corpus=corpus)
+
+
+def test_cli_preparation_policy_reaches_runtime_identity_and_submission(tmp_path, native_boundary, monkeypatch):
+    from rag_eval.benchmark_submission import export_sn_runs
+    monkeypatch.syspath_prepend(str(ROOT))
+    from scripts.run_notebook_benchmarks import main
+    bundle = news_bundle(tmp_path / 'input')
+    paths = []
+    for policy in ('per-source-metadata-v1', 'deferred-notebook-metadata-v1'):
+        run = tmp_path / policy
+        argv = ['run_notebook_benchmarks.py', '--bundle', str(tmp_path / 'input/bundle'),
+                '--partition-id', bundle['partitions'][0]['partition_id'], '--mode', 'chunk',
+                '--project-root', str(tmp_path / 'product'), '--run-dir', str(run)]
+        if policy.startswith('deferred'):
+            argv.extend(['--preparation-policy', policy])
+        monkeypatch.setattr(sys, 'argv', argv)
+        assert main() == 0
+        assert native_boundary.observed_policies[-1] == policy
+        loaded = load_run(run)
+        assert loaded['manifest']['identity']['preparation_policy'] == policy
+        assert json.loads((run / 'runtime-identity.json').read_text())['preparation_policy'] == policy
+        assert policy in (run / 'report/report.md').read_text()
+        submission = export_sn_runs(tmp_path / 'input/bundle', [run], tmp_path / ('submission-' + policy))
+        configuration = json.loads(submission.read_text())['method']['configuration']
+        assert configuration['identity']['preparation_policy'] == policy
+        paths.append(run)
+    identities = [load_run(path)['manifest'] for path in paths]
+    assert identities[0]['pairing_id'] != identities[1]['pairing_id']
+    assert identities[0]['protocol_id'] != identities[1]['protocol_id']
+    with pytest.raises(ValueError, match='cannot mix'):
+        export_sn_runs(tmp_path / 'input/bundle', paths, tmp_path / 'mixed')
+
+
+def test_unknown_preparation_policy_rejected_before_run_creation(tmp_path):
+    with pytest.raises(ValueError, match='preparation policy'):
+        execute(root=ROOT, project=tmp_path / 'project', bundle_dir=tmp_path / 'missing-bundle',
+                run=tmp_path / 'run', mode='chunk', partition_id='p', preparation_policy='typo')
+    assert not (tmp_path / 'run').exists()
 
 
 def test_cli_file_selection_runs_and_exports_only_selected_case_with_full_corpus(tmp_path, native_boundary, monkeypatch):

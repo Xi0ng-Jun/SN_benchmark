@@ -71,7 +71,7 @@ def _fixture_repo(tmp_path):
     return project
 
 
-def test_materialized_source_survives_original_change_and_reports_loaded_identity(tmp_path):
+def test_materialized_source_survives_original_change_and_reports_loaded_identity(tmp_path, monkeypatch):
     from rag_eval.artifact_store import ArtifactStore
     from rag_eval.runtime_environment import materialize_captured_sn_source, module_source_identity
     from rag_eval.sn_source_capture import capture_sn_source
@@ -103,11 +103,21 @@ print(json.dumps({
     assert loaded["value"] == "captured-v1"
     assert Path(loaded["origin"]) == expected_path
     assert loaded["sha256"] == hashlib.sha256(expected_path.read_bytes()).hexdigest()
-    sys.path.insert(0, str(materialized.backend_root))
-    identity = module_source_identity(
-        "app.core.text_whitespace", materialized,
-        expected_manifest=captured.actual_manifest,
-    )
+    monkeypatch.syspath_prepend(str(materialized.backend_root))
+    previous = {name: module for name, module in sys.modules.items()
+                if name == 'app' or name.startswith('app.')}
+    for name in previous:
+        del sys.modules[name]
+    try:
+        identity = module_source_identity(
+            "app.core.text_whitespace", materialized,
+            expected_manifest=captured.actual_manifest,
+        )
+    finally:
+        for name in list(sys.modules):
+            if name == 'app' or name.startswith('app.'):
+                del sys.modules[name]
+        sys.modules.update(previous)
     assert identity == {
         "module": "app.core.text_whitespace",
         "origin": "backend/app/core/text_whitespace.py",

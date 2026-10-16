@@ -253,7 +253,7 @@ def test_runtime_freezes_evidence_before_gold_join(tmp_path, monkeypatch):
     module = ModuleType('app.core.llm_logging')
     module.LLMInteractionLogger = type('Logger', (), {'log': lambda *a, **k: None})
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    monkeypatch.setattr(benchmark_runtime, 'prepare_notebook', lambda *a: ('n', f[3]))
+    monkeypatch.setattr(benchmark_runtime, 'prepare_notebook', lambda *a, **kw: ('n', f[3]))
     monkeypatch.setattr(system_runtime, 'run_system_question', lambda *a, **kw: deepcopy(f[4]))
     def check_after_capture(repo, record, mapping, **kwargs):
         assert record['qasper_evidence']['status'] == 'complete'
@@ -455,7 +455,7 @@ def test_execute_records_policy_and_preserves_answer_on_mapping_failure(tmp_path
         return SimpleNamespace(db_path=settings.db_path,_connect=f[2]._connect,close_local=lambda:None,close=lambda:None)
     repository.SQLiteRepository=make_repo
     monkeypatch.setitem(sys.modules,repository.__name__,repository)
-    monkeypatch.setattr(benchmark_runtime,'prepare_notebook',lambda *a:('notebook',f[3]))
+    monkeypatch.setattr(benchmark_runtime,'prepare_notebook',lambda *a, **kw:('notebook',f[3]))
     monkeypatch.setattr(system_runtime,'run_system_question',lambda *a, **kw:deepcopy(f[4]))
     monkeypatch.setattr(system_runtime,'complete_evidence_checks',lambda *a,**k:None)
     monkeypatch.setattr(runtime_environment,'snapshot_sources',lambda *a:{'revision':'offline-fixture'})

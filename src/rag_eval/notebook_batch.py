@@ -17,6 +17,7 @@ import time
 
 from .run_results import EventJournal
 from .artifacts import digest
+from .benchmark_runtime import DEFAULT_PREPARATION_POLICY, validate_preparation_policy
 from .identity import fingerprint
 from .execution_diagnostics import exception_details, persist_stderr, sanitize_diagnostic
 
@@ -25,11 +26,12 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                output_root, project_root, python=None, model_config=None,
                sn_source_ref=None, dependency_requirements=None, runtime_expectation=None,
                root=None, budget_ledger=None, task_worktree_ref=None,
-               reasoning_protocol='reasoning-v1'):
+               reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY):
     """Validate all selected IDs before any process; retain frozen case order."""
     from .bundle_index import find_installed_bundle, load_partition
     from .notebook_bundle import OFFICIAL_REQUEST_REVISION
     from .notebook_runner import load_case_ids_file
+    validate_preparation_policy(preparation_policy)
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Mode must be chunk or reasoning')
     from .reasoning_protocol import protocol_identity
@@ -71,7 +73,8 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                 '--artifact-index-id', artifact_index_id, '--partition-id', pid,
                 '--mode', mode, '--run-dir', str(run), '--project-root', str(project_root),
                 '--request-revision', OFFICIAL_REQUEST_REVISION,
-                '--reasoning-protocol', reasoning_protocol]
+                '--reasoning-protocol', reasoning_protocol,
+                '--preparation-policy', preparation_policy]
         for flag, value in (('--model-config', model_config), ('--sn-source-ref', sn_source_ref),
                             ('--dependency-requirements', dependency_requirements),
                             ('--runtime-expectation', runtime_expectation), ('--budget-ledger', budget_ledger), ('--task-worktree-ref', task_worktree_ref)):
@@ -80,7 +83,7 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
         for cid in ids:
             argv.extend(['--case-id', cid])
         jobs.append(dict(partition_id=pid, case_ids=ids, run_dir=str(run), mode=mode,
-                         reasoning_protocol=reasoning_protocol,
+                         reasoning_protocol=reasoning_protocol, preparation_policy=preparation_policy,
                          suite=index['source_manifest']['suite'], bundle_id=fingerprint(index['source_manifest']),
                          bundle=str(bundle), artifact_root=str(artifact_root),
                          artifact_index_id=artifact_index_id, case_id_file=str(Path(case_id_file).resolve()),

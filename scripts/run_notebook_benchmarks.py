@@ -67,6 +67,7 @@ def _consume_readiness_receipt(path, expected_scope):
 
 
 def main():
+    from rag_eval.benchmark_runtime import DEFAULT_PREPARATION_POLICY, PREPARATION_POLICIES
     from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
     from rag_eval.execution_diagnostics import exception_details, failure_summary, config_sensitive_values
 
@@ -76,6 +77,8 @@ def main():
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--partition-id', required=True)
     parser.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
+    parser.add_argument('--preparation-policy', choices=PREPARATION_POLICIES, default=DEFAULT_PREPARATION_POLICY,
+                        help='Document preparation policy; deferred metadata refresh is opt-in')
     parser.add_argument('--reasoning-protocol', choices=('reasoning-v1', 'reasoning-no-clarification-v1'),
                         default='reasoning-v1', help='Explicit reasoning protocol variant')
     parser.add_argument('--run-dir', type=Path, required=True)
@@ -163,6 +166,7 @@ def main():
                     mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
                     case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root,
                     artifact_index_id=args.artifact_index_id, reasoning_protocol=args.reasoning_protocol,
+                    preparation_policy=args.preparation_policy,
                     **startup_kwargs)
     except BaseException as exc:
         details = getattr(exc, '_rag_eval_diagnostic_details', None) or exception_details(

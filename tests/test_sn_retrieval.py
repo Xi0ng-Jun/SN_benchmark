@@ -98,7 +98,7 @@ def test_sn_run_exports_observed_ranking_and_scores_it_independently_of_generati
         return repo
     repository.SQLiteRepository = make_repo
     monkeypatch.setitem(sys.modules, repository.__name__, repository)
-    monkeypatch.setattr(benchmark_runtime, 'prepare_notebook', lambda *a: ('notebook', mapping))
+    monkeypatch.setattr(benchmark_runtime, 'prepare_notebook', lambda *a, **kw: ('notebook', mapping))
     def ask(repo, notebook, question, mode, mapping, **diagnostics):
         assert 'gold' not in question and 'gold_document_ids' not in question
         hits = chunks if question['original_question'] == 'apple' else []

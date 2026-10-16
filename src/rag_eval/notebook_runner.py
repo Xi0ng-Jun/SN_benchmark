@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 
 from .artifacts import digest, save_json, save_jsonl
+from .benchmark_runtime import DEFAULT_PREPARATION_POLICY, validate_preparation_policy
 from .notebook_bundle import LEGACY_REQUEST_REVISION, load_bundle, partition_bundle
 from .notebook_data import VERSION
 from .identity import fingerprint
@@ -77,7 +78,8 @@ def _anchor_documents(repo, record, mapping):
 
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
                 qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
-                diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1'):
+                diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1',
+                preparation_policy=DEFAULT_PREPARATION_POLICY):
     update_state(run, 'importing')
     from .benchmark_runtime import prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
@@ -88,7 +90,8 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
     usage = {}
     try:
         with capture_usage(LLMInteractionLogger) as usage:
-            notebook, mapping = prepare_notebook(repo, cell, product['documents'], product['manifest']['suite'])
+            notebook, mapping = prepare_notebook(repo, cell, product['documents'], product['manifest']['suite'],
+                                                 preparation_policy=preparation_policy)
     finally:
         save_json(run / 'preparation-usage.json', usage)
     selected = {case['case_id']: case for case in cases}
@@ -223,12 +226,13 @@ def _saved_failures(run):
 def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
             agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
             sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
-            reasoning_protocol='reasoning-v1'):
+            reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
     request revision, and their historical scoring plans remain unchanged.
     """
+    validate_preparation_policy(preparation_policy)
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Explicit chunk/reasoning mode required')
     from .reasoning_protocol import protocol_identity
@@ -351,6 +355,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         from .feature_identity import FEATURE_SETTING_FIELDS, build_feature_identity
         runtime['effective_settings'] = {name: getattr(settings, name) for name in FEATURE_SETTING_FIELDS
                                          if hasattr(settings, name)}
+        runtime['preparation_policy'] = preparation_policy
         if reasoning_protocol != 'reasoning-v1':
             runtime['reasoning_protocol'] = protocol_info
         save_json(run / 'runtime-identity.json', runtime)
@@ -361,7 +366,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         identity = dict(source=bundle['manifest'], models={}, code=code,
                         runtime_settings=runtime['comparable_settings_sha256'],
                         product_services=runtime['service_config_sha256'], product_bundle=product['manifest'],
-                        audits_sha256=fingerprint([]), track='R',
+                        audits_sha256=fingerprint([]), track='R', preparation_policy=preparation_policy,
                         notebook_context=dict(partition_id=partition_id, selected_cases=bundle['manifest']['selected_cases'],
                                               partition_count=bundle['manifest']['partition_count']))
         if reasoning_protocol != 'reasoning-v1':
@@ -448,7 +453,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         session_factory=tracing.evaluation_session if tracing is not None else None,
                         qasper_catalogues=qasper_catalogues, hotpot_evidence=hotpot_evidence,
                         multihop_retrieval=multihop_retrieval, diagnostic_sensitive_values=generation_private_values,
-                        reasoning_protocol=reasoning_protocol)
+                        reasoning_protocol=reasoning_protocol, preparation_policy=preparation_policy)
             score_outputs(run, cases, planned, scores)
         errors, failures = _saved_failures(run)
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)

@@ -1,20 +1,45 @@
 """SN document ingestion and observed evidence checks for isolated Notebook runs."""
 import hashlib
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import time
 
 from .artifacts import save_json
 
 
+DEFAULT_PREPARATION_POLICY = 'per-source-metadata-v1'
+DEFERRED_METADATA_POLICY = 'deferred-notebook-metadata-v1'
+PREPARATION_POLICIES = (DEFAULT_PREPARATION_POLICY, DEFERRED_METADATA_POLICY)
+
+
+def validate_preparation_policy(policy):
+    if policy not in PREPARATION_POLICIES:
+        raise ValueError('Unknown preparation policy: ' + str(policy))
+
+
 def read_json(path, default=None):
     return json.loads(Path(path).read_text()) if Path(path).exists() else default
 
-def prepare_notebook(repo, cell, documents, dataset):
+def prepare_notebook(repo, cell, documents, dataset, *, preparation_policy=DEFAULT_PREPARATION_POLICY):
+    validate_preparation_policy(preparation_policy)
+    deferred = preparation_policy == DEFERRED_METADATA_POLICY
+    metadata_scope = nullcontext
+    if deferred:
+        try:
+            from app.services.notebook_metadata import suppress_notebook_metadata_refresh
+        except ImportError as exc:
+            raise ValueError('SN does not support deferred notebook metadata refresh') from exc
+        if not callable(getattr(repo, '_augment_notebook_meta', None)):
+            raise ValueError('SN does not expose the notebook metadata refresh hook')
+        metadata_scope = suppress_notebook_metadata_refresh
     from app.models.notebooks import NotebookCreate
     from app.services.repository import UploadedSourceFile
     from app.services.batch_ingest import backfill_chunk_embeddings
     state = read_json(cell / 'state.json', {})
+    if state.get('notebook_id') and state.get('preparation_policy', DEFAULT_PREPARATION_POLICY) != preparation_policy:
+        raise ValueError('Existing notebook preparation policy does not match requested preparation policy')
+    state['preparation_policy'] = preparation_policy
     if not state.get('notebook_id'):
         state['notebook_id'] = repo.create_notebook(NotebookCreate(name='Benchmark ' + dataset)).id
         save_json(cell / 'state.json', state)
@@ -23,21 +48,24 @@ def prepare_notebook(repo, cell, documents, dataset):
     capacity = repo.effective_document_limit(None)
     if capacity < len(documents):
         raise ValueError('Evaluation document capacity is smaller than frozen corpus')
-    for index, document in enumerate(documents):
-        public_id = document['id']
-        if public_id in mapping:
-            continue
-        # Keep original paragraph bytes; titles are metadata, not answer hints.
-        content = document['text'].encode('utf-8')
-        filename = hashlib.sha256(public_id.encode()).hexdigest()[:24] + '.md'
-        started = time.monotonic()
-        uploaded = repo.upload_sources(notebook, [UploadedSourceFile(
-            file_name=filename, content_type='text/markdown', content=content,
-            title=document.get('title') or public_id)], scheduler=None, capacity_limit=capacity)
-        mapping[public_id] = {'source_id': uploaded[0].id, 'text_sha256': hashlib.sha256(content).hexdigest(),
-                              'filename': filename, 'ingest_seconds': time.monotonic() - started}
-        save_json(cell / 'document-map.json', mapping)
-        print(dataset, 'import', index + 1, '/', len(documents), flush=True)
+    # scheduler=None keeps ingestion on this thread, inside the SN ContextVar
+    # scope. Other ingestion hooks and all per-source model work remain active.
+    with metadata_scope():
+        for index, document in enumerate(documents):
+            public_id = document['id']
+            if public_id in mapping:
+                continue
+            # Keep original paragraph bytes; titles are metadata, not answer hints.
+            content = document['text'].encode('utf-8')
+            filename = hashlib.sha256(public_id.encode()).hexdigest()[:24] + '.md'
+            started = time.monotonic()
+            uploaded = repo.upload_sources(notebook, [UploadedSourceFile(
+                file_name=filename, content_type='text/markdown', content=content,
+                title=document.get('title') or public_id)], scheduler=None, capacity_limit=capacity)
+            mapping[public_id] = {'source_id': uploaded[0].id, 'text_sha256': hashlib.sha256(content).hexdigest(),
+                                  'filename': filename, 'ingest_seconds': time.monotonic() - started}
+            save_json(cell / 'document-map.json', mapping)
+            print(dataset, 'import', index + 1, '/', len(documents), flush=True)
     if not state.get('prepared'):
         backfill_chunk_embeddings(repo, notebook, missing_only=True)
         rows = repo._connect().execute('SELECT id, source_id FROM chunks WHERE notebook_id=?', (notebook,)).fetchall()
@@ -53,6 +81,19 @@ def prepare_notebook(repo, cell, documents, dataset):
         repo.close_local()
         repo.build_scale_index(notebook)
         save_json(cell / 'document-map.json', mapping)
+        if deferred:
+            # SN may fall back internally. A returned hook is not proof of a
+            # successful model response; retain only what this boundary observes.
+            refresh = dict(invoked=True, call_returned=False, source_count=len(mapping))
+            state['final_metadata_refresh'] = refresh
+            save_json(cell / 'state.json', state)
+            started = time.monotonic()
+            try:
+                repo._augment_notebook_meta(notebook)
+                refresh['call_returned'] = True
+            finally:
+                refresh['elapsed_seconds'] = time.monotonic() - started
+                save_json(cell / 'state.json', state)
         state.update(prepared=True, documents=len(mapping), chunks=len(rows), embedded_chunks=embedded,
                      kg_present=False, effective_document_limit=capacity)
         save_json(cell / 'state.json', state)

@@ -1,5 +1,13 @@
 # 评测状态
 
+## 2026-10-16 · 导入完成后统一刷新 notebook metadata
+
+- **开发侧实现。** 评测准备流程增加 `--preparation-policy deferred-notebook-metadata-v1`，同步导入期间仅暂停 SN notebook metadata 刷新，全部资料完成 chunk/embedding 校验及建索引后调用一次最终刷新，再进入 Ask。默认 `per-source-metadata-v1` 保留；单次、batch、native Agent CLI 已接，工作台仍走默认。策略写入 runtime/manifest/state、batch argv 和提交身份，异策略不可混合导出。
+- **失败与回执。** 导入异常/取消会恢复 suppression；部分 mapping 保留，不刷新半份语料、不标 prepared。最终刷新沿用 SN best-effort，回执只记录 invoked/call_returned/source_count/elapsed_seconds，不据返回声称模型合成成功。不支持刷新 API 的 SN 拒绝运行；已有 notebook 策略冲突拒绝复用，新 run-dir 约束不变。
+- **本地实测边界。** 真实 SN repository + 离线假模型，各策略导入 100 篇合成短资料，notebook_metadata **448→8 次**，source_summary、paper_metadata、source_element_embedding、chunk_embedding 均各 **100 次**；100 篇均有 chunk，embedding 覆盖完整，摘要/论文元数据标记与最终 purpose 均落库、全部标题参与 metadata 提示。该 probe 在本地 SN `0680aa12` 及从 Git 提取的服务器同提交 `970b679304a216c280b720666f18c4802065028f` 均通过；未调用真实模型，未修改 SN 原树源码/配置/数据。
+- **回归。** 准备策略初始红灯 8 项、CLI/身份接线红灯 4 项均确认；最终 Notebook、batch、submission、identity、阶段诊断、证据投影、源码加载、reasoning 协议、工作台 runner 和真实 SN probe 合计 **364 passed（30.62s）**。另一次精确服务器 SN SHA probe **1 passed（13.76s）**，与前项覆盖有重叠，不相加。修复旧源码加载测试未清理 `sys.path/app.*` 导致的顺序污染；未调整产品行为来迁就测试。`git diff --check` 通过。
+- **服务器仍待验证。** 用户转述的旧样本约 51–52 分钟准备，按减少 440 × 5.25 秒推算约 13 分钟；这不是新策略服务器实测。实际分组、模型输出和质量效果需固定样本核对。本次未修改在跑任务、缓存、题间并发或私有 orchestrator，也未处理/重跑 13 道合成失败题。操作与证据边界见[准备优化说明](deferred-notebook-metadata.md)。
+
 ## 2026-10-15 · reasoning-no-clarification-v1 评测侧协议
 
 - 已实现一个显式 opt-in 的强制作答变体：先调用 SN intent preview，再用固定 `cover-all-options-v1` 策略回答每个 `required != false` 的 ambiguity；非空 options 按原顺序拼接为“同时考虑以下所有可能：A；B”，无 options 时使用 `resolved_question`。每题保存原始 contract、`preview_needs_clarification`、自动确认项、答案来源和 policy 版本。

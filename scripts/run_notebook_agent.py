@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 
 def main(argv=None):
+    from rag_eval.benchmark_runtime import DEFAULT_PREPARATION_POLICY, PREPARATION_POLICIES
     from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -23,6 +24,7 @@ def main(argv=None):
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--partition-id', required=True)
     parser.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
+    parser.add_argument('--preparation-policy', choices=PREPARATION_POLICIES, default=DEFAULT_PREPARATION_POLICY)
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--judge-config', type=Path, required=True,
@@ -54,7 +56,7 @@ def main(argv=None):
     try:
         execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
                 mode=args.mode, artifact_root=args.artifact_root, artifact_index_id=args.artifact_index_id, partition_id=args.partition_id, request_revision=args.request_revision,
-                case_ids=args.case_ids, model_config=args.model_config,
+                case_ids=args.case_ids, model_config=args.model_config, preparation_policy=args.preparation_policy,
                 agent_config={'judge_config': args.judge_config.resolve(), 'trajectory': args.trajectory,
                               'metrics': args.metrics, 'task_timeout': args.task_timeout})
     except KeyboardInterrupt:

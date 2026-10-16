@@ -163,7 +163,7 @@ flowchart TD
 1. `prepare` 从本地正式来源生成 bundle；同一会议的问题共享完整会议资料和一个 partition。选择一题只限制提问，不删会议内容。
 2. 先以 `prepare --install-bundle ... --artifact-root ...` 完整安装 canonical bundle，冻结 installer 输出的 bundle/index ID；Notebook CLI 显式传 `notebook-request-v3`、`--artifact-root` 和来自冻结配置的 `--artifact-index-id`，拒绝 pointer 变化，再校验 capsule、完整公开请求与选题归属。未指定 store 的旧复制模式仍完整加载 bundle。
 3. runner 拒绝已有 run-dir，发布共享输入／源码引用并调用 `configure_environment`；无 store 时仍复制 `input/`。配置、数据库和 storage 始终独立。环境变量、导入路径和 cwd 会变化，因此一个分区/mode 使用一个新 CLI 进程。
-4. `prepare_notebook` 通过 SN 导入整份资料，保存对象映射，检查分块和 embedding 覆盖并建索引。被测检索／生成模型由 SN TOML 及对应 Settings 决定。
+4. `prepare_notebook` 通过 SN 导入整份资料，保存对象映射，检查分块和 embedding 覆盖并建索引。默认 `per-source-metadata-v1`；显式 `deferred-notebook-metadata-v1` 仅抑制导入循环中的笔记本元数据刷新，校验/索引完成后统一调用一次，再标 prepared。策略写入 runtime/manifest/state 和方法身份；最终刷新回执只说明调用与返回，不证明模型成功。被测检索／生成模型由 SN TOML 及对应 Settings 决定。
 5. `run_system_question` 捕获实际合成输入及 usage，进入 `submit_system_question`。chunk 直接 Ask；reasoning 先做原生意图预览，需要澄清时记录 clarification，不从 gold 编造澄清回答。
 6. Ask 返回后检查 SN 是否实际持久化该答案，记录 success/no_answer/clarification/error。输出完成后接入评分侧标签做诊断；若证据观测失败，保留答案与错误状态，不捏造空证据成功。
 7. run 保存完整回答、诊断分和终态；共享模式自动单 run 报告披露 capsule 校验边界。正式 export 显式列真实 run 目录，用一个 context 做 canonical 全验证，按套件 compact 投影并跨分区对账；不能传父目录期待递归发现。

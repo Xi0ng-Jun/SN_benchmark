@@ -53,7 +53,7 @@ def test_execution_preserves_clarification_and_dashboard_pairing(tmp_path, monke
     from contextlib import nullcontext
     from rag_eval import usage_capture
     monkeypatch.setattr(usage_capture, 'capture_usage', lambda *a: nullcontext({}))
-    def prepare_notebook(repo, cell, docs, suite):
+    def prepare_notebook(repo, cell, docs, suite, *, preparation_policy='per-source-metadata-v1'):
         assert len(docs) == 1
         assert 'What flies?' not in docs[0]['text']
         return 'notebook', {docs[0]['id']: {'source_id':'source', 'chunk_ids':['chunk']}}

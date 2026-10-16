@@ -47,6 +47,28 @@ def test_plan_groups_selected_cases_and_forwards_only_ids(tmp_path):
         assert 'SECRET-GOLD' not in json.dumps(job)
 
 
+def test_batch_cli_preserves_preparation_policy_in_every_child(tmp_path, capsys):
+    from scripts.run_notebook_batch import main
+    _, path, refs, ids = installed(tmp_path)
+    policy = 'deferred-notebook-metadata-v1'
+    assert main(['run', '--bundle', str(path), '--artifact-root', str(tmp_path / 'store'),
+                 '--artifact-index-id', refs['index']['id'], '--case-id-file', str(ids),
+                 '--mode', 'chunk', '--project-root', str(tmp_path / 'product'),
+                 '--output-root', str(tmp_path / 'batch'), '--preparation-policy', policy, '--dry-run']) == 0
+    jobs = json.loads(capsys.readouterr().out)['jobs']
+    assert len(jobs) == 2
+    for job in jobs:
+        assert job['preparation_policy'] == policy
+        assert job['argv'][job['argv'].index('--preparation-policy') + 1] == policy
+    assert not (tmp_path / 'batch').exists()
+
+
+def test_batch_rejects_unknown_preparation_policy(tmp_path):
+    with pytest.raises(ValueError, match='preparation policy'):
+        plan(tmp_path, preparation_policy='typo')
+    assert not (tmp_path / 'batch').exists()
+
+
 @pytest.mark.parametrize('text', ['qasper:q\nunknown\n', 'qasper:q\nqasper:q\n', '\n', 'qasper:q \n'])
 def test_invalid_selection_rejects_before_any_output_or_process(tmp_path, text):
     from rag_eval.notebook_batch import plan_batch

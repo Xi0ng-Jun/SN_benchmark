@@ -134,6 +134,9 @@ def write_report(run_dirs, output, *, partition_only=False):
                               + "；全题单 " + str(notebook_context["selected_cases"]) + " 题 / " + str(notebook_context["partition_count"]) + " 个资料分区。",
                               "F1/ROUGE 等连续主分仅报告有效评分均值与覆盖率，不解释为答对率。ALCE 模型指标需要独立官方评分步骤；当前未评分保留 null。"])
             lines.append(f"路径：{manifest['track']}；模式：{_mode_label(manifest) or '不适用'}；显式模型适配器中未结束的调用记录：{run['unfinished_model_calls']}（不含产品内部全部请求）。")
+            preparation_policy = manifest.get('identity', {}).get('preparation_policy')
+            if preparation_policy:
+                lines.append('资料准备策略：' + _cell(preparation_policy) + '。')
             audit = run.get('scheduled_generation_audit')
             if audit is not None:
                 completeness = audit['completeness']

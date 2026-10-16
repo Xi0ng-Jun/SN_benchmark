@@ -247,6 +247,8 @@ export ARTIFACT_ROOT="$CAMPAIGN_ROOT/artifacts"
 
 每个 partition × mode × attempt 使用新目录、新 CLI 进程。当前 runner **不支持原目录隐式续跑**，目录存在即拒绝。重试建新 attempt 并记录原因和父 attempt，不能按低分选择性重跑。
 
+资料导入成为瓶颈时，可在新的诊断运行显式加 `--preparation-policy deferred-notebook-metadata-v1`：暂停逐篇 notebook metadata 刷新，整份资料准备后刷新一次；摘要、论文元数据、chunk/embedding 仍沿用原路径。默认 `per-source-metadata-v1` 不变；新旧策略进入不同方法身份，不可混入同一提交。单次、batch 和 native Agent CLI 均支持，工作台尚未暴露该选项。回执、已验证范围及服务器验收见[准备优化说明](docs/deferred-notebook-metadata.md)。
+
 smoke 核验请求无 gold、资料范围正确、输出及失败状态完整、证据映射可回放，并验证对应官方评分路径。通过后按计划枚举全量 partitions，省略 `--case-id-file`。MultiHop reasoning 使用 `--mode reasoning` 和不同的新目录；其他方法保持本轮清单中的 mode。
 
 每个运行会保存 manifest、状态、题单、`outputs.jsonl`、运行期 `scores.jsonl` 和产品工件。**runner 的诊断分不等于统一答卷的官方成绩**；后续导出和官方评分仍须执行。

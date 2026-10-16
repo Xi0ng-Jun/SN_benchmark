@@ -169,7 +169,7 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
             config['qasper_evidence_recovery'] = dict(origin='saved-run-readonly-export', **evidence_policy)
         current = fingerprint({'identity': config, 'mode': manifest['mode']})
         if family is not None and family != current:
-            raise ValueError('SN submissions cannot mix modes, models, requests or source revisions')
+            raise ValueError('SN submissions cannot mix modes, models, requests, preparation policies or source revisions')
         family = current
         protocol_info = identity.get('reasoning_protocol')
         method_name = 'sn-' + (
