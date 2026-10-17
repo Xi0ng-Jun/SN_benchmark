@@ -129,8 +129,44 @@ def main():
         command.add_argument('--task', required=True)
         if name == 'worktree-bind':
             command.add_argument('--worktree', required=True, help='Trusted registered ID')
+    for name in ('iterations-migrate', 'iteration-show', 'iteration-legacy-node', 'iteration-legacy-parent'):
+        command = commands.add_parser(name, help='Read iterations or map legacy Tasks with evidenced fields only')
+        command.add_argument('--config', type=Path, required=True)
+        if name != 'iteration-show':
+            command.add_argument('--actor', required=True)
+        if name == 'iterations-migrate':
+            command.add_argument('--apply', action='store_true', help='Write; the default is a dry-run report')
+        if name in ('iteration-show', 'iteration-legacy-node'):
+            command.add_argument('--iteration', required=True)
+        if name in ('iteration-legacy-node', 'iteration-legacy-parent'):
+            command.add_argument('--basis', required=True, help='Evidence for this manual association')
+        if name == 'iteration-legacy-node':
+            command.add_argument('--label', required=True)
+            command.add_argument('--parent')
+            command.add_argument('--execution', action='append', default=[])
+        if name == 'iteration-legacy-parent':
+            command.add_argument('--candidate', required=True)
+            command.add_argument('--parent', required=True)
     args = parser.parse_args()
-    if args.command.startswith('worktree-'):
+    if args.command.startswith('iteration'):
+        from .configuration import task_worktree_services
+        from .iterations import IterationService
+        from .job_execution import JobExecutionStore
+        repository = WorkbenchRepository(args.state)
+        service, _ = task_worktree_services(repository, load_config(args.config))
+        iterations = IterationService(repository, service, executions=JobExecutionStore(repository))
+        if args.command == 'iterations-migrate':
+            result = iterations.migrate_legacy(actor=args.actor, dry_run=not args.apply)
+        elif args.command == 'iteration-show':
+            result = iterations.iteration(args.iteration)
+        elif args.command == 'iteration-legacy-node':
+            result = iterations.record_legacy_candidate(args.iteration, label=args.label, basis=args.basis,
+                                                        actor=args.actor, execution_ids=args.execution,
+                                                        parent_candidate_id=args.parent)
+        else:
+            result = iterations.assign_legacy_parent(args.candidate, args.parent, basis=args.basis, actor=args.actor)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command.startswith('worktree-'):
         from .configuration import task_worktree_services
         config = load_config(args.config)
         service, registrations = task_worktree_services(WorkbenchRepository(args.state), config)

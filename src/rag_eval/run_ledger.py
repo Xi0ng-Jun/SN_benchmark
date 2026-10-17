@@ -31,6 +31,7 @@ FIELDS = (
     "official_score",
     "official_scores_path",
     "task_worktree",
+    "candidate",
     "stage_metrics",
     "created_at",
 )
@@ -210,6 +211,7 @@ def derive_run(run_dir: str | Path, *, scores_path: str | Path | None = None,
         "official_score": _score_value(Path(scores_path).expanduser() if scores_path else None),
         "official_scores_path": str(Path(scores_path).expanduser().resolve()) if scores_path else None,
         "task_worktree": identity.get('task_worktree'),
+        "candidate": identity.get('candidate'),
         "stage_metrics": _stage_value(Path(stage_metrics_path).expanduser()
                                       if stage_metrics_path else None),
         "created_at": _created_at(run, manifest, state),
@@ -330,6 +332,7 @@ def query_runs(ledger: str | Path, *, suite: str | None = None,
         row.setdefault('stderr_summary', None)
         row.setdefault('official_scores_path', None)
         row.setdefault('task_worktree', None)
+        row.setdefault('candidate', None)
     return [row for row in rows
             if (suite is None or row.get("suite") == suite)
             and (mode is None or row.get("mode") == mode)

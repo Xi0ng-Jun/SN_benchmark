@@ -49,6 +49,8 @@ def main(argv=None):
     parser.add_argument('--task', required=True)
     parser.add_argument('--role', choices=('analyst', 'implementer'), default='analyst')
     parser.add_argument('--hypothesis')
+    parser.add_argument('--candidate', help='iteration candidate (implementer leak-check)')
+    parser.add_argument('--parent', help='evaluated candidate a drafted proposal hangs under')
     parser.add_argument('command')
     parser.add_argument('args', nargs='*')
     parser.add_argument('--all', action='store_true')
@@ -69,6 +71,9 @@ def main(argv=None):
         runs = json.loads(views.task_runs_context(task_id)[1])
         out = dict(task={k: task[k] for k in ('id', 'title', 'goal')}, worktree=runs['worktree'], runs=runs['runs'],
                    hypotheses=[_card_summary(c) for c in store.list(task_id)])
+        iteration = _iteration_summary(repository, views, task_id, [run['id'] for run in runs['runs']])
+        if iteration is not None:
+            out['iteration'] = iteration
     elif command == 'runs':
         out = views.list_runs() if options.all else json.loads(views.task_runs_context(task_id)[1])
     elif command == 'cases':
@@ -93,6 +98,13 @@ def main(argv=None):
         if leak['findings']:
             out = dict(saved=False, reason='implementer-facing fields overlap benchmark text; rewrite them',
                        findings=leak['findings'])
+        elif options.parent:
+            from .iterations import IterationService
+            saved = IterationService(repository, views._worktree_service).draft_proposal(
+                options.parent, card, author='agent:analyst')
+            if saved['task_id'] != task_id:
+                raise SystemExit('the parent candidate belongs to another iteration Task')
+            out = dict(saved=True, card=saved, next='a person approves or rejects this proposal')
         else:
             out = dict(saved=True, card=store.draft(task_id, card, author='agent:analyst'),
                        next='a person approves or rejects it on the Changes page')
@@ -103,12 +115,31 @@ def main(argv=None):
         out = {k: card['card'].get(k) for k in ('title', 'component', 'mechanism', 'implementer_brief',
                                                 'possible_harm', 'change_scope')}
     else:  # leak-check
-        out = leak_check(views, task_id, task_run_ids(views, task_id), hypothesis_id=options.hypothesis)
+        out = leak_check(views, task_id, task_run_ids(views, task_id), hypothesis_id=options.hypothesis,
+                         candidate_id=options.candidate)
         if options.role == 'implementer':
             out['findings'] = [dict(kind=f['kind'], source=f['source']) for f in out['findings']]
             out.pop('runs', None)
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
     sys.stdout.write('\n')
+
+
+def _iteration_summary(repository, views, task_id, run_ids):
+    """Candidates of the iteration this Task backs, with the run ids of their attempts."""
+    from .iterations import IterationService
+    service = IterationService(repository, views._worktree_service)
+    found = [i for i in service.iterations() if i['task_id'] == task_id]
+    if not found:
+        return None
+    tree = service.iteration(found[0]['id'])
+    owned = lambda executions: [r for r in run_ids if r.rsplit('-', 1)[0] in executions]
+    return dict(id=tree['id'], origin=tree['origin'], start_commit=tree['start_commit'],
+                unknown=tree['unknown'], candidates=[dict(
+                    id=c['id'], parent=c['parent_candidate_id'], depth=c['depth'], state=c['state'],
+                    frozen_commit=c['frozen_commit'], proposal_id=c['proposal_id'],
+                    runs=owned({a['execution_id'] for a in c['attempts']} | {l['execution_id'] for l in c['links']}))
+                    for c in tree['candidates']],
+                unassigned_runs=owned(set(tree['unassigned_executions'])))
 
 
 def _card_summary(record):

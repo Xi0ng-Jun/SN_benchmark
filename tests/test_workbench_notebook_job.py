@@ -157,3 +157,34 @@ def test_matching_bundle_copy_inside_store_is_not_treated_as_owned_object(tmp_pa
             partition_id=prep['input']['selection']['partition_ids'][0],
             artifact_root=args['artifact_store'].root, artifact_index_id=prep['input']['index_ref']['id'])
     assert not run.exists()
+
+
+@pytest.mark.parametrize('matches', [True, False])
+def test_candidate_frozen_commit_is_checked_against_the_loaded_source(tmp_path, monkeypatch, matches):
+    from rag_eval.notebook_runner import execute
+    from rag_eval import runtime_environment
+    jobs, job, prep, args = prepared(tmp_path)
+    config = settings(tmp_path, args)
+    spec = build_execution_spec(jobs, job['task_id'], job['job_id'], prep['preparation_id'],
+        config, request_key='candidate', budget=dict(timeout_seconds=10))
+    payload = json.loads(spec['argv'][-1])
+    head = prep['source']['provenance']['head_revision']
+    association = dict(task_id=job['task_id'], worktree_path=str(tmp_path / 'tree'), paseo_workspace_id='w',
+                       source_ref=payload['sn_ref']['id'], iteration_id='a' * 32, candidate_id='b' * 32,
+                       attempt=1, frozen_commit=head if matches else '0' * 40,
+                       preparation_id=prep['preparation_id'])
+    class InitializationReached(Exception):
+        pass
+    def stop_before_runtime_or_models(*a, **kw):
+        raise InitializationReached()
+    monkeypatch.setattr(runtime_environment, 'configure_environment', stop_before_runtime_or_models)
+    run = tmp_path / 'runner'
+    with pytest.raises(InitializationReached if matches else ValueError):
+        execute(root=Path(__file__).resolve().parents[1], project=config['project_root'],
+            bundle_dir=payload['bundle'], run=run, mode='chunk',
+            partition_id=payload['selection']['partition_ids'][0],
+            request_revision='notebook-request-v3', case_ids=payload['selection']['case_ids'],
+            artifact_root=payload['artifact_root'], artifact_index_id=payload['index_ref']['id'],
+            sn_source_ref=payload['sn_ref'], task_worktree=association)
+    # A mismatch is a saved failure, not a silently relabelled run.
+    assert json.loads((run / 'state.json').read_text())['phase'] == 'failed'

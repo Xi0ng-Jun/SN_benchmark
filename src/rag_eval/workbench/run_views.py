@@ -394,6 +394,8 @@ class RunViews:
         runtime = _json(run / 'runtime-identity.json') if (run / 'runtime-identity.json').is_file() else {}
         loaded = ((runtime.get('loaded_model_services') or {}).get('observation') or {})
         return dict(
+            # Iteration candidate attempt as the runner verified it; None for Task runs.
+            candidate=identity.get('candidate'),
             source=dict(sn_source_ref=((refs.get('sources') or {}).get('sn') or {}).get('id'),
                         source_format=code.get('source_format'), head_revision=code.get('head_revision'),
                         head_tree=code.get('head_tree'), selected_roots=code.get('selected_roots'),

@@ -189,6 +189,9 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
                      preparation_config=config.get('job_preparation'),
                      worktree_service=worktree_service)
     app.include_router(job_api.router())
+    from .iterations_api import IterationAPI
+    app.include_router(IterationAPI(repository, workspace, worktree_service, plans=plans, job_api=job_api,
+                                    actor=actor, config=config, creator=hypothesis_worktree_creator).router())
     from .run_views import RunViews
     views = RunViews.from_config(config.get('run_views'), base=Path.cwd(), worktree_service=worktree_service,
                                  execution_enabled=isinstance(config.get('job_execution'), dict),

@@ -68,7 +68,8 @@ class AgentCreationStore:
             raise ValueError('Creation intent is not owned by this task and actor')
         return task, self._record(row)
 
-    def _command(self, conn, task, profile_id, title, agent_id, sdk_key, role=None, hypothesis_id=None):
+    def _command(self, conn, task, profile_id, title, agent_id, sdk_key, role=None, hypothesis_id=None,
+                 candidate_id=None):
         from .creation_bridge import validate_create_command
         workspace = self.repository._require(conn, 'workspaces', task['workspace_id'])
         binding = self._bindings.get(workspace['id'])
@@ -80,7 +81,12 @@ class AgentCreationStore:
                    'idempotencyKey': sdk_key, 'config': copy.deepcopy(binding['profiles'][profile_id])}
         bound = (conn.execute('SELECT * FROM task_worktrees WHERE task_id=?', (task['id'],)).fetchone()
                  if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_worktrees'").fetchone() else None)
-        if role == 'implementer':
+        if role == 'implementer' and candidate_id is not None:
+            # An iteration candidate owns its worktree; several candidates may
+            # implement one proposal, so the card cannot choose the directory.
+            from .iterations import candidate_binding
+            bound = candidate_binding(conn, candidate_id)
+        elif role == 'implementer':
             from .hypothesis_worktrees import hypothesis_binding
             saved = hypothesis_binding(conn, task['id'], hypothesis_id)
             if saved is not None:
@@ -101,7 +107,8 @@ class AgentCreationStore:
             command['title'] = title
         return validate_create_command(command)
 
-    def prepare(self, task_id, profile_id, *, actor, request_key, title=None, role=None, hypothesis_id=None):
+    def prepare(self, task_id, profile_id, *, actor, request_key, title=None, role=None, hypothesis_id=None,
+                candidate_id=None):
         task_id = _opaque(task_id, 'task identity')
         profile_id = _opaque(profile_id, 'creation profile')
         actor = _opaque(actor, 'actor')
@@ -113,9 +120,13 @@ class AgentCreationStore:
             raise ValueError('Invalid Agent role')
         if (role == 'implementer') != (hypothesis_id is not None):
             raise ValueError('An implementer Agent is created for exactly one approved hypothesis card')
+        if candidate_id is not None and role != 'implementer':
+            raise ValueError('Only an implementer Agent is created for a candidate')
         payload = {'profile_id': profile_id, 'title': title}
         if role is not None:
             payload.update(role=role, hypothesis_id=hypothesis_id)
+        if candidate_id is not None:
+            payload['candidate_id'] = candidate_id
         repo = self.repository
         with repo.connect(write=True) as conn:
             task = repo._require(conn, 'tasks', task_id)
@@ -130,8 +141,16 @@ class AgentCreationStore:
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hypotheses'").fetchone() else None
                 if card is None or card['status'] not in ('approved', 'implementing'):
                     raise ValueError('The hypothesis card is not approved for implementation')
+            if candidate_id is not None:
+                candidate = conn.execute(
+                    'SELECT c.status,c.proposal_id FROM candidates c JOIN iterations i ON i.id=c.iteration_id '
+                    'WHERE c.id=? AND i.task_id=?', (candidate_id, task_id)).fetchone() \
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='candidates'").fetchone() else None
+                if candidate is None or candidate['proposal_id'] != hypothesis_id or candidate['status'] != 'ready':
+                    raise ValueError('The candidate is not implementing this proposal')
             intent_id, agent_id = uid(), str(uuid.uuid4())
-            command = self._command(conn, task, profile_id, title, agent_id, 'creation:' + intent_id, role, hypothesis_id)
+            command = self._command(conn, task, profile_id, title, agent_id, 'creation:' + intent_id, role, hypothesis_id,
+                                    candidate_id)
             conn.execute('''INSERT INTO agent_creation_intents
                 (id,task_id,actor,request_key,agent_id,payload,command,status,prepared_at)
                 VALUES(?,?,?,?,?,?,?,'prepared',?)''',
@@ -139,7 +158,8 @@ class AgentCreationStore:
                           json.dumps(command, ensure_ascii=False), now()))
             repo._event(conn, task_id, 'agent.creation.prepared', intent_id,
                         {'agent_id': agent_id, 'profile_id': profile_id, 'title': title, 'actor': actor,
-                         **({'role': role, 'hypothesis_id': hypothesis_id} if role else {})})
+                         **({'role': role, 'hypothesis_id': hypothesis_id} if role else {}),
+                         **({'candidate_id': candidate_id} if candidate_id else {})})
             return self._scope(conn, task_id, intent_id, actor)[1]
 
     def get(self, task_id, intent_id, *, actor):
@@ -176,7 +196,7 @@ class AgentCreationStore:
             try:
                 authorized = self._command(conn, task, intent['profile_id'], intent['title'],
                                            command['agentId'], command['idempotencyKey'], intent.get('role'),
-                                           intent.get('hypothesis_id'))
+                                           intent.get('hypothesis_id'), intent.get('candidate_id'))
             except ValueError:
                 raise Conflict('Creation authorization changed before dispatch') from None
             if authorized != command:
@@ -217,6 +237,9 @@ class AgentCreationStore:
                                  'VALUES(:id,:task_id,:agent_id,:linked_by,:linked_at,:role,:cwd,:hypothesis_id)',
                                  dict(session, role=intent.get('role'), cwd=intent['command']['expectedCwd'],
                                       hypothesis_id=intent.get('hypothesis_id')))
+                    if intent.get('candidate_id'):
+                        conn.execute('UPDATE task_sessions SET candidate_id=? WHERE id=?',
+                                     (intent['candidate_id'], session['id']))
                     repo._event(conn, task_id, 'session.attached', session['id'],
                                 dict(session, **({'role': intent['role']} if intent.get('role') else {})))
                     session_id = session['id']

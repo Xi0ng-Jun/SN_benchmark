@@ -45,6 +45,7 @@ class CreationRequest(BaseModel):
     request_key: str = Field(strict=True, min_length=1, max_length=200)
     role: Literal['analyst', 'implementer'] | None = None
     hypothesis_id: str | None = Field(default=None, strict=True, min_length=1, max_length=200)
+    candidate_id: str | None = Field(default=None, strict=True, pattern='^[0-9a-f]{32}$')
 
     @field_validator('profile_id', 'title')
     @classmethod
@@ -79,7 +80,7 @@ def project_creation(record):
     public = {key: record[key] for key in (
         'id', 'task_id', 'actor', 'profile_id', 'title', 'request_key', 'agent_id', 'status',
         'prepared_at', 'started_at', 'finished_at', 'session_id')}
-    public.update({k: record[k] for k in ('role', 'hypothesis_id') if record.get(k) is not None})
+    public.update({k: record[k] for k in ('role', 'hypothesis_id', 'candidate_id') if record.get(k) is not None})
     envelope = record['envelope']
     public['envelope'] = None
     if envelope is not None:

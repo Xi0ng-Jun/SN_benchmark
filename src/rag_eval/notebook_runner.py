@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 import json
 from pathlib import Path
+import re
 import shutil
 
 from .artifacts import digest, save_json, save_jsonl
@@ -205,6 +206,19 @@ def score_outputs(run, cases, planned, sink):
                            trace=(output or {}).get('trace')))
 
 
+TASK_ASSOCIATION_FIELDS = frozenset({'task_id', 'worktree_path', 'paseo_workspace_id', 'source_ref'})
+CANDIDATE_ASSOCIATION_FIELDS = frozenset({'iteration_id', 'candidate_id', 'attempt', 'frozen_commit',
+                                          'preparation_id'})
+
+
+def _candidate_association(value):
+    """Shape of a workbench candidate attempt; the commit is checked after loading."""
+    hexed = lambda text, size: type(text) is str and re.fullmatch('[0-9a-f]{%d}' % size, text) is not None
+    return (hexed(value.get('iteration_id'), 32) and hexed(value.get('candidate_id'), 32)
+            and type(value.get('attempt')) is int and value['attempt'] >= 1
+            and hexed(value.get('frozen_commit'), 40) and hexed(value.get('preparation_id'), 64))
+
+
 FAILURE_FIELDS = ('error_type', 'error_message', 'failed_phase', 'diagnostic_path', 'diagnostic_write_error')
 
 
@@ -243,8 +257,9 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             or (dependency_requirements is not None and sn_source_ref is None)):
         raise ValueError('Startup dependency checks require an explicit captured source')
     if task_worktree is not None:
-        if (not isinstance(task_worktree, dict)
-                or set(task_worktree) != {'task_id', 'worktree_path', 'paseo_workspace_id', 'source_ref'}
+        keys = set(task_worktree) if isinstance(task_worktree, dict) else None
+        if (keys not in (TASK_ASSOCIATION_FIELDS, TASK_ASSOCIATION_FIELDS | CANDIDATE_ASSOCIATION_FIELDS)
+                or (keys != TASK_ASSOCIATION_FIELDS and not _candidate_association(task_worktree))
                 or not sn_source_ref or task_worktree.get('source_ref') != sn_source_ref.get('id')
                 or not isinstance(task_worktree.get('task_id'), str) or not task_worktree['task_id']
                 or not isinstance(task_worktree.get('worktree_path'), str)
@@ -335,6 +350,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         if sn_source_ref is not None:
             source_kwargs['captured_source_ref'] = sn_source_ref
         code = snapshot_sources(root, project, run, **source_kwargs)
+        if task_worktree is not None and 'candidate_id' in task_worktree and (
+                code.get('head_revision') != task_worktree['frozen_commit']
+                or code.get('modified_paths') or code.get('added_paths') or code.get('deleted_paths')):
+            raise ValueError('Loaded source differs from the frozen candidate commit')
         environment_kwargs = {
             'document_limit': bundle['manifest']['max_documents'],
         }
@@ -372,7 +391,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         if reasoning_protocol != 'reasoning-v1':
             identity['reasoning_protocol'] = protocol_info
         if task_worktree is not None:
-            identity['task_worktree'] = dict(task_worktree)
+            identity['task_worktree'] = {key: task_worktree[key] for key in sorted(TASK_ASSOCIATION_FIELDS)}
+            if 'candidate_id' in task_worktree:
+                identity['candidate'] = {key: task_worktree[key]
+                                         for key in sorted(CANDIDATE_ASSOCIATION_FIELDS | {'source_ref'})}
         identity['feature_set'] = build_feature_identity(runtime)
         identity['dotenv_sha256'] = runtime.get('dotenv_snapshot', {}).get('sha256')
         if 'startup_dependencies' in runtime:

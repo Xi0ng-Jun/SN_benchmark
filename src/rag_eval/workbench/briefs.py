@@ -86,8 +86,10 @@ $S docs                       # 下方文档索引
 '''
 
 
-def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty):
+def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty, candidate_id=None):
     s = f'{tool} --task {task["id"]} --role implementer --hypothesis {hypothesis_id}'
+    if candidate_id:
+        s += f' --candidate {candidate_id}'
     scope = '\n'.join(f'- `{p}`' for p in card.get('change_scope') or []) or '- （卡片未限定，改动尽量集中在上述组件）'
     dirty = '\n'.join(f'- `{p}`' for p in start_dirty) or '- （无）'
     return f'''# 你的角色：实现 Agent（Silicon Notebook）
@@ -128,9 +130,12 @@ def resolve_brief(repository, task_id, session_id, *, tool):
                  if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_worktrees'").fetchone() else None)
         cwd = repository.session_cwd(conn, session, task)
         card = None
+        candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
         if session['role'] == 'implementer':
             from .hypothesis_worktrees import hypothesis_binding
-            saved_binding = hypothesis_binding(conn, task_id, session['hypothesis_id'])
+            from .iterations import candidate_binding
+            saved_binding = (candidate_binding(conn, candidate_id) if candidate_id
+                             else hypothesis_binding(conn, task_id, session['hypothesis_id']))
             if saved_binding is not None:
                 bound = dict(saved_binding, start_snapshot_json=json.dumps(saved_binding['start_snapshot']))
             row = conn.execute('SELECT card FROM hypotheses WHERE id=? AND task_id=?',
@@ -142,7 +147,7 @@ def resolve_brief(repository, task_id, session_id, *, tool):
     if session['role'] == 'implementer':
         start = json.loads(bound['start_snapshot_json']) if bound else {}
         text = implementer_brief(task, card, worktree=worktree, tool=tool, hypothesis_id=session['hypothesis_id'],
-                                 start_dirty=[d['path'] for d in start.get('dirty', [])])
+                                 start_dirty=[d['path'] for d in start.get('dirty', [])], candidate_id=candidate_id)
         title = '实现 Agent 工作说明 · ' + card['title']
     else:
         text = analyst_brief(task, eval_root=str(Path(workspace['location'])), tool=tool, worktree=worktree, cwd=cwd)

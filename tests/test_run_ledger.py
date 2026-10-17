@@ -53,6 +53,7 @@ def test_append_derives_identity_and_keeps_optional_values_null(tmp_path):
         "official_score": None,
         "official_scores_path": None,
         "task_worktree": None,
+        "candidate": None,
         "stage_metrics": None,
         "created_at": "2026-10-13T03:15:00+00:00",
     }

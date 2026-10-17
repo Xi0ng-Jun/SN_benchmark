@@ -91,6 +91,9 @@ class HypothesisStore:
                 status TEXT NOT NULL, card TEXT NOT NULL, author TEXT NOT NULL,
                 decision TEXT, verification TEXT, conclusion TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL)''')
+            # Iteration proposals name the evaluated candidate they hang under.
+            if 'parent_candidate_id' not in {r['name'] for r in conn.execute('PRAGMA table_info(hypotheses)')}:
+                conn.execute('ALTER TABLE hypotheses ADD COLUMN parent_candidate_id TEXT')
 
     @staticmethod
     def _record(row):
@@ -115,17 +118,18 @@ class HypothesisStore:
         with self.repository.connect() as conn:
             return self._get(conn, task_id, hypothesis_id)
 
-    def draft(self, task_id, card, *, author):
+    def draft(self, task_id, card, *, author, parent_candidate_id=None):
         card = validate_card(card)
         author = _text(author, 'author', limit=200)
         with self.repository.connect(write=True) as conn:
             self.repository._require(conn, 'tasks', task_id)
             record = dict(id=uid(), task_id=task_id, status='draft', card=json.dumps(card, ensure_ascii=False),
-                          author=author, created_at=now(), updated_at=now())
-            conn.execute('INSERT INTO hypotheses(id,task_id,status,card,author,created_at,updated_at) '
-                         'VALUES(:id,:task_id,:status,:card,:author,:created_at,:updated_at)', record)
+                          author=author, created_at=now(), updated_at=now(), parent_candidate_id=parent_candidate_id)
+            conn.execute('INSERT INTO hypotheses(id,task_id,status,card,author,created_at,updated_at,parent_candidate_id) '
+                         'VALUES(:id,:task_id,:status,:card,:author,:created_at,:updated_at,:parent_candidate_id)', record)
             self.repository._event(conn, task_id, 'hypothesis.drafted', record['id'],
-                                   {'title': card['title'], 'author': author, 'predictions': len(card['predictions'])})
+                                   {'title': card['title'], 'author': author, 'predictions': len(card['predictions']),
+                                    **({'parent_candidate_id': parent_candidate_id} if parent_candidate_id else {})})
             return self._get(conn, task_id, record['id'])
 
     def decide(self, task_id, hypothesis_id, decision, *, actor, note=''):
@@ -213,12 +217,22 @@ def scan_text(text, material):
     return hits
 
 
-def leak_check(run_views, task_id, run_ids, extra_texts=(), *, hypothesis_id=None):
+def leak_check(run_views, task_id, run_ids, extra_texts=(), *, hypothesis_id=None, candidate_id=None):
     """Scan added diff lines in the Task worktree (and given texts) for benchmark material."""
     material = benchmark_material(run_views, run_ids)
     findings = []
     found = None
-    if hypothesis_id is not None:
+    if candidate_id is not None:
+        from .iterations import IterationService
+        service = run_views._worktree_service
+        if service is None:
+            raise ValueError('Candidate worktree service unavailable')
+        view = IterationService(service.repository, service).view(candidate_id)
+        if view.task_id != task_id:
+            raise ValueError('Candidate belongs to another iteration Task')
+        if view.binding(task_id) is not None:
+            found = (view.read(task_id), 'candidate_worktree')
+    elif hypothesis_id is not None:
         from .hypothesis_worktrees import HypothesisWorktreeService
         service = run_views._worktree_service
         if service is None:
