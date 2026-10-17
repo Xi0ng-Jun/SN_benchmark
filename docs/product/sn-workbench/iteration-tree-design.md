@@ -1,6 +1,6 @@
 # 迭代与候选树：工作台交互与数据设计（草案）
 
-2026-10-15。状态：**设计草案，未实现**。由用户与协调者讨论收敛，依据[界面先例调研](../../research/2026-10-15-iteration-tree-ui-prior-art.md)和当前代码。第 2 节列出已由用户确认的方向；其余是建议，实现中按真实使用调整。本文不改变 [CURRENT_STATE](../../../CURRENT_STATE.md) 的不变量。
+2026-10-15。状态：**第一阶段（身份契约，第 6 节、第 10 节第 1 步）已实现**，见 [2026-10-17 smoke 记录](../../experiments/2026-10-17-iteration-identity-smoke.md)；比较、CLI 动词与界面尚未实现。由用户与协调者讨论收敛，依据[界面先例调研](../../research/2026-10-15-iteration-tree-ui-prior-art.md)和当前代码。第 2 节列出已由用户确认的方向；其余是建议，实现中按真实使用调整。本文不改变 [CURRENT_STATE](../../../CURRENT_STATE.md) 的不变量。
 
 ## 1. 要解决的问题
 
@@ -87,6 +87,7 @@ run:    沿用现有 Job/execution 状态与终态规则
 
 约束：
 
+- 实现说明（2026-10-17）：`candidate_id`／`iteration_id`／`attempt` 没有改写 Job／preparation／execution 的 v1 封闭格式，而是由 `candidate_attempts` 把候选与 attempt 绑定到 job_id 与 preparation_id（preparation 的 source head 必须等于 `frozen_commit`），再随执行关联传给 runner，由 runner 在实际加载源码后核对并写入 manifest `identity.candidate` 与 ledger。
 - 身份在**生产边界**写入（worktree 创建、job preparation、runner 启动），并由 runner 校验（当前 `notebook_runner.py` 对 `task_worktree` 字段集做校验，需扩展契约而不是只在前端加字段）。
 - `frozen_commit` 用于派生，`source_ref` 用于核对实际加载；二者都不替代 runner 的实际加载回执。
 - **浏览选择只改视图。** 现有 `activate()`（设为当前改动）会切换 Task 执行绑定；新界面中执行请求显式携带 `candidate_id`。
@@ -170,8 +171,9 @@ run:    沿用现有 Job/execution 状态与终态规则
 | 旧 Task | 映射为迭代，只填有证据的字段，其余标未知（见第 10 节） |
 | 默认排序 | 树结构顺序（父在前、兄弟按派生时间），另设“按 Δ根 排行”切换（协调者推荐，用户委托） |
 | 提议的父节点 | 维持现状：只对已评测、可引用 run 证据的节点提议 |
+| 迭代内换 mode | 另开迭代；mode／reasoning protocol 属于比较身份，可沿用同一起点与题单（用户，2026-10-17） |
+| 迭代之间的关联 | 新迭代记录 `seeded_from = (迭代, 候选)`，以该候选冻结 commit 为起点；只用于导航，分数不跨迭代继承（用户，2026-10-17） |
 
 ## 12. 仍待定
 
-- 迭代内是否允许换 mode（chunk/reasoning）作为同一迭代的另一组比较，还是另开迭代。
-- 多个迭代之间如何关联（例如从迭代 I2 的已采纳候选开新迭代）。
+- 部分题出错的运行（execution 记为 failed）能否作为“已评测”、可否作为提议依据：随第二阶段比较记录一起确定。
