@@ -354,3 +354,40 @@ def test_legacy_capture_of_a_directorys_clean_start_is_parent_evidence_not_the_c
     assert found['executions'][0]['basis']['kind'] == 'saved_task_capture_after_start'
     assert plan['unassigned_executions'] == [baseline]
     assert plan['unassigned_evidence'][baseline][0]['kind'] == 'captured_from_clean_start_of'
+
+
+def test_provision_resets_a_stranded_dispatch_marker_and_retries(env):
+    """A crash after the dispatch marker but before creator.create() returns must not strand the candidate forever."""
+    import sqlite3
+    tree, root = evaluated_root(env)
+    proposal = approved(env, tree, root['id'])
+
+    class _CrashBeforeCreate:
+        def create(self, project_root, branch, base_revision):
+            raise RuntimeError('process killed before workspace creation')
+        def list(self):
+            return []
+
+    env['service'].creator = _CrashBeforeCreate()
+    # derive() calls provision(); the crash creator's create() raises,
+    # provision() swallows it, and the 'null' dispatch marker stays in DB.
+    child = env['service'].derive(root['id'], proposal_id=proposal, actor='alice', request_key='sc')
+    child_id = child['id']
+    with sqlite3.connect(env['repo'].database) as conn:
+        row = conn.execute('SELECT workspace_json FROM candidate_worktrees WHERE candidate_id=?',
+                           (child_id,)).fetchone()
+    assert row[0] == 'null', f'dispatch marker should be null, got {row[0]!r}'
+
+    # Second provision() with the crash creator: workspace_json is 'null' (not
+    # None), so it skips the creation branch and goes to _reconcile(expected=None).
+    # list() returns [] → 0 matches → marker reset to NULL.
+    env['service'].provision(child_id)
+    with sqlite3.connect(env['repo'].database) as conn:
+        row = conn.execute('SELECT workspace_json FROM candidate_worktrees WHERE candidate_id=?',
+                           (child_id,)).fetchone()
+    assert row[0] is None, f'dispatch marker was not reset; workspace_json = {row[0]!r}'
+
+    # Restore the real creator; the next provision() creates the workspace and reconciles.
+    env['service'].creator = env['creator']
+    recovered = env['service'].provision(child_id)
+    assert recovered['worktree']['status'] == 'ready' and recovered['state'] == 'implementing'

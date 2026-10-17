@@ -505,6 +505,20 @@ class IterationService:
                 continue
             matches.append((workspace, root))
         if len(matches) != 1:
+            # When no workspace matches and the dispatch marker (workspace_json
+            # set to 'null') was written but the creator call never returned a
+            # workspace (process crashed or was killed after the UPDATE), reset
+            # the marker so the next provision() can retry.  The no-second-
+            # dispatch guarantee (workspace_json IS NULL guard) still holds:
+            # the only paths that reach here with workspace_json='null' AND
+            # no matching workspace are genuinely failed dispatches.
+            if len(matches) == 0 and intent['workspace_json'] == 'null':
+                with self.repository.connect(write=True) as conn:
+                    conn.execute("UPDATE candidate_worktrees SET workspace_json=NULL,updated_at=? "
+                                 "WHERE candidate_id=? AND workspace_json='null'",
+                                 (now(), candidate_id))
+                    self.repository._event(conn, task_id, 'candidate.worktree.dispatch_reset', candidate_id,
+                                           dict(reason='no_matching_workspace_found_after_dispatch_marker'))
             raise ValueError('No unique verified registered workspace')
         workspace, root = matches[0]
         binding = self.trees.snapshot_binding(task_id, root, paseo_workspace_id=workspace['workspace_id'])
