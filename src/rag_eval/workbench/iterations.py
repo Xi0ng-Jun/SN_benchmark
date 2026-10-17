@@ -612,7 +612,10 @@ class IterationService:
                 private = sorted({entry[key] for entry in dirty for key in ('path', 'original_path')
                                   if key in entry and _private(entry[key])})
                 if private:
-                    raise ValueError('Private paths cannot be frozen: ' + ', '.join(private))
+                    raise ValueError(
+                        'Private paths cannot be frozen: ' + ', '.join(private) + '. '
+                        'Other non-standard sensitive files must be listed in .gitignore '
+                        'before calling freeze().')
                 identity = ('-c', 'user.name=' + COORDINATOR[0], '-c', 'user.email=' + COORDINATOR[1],
                             '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null')
                 _text_git(root, 'add', '--all', '--', '.')

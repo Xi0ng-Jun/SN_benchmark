@@ -141,11 +141,16 @@ class IterationAPI:
 
         @router.post('/api/candidates/{candidate_id}/proposals')
         def proposal_draft(candidate_id: str, command: Proposal):
+            # Intentionally not behind _write(): drafting a proposal and
+            # recording a decision are DB-only operations that create no
+            # external resources (no Paseo workspace, no git commit).
+            # _write() gates operations that touch external systems.
             self._scope(candidate_id=candidate_id)
             return service.draft_proposal(candidate_id, command.card, author=actor)
 
         @router.post('/api/candidates/{candidate_id}/decision')
         def node_decide(candidate_id: str, command: Decide):
+            # Same rationale as proposal_draft: no external side-effect.
             self._scope(candidate_id=candidate_id)
             return service.decide(candidate_id, command.decision, actor=actor, note=command.note)
 
