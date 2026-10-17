@@ -745,24 +745,37 @@ class IterationService:
             rows = conn.execute("SELECT hypothesis_id,binding_json FROM hypothesis_worktrees WHERE task_id=? "
                                 "AND status='ready' ORDER BY created_at,hypothesis_id", (task_id,)).fetchall() \
                 if _has_table(conn, 'hypothesis_worktrees') else []
+            notes = {}
             for row in rows:
                 binding = json.loads(row['binding_json'])
+                # A directory hosts several source states over time. A capture
+                # equal to its clean start is the parent state, not this
+                # candidate; only changed captures from it are the candidate's.
+                start = ((binding.get('start_snapshot') or {}).get('source_ref') or {}).get('id')
                 runs = []
                 for execution_id, record in started.items():
                     prep = preparations.get(record['preparation_id'])
                     if prep is None:
                         continue
                     source_id = prep['source']['artifact_ref']['id']
-                    if (binding['worktree_path'], source_id) in captures:
+                    if (binding['worktree_path'], source_id) not in captures:
+                        continue
+                    if source_id == start:
+                        notes.setdefault(execution_id, []).append(dict(
+                            kind='captured_from_clean_start_of', proposal_id=row['hypothesis_id'],
+                            source_ref=source_id))
+                    else:
                         runs.append(dict(execution_id=execution_id, basis=dict(
-                            kind='saved_task_capture', source_ref=source_id, worktree_path=binding['worktree_path'])))
+                            kind='saved_task_capture_after_start', source_ref=source_id,
+                            start_source_ref=start, worktree_path=binding['worktree_path'])))
                 candidates.append(dict(proposal_id=row['hypothesis_id'],
                                        observed_creation_base=binding['base_revision'],
                                        worktree_path=binding['worktree_path'], executions=runs))
             assigned = {run['execution_id'] for c in candidates for run in c['executions']}
         return dict(task_id=task_id, title=task['title'], existing_iteration=existing['id'] if existing else None,
                     plan=plan, unknown=unknown, candidates=candidates,
-                    unassigned_executions=[e for e in started if e not in assigned])
+                    unassigned_executions=[e for e in started if e not in assigned],
+                    unassigned_evidence={e: n for e, n in notes.items() if e not in assigned})
 
     def _task_captures(self, task_id):
         from ..identity import fingerprint

@@ -316,3 +316,41 @@ def test_legacy_mapping_fills_only_evidenced_fields(tmp_path, monkeypatch):
     assert iterations.iteration(mapped['id'])['unassigned_executions'] == []
     with pytest.raises(Conflict):
         iterations.run(root['id'], budget=BUDGET, actor='operator', request_key='x')
+
+
+def test_legacy_capture_of_a_directorys_clean_start_is_parent_evidence_not_the_candidate(tmp_path, monkeypatch):
+    from rag_eval.workbench.hypothesis_worktrees import HypothesisWorktreeService
+    from test_workbench_job_preparation_records import environment
+    repo, jobs, job, args = environment(tmp_path)
+    task = job['task_id']
+    initialize_task_worktrees(repo)
+    trees = TaskWorktreeService(repo, args['artifact_store'], project_root=tmp_path / 'sn')
+    cards = HypothesisStore(repo)
+    card = cards.draft(task, CARD, author='analyst')
+    cards.decide(task, card['id'], 'approve', actor='human')
+    hypothesis_trees = HypothesisWorktreeService(repo, trees, creator=Creator(tmp_path / 'trees'))
+    tree = Path(hypothesis_trees.create(task, card['id'], actor='human')['binding']['worktree_path'])
+    hypothesis_trees.activate(task, card['id'], actor='human')
+    executions = JobExecutionStore(repo)
+    monkeypatch.setattr(executions, '_start', lambda record: None)
+
+    def execute(job_record, key):
+        prep = jobs.capture_inputs_source(**dict(args, job_id=job_record['job_id'], sn_ref=trees.capture_source(task),
+                                                 request_key=key))['preparation']
+        spec = dict(argv=['true'], run_dir=str(tmp_path / 'runs' / key), budget=BUDGET,
+                    preparation_id=prep['preparation_id'])
+        return executions.run(task, job_record['job_id'], 1, execution_spec=spec, actor='alice',
+                              request_key=key)['execution_id']
+
+    # The same directory first serves its unchanged start (the baseline), then the change.
+    baseline = execute(job, 'clean')
+    (tree / 'backend/app/__init__.py').write_text('VALUE = "changed"\n')
+    second = jobs.prepare(task, job['plan_id'], job['plan_revision'], job['plan_content_hash'],
+                          actor='alice', request_key='second')
+    changed = execute(second, 'changed')
+    plan = IterationService(repo, trees, executions=executions).legacy_plan(task)
+    [found] = plan['candidates']
+    assert [run['execution_id'] for run in found['executions']] == [changed]
+    assert found['executions'][0]['basis']['kind'] == 'saved_task_capture_after_start'
+    assert plan['unassigned_executions'] == [baseline]
+    assert plan['unassigned_evidence'][baseline][0]['kind'] == 'captured_from_clean_start_of'
