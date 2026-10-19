@@ -41,6 +41,7 @@ export EVAL_PYTHON="$EVAL_ROOT/.venv/bin/python"
 | `... flips LEFT RIGHT` | 分析 | 同题配对翻转表 |
 | `... hypotheses` | 分析 | 本任务假设卡及核对结果 |
 | `... hypothesis-draft --file card.json` | 分析 | 提交假设卡草稿；交给实现 Agent 的字段若与题面或 gold 重叠会被拒绝；草稿需人在更改页批准 |
+| `... hypothesis-draft --parent <候选> --file card.json` | 分析 | 迭代 Task：把提议挂在一个已评测候选下（该候选的运行即证据）；同样做泄漏扫描、需人批准 |
 | `... docs` | 分析 | 评测文档索引 |
 | `... --role implementer --hypothesis H card` | 实现 | 已批准卡片中交给实现者的字段 |
 | `... leak-check` | 两者 | 扫描 worktree diff 是否与本任务运行的题面、gold 或 case id 重叠（实现角色只看到重叠类型） |
