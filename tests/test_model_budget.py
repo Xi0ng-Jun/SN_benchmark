@@ -24,6 +24,16 @@ def test_reservations_share_limit_and_unknown_usage_is_not_free(tmp_path):
     assert json.loads(saved)['requests'][results[1]]['status'] == 'reserved'
 
 
+def test_qwen_flash_reserves_chat_output_and_stays_in_first_tier(tmp_path):
+    path = tmp_path / 'budget.json'
+    ModelBudget.create(path, limit_cny='10')
+    budget = ModelBudget(path)
+    rid = budget.reserve({'model': 'qwen-flash', 'messages': [{'content': 'chat'}]})
+    assert json.loads(path.read_text())['requests'][rid]['output_bound'] == 16384
+    with pytest.raises(BudgetStopped):
+        budget.reserve({'model': 'qwen-flash', 'messages': [{'content': 'x' * 131072}]})
+
+
 def test_unknown_model_never_reaches_transport(tmp_path):
     path = tmp_path / 'budget.json'
     ModelBudget.create(path, limit_cny='10')

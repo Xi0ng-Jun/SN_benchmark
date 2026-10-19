@@ -14,7 +14,12 @@ from pathlib import Path
 import tempfile
 import uuid
 
-RATES = {'qwen-turbo': (.30, 3.00), 'text-embedding-v4': (.50, 0), 'qwen3-rerank': (.50, 0)}
+RATES = {'qwen-turbo': (.30, 3.00), 'qwen-flash': (.15, 1.50), 'text-embedding-v4': (.50, 0),
+         'qwen3-rerank': (.50, 0)}
+CHAT_MODELS = frozenset({'qwen-turbo', 'qwen-flash'})
+# qwen-flash is priced per request by input-length tier; RATES carry the first
+# tier only. Input bytes bound tokens, so a byte bound inside the tier is safe.
+INPUT_TIER_LIMIT = {'qwen-flash': 131072}
 
 
 class BudgetStopped(KeyboardInterrupt):
@@ -56,7 +61,7 @@ class ModelBudget:
             raise BudgetStopped('Model outside approved budget')
         model = payload['model']
         # Token IDs, modalities and unknown payloads need a separate budget policy.
-        inputs = payload.get('messages') if model == 'qwen-turbo' else payload.get('input')
+        inputs = payload.get('messages') if model in CHAT_MODELS else payload.get('input')
         if model == 'qwen3-rerank':
             inputs = payload.get('input', payload)
         serialized = json.dumps(inputs, ensure_ascii=False).encode('utf-8')
@@ -68,7 +73,9 @@ class ModelBudget:
             documents = (inputs or {}).get('documents', []) if isinstance(inputs, dict) else []
             multiplier = max(1, len(documents))
         input_bound = len(serialized) * multiplier + 4096
-        output_bound = 16384 if model == 'qwen-turbo' else 0
+        if input_bound > INPUT_TIER_LIMIT.get(model, math.inf):
+            raise BudgetStopped('Request outside priced tier')
+        output_bound = 16384 if model in CHAT_MODELS else 0
         rate_in, rate_out = RATES[model]
         cost = (input_bound * rate_in + output_bound * rate_out) / 1e6
         rid = uuid.uuid4().hex
@@ -89,7 +96,7 @@ class ModelBudget:
             return
         with self._locked() as row:
             request = row['requests'][rid]
-            if request['model'] == 'qwen-turbo' and 'completion_tokens' not in usage and 'output_tokens' not in usage:
+            if request['model'] in CHAT_MODELS and 'completion_tokens' not in usage and 'output_tokens' not in usage:
                 return
             rate_in, rate_out = RATES[request['model']]
             cost = (inp * rate_in + out * rate_out) / 1e6
