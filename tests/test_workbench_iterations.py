@@ -146,6 +146,15 @@ def test_proposals_hang_only_under_evaluated_candidates(env):
         env['service'].derive(root['id'], proposal_id=card['id'], actor='alice', request_key='early')
 
 
+def test_sn_eval_sees_executions_when_drafting_under_an_evaluated_candidate(env):
+    from types import SimpleNamespace
+    from rag_eval.workbench.agent_tools import iteration_service
+    tree, root = evaluated_root(env)
+    views = SimpleNamespace(_worktree_service=env['service'].trees)
+    card = iteration_service(env['repo'], views).draft_proposal(root['id'], CARD, author='agent:analyst')
+    assert card['parent_candidate_id'] == root['id']
+
+
 def test_child_starts_at_parent_frozen_commit_and_the_coordinator_freezes_it(env):
     tree, root = evaluated_root(env)
     service = env['service']

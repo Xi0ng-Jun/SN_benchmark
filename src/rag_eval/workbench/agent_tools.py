@@ -34,6 +34,13 @@ def build(state, config_path):
     return repository, views
 
 
+def iteration_service(repository, views):
+    """The CLI's IterationService; it must see executions to know which candidates are evaluated."""
+    from .iterations import IterationService
+    from .job_execution import JobExecutionStore
+    return IterationService(repository, views._worktree_service, executions=JobExecutionStore(repository))
+
+
 def task_run_ids(views, task_id):
     content = json.loads(views.task_runs_context(task_id)[1])
     return [run['id'] for run in content['runs']]
@@ -99,9 +106,7 @@ def main(argv=None):
             out = dict(saved=False, reason='implementer-facing fields overlap benchmark text; rewrite them',
                        findings=leak['findings'])
         elif options.parent:
-            from .iterations import IterationService
-            saved = IterationService(repository, views._worktree_service).draft_proposal(
-                options.parent, card, author='agent:analyst')
+            saved = iteration_service(repository, views).draft_proposal(options.parent, card, author='agent:analyst')
             if saved['task_id'] != task_id:
                 raise SystemExit('the parent candidate belongs to another iteration Task')
             out = dict(saved=True, card=saved, next='a person approves or rejects this proposal')
@@ -126,8 +131,7 @@ def main(argv=None):
 
 def _iteration_summary(repository, views, task_id, run_ids):
     """Candidates of the iteration this Task backs, with the run ids of their attempts."""
-    from .iterations import IterationService
-    service = IterationService(repository, views._worktree_service)
+    service = iteration_service(repository, views)
     found = [i for i in service.iterations() if i['task_id'] == task_id]
     if not found:
         return None
