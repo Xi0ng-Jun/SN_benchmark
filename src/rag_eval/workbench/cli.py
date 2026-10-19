@@ -149,12 +149,9 @@ def main():
             command.add_argument('--parent', required=True)
     args = parser.parse_args()
     if args.command.startswith('iteration'):
-        from .configuration import task_worktree_services
-        from .iterations import IterationService
-        from .job_execution import JobExecutionStore
-        repository = WorkbenchRepository(args.state)
-        service, _ = task_worktree_services(repository, load_config(args.config))
-        iterations = IterationService(repository, service, executions=JobExecutionStore(repository))
+        from .agent_tools import build, iteration_service
+        repository, views = build(args.state, args.config)
+        iterations = iteration_service(repository, views)
         if args.command == 'iterations-migrate':
             result = iterations.migrate_legacy(actor=args.actor, dry_run=not args.apply)
         elif args.command == 'iteration-show':

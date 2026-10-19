@@ -10,6 +10,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
+from .comparisons import Admission, ComparisonService, summary
+from .hypotheses import HypothesisStore, leak_check
 from .iterations import IterationService
 from .jobs_api import build_execution_spec
 from .repository import UnknownIdentity
@@ -62,14 +64,37 @@ class Empty(_Command):
 
 
 class IterationAPI:
-    def __init__(self, repository, workspace, worktree_service, *, plans, job_api, actor, config, creator=None):
+    def __init__(self, repository, workspace, worktree_service, *, plans, job_api, actor, config, run_views,
+                 creator=None):
         self.workspace = workspace
         self.actor = actor
         self.writable = config.get('task_worktrees', {}).get('create_candidates') is True
         self.service = IterationService(
             repository, worktree_service, plans=plans, jobs=job_api.store, executions=job_api.execution,
             creator=creator, preparation_config=config.get('job_preparation'),
-            execution_config=config.get('job_execution'), build_spec=build_execution_spec)
+            execution_config=config.get('job_execution'), build_spec=build_execution_spec,
+            admission=Admission(run_views))
+        self.comparisons = ComparisonService(repository, self.service, run_views)
+        self.hypotheses = HypothesisStore(repository)
+        self.views = run_views
+
+    def check(self, candidate_id):
+        """Check the proposal's predictions against the candidate's Δ父 record."""
+        from .agent_tools import task_run_ids
+        candidate = self.service.candidate(candidate_id)
+        if candidate['proposal_id'] is None:
+            raise ValueError('Only a candidate derived from a proposal has predictions to check')
+        record = self.comparisons.for_candidate(candidate_id, actor=self.actor)['parent']
+        if 'id' not in record:
+            raise ValueError('Δ父 comparison unavailable: ' + str(record.get('reason')))
+        task_id = self.service.view(candidate_id).task_id
+        leak = leak_check(self.views, task_id, task_run_ids(self.views, task_id), candidate_id=candidate_id)
+        flips = dict(metric=record['metric'], admission=record['admission']['status'], rows=record['rows'],
+                     counts=record['counts'], note=record['admission']['reason'])
+        return self.hypotheses.record_check(
+            task_id, candidate['proposal_id'], baseline_run=record['reference']['runs'],
+            candidate_run=record['subject']['runs'], flips=flips, comparison_id=record['id'],
+            leak={k: leak[k] for k in ('status', 'findings', 'checked_files')}, actor=self.actor)
 
     def _write(self):
         if not self.writable:
@@ -100,7 +125,11 @@ class IterationAPI:
         @router.get('/api/iterations/{iteration_id}')
         def iteration_show(iteration_id: str):
             self._scope(iteration_id=iteration_id)
-            return service.iteration(iteration_id)
+            tree = service.iteration(iteration_id)
+            for candidate in tree['candidates']:
+                both = self.comparisons.for_candidate(candidate['id'], actor=actor, iteration=tree)
+                candidate['comparisons'] = dict(parent=summary(both['parent']), root=summary(both['root']))
+            return tree
 
         @router.get('/api/candidates/{candidate_id}')
         def node_show(candidate_id: str):
@@ -112,6 +141,29 @@ class IterationAPI:
             self._scope(candidate_id=candidate_id)
             view = service.view(candidate_id)
             return {'binding': None} if view.binding(view.task_id) is None else view.read(view.task_id)
+
+        @router.get('/api/candidates/{candidate_id}/comparisons')
+        def node_comparisons(candidate_id: str):
+            self._scope(candidate_id=candidate_id)
+            return self.comparisons.for_candidate(candidate_id, actor=actor)
+
+        @router.get('/api/comparisons/{comparison_id}')
+        def comparison_show(comparison_id: str):
+            record = self.comparisons.get(comparison_id)
+            self._scope(candidate_id=record['candidate_id'])
+            return record
+
+        @router.get('/api/candidates/{candidate_id}/compare')
+        def node_compare(candidate_id: str, reference: str):
+            self._scope(candidate_id=candidate_id)
+            self._scope(candidate_id=reference)
+            return self.comparisons.pinned(candidate_id, reference)
+
+        @router.post('/api/candidates/{candidate_id}/check')
+        def node_check(candidate_id: str, command: Empty):
+            # DB-only like proposal_draft: records a verification, touches no external system.
+            self._scope(candidate_id=candidate_id)
+            return self.check(candidate_id)
 
         @router.post('/api/candidates/{candidate_id}/provision')
         def node_provision(candidate_id: str, command: Empty):

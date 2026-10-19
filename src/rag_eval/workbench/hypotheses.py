@@ -146,14 +146,16 @@ class HypothesisStore:
             self.repository._event(conn, task_id, 'hypothesis.decided', hypothesis_id, body)
             return self._get(conn, task_id, hypothesis_id)
 
-    def record_check(self, task_id, hypothesis_id, *, baseline_run, candidate_run, flips, leak, actor):
+    def record_check(self, task_id, hypothesis_id, *, baseline_run, candidate_run, flips, leak, actor,
+                     comparison_id=None):
         with self.repository.connect(write=True) as conn:
             record = self._get(conn, task_id, hypothesis_id)
             if record['status'] not in ('implementing', 'verified', 'approved'):
                 raise Conflict('Predictions are checked after the card is approved')
             if flips.get('admission') != 'admitted':
                 raise ValueError('The two runs are not admitted as a pair: ' + str(flips.get('note')))
-            body = dict(baseline_run=baseline_run, candidate_run=candidate_run, actor=actor, at=now(),
+            body = dict(baseline_run=baseline_run, candidate_run=candidate_run, comparison_id=comparison_id,
+                        actor=actor, at=now(),
                         counts=flips.get('counts'), leak=leak, **check_predictions(record['card']['predictions'], flips))
             conn.execute("UPDATE hypotheses SET status='verified', verification=?, updated_at=? WHERE id=?",
                          (json.dumps(body, ensure_ascii=False), now(), hypothesis_id))

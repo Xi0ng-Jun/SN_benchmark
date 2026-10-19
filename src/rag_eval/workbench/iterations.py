@@ -138,7 +138,7 @@ class _CandidateWorktreeView(TaskWorktreeService):
 
 class IterationService:
     def __init__(self, repository, task_worktree_service, *, plans=None, jobs=None, executions=None,
-                 creator=None, preparation_config=None, execution_config=None, build_spec=None):
+                 creator=None, preparation_config=None, execution_config=None, build_spec=None, admission=None):
         self.repository = repository
         self.trees = task_worktree_service
         self.plans = plans
@@ -148,6 +148,9 @@ class IterationService:
         self.preparation_config = preparation_config
         self.execution_config = execution_config
         self.build_spec = build_spec
+        # Judges one measurement (attempt or evidence link) on its own; without
+        # it no candidate counts as evaluated.
+        self.admission = admission
         initialize_iterations(repository)
 
     # ------------------------------------------------------------ reading
@@ -175,18 +178,24 @@ class IterationService:
         except ValueError:
             return None
 
+    def _measured(self, row):
+        execution = self._execution(row['task_id'], row['execution_id'])
+        measured = dict(row, execution_state=execution['state'] if execution else None,
+                        run_dir=execution['run_dir'] if execution else None)
+        measured['admission'] = self.admission(measured) if self.admission else None
+        return measured
+
     def _view(self, conn, candidate):
-        attempts = []
-        for attempt in self._attempts(conn, candidate['id']):
-            execution = self._execution(attempt['task_id'], attempt['execution_id'])
-            attempts.append(dict(attempt, execution_state=execution['state'] if execution else None,
-                                 run_dir=execution['run_dir'] if execution else None))
+        attempts = [self._measured(a) for a in self._attempts(conn, candidate['id'])]
         links = []
         for row in conn.execute('SELECT * FROM candidate_links WHERE candidate_id=? ORDER BY created_at',
                                 (candidate['id'],)):
             link = dict(row)
             link['basis'] = json.loads(link.pop('basis_json'))
-            links.append(link)
+            links.append(self._measured(link))
+        # The first admitted measurement, in recorded order and regardless of score.
+        reference = next((dict(attempt=m.get('attempt'), execution_id=m['execution_id'])
+                          for m in attempts + links if (m['admission'] or {}).get('status') == 'admitted'), None)
         tree = conn.execute('SELECT status,branch,base_revision,binding_json FROM candidate_worktrees '
                             'WHERE candidate_id=?', (candidate['id'],)).fetchone()
         worktree = None
@@ -202,20 +211,16 @@ class IterationService:
             state = {'provisioning': 'provisioning', 'ready': 'implementing'}[candidate['status']]
         elif 'running' in states:
             state = 'running'
-        elif 'finished' in states:
+        elif reference is not None:
             state = 'evaluated'
         elif states:
             state = 'failed'
         else:
             state = 'frozen'
-        return dict(candidate, state=state, attempts=attempts, links=links, worktree=worktree)
+        return dict(candidate, state=state, attempts=attempts, links=links, worktree=worktree, reference=reference)
 
     def _evaluated(self, conn, candidate_id):
-        for attempt in self._attempts(conn, candidate_id):
-            execution = self._execution(attempt['task_id'], attempt['execution_id'])
-            if execution is not None and execution['state'] == 'finished':
-                return True
-        return False
+        return self._view(conn, self._candidate(conn, candidate_id))['reference'] is not None
 
     def iterations(self, workspace_id=None):
         with self.repository.connect() as conn:

@@ -36,9 +36,11 @@ def build(state, config_path):
 
 def iteration_service(repository, views):
     """The CLI's IterationService; it must see executions to know which candidates are evaluated."""
+    from .comparisons import Admission
     from .iterations import IterationService
     from .job_execution import JobExecutionStore
-    return IterationService(repository, views._worktree_service, executions=JobExecutionStore(repository))
+    return IterationService(repository, views._worktree_service, executions=JobExecutionStore(repository),
+                            admission=Admission(views))
 
 
 def task_run_ids(views, task_id):

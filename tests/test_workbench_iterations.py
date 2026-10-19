@@ -28,6 +28,13 @@ def commit(project, message):
     return git(project, 'rev-parse', 'HEAD')
 
 
+def finished_is_admitted(measurement):
+    """Stands in for formal admission: these fixtures publish no run artifacts."""
+    state = measurement['execution_state']
+    return dict(status='admitted' if state == 'finished' else 'pending' if state == 'running' else 'not_admitted',
+                reason=None)
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     repo, workspace, _, plans, _, command = plan_setup(tmp_path)
@@ -50,7 +57,8 @@ def env(tmp_path, monkeypatch):
         repo, trees, plans=plans, jobs=EvaluationJobStore(repo), executions=executions, creator=creator,
         preparation_config=dict(artifact_root=str(store.root),
                                 inputs={'registered': dict(bundle_ref=refs['bundle'], index_ref=refs['index'])}),
-        execution_config=settings(tmp_path, dict(artifact_store=store)), build_spec=build_execution_spec)
+        execution_config=settings(tmp_path, dict(artifact_store=store)), build_spec=build_execution_spec,
+        admission=finished_is_admitted)
     create = dict(title='I1', start_commit=start, input_id='registered',
                   expected_bundle_id=command['expected_bundle_id'], case_ids=['qasper:q'], mode='chunk',
                   actor='alice', request_key='i1')
@@ -150,7 +158,8 @@ def test_sn_eval_sees_executions_when_drafting_under_an_evaluated_candidate(env)
     from types import SimpleNamespace
     from rag_eval.workbench.agent_tools import iteration_service
     tree, root = evaluated_root(env)
-    views = SimpleNamespace(_worktree_service=env['service'].trees)
+    views = SimpleNamespace(_worktree_service=env['service'].trees, execution_runs=lambda execution_id: [SimpleNamespace(id='run')],
+                            admission=lambda run_id: dict(status='admitted', reason=None))
     card = iteration_service(env['repo'], views).draft_proposal(root['id'], CARD, author='agent:analyst')
     assert card['parent_candidate_id'] == root['id']
 

@@ -617,6 +617,23 @@ class RunViews:
                     left_run=left_id, right_run=right_id, metric=metric, counts=counts, rows=rows,
                     note=report['admission']['reason'], admission_detail=report['admission'])
 
+    def execution_runs(self, execution_id: str) -> list[RunEntry]:
+        """Partition runs of one workbench execution, in batch-plan order."""
+        self._discover_executions()
+        prefix = execution_id + '-'
+        found = [e for i, e in self._runs.items() if i.startswith(prefix) and i[len(prefix):].isdigit()]
+        return sorted(found, key=lambda e: int(e.id[len(prefix):]))
+
+    def admission(self, run_id: str) -> dict:
+        """Formal admission of one run on its own: the flip report's self comparison."""
+        from ..flip_report import compare_runs_flips
+        entry = self._entry(run_id)
+        report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
+                                    after_scores=entry.scores)
+        status = report['admission']['status']
+        return dict(status=status, reason=None if status == 'admitted' else
+                    report['before'].get('reason') or report['admission']['reason'])
+
     # -------------------------------------------------------------- worktree
     # The Changes page consumes TaskWorktreeService.read()'s shape. When the
     # coordinator injects that service, it is the only diff source. Until then
