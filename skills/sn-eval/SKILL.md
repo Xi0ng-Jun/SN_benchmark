@@ -51,6 +51,7 @@ export EVAL_PYTHON="$EVAL_ROOT/.venv/bin/python"
 | `... node adopt <候选> --reason R`（或 `node reject`） | 分析 | **申请**采纳／放弃 |
 | `... iteration create --file it.json --reason R` | 分析 | **申请**新建迭代（title、start_commit、input_id、expected_bundle_id、case_ids、mode） |
 | `... requests [--status S]` | 两者 | 请求及其状态、确认人、执行回执 |
+| `... request withdraw <请求> --reason R` | 两者（实现：仅自己候选的请求） | 撤回仍待确认的请求（如误提） |
 | `... docs` | 分析 | 评测文档索引 |
 | `... --role implementer --hypothesis H card` | 实现 | 已批准卡片中交给实现者的字段 |
 | `... leak-check` | 两者 | 扫描 worktree diff 是否与本任务运行的题面、gold 或 case id 重叠（实现角色只看到重叠类型） |

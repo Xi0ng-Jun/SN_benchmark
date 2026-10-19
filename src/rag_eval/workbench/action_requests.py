@@ -133,6 +133,12 @@ class ActionRequestStore:
             raise ValueError('Rejecting a request needs a note')
         return self._decide(request_id, 'rejected', actor=actor, note=note.strip())
 
+    def withdraw(self, request_id, *, actor, note):
+        """The requester takes back a pending request (for example one filed by mistake)."""
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError('Withdrawing a request needs a reason')
+        return self._decide(request_id, 'withdrawn', actor=actor, note=note.strip())
+
     def claim(self, request_id, *, actor, note=''):
         """Mark confirmed before executing; a confirmed request left by a crash may be executed again."""
         return self._decide(request_id, 'confirmed', actor=actor, note=note, expected=('pending', 'confirmed'))

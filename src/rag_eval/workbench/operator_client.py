@@ -84,8 +84,12 @@ def main(argv=None):
         print(describe(record))
         if record['status'] != 'pending':
             raise SystemExit('只有待确认的请求可以确认')
-        if not args.yes and input('确认执行？[y/N] ').strip().lower() != 'y':
-            raise SystemExit('未确认，什么也没做')
+        if not args.yes:
+            answer = input('确认执行？[y/N] ').strip().lower()
+            if not sys.stdin.isatty():
+                print()
+            if answer != 'y':
+                raise SystemExit('未确认，什么也没做')
         out = client.call('POST', f'/api/action-requests/{args.request}/confirm', dict(note=args.note))
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1)
     sys.stdout.write('\n')

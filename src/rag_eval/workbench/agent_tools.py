@@ -19,9 +19,9 @@ from pathlib import Path
 REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node adopt', 'node reject', 'iteration create')
 ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
-                    *REQUEST_COMMANDS)
-IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'requests')
-GROUPS = ('iteration', 'node', 'proposal')
+                    'request withdraw', *REQUEST_COMMANDS)
+IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'requests', 'request withdraw')
+GROUPS = ('iteration', 'node', 'proposal', 'request')
 
 
 def build(state, config_path):
@@ -127,7 +127,8 @@ def main(argv=None):
         out = _draft_leak(views, task_id, card) or dict(
             saved=True, card=tools.service.draft_proposal(options.parent, card, author='agent:analyst'),
             next='a person approves or rejects this proposal')
-    elif command in ('iteration show', 'node list', 'node show', 'compare', 'requests', *REQUEST_COMMANDS):
+    elif command in ('iteration show', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
+                     *REQUEST_COMMANDS):
         out = IterationTools(repository, views, task_id, options.role).run(command, a, options)
     elif command == 'card':
         card = store.get(task_id, options.hypothesis)
@@ -201,6 +202,12 @@ class IterationTools:
                         requests=[r for r in self.requests.list(task_id=self.task_id) if r['target_id'] == args[0]])
         if command == 'compare':
             return self.compare(*args[:2])
+        if command == 'request withdraw':
+            record = self.requests.get(args[0]) if args else None
+            if record is None or record['task_id'] != self.task_id or (
+                    self.role == 'implementer' and record['target_id'] != options.candidate):
+                raise SystemExit('only a request of this Task (an implementer: of its own candidate) can be withdrawn')
+            return self.requests.withdraw(args[0], actor=self.actor, note=options.reason or '')
         if command == 'requests':
             rows = self.requests.list(task_id=self.task_id, status=options.status)
             if self.role == 'implementer':

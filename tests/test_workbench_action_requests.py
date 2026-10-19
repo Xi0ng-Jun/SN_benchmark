@@ -125,3 +125,13 @@ def test_proposals_are_drafted_with_proposal_draft(t, capsys, tmp_path):
     assert out['saved'] and out['card']['parent_candidate_id'] == t['root']
     with pytest.raises(SystemExit):
         sn_eval(t, capsys, 'hypothesis-draft', '--parent', t['root'], '--file', str(card))
+
+
+def test_a_requester_can_withdraw_a_pending_request(t, capsys):
+    request = sn_eval(t, capsys, 'node', 'run', t['root'], '--reason', 'x')['request']
+    with pytest.raises(ValueError, match='reason'):
+        sn_eval(t, capsys, 'request', 'withdraw', request['id'])
+    withdrawn = sn_eval(t, capsys, 'request', 'withdraw', request['id'], '--reason', 'filed by mistake')
+    assert withdrawn['status'] == 'withdrawn' and withdrawn['decided_by'] == 'agent:analyst'
+    with pytest.raises(Conflict, match='withdrawn'):
+        t['requests'].claim(request['id'], actor='alice')

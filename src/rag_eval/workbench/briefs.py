@@ -48,6 +48,7 @@ $S node list [--rank root]    # 谱系（默认树序；--rank root 按 Δ根 �
 $S node show <候选>           # attempt 与准入结论、参考运行、比较记录、相关请求
 $S compare <候选> <参考候选>   # 对父／根返回已存比较记录，其他为临时比较（不入库）
 $S requests [--status pending]
+$S request withdraw <请求> --reason '…'   # 撤回误提且仍待确认的请求
 ```
 派生、冻结、运行、采纳／放弃、新建迭代**只能申请**：`$S node derive <父> --proposal <已批准提议> --reason '…'`、`$S node run <候选> --reason '…'`、`$S node adopt|reject <候选> --reason '…'`。请求只登记，不执行；人在工作台确认后由服务器按登记的参数执行。不要用 `scripts/sn-workbench`，那是人确认请求用的。
 
