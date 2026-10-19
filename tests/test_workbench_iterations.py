@@ -155,6 +155,18 @@ def test_sn_eval_sees_executions_when_drafting_under_an_evaluated_candidate(env)
     assert card['parent_candidate_id'] == root['id']
 
 
+def test_analyst_brief_of_an_iteration_task_names_candidates_and_parent_drafting(env):
+    from rag_eval.workbench.briefs import resolve_brief
+    tree = iteration(env)
+    root = tree['candidates'][0]
+    with env['repo'].connect(write=True) as conn:
+        conn.execute("INSERT INTO task_sessions(id,task_id,agent_id,role,cwd) VALUES('s1',?,'agent-1','analyst','/eval')",
+                     (tree['task_id'],))
+    _, text, _ = resolve_brief(env['repo'], tree['task_id'], 's1', tool='sn-eval')
+    assert root['id'] in text and root['worktree']['path'] in text and env['start'] in text
+    assert '--parent <候选 id>' in text and '本任务未绑定' not in text
+
+
 def test_child_starts_at_parent_frozen_commit_and_the_coordinator_freezes_it(env):
     tree, root = evaluated_root(env)
     service = env['service']

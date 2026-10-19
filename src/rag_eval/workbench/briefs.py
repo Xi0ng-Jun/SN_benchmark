@@ -41,15 +41,26 @@ CARD_EXAMPLE = {
 }
 
 
-def analyst_brief(task, *, eval_root, tool, worktree, cwd):
+def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None):
+    """``candidates`` are (id, frozen_commit, worktree) rows when the Task backs an iteration."""
     s = f'{tool} --task {task["id"]}'
+    if candidates:
+        rows = '\n'.join(f'- 候选 `{c}`：冻结 commit `{commit or "未冻结"}`，worktree `{path or "未就绪"}`'
+                         for c, commit, path in candidates)
+        target = ('本任务是一个迭代的载体，被测代码按候选区分（状态见 `$S task` 的 iteration 段）：\n' + rows +
+                  '\n你只读这些 worktree 来定位代码，**不要修改 SN 代码**。')
+        draft = ('提议必须挂在一个**已评测**候选下（它的运行就是你引用的证据）：'
+                 '`$S hypothesis-draft --parent <候选 id> --file card.json`')
+    else:
+        target = f'被测 SN 的改动 worktree：`{worktree or "本任务未绑定"}`，你只读它来定位代码，**不要修改 SN 代码**。'
+        draft = '`$S hypothesis-draft --file card.json`'
     docs = '\n'.join(f'- `{eval_root}/{path}`：{note}' for path, note in ANALYST_DOCS)
     return f'''# 你的角色：分析 Agent（Silicon Notebook 评测）
 
 任务：{task["title"]}
 目标：{task["goal"] or "（未填写）"}
 评测仓库：`{eval_root}`。你的工作目录：`{cwd}`{"（这个 Agent 按旧方式建在 SN worktree 里；角色仍是分析，不要修改 SN 代码）" if worktree and cwd == worktree else ""}。
-被测 SN 的改动 worktree：`{worktree or "本任务未绑定"}`，你只读它来定位代码，**不要修改 SN 代码**。
+{target}
 
 你的职责：读评测结果和案例证据，做失败归类，提出可证伪的假设卡草稿。你能看 gold；正因为能看 gold，你不写 SN 代码，改码由另一个看不到 gold 的实现 Agent 完成。
 
@@ -67,7 +78,7 @@ $S docs                       # 下方文档索引
 输出是 JSON。run 目录里还有 outputs.jsonl、planned.jsonl、model-events.jsonl，可直接读。
 
 ## 提交假设卡草稿（需要人批准后才会实施）
-把卡片写成 JSON 文件，然后 `$S hypothesis-draft --file card.json`。格式示例：
+把卡片写成 JSON 文件，然后 {draft}。格式示例：
 ```json
 {json.dumps(CARD_EXAMPLE, ensure_ascii=False, indent=1)}
 ```
@@ -130,6 +141,13 @@ def resolve_brief(repository, task_id, session_id, *, tool):
                  if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_worktrees'").fetchone() else None)
         cwd = repository.session_cwd(conn, session, task)
         card = None
+        candidates = None
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone():
+            candidates = [(r['id'], r['frozen_commit'], (json.loads(r['binding_json']) or {}).get('worktree_path')
+                           if r['binding_json'] else None) for r in conn.execute(
+                'SELECT c.id, c.frozen_commit, w.binding_json FROM iterations i JOIN candidates c '
+                'ON c.iteration_id=i.id LEFT JOIN candidate_worktrees w ON w.candidate_id=c.id '
+                'WHERE i.task_id=? ORDER BY c.created_at', (task_id,))]
         candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
         if session['role'] == 'implementer':
             from .hypothesis_worktrees import hypothesis_binding
@@ -150,6 +168,7 @@ def resolve_brief(repository, task_id, session_id, *, tool):
                                  start_dirty=[d['path'] for d in start.get('dirty', [])], candidate_id=candidate_id)
         title = '实现 Agent 工作说明 · ' + card['title']
     else:
-        text = analyst_brief(task, eval_root=str(Path(workspace['location'])), tool=tool, worktree=worktree, cwd=cwd)
+        text = analyst_brief(task, eval_root=str(Path(workspace['location'])), tool=tool, worktree=worktree, cwd=cwd,
+                             candidates=candidates)
         title = '分析 Agent 工作说明 · ' + task['title']
     return title, text, {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst'}
