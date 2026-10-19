@@ -41,16 +41,29 @@ CARD_EXAMPLE = {
 }
 
 
+ITERATION_VERBS = '''## 迭代动词（只读；写动作只能申请）
+```
+$S iteration show             # 本迭代：起点、冻结题单、候选树与每个候选的 Δ父／Δ根 摘要
+$S node list [--rank root]    # 谱系（默认树序；--rank root 按 Δ根 平铺排行）
+$S node show <候选>           # attempt 与准入结论、参考运行、比较记录、相关请求
+$S compare <候选> <参考候选>   # 对父／根返回已存比较记录，其他为临时比较（不入库）
+$S requests [--status pending]
+```
+派生、冻结、运行、采纳／放弃、新建迭代**只能申请**：`$S node derive <父> --proposal <已批准提议> --reason '…'`、`$S node run <候选> --reason '…'`、`$S node adopt|reject <候选> --reason '…'`。请求只登记，不执行；人在工作台确认后由服务器按登记的参数执行。不要用 `scripts/sn-workbench`，那是人确认请求用的。
+
+'''
+
+
 def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None):
     """``candidates`` are (id, frozen_commit, worktree) rows when the Task backs an iteration."""
     s = f'{tool} --task {task["id"]}'
     if candidates:
         rows = '\n'.join(f'- 候选 `{c}`：冻结 commit `{commit or "未冻结"}`，worktree `{path or "未就绪"}`'
                          for c, commit, path in candidates)
-        target = ('本任务是一个迭代的载体，被测代码按候选区分（状态见 `$S task` 的 iteration 段）：\n' + rows +
+        target = ('本任务是一个迭代的载体，被测代码按候选区分（`$S node list` 看谱系与 Δ父／Δ根）：\n' + rows +
                   '\n你只读这些 worktree 来定位代码，**不要修改 SN 代码**。')
         draft = ('提议必须挂在一个**已评测**候选下（它的运行就是你引用的证据）：'
-                 '`$S hypothesis-draft --parent <候选 id> --file card.json`')
+                 '`$S proposal draft --parent <候选 id> --file card.json`')
     else:
         target = f'被测 SN 的改动 worktree：`{worktree or "本任务未绑定"}`，你只读它来定位代码，**不要修改 SN 代码**。'
         draft = '`$S hypothesis-draft --file card.json`'
@@ -85,7 +98,7 @@ $S docs                       # 下方文档索引
 - predictions 是逐题预测：expect 取 improve / unchanged / not_worse / worse；guard=true 表示守护题（不应变差）。验证时按翻转表逐条核对，不看均分。
 - implementer_brief 是唯一会交给实现 Agent 的说明：写机制和改法，**不得包含题面、gold、case id、论文内容或分数**，提交前会做泄漏扫描。
 
-## 可参考的评测文档
+{ITERATION_VERBS.format(s=s) if candidates else ""}## 可参考的评测文档
 {docs}
 
 ## 规则
@@ -125,7 +138,7 @@ worktree 起点已有这些未提交改动，它们属于用户，不要覆盖�
 - 不写死任何题面、论文、数据集名或 case id；用合成数据写单元测试，覆盖受益和可能受害两种情况。
 - 遵守本仓库 `AGENTS.md`；运行 SN 自己的测试；不提交 git，不启动评测运行。
 - 完成后自查：`{s} leak-check`（只报告是否与考题重叠，不显示考题内容）。
-- 回复时说明：改了哪些文件、为什么、测试命令与结果、残余风险。
+{f"- 实现与测试都完成后，可以申请冻结和运行（只登记请求，人确认后服务器才执行）：`{s} node freeze {candidate_id} --reason '…'`，冻结确认后再 `{s} node run {candidate_id} --reason '…'`；`{s} requests` 看请求状态。" + chr(10) if candidate_id else ""}- 回复时说明：改了哪些文件、为什么、测试命令与结果、残余风险。
 '''
 
 

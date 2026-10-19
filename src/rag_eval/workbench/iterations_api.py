@@ -10,11 +10,12 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
+from .action_requests import VERBS, ActionRequestStore, execute
 from .comparisons import Admission, ComparisonService, summary
 from .hypotheses import HypothesisStore, leak_check
 from .iterations import IterationService
 from .jobs_api import build_execution_spec
-from .repository import UnknownIdentity
+from .repository import Conflict, UnknownIdentity
 
 
 class _Command(BaseModel):
@@ -63,6 +64,10 @@ class Empty(_Command):
     pass
 
 
+class ActionDecision(_Command):
+    note: str = Field(default='', max_length=4000)
+
+
 class IterationAPI:
     def __init__(self, repository, workspace, worktree_service, *, plans, job_api, actor, config, run_views,
                  creator=None):
@@ -77,6 +82,30 @@ class IterationAPI:
         self.comparisons = ComparisonService(repository, self.service, run_views)
         self.hypotheses = HypothesisStore(repository)
         self.views = run_views
+        self.requests = ActionRequestStore(repository)
+        self.repository = repository
+
+    def _request(self, request_id):
+        record = self.requests.get(request_id)
+        if self.repository.task(record['task_id'])['workspace_id'] != self.workspace['id']:
+            raise UnknownIdentity('Unknown action request identity')
+        if record['target_id'] is not None:
+            self._scope(candidate_id=record['target_id'])
+        return record
+
+    def confirm(self, request_id, note=''):
+        """A person confirms; the server executes the recorded parameters unchanged."""
+        record = self._request(request_id)
+        if record['status'] in ('executed', 'failed'):
+            return record
+        if VERBS[record['verb']][1]:
+            self._write()
+        self.requests.claim(request_id, actor=self.actor, note=note)
+        try:
+            result = execute(self.service, record, workspace_id=self.workspace['id'], actor=self.actor)
+        except (Conflict, ValueError) as error:
+            return self.requests.finish(request_id, error=str(error))
+        return self.requests.finish(request_id, result=result)
 
     def check(self, candidate_id):
         """Check the proposal's predictions against the candidate's Δ父 record."""
@@ -164,6 +193,23 @@ class IterationAPI:
             # DB-only like proposal_draft: records a verification, touches no external system.
             self._scope(candidate_id=candidate_id)
             return self.check(candidate_id)
+
+        @router.get('/api/action-requests')
+        def action_requests(status: str | None = None):
+            return self.requests.list(workspace_id=self.workspace['id'], status=status)
+
+        @router.get('/api/action-requests/{request_id}')
+        def action_request(request_id: str):
+            return self._request(request_id)
+
+        @router.post('/api/action-requests/{request_id}/confirm')
+        def action_confirm(request_id: str, command: ActionDecision):
+            return self.confirm(request_id, command.note)
+
+        @router.post('/api/action-requests/{request_id}/reject')
+        def action_reject(request_id: str, command: ActionDecision):
+            self._request(request_id)
+            return self.requests.reject(request_id, actor=actor, note=command.note)
 
         @router.post('/api/candidates/{candidate_id}/provision')
         def node_provision(candidate_id: str, command: Empty):

@@ -1,9 +1,12 @@
-"""Read tools (and the hypothesis-draft write) for Agents working on a Task.
+"""Read tools, drafts and action requests for Agents working on a Task.
 
 Run through `scripts/sn-eval`. Every command prints JSON. None of them starts
-SN, calls a model or changes a run; `hypothesis-draft` only stores a draft that
-a person must approve. `--role implementer` limits the commands to the approved
-card and the leak check, and strips case ids from leak findings.
+SN, calls a model or changes a run. `hypothesis-draft` and `proposal draft`
+only store a draft a person must approve; `node derive|freeze|run|adopt|reject`
+and `iteration create` only record a pending request that a person confirms
+in the workbench before the server executes it. `--role implementer` limits
+the commands to the approved card, the leak check and freeze/run requests for
+its own candidate, and strips case ids from leak findings.
 """
 from __future__ import annotations
 
@@ -13,8 +16,12 @@ import os
 import sys
 from pathlib import Path
 
-ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check')
-IMPLEMENTER_COMMANDS = ('card', 'leak-check')
+REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node adopt', 'node reject', 'iteration create')
+ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
+                    'iteration show', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
+                    *REQUEST_COMMANDS)
+IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'requests')
+GROUPS = ('iteration', 'node', 'proposal')
 
 
 def build(state, config_path):
@@ -58,8 +65,13 @@ def main(argv=None):
     parser.add_argument('--task', required=True)
     parser.add_argument('--role', choices=('analyst', 'implementer'), default='analyst')
     parser.add_argument('--hypothesis')
-    parser.add_argument('--candidate', help='iteration candidate (implementer leak-check)')
+    parser.add_argument('--candidate', help="the implementer's own iteration candidate")
     parser.add_argument('--parent', help='evaluated candidate a drafted proposal hangs under')
+    parser.add_argument('--reason', help='why a person should confirm this request')
+    parser.add_argument('--proposal', help='approved proposal a derive request starts from')
+    parser.add_argument('--timeout', type=int, help='run request: timeout_seconds (default 3600)')
+    parser.add_argument('--limit-cny', type=float, help='run request: optional cost guard')
+    parser.add_argument('--rank', choices=('root',), help='node list: flat list ranked by Δ根')
     parser.add_argument('command')
     parser.add_argument('args', nargs='*')
     parser.add_argument('--all', action='store_true')
@@ -67,9 +79,13 @@ def main(argv=None):
     parser.add_argument('--status')
     parser.add_argument('--file')
     options = parser.parse_intermixed_args(argv)
+    if options.command in GROUPS and options.args:
+        options.command = options.command + ' ' + options.args.pop(0)
     allowed = IMPLEMENTER_COMMANDS if options.role == 'implementer' else ANALYST_COMMANDS
     if options.command not in allowed:
         parser.error(f'{options.role} commands: ' + ', '.join(allowed))
+    if options.command == 'hypothesis-draft' and options.parent:
+        parser.error('a proposal under a candidate is `proposal draft --parent <candidate>`')
     from .hypotheses import HypothesisStore, leak_check
     repository, views = build(options.state, options.config)
     store = HypothesisStore(repository)
@@ -99,22 +115,20 @@ def main(argv=None):
         out = [dict(path=str(root / path), purpose=note) for path, note in ANALYST_DOCS]
     elif command == 'hypothesis-draft':
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
-        leak = leak_check(views, task_id, task_run_ids(views, task_id),
-                          extra_texts=[('implementer_brief', str(card.get('implementer_brief', ''))),
-                                       ('mechanism', str(card.get('mechanism', ''))),
-                                       ('change_scope', '\n'.join(map(str, card.get('change_scope', []))))])
-        leak['findings'] = [f for f in leak['findings'] if f['source'] in ('implementer_brief', 'mechanism', 'change_scope')]
-        if leak['findings']:
-            out = dict(saved=False, reason='implementer-facing fields overlap benchmark text; rewrite them',
-                       findings=leak['findings'])
-        elif options.parent:
-            saved = iteration_service(repository, views).draft_proposal(options.parent, card, author='agent:analyst')
-            if saved['task_id'] != task_id:
-                raise SystemExit('the parent candidate belongs to another iteration Task')
-            out = dict(saved=True, card=saved, next='a person approves or rejects this proposal')
-        else:
-            out = dict(saved=True, card=store.draft(task_id, card, author='agent:analyst'),
-                       next='a person approves or rejects it on the Changes page')
+        out = _draft_leak(views, task_id, card) or dict(
+            saved=True, card=store.draft(task_id, card, author='agent:analyst'),
+            next='a person approves or rejects it on the Changes page')
+    elif command == 'proposal draft':
+        if not options.parent or not options.file:
+            raise SystemExit('proposal draft needs --parent <candidate> and --file card.json')
+        tools = IterationTools(repository, views, task_id, options.role)
+        tools.own(options.parent)
+        card = json.loads(Path(options.file).read_text(encoding='utf-8'))
+        out = _draft_leak(views, task_id, card) or dict(
+            saved=True, card=tools.service.draft_proposal(options.parent, card, author='agent:analyst'),
+            next='a person approves or rejects this proposal')
+    elif command in ('iteration show', 'node list', 'node show', 'compare', 'requests', *REQUEST_COMMANDS):
+        out = IterationTools(repository, views, task_id, options.role).run(command, a, options)
     elif command == 'card':
         card = store.get(task_id, options.hypothesis)
         if card['status'] not in ('approved', 'implementing', 'verified', 'concluded'):
@@ -129,6 +143,127 @@ def main(argv=None):
             out.pop('runs', None)
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
     sys.stdout.write('\n')
+
+
+def _draft_leak(views, task_id, card):
+    """A refusal when implementer-facing fields overlap benchmark text, else None."""
+    from .hypotheses import leak_check
+    leak = leak_check(views, task_id, task_run_ids(views, task_id),
+                      extra_texts=[('implementer_brief', str(card.get('implementer_brief', ''))),
+                                   ('mechanism', str(card.get('mechanism', ''))),
+                                   ('change_scope', '\n'.join(map(str, card.get('change_scope', []))))])
+    findings = [f for f in leak['findings'] if f['source'] in ('implementer_brief', 'mechanism', 'change_scope')]
+    if findings:
+        return dict(saved=False, reason='implementer-facing fields overlap benchmark text; rewrite them',
+                    findings=findings)
+    return None
+
+
+class IterationTools:
+    """Iteration verbs scoped to the iteration this Task backs (design §8)."""
+
+    def __init__(self, repository, views, task_id, role):
+        from .action_requests import ActionRequestStore
+        from .comparisons import ComparisonService
+        self.service = iteration_service(repository, views)
+        self.comparisons = ComparisonService(repository, self.service, views)
+        self.requests = ActionRequestStore(repository)
+        self.task_id, self.role, self.actor = task_id, role, 'agent:' + role
+        found = [i for i in self.service.iterations() if i['task_id'] == task_id]
+        self.iteration_id = found[0]['id'] if found else None
+
+    def tree(self):
+        if self.iteration_id is None:
+            raise SystemExit('this Task backs no iteration')
+        from .comparisons import summary
+        tree = self.service.iteration(self.iteration_id)
+        for candidate in tree['candidates']:
+            both = self.comparisons.for_candidate(candidate['id'], actor=self.actor, iteration=tree)
+            candidate['comparisons'] = dict(parent=summary(both['parent']), root=summary(both['root']))
+        return tree
+
+    def own(self, candidate_id):
+        candidate = self.service.candidate(candidate_id)
+        if candidate['iteration_id'] != self.iteration_id:
+            raise SystemExit("the candidate belongs to another iteration, not this Task's")
+        return candidate
+
+    def run(self, command, args, options):
+        if command == 'iteration show':
+            if args and args[0] != self.iteration_id:
+                raise SystemExit("only this Task's iteration is visible here")
+            return self.tree()
+        if command == 'node list':
+            return self.node_list(rank=options.rank)
+        if command == 'node show':
+            candidate = self.own(args[0])
+            return dict(candidate=candidate, comparisons=self.comparisons.for_candidate(args[0], actor=self.actor),
+                        requests=[r for r in self.requests.list(task_id=self.task_id) if r['target_id'] == args[0]])
+        if command == 'compare':
+            return self.compare(*args[:2])
+        if command == 'requests':
+            rows = self.requests.list(task_id=self.task_id, status=options.status)
+            if self.role == 'implementer':
+                rows = [r for r in rows if r['target_id'] == options.candidate]
+            return rows
+        return self.request(command, args, options)
+
+    def node_list(self, *, rank=None):
+        tree = self.tree()
+        rows = [dict(id=c['id'], parent=c['parent_candidate_id'], depth=c['depth'], state=c['state'],
+                     frozen_commit=c['frozen_commit'], proposal_id=c['proposal_id'],
+                     decision=(c['decision'] or {}).get('decision'), reference=c['reference'],
+                     parent_delta=c['comparisons']['parent'], root_delta=c['comparisons']['root'])
+                for c in tree['candidates']]
+        if rank == 'root':
+            def delta(row):
+                if row['id'] == tree['root_candidate_id']:
+                    return 0.0
+                side = row['parent_delta'] if row['root_delta']['status'] == 'same_as_parent' else row['root_delta']
+                return side.get('mean_delta')
+            rows = sorted(rows, key=lambda row: (delta(row) is None, -(delta(row) or 0.0)))
+            for row in rows:
+                row['rank_delta'] = delta(row)
+        return dict(iteration_id=tree['id'], root_candidate_id=tree['root_candidate_id'],
+                    order='rank by Δ根 (flat)' if rank else 'tree', nodes=rows)
+
+    def compare(self, subject_id, reference_id):
+        subject = self.own(subject_id)
+        self.own(reference_id)
+        root_id = self.service.iteration(self.iteration_id)['root_candidate_id']
+        if reference_id in (subject['parent_candidate_id'], root_id) and subject_id != root_id:
+            both = self.comparisons.for_candidate(subject_id, actor=self.actor)
+            side = both['parent'] if reference_id == subject['parent_candidate_id'] else both['root']
+            if side.get('status') == 'same_as_parent':
+                side = both['parent']
+            return side
+        return self.comparisons.pinned(subject_id, reference_id)
+
+    def request(self, command, args, options):
+        verb = command.replace(' ', '-')
+        params, target = {}, None
+        if verb == 'iteration-create':
+            if not options.file:
+                raise SystemExit('iteration create needs --file with ' + ', '.join(
+                    ('title', 'start_commit', 'input_id', 'expected_bundle_id', 'case_ids', 'mode')))
+            params = json.loads(Path(options.file).read_text(encoding='utf-8'))
+        else:
+            if not args:
+                raise SystemExit(f'{command} needs a candidate id')
+            target = self.own(args[0])['id']
+            if self.role == 'implementer' and target != options.candidate:
+                raise SystemExit('an implementer may only request actions on its own --candidate')
+            if verb == 'node-derive' and options.proposal:
+                params['proposal_id'] = options.proposal
+            if verb == 'node-run':
+                if options.timeout is not None:
+                    params['timeout_seconds'] = options.timeout
+                if options.limit_cny is not None:
+                    params['limit_cny'] = options.limit_cny
+        record = self.requests.request(self.task_id, verb, target, params, reason=options.reason or '',
+                                       requested_by=self.actor)
+        return dict(request=record, next='nothing has run: a person confirms or rejects this request in the '
+                                         'workbench, then the server executes it')
 
 
 def _iteration_summary(repository, views, task_id, run_ids):

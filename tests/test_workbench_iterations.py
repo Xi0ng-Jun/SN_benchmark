@@ -173,7 +173,8 @@ def test_analyst_brief_of_an_iteration_task_names_candidates_and_parent_drafting
                      (tree['task_id'],))
     _, text, _ = resolve_brief(env['repo'], tree['task_id'], 's1', tool='sn-eval')
     assert root['id'] in text and root['worktree']['path'] in text and env['start'] in text
-    assert '--parent <候选 id>' in text and '本任务未绑定' not in text
+    assert 'proposal draft --parent <候选 id>' in text and '本任务未绑定' not in text
+    assert 'node run <候选>' in text and 'scripts/sn-workbench' in text
 
 
 def test_child_starts_at_parent_frozen_commit_and_the_coordinator_freezes_it(env):

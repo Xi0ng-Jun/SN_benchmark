@@ -41,10 +41,21 @@ export EVAL_PYTHON="$EVAL_ROOT/.venv/bin/python"
 | `... flips LEFT RIGHT` | 分析 | 同题配对翻转表 |
 | `... hypotheses` | 分析 | 本任务假设卡及核对结果 |
 | `... hypothesis-draft --file card.json` | 分析 | 提交假设卡草稿；交给实现 Agent 的字段若与题面或 gold 重叠会被拒绝；草稿需人在更改页批准 |
-| `... hypothesis-draft --parent <候选> --file card.json` | 分析 | 迭代 Task：把提议挂在一个已评测候选下（该候选的运行即证据）；同样做泄漏扫描、需人批准 |
+| `... proposal draft --parent <候选> --file card.json` | 分析 | 迭代 Task：把提议挂在一个已评测候选下（该候选的运行即证据）；同样做泄漏扫描、需人批准 |
+| `... iteration show` | 分析 | 本 Task 承载的迭代：起点、冻结题单、候选树与每个候选的 Δ父／Δ根 摘要 |
+| `... node list [--rank root]` | 分析 | 谱系行（默认树序；`--rank root` 按 Δ根 平铺排行，不改树） |
+| `... node show <候选>` | 分析 | attempt 与准入结论、参考运行、比较记录、相关请求 |
+| `... compare <候选> <参考>` | 分析 | 对父／根返回已存比较记录；其他组合即时计算，不入库 |
+| `... node derive <父> --proposal P --reason R` | 分析 | **申请**派生；只登记请求 |
+| `... node freeze <候选> --reason R`、`node run <候选> --reason R [--timeout N]` | 分析、实现（仅自己的 `--candidate`） | **申请**冻结／运行；只登记请求 |
+| `... node adopt <候选> --reason R`（或 `node reject`） | 分析 | **申请**采纳／放弃 |
+| `... iteration create --file it.json --reason R` | 分析 | **申请**新建迭代（title、start_commit、input_id、expected_bundle_id、case_ids、mode） |
+| `... requests [--status S]` | 两者 | 请求及其状态、确认人、执行回执 |
 | `... docs` | 分析 | 评测文档索引 |
 | `... --role implementer --hypothesis H card` | 实现 | 已批准卡片中交给实现者的字段 |
 | `... leak-check` | 两者 | 扫描 worktree diff 是否与本任务运行的题面、gold 或 case id 重叠（实现角色只看到重叠类型） |
+
+**写动作只能申请。** `sn-eval` 的派生、冻结、运行、采纳／放弃、新建迭代只登记一条待确认请求（理由与确切参数），什么也不执行；人确认后由运行中的工作台服务器按登记参数执行，回执写回请求。批准提议不经请求：草稿本身就在等人批准。人用 `scripts/sn-workbench requests|show|confirm|reject|proposal-approve|proposal-reject`（`--url` 指向运行中的服务器）处理；Agent 不得使用它——没有技术隔离，确认人与执行回执都记在请求上。
 
 角色分工：分析 Agent 工作目录是评测仓库，能看 gold，对 SN 只读，产出失败归类和假设卡。实现 Agent 工作目录是 Task 绑定的 SN worktree，只从已批准卡片的实现说明出发，看不到考题和 gold；服务端拒绝把案例、运行摘要、成绩发给实现 Agent。读文件这一层没有沙箱，隔离靠信息不下发、角色说明和泄漏扫描，不能当作强制隔离。
 
