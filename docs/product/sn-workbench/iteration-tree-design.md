@@ -1,6 +1,6 @@
 # 迭代与候选树：工作台交互与数据设计（草案）
 
-2026-10-15。状态：**第一阶段（身份契约，第 6 节、第 10 节第 1 步）已实现**，见 [2026-10-17 smoke 记录](../../experiments/2026-10-17-iteration-identity-smoke.md)；比较、CLI 动词与界面尚未实现。由用户与协调者讨论收敛，依据[界面先例调研](../../research/2026-10-15-iteration-tree-ui-prior-art.md)和当前代码。第 2 节列出已由用户确认的方向；其余是建议，实现中按真实使用调整。本文不改变 [CURRENT_STATE](../../../CURRENT_STATE.md) 的不变量。
+2026-10-15。状态：**第一阶段（身份契约）与第二阶段（父／根比较记录，第 10 节第 2 步）已实现**，见 [2026-10-17 smoke 记录](../../experiments/2026-10-17-iteration-identity-smoke.md)与[2026-10-19 链路与比较 smoke](../../experiments/2026-10-19-iteration-chain-and-comparison-smoke.md)；CLI 动词与界面尚未实现。由用户与协调者讨论收敛，依据[界面先例调研](../../research/2026-10-15-iteration-tree-ui-prior-art.md)和当前代码。第 2 节列出已由用户确认的方向；其余是建议，实现中按真实使用调整。本文不改变 [CURRENT_STATE](../../../CURRENT_STATE.md) 的不变量。
 
 ## 1. 要解决的问题
 
