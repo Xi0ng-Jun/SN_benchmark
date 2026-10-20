@@ -5,7 +5,7 @@ import { requestKey } from '../contracts';
 
 type Role = 'analyst' | 'implementer';
 type Draft = { taskId: string; actor: string; profileId: string | null; title: string; key: string | null;
-  role?: Role; hypothesisId?: string;
+  role?: Role; hypothesisId?: string; candidateId?: string;
   intentId: string | null; status: AgentCreationStatus; detail?: string; receipt: AgentCreationReceipt | null;
   record: AgentCreationRecord | null; correctable: boolean; checking: boolean };
 type ListState = { status: 'loading' | 'ready' | 'error'; records: AgentCreationRecord[]; detail?: string };
@@ -236,7 +236,7 @@ export function useAgentCreations(task: Task | undefined, actor: string, compact
         || current.status === 'saving' || current.status === 'unknown' || current.status === 'created') return;
     if (current.title !== '' && current.title.trim() === '') return;
     const key = current.key ?? requestKey();
-    const target = { role: current.role, hypothesisId: current.hypothesisId };
+    const target = { role: current.role, hypothesisId: current.hypothesisId, candidateId: current.candidateId };
     const intents = intentsRef.current[scopeKey] ??= Object.create(null) as Record<string, Intent>;
     const frozen = intents[key];
     if (frozen && (frozen.profileId !== current.profileId || frozen.title !== current.title)) return;
@@ -252,6 +252,7 @@ export function useAgentCreations(task: Task | undefined, actor: string, compact
       if (captured.title !== '') body.title = captured.title;
       if (target.role) body.role = target.role;
       if (target.hypothesisId) body.hypothesis_id = target.hypothesisId;
+      if (target.candidateId) body.candidate_id = target.candidateId;
       const { response, value } = await readJson(`/tasks/${encodeURIComponent(taskId)}/agent-creations`, { method: 'POST', body: JSON.stringify(body) });
       if (!active() || draftsRef.current[scopeKey]?.key !== key) return;
       if (!response.ok) {
@@ -310,8 +311,8 @@ export function useAgentCreations(task: Task | undefined, actor: string, compact
     listStatus: list.status, listDetail: list.detail, checking: current?.checking ?? false,
     open: () => setOpened(true), close: () => setOpened(false),
     // Role of the next creation; an implementer is always for one approved card.
-    setTarget: (role: Role, hypothesisId?: string) => { if (current && current.status !== 'saving' && current.status !== 'unknown') {
-      current.role = role; current.hypothesisId = hypothesisId; } },
+    setTarget: (role: Role, hypothesisId?: string, candidateId?: string) => { if (current && current.status !== 'saving' && current.status !== 'unknown') {
+      current.role = role; current.hypothesisId = hypothesisId; current.candidateId = candidateId; } },
     newIntent, check, checkPending: check, selectRecord,
     canNewIntent: mayStartNewIntent(),
     canCheckPending: Boolean(current?.key && !current.intentId && (current.status === 'unknown' || current.status === 'error')),

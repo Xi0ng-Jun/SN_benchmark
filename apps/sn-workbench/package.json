@@ -7,7 +7,7 @@
     "dev": "expo start --web",
     "build": "expo export --platform web",
     "typecheck": "tsc --noEmit",
-    "browser-test": "node tests/browser.mjs"
+    "browser-test": "node tests/tree-browser.mjs"
   },
   "dependencies": {
     "expo": "54.0.33",

@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 export type Metric = { value: number; denominator: number; kind: 'per-case' | 'batch-only' };
 export type CaseRow = { case_id: string; question: string; task: string; status: string; metrics: Record<string, number> };
 export type Result = {
@@ -117,3 +119,18 @@ export function literal(value: unknown): string { return typeof value === 'strin
 export function date(value: string): string { return new Date(value).toLocaleString('zh-CN', { hour12: false }); }
 export const judgmentLabels: Record<string, string> = { confirmed: '问题成立', rejected: '不支持该问题', undecided: '无法判断' };
 export const statusLabels: Record<string, string> = { success: '已回答', no_answer: '空回答', error: '执行错误', missing: '缺失', clarification: '澄清' };
+
+export function useResource<T>(path: string | null, refresh = 0) {
+  const [state, setState] = useState<{ path: string | null; data?: T; error?: string }>({ path: null });
+  useEffect(() => {
+    if (!path) return;
+    const controller = new AbortController();
+    api<T>(path, undefined, controller.signal).then(data => {
+      if (!controller.signal.aborted) setState({ path, data });
+    }).catch(error => {
+      if (!controller.signal.aborted) setState({ path, error: String(error.message) });
+    });
+    return () => controller.abort();
+  }, [path, refresh]);
+  return state.path === path ? state : { path };
+}

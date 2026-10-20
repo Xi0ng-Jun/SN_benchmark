@@ -46,9 +46,9 @@ export type CandidateDraftPanelProps = {
 };
 
 const kindOptions: readonly { kind: CandidateDraftKind; label: string }[] = [
-  { kind: 'finding', label: '发现候选' },
-  { kind: 'direction', label: '方向候选' },
-  { kind: 'next_step', label: '下一步候选' },
+  { kind: 'finding', label: '发现' },
+  { kind: 'direction', label: '方向' },
+  { kind: 'next_step', label: '下一步' },
 ];
 
 const roleLabels: Record<CandidateDraftSourceKind, string> = {
@@ -70,9 +70,9 @@ export function CandidateDraftPanel({ compact, source, kind, onKindChange, text,
   // blank; a blank reason gets a concrete generic explanation instead of
   // being treated as absent.
   const blockedSaveReason = saveBlockedReason === null ? null
-    : saveBlockedReason.trim().length === 0 ? '当前暂不能保存候选' : saveBlockedReason;
+    : saveBlockedReason.trim().length === 0 ? '当前暂不能保存发现' : saveBlockedReason;
   const blockedSourceReason = source !== null && source.blockedReason !== null
-    ? (source.blockedReason.trim().length === 0 ? '来源不可引用，暂不能保存候选' : source.blockedReason)
+    ? (source.blockedReason.trim().length === 0 ? '来源不可引用，暂不能保存发现' : source.blockedReason)
     : null;
   // Trim is only used to decide blankness for gates and explanations; the
   // parent keeps and displays the original id/label/scope/hash/text values.
@@ -88,22 +88,22 @@ export function CandidateDraftPanel({ compact, source, kind, onKindChange, text,
 
   let disabledReason: string | null = null;
   if (blockedSaveReason !== null) disabledReason = blockedSaveReason;
-  else if (source === null) disabledReason = '尚未选择候选来源';
+  else if (source === null) disabledReason = '尚未选择发现来源';
   else if (blockedSourceReason !== null) disabledReason = blockedSourceReason;
-  else if (source.kind !== 'assistant') disabledReason = '仅助手消息可作为候选来源';
-  else if (sourceText === null) disabledReason = '来源没有正文，暂不能保存候选';
-  else if (sourceText.trim().length === 0) disabledReason = '来源没有可引用正文，暂不能保存候选';
-  else if (source.truncated) disabledReason = '来源正文已截断，暂不能保存完整候选';
-  else if (!source.current) disabledReason = '来源已失效，暂不能保存候选';
-  else if (source.entryId.trim().length === 0) disabledReason = '来源缺少条目标识，暂不能保存候选';
-  else if (source.sha256.trim().length === 0) disabledReason = '来源缺少内容 hash，暂不能保存候选';
-  else if (source.scopeLabel.trim().length === 0) disabledReason = '来源缺少任务/会话/Agent/序号范围，暂不能保存候选';
-  else if (kind === null) disabledReason = '请选择候选类别';
-  else if (text.trim().length === 0) disabledReason = '候选内容不能为空';
+  else if (source.kind !== 'assistant') disabledReason = '仅助手消息可作为发现来源';
+  else if (sourceText === null) disabledReason = '来源没有正文，暂不能保存发现';
+  else if (sourceText.trim().length === 0) disabledReason = '来源没有可引用正文，暂不能保存发现';
+  else if (source.truncated) disabledReason = '来源正文已截断，暂不能保存完整发现';
+  else if (!source.current) disabledReason = '来源已失效，暂不能保存发现';
+  else if (source.entryId.trim().length === 0) disabledReason = '来源缺少条目标识，暂不能保存发现';
+  else if (source.sha256.trim().length === 0) disabledReason = '来源缺少内容 hash，暂不能保存发现';
+  else if (source.scopeLabel.trim().length === 0) disabledReason = '来源缺少任务/会话/Agent/序号范围，暂不能保存发现';
+  else if (kind === null) disabledReason = '请选择发现类别';
+  else if (text.trim().length === 0) disabledReason = '发现内容不能为空';
   else if (onSave === undefined) disabledReason = '保存尚未接入';
 
-  const saveStatusText = saveStatus === 'saving' ? '正在保存候选…'
-    : saveStatus === 'saved' ? '候选已保存'
+  const saveStatusText = saveStatus === 'saving' ? '正在保存发现…'
+    : saveStatus === 'saved' ? '发现已保存'
       : saveStatus === 'error' ? `保存失败${statusSuffix}`
         : saveStatus === 'unknown' ? `保存回执未知，暂不能再保存${statusSuffix}；请先核对保存结果` : null;
   // In-flight and unknown receipts already explain why saving is blocked; a
@@ -112,9 +112,9 @@ export function CandidateDraftPanel({ compact, source, kind, onKindChange, text,
 
   return <View testID="candidate-draft-panel" style={{ width: '100%', maxWidth: 820, alignSelf: 'center', minWidth: 0, gap }}>
     <View style={{ gap: 6, minWidth: 0 }}>
-      <Copy small style={{ fontWeight: '600' }}>候选来源</Copy>
+      <Copy small style={{ fontWeight: '600' }}>发现来源</Copy>
       {source === null
-        ? <Copy small muted>尚未选择候选来源；请先在只读消息中选择助手条目</Copy>
+        ? <Copy small muted>尚未选择发现来源；请先在只读消息中选择助手条目</Copy>
         : <>
           <View style={s.row}>
             <Copy small style={{ fontWeight: '600', flexShrink: 1, minWidth: 0 }} testID="candidate-source-label">{source.label}</Copy>
@@ -135,26 +135,26 @@ export function CandidateDraftPanel({ compact, source, kind, onKindChange, text,
           {source.sha256.trim().length === 0
             ? <Copy small muted testID="candidate-source-hash">来源缺少内容 hash</Copy>
             : <Copy small muted testID="candidate-source-hash" style={[s.mono, { flexShrink: 1, minWidth: 0 }]}>{`SHA-256：${source.sha256}`}</Copy>}
-          <Copy small muted>来源原文只读，下方候选文本单独编辑</Copy>
+          <Copy small muted>来源原文只读，下方发现文本单独编辑</Copy>
         </>}
     </View>
 
     <View style={sectionStyle}>
-      <Copy small style={{ fontWeight: '600' }}>候选草稿</Copy>
+      <Copy small style={{ fontWeight: '600' }}>发现草稿</Copy>
       <View style={s.row}>
         {kindOptions.map(option => <Button key={option.kind} label={option.label} testID={`candidate-kind-${option.kind}`}
           selected={kind === option.kind} disabled={locked}
           accessibilityLabel={`${sourceName}：选择${option.label}`}
           onPress={() => onKindChange(option.kind)} />)}
       </View>
-      <Input value={text} onChange={onTextChange} multiline label="候选内容" testID="candidate-text" editable={!locked} />
-      <Copy small muted>模型内容仅保存为候选，尚未经过人工确认</Copy>
+      <Input value={text} onChange={onTextChange} multiline label="发现内容" testID="candidate-text" editable={!locked} />
+      <Copy small muted>模型内容仅保存为发现，尚未经过人工确认</Copy>
     </View>
 
     <View style={sectionStyle}>
       <View style={s.row}>
-        <Button label="保存候选" primary testID="candidate-save" disabled={!canSave}
-          accessibilityLabel={`保存候选：来源 ${sourceName}`}
+        <Button label="保存发现" primary testID="candidate-save" disabled={!canSave}
+          accessibilityLabel={`保存发现：来源 ${sourceName}`}
           onPress={() => { if (canSave) onSave?.(); }} />
         <Button label={cancelLabel} testID="candidate-cancel"
           accessibilityLabel={`${cancelLabel}：来源 ${sourceName}`}

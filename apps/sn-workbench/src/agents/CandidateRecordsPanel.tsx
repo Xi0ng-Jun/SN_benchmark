@@ -87,15 +87,15 @@ export type CandidateRecordsPanelProps = {
 };
 
 const judgmentActions: readonly { judgment: CandidateJudgment; label: string }[] = [
-  { judgment: 'confirmed', label: '确认该候选' },
-  { judgment: 'rejected', label: '不支持该候选' },
+  { judgment: 'confirmed', label: '确认该发现' },
+  { judgment: 'rejected', label: '不支持该发现' },
   { judgment: 'undecided', label: '暂无法判断' },
 ];
 
 // Fixed display labels: an undecided record is never worded as confirmed.
 const judgmentLabels: Record<CandidateJudgment, string> = {
-  confirmed: '人工确认该候选',
-  rejected: '不支持该候选',
+  confirmed: '人工确认该发现',
+  rejected: '不支持该发现',
   undecided: '暂无法判断',
 };
 
@@ -122,7 +122,7 @@ export function CandidateRecordsPanel({ compact, records, selectedCandidateId, o
   const receipt = decision.receipt ?? null;
   const selected = selectedCandidateId === null ? null : records.find(record => record.id === selectedCandidateId) ?? null;
   const selectionMissing = selectedCandidateId !== null && selected === null;
-  const selectedName = selected === null ? '未选择候选' : selected.label;
+  const selectedName = selected === null ? '未选择发现' : selected.label;
   const listDetailSuffix = listDetail !== undefined && listDetail !== '' ? `：${listDetail}` : '';
   const decisionDetailSuffix = decision.detail !== undefined && decision.detail !== '' ? `：${decision.detail}` : '';
   const listReady = listStatus === 'ready' && listCurrent;
@@ -143,12 +143,12 @@ export function CandidateRecordsPanel({ compact, records, selectedCandidateId, o
 
   let disabledReason: string | null = null;
   if (blockedDecisionReason !== null) disabledReason = blockedDecisionReason;
-  else if (listStatus === 'error') disabledReason = '候选列表读取失败，暂不能保存人工判断';
-  else if (listStatus !== 'ready') disabledReason = '候选列表尚未读取完成，暂不能保存人工判断';
-  else if (!listCurrent) disabledReason = '候选列表不是当前快照，暂不能保存人工判断';
-  else if (selectedCandidateId === null) disabledReason = '请选择候选';
-  else if (selected === null) disabledReason = '所选候选不在当前列表中';
-  else if (decision.candidateId !== selected.id) disabledReason = decision.candidateId === null ? '判断草稿尚未绑定候选' : '判断草稿与当前所选候选不一致';
+  else if (listStatus === 'error') disabledReason = '发现列表读取失败，暂不能保存人工判断';
+  else if (listStatus !== 'ready') disabledReason = '发现列表尚未读取完成，暂不能保存人工判断';
+  else if (!listCurrent) disabledReason = '发现列表不是当前快照，暂不能保存人工判断';
+  else if (selectedCandidateId === null) disabledReason = '请选择发现';
+  else if (selected === null) disabledReason = '所选发现不在当前列表中';
+  else if (decision.candidateId !== selected.id) disabledReason = decision.candidateId === null ? '判断草稿尚未绑定发现' : '判断草稿与当前所选发现不一致';
   else if (!judgmentLegal) disabledReason = decision.judgment === null ? '请选择判断结论' : '判断结论值无效，暂不能保存人工判断';
   else if (decision.reason.trim().length === 0) disabledReason = '判断理由不能为空';
   else if (onSave === undefined) disabledReason = '保存尚未接入';
@@ -171,50 +171,50 @@ export function CandidateRecordsPanel({ compact, records, selectedCandidateId, o
   const receiptText = decision.status === 'saved'
     ? receiptMatches && receipt !== null
       ? `人工判断已保存：${receipt.actorLabel} · ${judgmentLabels[receipt.judgment]} · ${receipt.savedAtLabel} · 修订 ${receipt.revisionId}`
-      : '保存回执未核对或不属于当前候选，不能显示为已保存'
+      : '保存回执未核对或不属于当前发现，不能显示为已保存'
     : decision.status === 'unknown'
-      ? '尚无匹配当前候选的已核对回执，不能显示为已保存'
+      ? '尚无匹配当前发现的已核对回执，不能显示为已保存'
       : receipt !== null
         ? '已有保存回执，但父层状态不是已保存，不能显示为保存成功'
         : '尚无保存回执';
   const decisionStatusText = decision.status === 'saving' ? '正在保存人工判断…'
     : decision.status === 'error' ? `保存失败${decisionDetailSuffix}`
       : decision.status === 'unknown' ? `保存结果未知，请先核对，不自动重试${decisionDetailSuffix}` : null;
-  const listStatusText = listStatus === 'idle' ? '尚未读取本地候选列表'
-    : listStatus === 'loading' ? '正在读取候选列表…'
-      : listStatus === 'error' ? `读取候选列表失败${listDetailSuffix}` : null;
+  const listStatusText = listStatus === 'idle' ? '尚未读取本地发现列表'
+    : listStatus === 'loading' ? '正在读取发现列表…'
+      : listStatus === 'error' ? `读取发现列表失败${listDetailSuffix}` : null;
   const listStale = records.length > 0 && (listStatus !== 'ready' || !listCurrent);
   const listEmpty = listStatus === 'ready' && listCurrent && records.length === 0;
 
   return <View testID="candidate-records-panel" style={{ width: '100%', maxWidth: 820, alignSelf: 'center', minWidth: 0, gap }}>
     <View style={{ gap: 6, minWidth: 0 }}>
       <View style={s.row}>
-        <Copy small style={{ fontWeight: '600' }}>已保存候选</Copy>
-        <Button label={listStatus === 'loading' ? '读取中…' : '刷新候选列表'} testID="candidate-records-refresh"
-          accessibilityLabel="刷新候选列表" disabled={!canRefresh}
+        <Copy small style={{ fontWeight: '600' }}>已保存发现</Copy>
+        <Button label={listStatus === 'loading' ? '读取中…' : '刷新发现列表'} testID="candidate-records-refresh"
+          accessibilityLabel="刷新发现列表" disabled={!canRefresh}
           onPress={() => { if (canRefresh) onRefresh?.(); }} />
         {onRefresh === undefined && <Copy small muted>刷新尚未接入</Copy>}
       </View>
       {listStatusText !== null && <Copy small muted>{listStatusText}</Copy>}
       {listStatus !== 'error' && listDetail !== undefined && listDetail !== '' && <Copy small muted style={{ flexShrink: 1, minWidth: 0 }}>{listDetail}</Copy>}
-      {listStale && <Copy small muted>先前读取的候选快照</Copy>}
-      {listEmpty && <Copy small muted>尚无已保存候选</Copy>}
+      {listStale && <Copy small muted>先前读取的发现快照</Copy>}
+      {listEmpty && <Copy small muted>尚无已保存发现</Copy>}
       {!listEmpty && records.length > 0 && <View style={s.row}>{records.map(record => <View key={record.id} style={{ maxWidth: '100%', minWidth: 0 }}>
         <Button label={record.label} selected={selectedCandidateId === record.id} testID={`candidate-record-${record.id}`}
-          accessibilityLabel={`选择候选 ${record.label}`}
+          accessibilityLabel={`选择发现 ${record.label}`}
           onPress={() => onSelectCandidate(record.id)} />
       </View>)}</View>}
     </View>
 
     {selectionMissing
-      ? <View style={sectionStyle}><Copy small muted>所选候选不在当前列表中，请重新选择</Copy></View>
+      ? <View style={sectionStyle}><Copy small muted>所选发现不在当前列表中，请重新选择</Copy></View>
       : selected !== null && <>
         <View style={sectionStyle}>
           <View style={s.row}>
             <Copy small style={{ fontWeight: '600', flexShrink: 1, minWidth: 0 }}>{selected.label}</Copy>
             <Copy small muted>{selected.kindLabel}</Copy>
           </View>
-          <Copy small muted>模型保存的候选原文，不可在此修改</Copy>
+          <Copy small muted>模型保存的发现原文，不可在此修改</Copy>
           <FullText text={selected.text} testID="candidate-record-text" />
           <Copy small muted style={{ flexShrink: 1, minWidth: 0 }}>{`记录来源：${selected.origin}`}</Copy>
           <Copy small muted style={{ flexShrink: 1, minWidth: 0 }}>{`选入人：${selected.selectedByLabel}`}</Copy>
@@ -232,7 +232,7 @@ export function CandidateRecordsPanel({ compact, records, selectedCandidateId, o
         <View style={sectionStyle}>
           <Copy small style={{ fontWeight: '600' }}>{`已有人工判断（${selected.decisions.length}）`}</Copy>
           {selected.decisions.length === 0
-            ? <Copy small muted>该候选尚无人工判断</Copy>
+            ? <Copy small muted>该发现尚无人工判断</Copy>
             : selected.decisions.map(item => <View key={item.id} style={{ gap: 4, minWidth: 0, borderTopWidth: 1, borderColor: theme.line, paddingTop: 8 }}>
               <View style={s.row}>
                 <Copy small style={{ fontWeight: '600' }}>{judgmentLabels[item.judgment]}</Copy>
@@ -245,7 +245,7 @@ export function CandidateRecordsPanel({ compact, records, selectedCandidateId, o
 
     <View style={sectionStyle}>
       <Copy small style={{ fontWeight: '600' }}>人工判断</Copy>
-      <Copy small muted>人工判断独立记录，不修改模型候选或官方分数</Copy>
+      <Copy small muted>人工判断独立记录，不修改模型发现或官方分数</Copy>
       <Copy small muted style={{ flexShrink: 1, minWidth: 0 }}>{`当前操作人：${decision.actorLabel}`}</Copy>
       <Copy small muted style={{ flexShrink: 1, minWidth: 0 }}>{`当前修订基线：${decision.headLabel}`}</Copy>
       <View style={s.row}>

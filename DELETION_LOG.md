@@ -1,12 +1,30 @@
 # 删除记录
 
+## 2026-10-20：工作台五页签界面（分支 `feat/workbench-iteration-tree`）
+
+依据：迭代树设计第 10 节第 4 步“取消五页签与更改页”；用户 2026-10-20 选择**直接删除**（不保留历史入口）。只删前端；后端路由（结果接入、计划草稿、人评、笔记、Task 假设卡等）未动，仍可经 HTTP 使用。没有迁移成迭代的旧 Task 不再出现在界面上，需要时用 `cli iterations-migrate` 映射为遗留迭代。
+
+| 删了什么 | 为什么 |
+| --- | --- |
+| `apps/sn-workbench/src/workspace/TaskViewNav.tsx`、`historyLabels.ts` | 工作／更改／结果／计划／记录五页签与“记录”页 |
+| `apps/sn-workbench/src/runs/ChangesPage.tsx`、`ExecutionPanel.tsx`、`HypothesesPanel.tsx` | 更改页（Task worktree、执行面板、Task 假设卡）；由候选详情、派生／冻结／运行动作与提议详情取代 |
+| `apps/sn-workbench/src/runs/RunCard.tsx`、`useRunViews.ts`、`Interpretation.tsx` | Task 时间线上的 run 卡与阅读说明；由“运行与准入”小节取代 |
+| `apps/sn-workbench/src/comparison/ComparisonPanel.tsx`、`useTaskComparison.ts` | 已接入结果之间的比较；迭代内比较由比较记录与逐题矩阵承担 |
+| `apps/sn-workbench/src/plans/PlanDraftEditor.tsx`、`PlanDraftHistory.tsx`、`usePlanDrafts.ts` | 计划草稿页；题单在新建迭代时冻结（`CasePicker.tsx` 保留并复用） |
+| `apps/sn-workbench/src/materials.tsx` | 结果材料栏（成绩、案例、来源、人评、笔记）；`useResource` 迁入 `contracts.ts` |
+| `apps/sn-workbench/tests/*.mjs`、`tests/*-server.py`（共 30 个） | 旧界面的浏览器验收与夹具：全部以 Task 导航进入，夹具只建普通 Task，新界面不再列出；由 `tests/tree-browser.mjs` 取代。对话与附件的边界用例随之失去浏览器覆盖（组件本身原样保留在 Agent 抽屉中） |
+
+保留：Agent 对话、附件、Agent 创建与“发现”（原对话候选，界面改称“发现”）整体移入底部 Agent 抽屉；run 案例阅读（`RunMaterials.tsx`）作为右栏阅读器；工作区设置。
+
+## 2026-09-29：退役 benchmark
+
 日期：2026-09-29。工作树：`feat/benchmark-protocol-correctness`；删除前 HEAD：`86addcf421d627f62553204275b506b4d8bc022b`。本轮尚未提交或推送。
 
 依据：用户明确只保留 **QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA**，并授权实际删除。仓内清理已执行：**95 个旧文件删除、6 个文件迁名，共 101 个旧路径退出当前树**。下表按删除前快照与当前文件系统逐项核对，不把迁名误写成共用功能消失。
 
 本轮只处理评测工作树；未操作产品 checkout、服务器、Git 外私有数据、虚拟环境／第三方包或上传包，未运行实际 SN／生成模型／judge 实验。退役专属历史可由 Git 回溯，不另建永久旧 suite archive；五套与共用工程历史保留。仍未处理的五套内部默认／兼容问题见 [TRIAGE](TRIAGE.md)。
 
-## 删除的文件
+### 删除的文件
 
 表中的路径为已删除文件，不提供失效跳转。
 
@@ -108,7 +126,7 @@
 | `docs/superpowers/plans/2026-09-13-sn-public-system.md` | 退役套件专属实施计划；共用 Agent／当前五套的计划与契约另行保留。 |
 | `docs/superpowers/plans/2026-09-14-public-selection-implementation.md` | 退役套件专属实施计划；共用 Agent／当前五套的计划与契约另行保留。 |
 
-## 迁移共用职责，同时删除旧路径
+### 迁移共用职责，同时删除旧路径
 
 以下不是删除当前能力；所有消费者已直接使用新模块，没有兼容转发壳。
 
@@ -121,7 +139,7 @@
 | `configs/public-starter-models.example.json` → [model-roles.example.json](configs/model-roles.example.json) | 保留 tested／judge 显式配置，名称不再暗示旧 benchmark。 |
 | `tests/test_system_execution.py` → [test_sn_execution.py](tests/test_sn_execution.py) | 保留 SN 澄清、取消、完整输出、持久化和分母测试，移除旧 suite 专属 runner 断言。 |
 
-## 混合文件内删除与同步
+### 混合文件内删除与同步
 
 | 删了什么 | 为什么 |
 | --- | --- |
@@ -138,14 +156,14 @@
 | README、AGENTS、RUNBOOK、ARCHITECTURE_CURRENT、CURRENT_STATE、TRIAGE、evaluation-context/status、data/results/var README 的清理前状态和旧引用 | 当前文档反映实际删除与迁移，旧通过数标明历史，剩余债务仍保持待办。 |
 | 外部方法 registry 和 Agent CLI help 的旧模型配置文件名 | 对齐 model-roles.example.json，显式模型身份和参数解析契约保留。 |
 
-## 保留边界
+### 保留边界
 
 - 五套数据、标准化评分、官方答卷、外部方法／reference、QMSum BM25、证据投影及检索排名链路保留。ALCE 的 ASQA／QAMPARI／ELI5 和官方 QA 权重 roberta-large-squad 不是退役对象。
 - Agent 原生观测、组件补评、取消／迟到处理、Dashboard、runtime 隔离及结果落盘仍有当前消费者和离线覆盖。
 - 五套已保存 run 的 `public-starter-run-v1`／report 格式标记保留；这是保存身份的一部分，不代表支持旧套件。五套 v1/v2 API 默认和 reader 收敛未在本轮处理。
 - Git 外本地符号链接、原始 run、数据／模型缓存和服务器 unit 未删除；上传包也未重打包。当前源码清理不代表服务器部署已同步。
 
-## 验证
+### 验证
 
 - 删除前基线：Python **769 passed、2 skipped**。
 - 新增“五套范围、拒绝退役输入”测试先失败后通过；复核后为缺完整计划身份增加两项反例，同样先失败再移除旧补偿。

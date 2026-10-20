@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { ChevronLeft, IdCard, X } from 'lucide-react-native';
-import { useResource } from '../materials';
+import { useResource } from '../contracts';
 import { Button, Copy, fmt, Input, Pill, s, StatusDot, useTheme, hover } from '../ui';
 import { CHROME_HEIGHT, IconButton } from '../shell';
 import { CaseDetail as CaseDetailData, CaseList as CaseListData, caseLabel, caseStatusLabels, Flip, FlipTable as FlipData, Paper,

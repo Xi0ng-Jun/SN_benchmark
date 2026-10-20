@@ -85,6 +85,18 @@ class IterationAPI:
         self.requests = ActionRequestStore(repository)
         self.repository = repository
 
+    def primary(self, candidate):
+        """The reference run's official primary metric; several partitions are not averaged here."""
+        reference = candidate.get('reference')
+        if reference is None:
+            return None
+        runs = self.views.execution_runs(reference['execution_id'])
+        if len(runs) != 1:
+            return dict(metric=None, value=None, reason=f'{len(runs)} partitions')
+        official = self.views.run(runs[0].id)['official']
+        metric = official.get('primary_metric')
+        return dict(metric=metric, value=(official.get('metrics') or {}).get(metric), run_id=runs[0].id)
+
     def _request(self, request_id):
         record = self.requests.get(request_id)
         if self.repository.task(record['task_id'])['workspace_id'] != self.workspace['id']:
@@ -158,6 +170,7 @@ class IterationAPI:
             for candidate in tree['candidates']:
                 both = self.comparisons.for_candidate(candidate['id'], actor=actor, iteration=tree)
                 candidate['comparisons'] = dict(parent=summary(both['parent']), root=summary(both['root']))
+                candidate['primary'] = self.primary(candidate)
             return tree
 
         @router.get('/api/candidates/{candidate_id}')

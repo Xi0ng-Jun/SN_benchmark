@@ -16,7 +16,7 @@ type SourceDraft = { taskId: string; sessionId: string; agentId: string; generat
 type DecisionDraft = { key: string; base: string | null; judgment: CandidateJudgment | null; reason: string;
   status: CandidateDecisionStatus; detail?: string; receipt?: Decision };
 type List = { taskId: string; generation: number; status: 'loading' | 'ready' | 'error'; records: Candidate[]; detail?: string };
-const labels: Record<CandidateDraftKind, string> = { finding: '发现候选', direction: '方向候选', next_step: '下一步候选' };
+const labels: Record<CandidateDraftKind, string> = { finding: '发现', direction: '方向', next_step: '下一步' };
 const locked = (status: string) => status === 'saving' || status === 'unknown';
 const sameLocator = (left: SourceLocator, right: SourceLocator) => left.epoch === right.epoch
   && left.seq_start === right.seq_start && left.seq_end === right.seq_end && left.turn_id === right.turn_id
@@ -177,7 +177,7 @@ export function useCandidates(task: Task | undefined, actor: string, sessions: R
       const receipt = await write<Candidate>(`/tasks/${intent.taskId}/sessions/${intent.sessionId}/candidates`, {
         locator: intent.entry.source_locator, kind: intent.kind, text: intent.text, request_key: intent.key });
       if (!candidateReceiptMatches(receipt, intent, actor)) {
-        throw new Error('保存回执与候选意图不一致');
+        throw new Error('保存回执与发现意图不一致');
       }
       if (sourceRef.current[id]?.key === intent.key) updateSource(id, { ...intent, text: receipt.text, status: 'saved' });
       if (active()) { void refreshList(); onSaved(intent.taskId); }
@@ -191,7 +191,7 @@ export function useCandidates(task: Task | undefined, actor: string, sessions: R
       text: form.entry.text, sha256: form.entry.source_locator.sha256, truncated: form.entry.truncated,
       current: sourceCurrent(form), blockedReason: form.entry.candidateBlockedReason },
     kind: form.kind, text: form.text, saveStatus: form.status, statusDetail: form.detail,
-    saveBlockedReason: Array.from(form.text).length > 10000 ? '候选内容超过服务端 10000 字符上限' : null,
+    saveBlockedReason: Array.from(form.text).length > 10000 ? '发现内容超过服务端 10000 字符上限' : null,
     onKindChange: kind => modifySource({ kind }), onTextChange: text => modifySource({ text }),
     onSave: () => { void saveCandidate(); }, onCancel: () => { if (task && active()) setForms(previous => ({ ...previous, [task.id]: null })); },
   } : null;
@@ -208,9 +208,9 @@ export function useCandidates(task: Task | undefined, actor: string, sessions: R
     decision: { candidateId: record?.id ?? null, actorLabel: actor,
       headLabel: head ? '当前操作者修订 · ' + head.id : '当前操作者尚无判断修订',
       judgment: decision?.judgment ?? null, reason: decision?.reason ?? '', status: decision?.status ?? 'idle',
-      blockedReason: !record || !decision ? '请选择已保存候选' : Array.from(decision.reason).length > 10000
+      blockedReason: !record || !decision ? '请选择已保存发现' : Array.from(decision.reason).length > 10000
         ? '判断理由超过服务端 10000 字符上限' : decision.status !== 'saved' && decision.base !== (head?.id ?? null)
-          ? '当前操作者修订已变化，请取消编辑并重新选择候选' : null,
+          ? '当前操作者修订已变化，请取消编辑并重新选择发现' : null,
       detail: decision?.detail, receipt: decision?.receipt ? { candidateId: decision.receipt.candidate_id,
         revisionId: decision.receipt.id, actorLabel: decision.receipt.actor, judgment: decision.receipt.judgment,
         reason: decision.receipt.reason, savedAtLabel: date(decision.receipt.saved_at),
@@ -249,7 +249,7 @@ export function useCandidates(task: Task | undefined, actor: string, sessions: R
       if (result.status !== 'ok') throw new Error('保存回执核对响应无效');
       if (type === 'candidate') {
         const receipt = result.receipt as Candidate;
-        if (!candidateReceiptMatches(receipt, candidateIntent!, actor)) throw new Error('保存回执与候选意图不一致');
+        if (!candidateReceiptMatches(receipt, candidateIntent!, actor)) throw new Error('保存回执与发现意图不一致');
         if (formId && sourceRef.current[formId]?.key === intentKey && sourceRef.current[formId].status === 'unknown') {
           updateSource(formId, { ...candidateIntent!, status: 'saved', text: receipt.text, detail: undefined });
         }

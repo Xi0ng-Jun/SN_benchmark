@@ -1,10 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
-import { ChevronDown, ChevronRight, Circle, Folder, ListTree, PanelLeftClose, Plus, Settings } from 'lucide-react-native';
+import { Platform, Pressable, View } from 'react-native';
 import type { LucideIcon } from 'lucide-react-native';
-import type { Workspace } from './contracts';
-import type { TaskOverview } from './runs/contracts';
-import { DotTone, Pill, StatusDot, useTheme } from './ui';
+import { useTheme } from './ui';
 
 // Paseo: left-sidebar / explorer-sidebar-layout / HEADER_INNER_HEIGHT.
 // These local shells host workbench content without Paseo's private stores.
@@ -51,74 +48,6 @@ export function IconButton({ label, icon: Icon, onPress, selected = false, testI
         backgroundColor: selected || hovered || pressed ? theme.selected : 'transparent' })}>
       <Icon size={16} strokeWidth={1.5} color={hovered || selected ? theme.text : theme.muted} />
     </Pressable>
-  </View>;
-}
-
-function NavigationRow({ label, icon: Icon, selected = false, onPress, children, trailing, testID }: {
-  label: string; icon?: LucideIcon; selected?: boolean; onPress: () => void; children?: React.ReactNode; trailing?: React.ReactNode; testID?: string;
-}) {
-  const theme = useTheme();
-  const [hovered, setHovered] = useState(false);
-  return <View style={{ flex: 1, minWidth: 0 }} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
-    <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected }} onPress={onPress} testID={testID}
-      {...(Platform.OS === 'web' ? { title: label } : {})}
-      style={{ minHeight: 32, paddingVertical: 6, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 8,
-        backgroundColor: selected ? theme.selected : hovered ? theme.surface : 'transparent' }}>
-      {Icon && <Icon size={16} strokeWidth={1.5} color={selected || hovered ? theme.text : theme.muted} />}
-      {children}
-      <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontSize: 14, lineHeight: 20, color: selected || hovered ? theme.text : theme.muted }}>{label}</Text>
-      {trailing}
-    </Pressable>
-  </View>;
-}
-
-// Paseo sidebar-agent-state buckets: running blue, failed red, needs you amber (undecided
-// records or finished runs with cases to read), idle grey.
-const taskTone = (overview?: TaskOverview): DotTone => !overview ? null
-  : overview.status === 'running' ? 'running' : overview.status === 'failed' ? 'danger' : overview.pending ? 'warning'
-    : overview.status === 'attention' ? 'warning' : overview.status === 'unbound' ? null : 'idle';
-const toneLabels: Record<string, string> = { running: '运行中', danger: '运行失败', warning: '有待读题或待决定', idle: '无待处理' };
-
-export function WorkspaceSidebar({ width, compact, workspaces, taskId, overview = {}, onTask, onNewTask, onClose, onSettings, onRuns }: {
-  width: number; compact: boolean; workspaces: Workspace[]; taskId: string | null; overview?: Record<string, TaskOverview>;
-  onTask: (id: string) => void; onNewTask: () => void; onClose: () => void; onSettings: () => void; onRuns?: () => void;
-}) {
-  const theme = useTheme();
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  return <View testID="workspace-sidebar" style={{ width, height: '100%', backgroundColor: theme.sidebar, borderRightWidth: 1, borderColor: theme.line }}>
-    <View style={{ height: compact ? 48 : CHROME_HEIGHT, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-      <Text style={{ flex: 1, color: theme.text, fontSize: 14, fontWeight: '400' }}>Silicon Notebook</Text>
-      <IconButton label="收起工作区侧栏" icon={PanelLeftClose} onPress={onClose} testID={compact ? 'close-sidebar' : 'toggle-left-sidebar'} />
-    </View>
-    <View style={{ padding: 8, gap: 2 }}>
-      <NavigationRow label="新建任务" icon={Plus} onPress={onNewTask} testID="new-task" />
-      {onRuns && <NavigationRow label="全局 run 目录" icon={ListTree} onPress={onRuns} testID="open-run-directory" />}
-    </View>
-    <ScrollView style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ paddingHorizontal: 8, paddingTop: 12 }}>
-      <View style={{ height: 28, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center' }}>
-        <Text style={{ flex: 1, fontSize: 12, color: theme.muted }}>Workspaces</Text>
-        <IconButton label="建立任务" icon={Plus} onPress={onNewTask} />
-      </View>
-      {workspaces.map(w => <View key={w.id} style={{ marginBottom: 16 }}>
-        <NavigationRow label={w.title} onPress={() => setCollapsed(p => ({ ...p, [w.id]: !p[w.id] }))}>
-          {collapsed[w.id] ? <ChevronRight size={12} color={theme.muted} /> : <ChevronDown size={12} color={theme.muted} />}
-          <Folder size={16} strokeWidth={1.5} color={theme.muted} />
-        </NavigationRow>
-        {!collapsed[w.id] && <View style={{ marginLeft: 20, borderLeftWidth: 1, borderColor: theme.line, paddingLeft: 4, gap: 2 }}>
-          {w.tasks.map(t => <NavigationRow key={t.id} label={t.title} onPress={() => onTask(t.id)} selected={t.id === taskId} testID={'task-nav-' + t.id}
-            trailing={overview[t.id]?.pending ? <Pill label={String(overview[t.id].pending)} tone="warning" testID={'task-pending-' + t.id} /> : null}>
-            <View style={{ width: 8, alignItems: 'center' }} {...(Platform.OS === 'web' ? { title: toneLabels[taskTone(overview[t.id]) ?? ''] ?? '' } : {})}>{taskTone(overview[t.id]) ? <StatusDot tone={taskTone(overview[t.id])} />
-              : <Circle size={6} color={theme.line} fill={theme.line} />}</View>
-          </NavigationRow>)}
-          {!w.tasks.length && <Text style={{ color: theme.muted, fontSize: 12, padding: 8 }}>尚无任务</Text>}
-        </View>}
-      </View>)}
-    </ScrollView>
-    <View style={{ height: 42, paddingHorizontal: 8, borderTopWidth: 1, borderColor: theme.line, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-      <IconButton label="建立任务" icon={Plus} onPress={onNewTask} />
-      <Text style={{ flex: 1, color: theme.muted, fontSize: 12 }}>本地工作台</Text>
-      <IconButton label="工作区设置" icon={Settings} onPress={onSettings} testID="open-settings" />
-    </View>
   </View>;
 }
 

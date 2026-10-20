@@ -97,9 +97,9 @@ function AssistantMessage({ entry, candidateReason, onCandidate }: {
     {entry.truncated && <Copy small muted>正文已截断</Copy>}
     {onCandidate && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, marginLeft: -8, flexWrap: 'wrap', minHeight: 32,
       opacity: hovered || open ? 1 : 0 }}>
-      <Button label={open ? '收起' : '记为候选'} onPress={() => setOpen(o => !o)} testID={`chat-candidate-${entry.id}`} />
+      <Button label={open ? '收起' : '记下'} onPress={() => setOpen(o => !o)} testID={`chat-candidate-${entry.id}`} />
       {open && candidateActions.map(action => <Button key={action.kind} label={action.label} disabled={candidateReason !== null}
-        accessibilityLabel={`记为${action.label}候选`} onPress={() => { if (candidateReason === null) onCandidate(action.kind); }} />)}
+        accessibilityLabel={`记为${action.label}`} onPress={() => { if (candidateReason === null) onCandidate(action.kind); }} />)}
       {open && candidateReason !== null && <Text style={{ fontSize: 11, color: theme.muted }}>{candidateReason}</Text>}
     </View>}
   </View>;

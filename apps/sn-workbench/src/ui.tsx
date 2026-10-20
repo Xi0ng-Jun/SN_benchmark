@@ -2,17 +2,19 @@ import React, { createContext, useContext } from 'react';
 import { Pressable, PressableStateCallbackType, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
 import type { LucideIcon } from 'lucide-react-native';
 
-// Geometry and Zinc palette follow Paseo's theme.ts; components are local,
-// so they do not depend on Paseo's private stores or panel context.
+// Linear tokens (apps/sn-workbench/DESIGN.md): surface ladder + hairlines, one lavender accent.
+// Semantic colours are reserved for status and numeric deltas.
 export const themes = {
-  light: { bg: '#ffffff', sidebar: '#f4f4f5', surface: '#fafafa', selected: '#e4e4e7', line: '#e4e4e7', text: '#1a1a1e', muted: '#71717a', accent: '#3f3f46', error: '#b91c1c',
-    // Paseo statusDot* band and diff add/delete tones.
-    running: '#268ae0', warning: '#b37824', danger: '#f12e2f', success: '#299f51', add: '#3e704a', del: '#9d433b',
-    gold: '#fde68a', cited: '#bfdbfe', retrieved: '#ececee', addBg: '#ecfdf3', delBg: '#fef2f2' },
-  dark: { bg: '#18181b', sidebar: '#131316', surface: '#1f1f22', selected: '#27272a', line: '#27272a', text: '#f4f4f5', muted: '#a1a1aa', accent: '#d4d4d8', error: '#fca5a5',
-    running: '#5caaf6', warning: '#db932e', danger: '#f7796d', success: '#35c264', add: '#6cb17b', del: '#d8847b',
-    gold: '#5c4a12', cited: '#1e3a5f', retrieved: '#2a2a2e', addBg: '#12261a', delBg: '#2b1515' },
+  light: { bg: '#ffffff', sidebar: '#f5f6f6', surface: '#f6f7f7', raised: '#ffffff', selected: '#ebecee', line: '#e6e6e8', lineStrong: '#d4d5d8',
+    text: '#1b1b1f', secondary: '#3c3f46', muted: '#6b6f76', accent: '#3c3f46', primary: '#5e6ad2', primaryHover: '#828fff', onPrimary: '#ffffff', error: '#c4282d',
+    running: '#5e6ad2', warning: '#b7791f', danger: '#e5484d', success: '#27a644', add: '#2f7a45', del: '#b4383c',
+    gold: '#fde68a', cited: '#c7d2fe', retrieved: '#ececee', addBg: '#ecfdf3', delBg: '#fdf0f0' },
+  dark: { bg: '#0f1011', sidebar: '#010102', surface: '#141516', raised: '#18191a', selected: '#202125', line: '#23252a', lineStrong: '#34343a',
+    text: '#f7f8f8', secondary: '#d0d6e0', muted: '#8a8f98', accent: '#d0d6e0', primary: '#5e6ad2', primaryHover: '#828fff', onPrimary: '#ffffff', error: '#ff8a8a',
+    running: '#828fff', warning: '#d9a33a', danger: '#ff6369', success: '#3dbf5c', add: '#6cb17b', del: '#e0807a',
+    gold: '#5c4a12', cited: '#262c5c', retrieved: '#1c1d20', addBg: '#10251a', delBg: '#2b1517' },
 };
+export const MONO = 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
 export type Theme = typeof themes.light;
 export const ThemeContext = createContext<Theme>(themes.light);
 export const useTheme = () => useContext(ThemeContext);
@@ -22,8 +24,8 @@ export const s = StyleSheet.create({
   section: { fontSize: 14, fontWeight: '600', lineHeight: 22 },
   text: { fontSize: 14, lineHeight: 23 },
   hint: { fontSize: 12, lineHeight: 20 },
-  mono: { fontFamily: 'monospace', fontSize: 11, lineHeight: 18 },
-  card: { borderWidth: 1, borderRadius: 8, padding: 20, gap: 14 },
+  mono: { fontFamily: MONO, fontSize: 12, lineHeight: 18 },
+  card: { borderWidth: 1, borderRadius: 12, padding: 20, gap: 14 },
 });
 export function Copy({ children, muted = false, small = false, style, testID }: { children: React.ReactNode; muted?: boolean; small?: boolean; style?: object; testID?: string }) {
   const theme = useTheme();
@@ -37,11 +39,12 @@ export function Button({ label, accessibilityLabel, accessibilityRole = 'button'
   return <Pressable accessibilityRole={accessibilityRole} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ disabled, selected }}
     aria-selected={accessibilityRole === 'tab' ? selected : undefined} testID={testID}
     disabled={disabled} onPress={onPress} onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)} style={({ pressed }) => ({
-      flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 7,
-      backgroundColor: primary ? theme.text : selected || hovered || pressed ? theme.selected : 'transparent', opacity: disabled ? .45 : 1,
+      flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6,
+      backgroundColor: primary ? (hovered || pressed ? theme.primaryHover : theme.primary) : selected || hovered || pressed ? theme.selected : 'transparent',
+      borderWidth: 1, borderColor: primary ? 'transparent' : selected ? theme.lineStrong : 'transparent', opacity: disabled ? .45 : 1,
     })}>
-    {Icon && <Icon size={15} strokeWidth={1.5} color={primary ? theme.bg : theme.muted} />}
-    <Text style={{ color: primary ? theme.bg : theme.text, fontSize: 12, lineHeight: 18 }}>{label}</Text>
+    {Icon && <Icon size={14} strokeWidth={1.75} color={primary ? theme.onPrimary : theme.muted} />}
+    <Text style={{ color: primary ? theme.onPrimary : theme.text, fontSize: 13, fontWeight: '500', lineHeight: 18 }}>{label}</Text>
   </Pressable>;
 }
 export function Input({ value, onChange, placeholder, multiline = false, label, editable = true, testID }: {
@@ -50,8 +53,8 @@ export function Input({ value, onChange, placeholder, multiline = false, label, 
   const theme = useTheme();
   return <TextInput value={value} onChangeText={onChange} placeholder={placeholder} placeholderTextColor={theme.muted}
     accessibilityLabel={label} multiline={multiline} editable={editable} testID={testID}
-    style={{ borderWidth: 1, borderColor: theme.line, borderRadius: 6, padding: 12, color: theme.text, backgroundColor: theme.bg,
-      fontSize: 14, lineHeight: 22, minHeight: multiline ? 86 : 42, textAlignVertical: 'top' }} />;
+    style={{ borderWidth: 1, borderColor: theme.line, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12, color: theme.text, backgroundColor: theme.surface,
+      fontSize: 14, lineHeight: 22, minHeight: multiline ? 86 : 36, textAlignVertical: 'top' }} />;
 }
 export function Block({ title, children }: { title: string; children: React.ReactNode }) {
   const theme = useTheme();
@@ -62,7 +65,7 @@ export function Fold({ title, value }: { title: string; value: unknown }) {
   const theme = useTheme();
   return <View style={{ gap: 8, borderTopWidth: 1, borderColor: theme.line, paddingTop: 8 }}>
     <Button label={(open ? '▾ ' : '▸ ') + title} onPress={() => setOpen(!open)} />
-    {open && <Copy small style={{ fontFamily: 'monospace' }}>{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</Copy>}
+    {open && <Copy small style={{ fontFamily: MONO }}>{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</Copy>}
   </View>;
 }
 
