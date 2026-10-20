@@ -59,6 +59,9 @@ def test_run_maps_stay_out_of_argv_and_are_hash_checked(tmp_path):
         execute(payload)
     with pytest.raises(ExecutionRejected, match='every planned case'):
         spec_for(tmp_path / 'other', seed_runs={'unknown': '/runs/x'})
+    wider = dict({cid: '/runs/' + cid for cid in prep['input']['selection']['case_ids']}, extra='/runs/extra')
+    _, narrowed, _ = spec_for(tmp_path / 'wider', seed_runs=wider)
+    assert 'extra' not in json.loads(Path(narrowed['run_maps']['path']).read_text())['seed_runs']
     with pytest.raises(ExecutionRejected, match='parallel'):
         spec_for(tmp_path / 'third', parallel=0)
 

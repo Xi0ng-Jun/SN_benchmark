@@ -71,10 +71,12 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
         value = config.get(key)
         if value is None:
             continue
-        if (type(value) is not dict or not value or set(value) != set(prep['input']['selection']['case_ids'])
-                or any(type(v) is not str or not Path(v).is_absolute() for v in value.values())):
+        planned_ids = prep['input']['selection']['case_ids']
+        if (type(value) is not dict or not set(planned_ids) <= set(value)
+                or any(type(value[c]) is not str or not Path(value[c]).is_absolute() for c in planned_ids)):
             raise ExecutionRejected(key + ' must give an absolute run directory for every planned case')
-        extras[key] = dict(value)
+        # One server map may serve several plans; only this plan's cases travel.
+        extras[key] = {c: value[c] for c in planned_ids}
     if len(extras) > 1:
         raise ExecutionRejected('An execution either adopts finished runs or generates')
     maps = None
