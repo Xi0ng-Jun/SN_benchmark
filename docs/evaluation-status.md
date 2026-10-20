@@ -4,7 +4,7 @@
 
 ASQA 948 的 chunk 58 题、reasoning 60 题均在答案合成时失败（SN 拒绝模型返回的不完整 JSON），两模式失败题交集仅 2 题，与题目无关；资料导入已完成。新增 `--seed-prepared-run`（batch 为 `--seed-prepared-map`）：新 run 校验与原 run 同分区、同准备策略、同 export 条件族后，复制原 run 的 SN 数据库与 storage 及准备状态，只重新提问；`sources.file_path` 改写到新目录，库内其他位置若引用原 run 路径则拒绝。manifest 顶层与导出 provenance 记录种子来源，pairing 与合并条件不变。离线回归 2357 passed / 1 skipped；真实 SN `970b6793` 配离线假模型验证：删除种子目录后副本仍可读文件、检索与读取 source。
 
-服务器转述结果（evaluator `8dee77f`）：118 题全部走种子路径，每题中位 1.03 分钟（P90 3.73），总墙钟 29.1 分钟；首题 `rewritten_source_paths=100`、未重新导入。chunk 53/58、reasoning 56/60 补跑成功，剩余仍为同型合成失败。retry-merged：chunk STR-EM 0.4917 / STR-HIT 0.2068，reasoning-no-clarification 0.4879 / 0.2089，scorer `634aed97…`，配对差均含 0。alce:837 只读核实：99 篇有 chunk，仅 Markdown 标题开头的 1 篇为 0。失败响应中位长度约 16 字符，finish_reason stop 227 / length 5 / 空 119，`answer_max_tokens=16384`，指向模型服务偶发返回近空内容而非长度截断，待反馈 SN。QA/MAUVE/引用评分待资源包到达后执行第二批 B。数值见[表 4a/4f](benchmark-result-tables.md)。
+服务器转述结果（evaluator `8dee77f`）：118 题全部走种子路径，每题中位 1.03 分钟（P90 3.73），总墙钟 29.1 分钟；首题 `rewritten_source_paths=100`、未重新导入。chunk 53/58、reasoning 56/60 补跑成功，剩余仍为同型合成失败。retry-merged：chunk STR-EM 0.4917 / STR-HIT 0.2068，reasoning-no-clarification 0.4879 / 0.2089，scorer `634aed97…`，配对差均含 0。alce:837 只读核实：99 篇有 chunk，仅 Markdown 标题开头的 1 篇为 0。失败响应中位长度约 16 字符，finish_reason stop 227 / length 5 / 空 119，`answer_max_tokens=16384`，指向模型服务偶发返回近空内容而非长度截断，待反馈 SN。第 2 轮把剩余 9 题（chunk 5、reasoning 4）补跑后全部成功，final：chunk STR-EM 0.4948 / STR-HIT 0.2078，reasoning-no-clarification 0.4895 / 0.2089，两份均 947 success、0 error、1 missing（alce:837），配对差仍含 0。QA/MAUVE/引用评分待资源包到达后执行第二批 B。数值见[表 4a/4f](benchmark-result-tables.md)。
 
 ## 2026-10-16 服务器切换方式更新（用户最新决定）
 
