@@ -82,6 +82,9 @@ def main():
     parser.add_argument('--reasoning-protocol', choices=('reasoning-v1', 'reasoning-no-clarification-v1'),
                         default='reasoning-v1', help='Explicit reasoning protocol variant')
     parser.add_argument('--run-dir', type=Path, required=True)
+    parser.add_argument('--seed-prepared-run', type=Path,
+                        help='Copy the prepared SN notebook of this earlier run (same partition and conditions) '
+                             'instead of importing documents again')
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
                         help='Generation request contract (default: v3 without gold fields); explicit v1/v2 preserve historical requests.')
@@ -166,7 +169,7 @@ def main():
                     mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
                     case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root,
                     artifact_index_id=args.artifact_index_id, reasoning_protocol=args.reasoning_protocol,
-                    preparation_policy=args.preparation_policy,
+                    preparation_policy=args.preparation_policy, seed_prepared_run=args.seed_prepared_run,
                     **startup_kwargs)
     except BaseException as exc:
         details = getattr(exc, '_rag_eval_diagnostic_details', None) or exception_details(

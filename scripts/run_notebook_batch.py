@@ -22,6 +22,8 @@ def main(argv=None):
     run.add_argument('--preparation-policy', choices=PREPARATION_POLICIES, default=DEFAULT_PREPARATION_POLICY)
     run.add_argument('--reasoning-protocol', choices=('reasoning-v1', 'reasoning-no-clarification-v1'),
                      default='reasoning-v1')
+    run.add_argument('--seed-prepared-map', type=Path,
+                     help='JSON {case_id: earlier run dir}; ask again on copied prepared notebooks')
     run.add_argument('--parallel', type=int, default=1)
     run.add_argument('--python', default=sys.executable)
     run.add_argument('--ledger', dest='ledger_path', type=Path,

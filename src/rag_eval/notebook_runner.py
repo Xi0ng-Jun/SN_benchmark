@@ -77,24 +77,110 @@ def _anchor_documents(repo, record, mapping):
     return resolved, errors
 
 
+PREPARED_SEED_FORMAT = 'sn-prepared-seed-v1'
+_SEED_FILES = ('runtime/database.db', 'product-artifacts/state.json', 'product-artifacts/document-map.json')
+
+
+def validate_prepared_seed(seed, *, run, mode, partition_id, identity, preparation_policy):
+    """Accept only a prepared run of the same partition and answer conditions.
+
+    The comparison is the export family used for merging runs into one
+    submission, so a seeded retry can join its original batch and nothing else.
+    """
+    from .benchmark_submission import sn_submission_identity
+    seed = Path(seed).resolve()
+    if seed == run or seed.is_relative_to(run) or run.is_relative_to(seed):
+        raise ValueError('Prepared seed must be separate from the new run')
+    if any(not (seed / name).is_file() for name in ('manifest.json', *_SEED_FILES)) \
+            or not (seed / 'runtime/storage').is_dir():
+        raise ValueError('Prepared seed lacks a saved SN runtime or preparation state')
+    manifest = json.loads((seed / 'manifest.json').read_text(encoding='utf-8'))
+    seed_identity = manifest.get('identity') or {}
+    if manifest.get('mode') != mode:
+        raise ValueError('Prepared seed uses a different mode')
+    if seed_identity.get('notebook_context', {}).get('partition_id') != partition_id \
+            or seed_identity.get('product_bundle') != identity['product_bundle']:
+        raise ValueError('Prepared seed uses a different partition corpus')
+    if seed_identity.get('preparation_policy', DEFAULT_PREPARATION_POLICY) != preparation_policy:
+        raise ValueError('Prepared seed preparation policy does not match requested preparation policy')
+    family = lambda value: fingerprint({'identity': sn_submission_identity(value), 'mode': mode})
+    if family(seed_identity) != family(identity):
+        raise ValueError('Prepared seed differs in bundle, SN source, models, settings or request')
+    return seed
+
+
+def install_prepared_seed(seed, run):
+    """Copy SN state before the repository opens; refuse references back to the seed."""
+    import sqlite3
+    runtime, cell = run / 'runtime', run / 'product-artifacts'
+    if (runtime / 'database.db').exists() or (runtime / 'storage').exists() or cell.exists():
+        raise ValueError('Seeded runtime must start empty')
+    shutil.copytree(seed / 'runtime/storage', runtime / 'storage', symlinks=True)
+    source = sqlite3.connect(seed.joinpath('runtime/database.db').as_uri() + '?mode=ro', uri=True)
+    try:
+        target = sqlite3.connect(runtime / 'database.db')
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+    old_prefix, new_prefix = str(seed / 'runtime/storage') + '/', str(runtime / 'storage') + '/'
+    rewritten = 0
+    db = sqlite3.connect(runtime / 'database.db')
+    try:
+        with db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info('sources')")}
+            if 'file_path' in columns:
+                for row_id, path in db.execute('SELECT rowid, file_path FROM sources').fetchall():
+                    if isinstance(path, str) and path.startswith(old_prefix):
+                        db.execute('UPDATE sources SET file_path=? WHERE rowid=?',
+                                   (new_prefix + path[len(old_prefix):], row_id))
+                        rewritten += 1
+        # Any other reference would make the copy read from the original run.
+        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            for column in [row[1] for row in db.execute(f'PRAGMA table_info("{table}")')]:
+                hit = db.execute(f'SELECT 1 FROM "{table}" WHERE instr(CAST("{column}" AS TEXT), ?) LIMIT 1',
+                                 (str(seed),)).fetchone()
+                if hit:
+                    raise ValueError('Seed database references the seed run outside source file paths')
+    finally:
+        db.close()
+    cell.mkdir()
+    for name in ('state.json', 'document-map.json'):
+        shutil.copyfile(seed / 'product-artifacts' / name, cell / name)
+    receipt = dict(format=PREPARED_SEED_FORMAT, seed_run=str(seed), seed_run_id=seed.name,
+                   seed_manifest_sha256=digest(seed / 'manifest.json'),
+                   seed_files_sha256={name: digest(seed / name) for name in _SEED_FILES},
+                   rewritten_source_paths=rewritten,
+                   storage_files=sum(1 for path in (runtime / 'storage').rglob('*') if path.is_file()),
+                   note='SN state copied from a prepared run; documents were not imported again')
+    save_json(run / 'prepared-seed.json', receipt)
+    return receipt
+
+
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
                 qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
                 diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1',
-                preparation_policy=DEFAULT_PREPARATION_POLICY):
+                preparation_policy=DEFAULT_PREPARATION_POLICY, prepared_seed=None):
     update_state(run, 'importing')
-    from .benchmark_runtime import prepare_notebook
+    from .benchmark_runtime import load_prepared_notebook, prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
     from .usage_capture import capture_usage
     from app.core.llm_logging import LLMInteractionLogger
     cell = run / 'product-artifacts'
-    cell.mkdir()
-    usage = {}
-    try:
-        with capture_usage(LLMInteractionLogger) as usage:
-            notebook, mapping = prepare_notebook(repo, cell, product['documents'], product['manifest']['suite'],
-                                                 preparation_policy=preparation_policy)
-    finally:
-        save_json(run / 'preparation-usage.json', usage)
+    if prepared_seed is not None:
+        notebook, mapping = load_prepared_notebook(cell, product['documents'], preparation_policy=preparation_policy)
+        save_json(run / 'preparation-usage.json', {})
+    else:
+        cell.mkdir()
+        usage = {}
+        try:
+            with capture_usage(LLMInteractionLogger) as usage:
+                notebook, mapping = prepare_notebook(repo, cell, product['documents'], product['manifest']['suite'],
+                                                     preparation_policy=preparation_policy)
+        finally:
+            save_json(run / 'preparation-usage.json', usage)
     selected = {case['case_id']: case for case in cases}
     documents = {document['id']: document for document in product['documents']}
     with EventJournal(cell / 'attempts.jsonl') as attempts:
@@ -240,11 +326,14 @@ def _saved_failures(run):
 def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
             agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
             sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
-            reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY):
+            reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
+            seed_prepared_run=None):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
     request revision, and their historical scoring plans remain unchanged.
+    seed_prepared_run copies a prepared SN notebook of the same partition and
+    answer conditions, so only the questions are asked again.
     """
     validate_preparation_policy(preparation_policy)
     if mode not in {'chunk', 'reasoning'}:
@@ -432,6 +521,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             identity['multihop_retrieval'] = ranking_identity()
         if case_ids is not None:
             identity['notebook_context']['case_ids'] = [case['case_id'] for case in cases]
+        seed = None
+        if seed_prepared_run is not None:
+            seed = validate_prepared_seed(seed_prepared_run, run=run, mode=mode, partition_id=partition_id,
+                                          identity=identity, preparation_policy=preparation_policy)
         if agent_config is not None:
             identity['agent_evaluation'] = {'protocol': tracing.NATIVE_TRACE_VERSION, 'sdk_version': '4.2.2',
                                             'metrics': list(agent_metrics), 'sdk_timeout': sdk_timeout_identity(),
@@ -445,7 +538,11 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                   pairing_id=fingerprint(identity), models={}, source_manifest=bundle['manifest'],
                   product_protocol=VERSION, planned_sha256=digest(run / 'planned.jsonl'),
                   planned_predictions=len(cases), planned_scores=len(planned), identity=identity,
-                  human_calibration='pending', release_gate=False))
+                  human_calibration='pending', release_gate=False,
+                  **({'prepared_seed': dict(seed_run_id=seed.name, seed_manifest_sha256=digest(seed / 'manifest.json'))}
+                     if seed is not None else {})))
+        if seed is not None:
+            install_prepared_seed(seed, run)
         with ExitStack() as stack:
             model_events = stack.enter_context(EventJournal(run / 'model-events.jsonl'))
             outputs = stack.enter_context(EventJournal(run / 'outputs.jsonl'))
@@ -475,7 +572,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         session_factory=tracing.evaluation_session if tracing is not None else None,
                         qasper_catalogues=qasper_catalogues, hotpot_evidence=hotpot_evidence,
                         multihop_retrieval=multihop_retrieval, diagnostic_sensitive_values=generation_private_values,
-                        reasoning_protocol=reasoning_protocol, preparation_policy=preparation_policy)
+                        reasoning_protocol=reasoning_protocol, preparation_policy=preparation_policy,
+                        prepared_seed=seed)
             score_outputs(run, cases, planned, scores)
         errors, failures = _saved_failures(run)
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)
