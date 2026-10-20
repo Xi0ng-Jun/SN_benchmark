@@ -176,13 +176,17 @@ MAP 使用固定作者公式，不能改成教科书公式后沿用同一标签�
 
 | 方法 | 类别 / 状态 | STR-EM ↑ | STR-HIT ↑ | QA-EM ↑ | QA-F1 ↑ | QA-Hit ↑ | Scope N |
 | --- | --- | --- | --- | --- | --- | --- | ---: |
-| SN chunk / `sn.alce.chunk`（ASQA） | controlled-rerun / 当前范围 | 待填 | 待填 | 待填 / pending | 待填 / pending | 待填 / pending | 948 |
+| SN chunk / `sn.alce.chunk`（ASQA） | controlled-rerun / 当前范围 | 0.4917‡ | 0.2068‡ | pending | pending | pending | 948 |
 | VANILLA / `alce.vanilla.ordinary`（ASQA） | controlled-rerun / 暂缓 | 待填 | 待填 | 待填 | 待填 | 待填 | 948 |
 
 | 方法 | ROUGE-Lsum ↑ | MAUVE ↑ | Citation precision ↑ | Citation recall ↑ | 指标分母记录 |
 | --- | --- | --- | --- | --- | --- |
-| SN chunk（ASQA） | 待填 / pending | 待填 / pending | 待填 / pending | 待填 / pending | 每项 N 与 eligible-ID hash |
+| SN chunk（ASQA） | pending | pending | pending | pending | STR 分母 948；其余待第二批 B 评分 |
 | VANILLA（ASQA） | 待填 | 待填 | 待填 | 待填 | 同上 |
+
+‡ 服务器转述（2026-10-20），本机未读取原工件。文本 scorer `634aed97…`，分母 948，error/missing 按空答案计入。主值为“答案合成失败题补跑一次”后的 retry-merged 答卷：首次运行 STR-EM 0.4630、STR-HIT 0.1920（58 error，6.1%，全部为 SN 答案合成时模型返回不完整/空 JSON；与 reasoning 变体的失败题交集仅 2 题，判断与题目无关）。补跑在原 run 已导入的 notebook 上只重新提问（`--seed-prepared-run`），53/58 成功；剩余 5 error、1 missing 仍计入分母。missing 为 alce:837：其第 50 篇候选原文以 `# 3 in the world…` 开头，按 Markdown 上传时被解析为纯标题、切出 0 chunk，整题导入被拒；属评测侧上传格式问题，下一版 bundle 处理。生成条件：SN `970b6793`，evaluator 849 题为 `93ad5e2` + `deferred-notebook-metadata-v1`，99 题为 `dfb7c51` + `per-source-metadata-v1`（补跑题沿用各自种子的策略，evaluator `8dee77f`）。
+
+**强制作答变体（不进本表主行，不是标准 reasoning）。** `reasoning-no-clarification-v1`（`cover-all-options-v1`）同 948 题、同 scorer：retry-merged STR-EM 0.4879、STR-HIT 0.2089（首次 0.4598 / 0.2015；60 error 补跑 56 成功，剩 4 error、1 missing）。SN preview 判定需澄清 38 题（4.0%），0 题终态为 clarification、0 题超 2000 字符。与 chunk 同题配对（服务器离线计算，非官方 compare 入口，因答卷含 error 未过完整生成门槛）：STR-EM 差 −0.0038（95% CI −0.0204～+0.0124），STR-HIT 差 +0.0021（−0.0179～+0.0222），均含 0；需澄清的 38 题上 reasoning 0.3917 对 chunk 0.3636。
 
 ### 表 4b：QAMPARI full，1,000 题
 
@@ -269,6 +273,8 @@ MAUVE 等批量指标不虚构逐题值。
 | Think&Cite / Llama-3.1-8B-Instruct | ACL 2025 主会 | 948 | 0.452 | 0.806 | 0.823 | 优先；GTR top-100 内多步搜索，DPO/NLI reward |
 | Think&Cite / GPT-4o | ACL 2025 主会 | 948 | 0.501 | 0.871 | 0.895 | 优先；同方法较强配置，额外搜索成本 |
 | Cooperative CoRAG / Llama-3-Instruct-8B | Findings ACL 2026 | 948 | 0.458 | 0.549 | 0.489 | 可选扩展；联合训练 reranker/generator，只在 PopQA 训练，推理选 3 段 |
+
+SN chunk 948（retry-merged，见表 4a 脚注）STR-EM 0.4917：数值上高于 InstructRAG-ICL、InstructRAG-FT、Think&Cite-8B、Cooperative CoRAG，低于 Think&Cite-GPT-4o（0.501）；首次运行口径 0.4630。引用 P/R 待第二批 B。这是 published-reference 系统级参照，backbone、检索、训练、调用预算和评分环境均不同，不构成同条件排名。
 
 来源：[InstructRAG 正式版表 2/3](https://proceedings.iclr.cc/paper_files/paper/2025/file/cdce0de17dc3cf97019a35baa65aebd0-Paper-Conference.pdf)、[Think&Cite 表 1/附录 A](https://aclanthology.org/2025.acl-long.490.pdf)、[Cooperative CoRAG 表 1/2](https://aclanthology.org/2026.findings-acl.2157.pdf)。引用列已统一成 P 在前、R 在后。这些行未提供 STR-HIT，不以引用 recall 替代它。
 
