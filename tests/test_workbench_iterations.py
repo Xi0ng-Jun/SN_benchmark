@@ -540,3 +540,23 @@ def test_root_adopts_configured_runs_and_children_seed_from_the_roots_reference(
     ran = service.run(child['id'], budget=BUDGET, actor='alice', request_key='c1')
     maps = payload(env, ran)['run_maps']
     assert json.loads(Path(maps['path']).read_text()) == {'seed_runs': {'qasper:q': '/finished/q'}}
+
+
+def test_seeded_runs_refuse_candidates_that_change_preparation_code(env, tmp_path):
+    service = env['service']
+    adoptable = tmp_path / 'adoptable.json'
+    adoptable.write_text(json.dumps({'qasper:q': '/finished/q'}))
+    service.execution_config = dict(service.execution_config, adoptable_runs=str(adoptable), seed_from_root=True,
+                                    seed_guard_patterns=['chunking'])
+    tree = iteration(env)
+    root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='adopt', adopt=True)
+    finish(env, root)
+    record = env['executions'].get(tree['task_id'], root['attempts'][-1]['execution_id'])
+    Path(record['run_dir']).mkdir(parents=True, exist_ok=True)
+    (Path(record['run_dir']) / 'batch-plan.json').write_text(json.dumps([
+        dict(partition_id='p', case_ids=['qasper:q'], run_dir='/finished/q', adopted=True)]))
+    child = service.derive(root['id'], note='touch chunking', actor='alice', request_key='c')
+    (Path(child['worktree']['path']) / 'backend/app/chunking.py').write_text('X = 1\n')
+    service.freeze(child['id'], actor='alice')
+    with pytest.raises(Conflict, match='chunking.py'):
+        service.run(child['id'], budget=BUDGET, actor='alice', request_key='c1')

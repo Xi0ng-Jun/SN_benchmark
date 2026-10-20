@@ -716,6 +716,18 @@ class IterationService:
         jobs = json.loads((Path(execution['run_dir']) / 'batch-plan.json').read_text())
         return {cid: job['run_dir'] for job in jobs for cid in job['case_ids']}
 
+    def _guard_seeded_change(self, iteration, candidate):
+        """Asking again on prepared notebooks hides changes to preparation code."""
+        patterns = (self.execution_config or {}).get('seed_guard_patterns') or []
+        if not patterns or candidate['frozen_commit'] == iteration['start_commit']:
+            return
+        root = self.trees.project_root
+        changed = _text_git(root, 'diff', '--name-only', iteration['start_commit'], candidate['frozen_commit'])
+        hits = sorted(path for path in changed.splitlines() if any(p in path for p in patterns))
+        if hits:
+            raise Conflict('该候选改动了资料准备相关文件，复用已导入的 notebook 不会反映这些改动: '
+                           + ', '.join(hits[:10]))
+
     def run(self, candidate_id, *, budget, actor, request_key, adopt=False):
         """Prepare a Job on the iteration plan with the frozen capture, then dispatch.
 
@@ -776,6 +788,7 @@ class IterationService:
         elif (self.execution_config or {}).get('seed_from_root') is True:
             seeds = self._seed_runs(iteration)
             if seeds is not None:
+                self._guard_seeded_change(iteration, candidate)
                 config['seed_runs'] = seeds
         prior = self.executions.run_receipt(task_id, job['job_id'], job['state_version'], prepared['preparation_id'],
                                             budget, actor=actor, request_key=key)
