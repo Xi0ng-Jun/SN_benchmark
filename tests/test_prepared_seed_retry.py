@@ -139,3 +139,29 @@ def test_source_change_needs_explicit_permission_and_is_recorded(fake_sn, monkey
     record = json.loads((run / 'manifest.json').read_text())['prepared_seed']
     assert record['source_change'] is True and record['seed_source']['head_revision'] is None
     assert load_run(run)['outputs'][0]['status'] == 'success'
+
+
+def test_candidate_association_is_not_an_answer_condition():
+    from rag_eval.identity import fingerprint
+    from rag_eval.notebook_runner import _seed_projection
+    seed = dict(source={'b': 1}, runtime_settings='s', product_services='m', code={'versions': {'x': '1'}, 'head_revision': 'a'})
+    run = dict(seed, code={'versions': {'x': '1'}, 'head_revision': 'b'}, task_worktree={'task_id': 't'},
+               candidate={'candidate_id': 'c', 'attempt': 1})
+    same = lambda allow: fingerprint(_seed_projection(seed, allow_source_change=allow)) == \
+        fingerprint(_seed_projection(run, allow_source_change=allow))
+    assert same(True) and not same(False)
+    assert not fingerprint(_seed_projection(dict(run, product_services='other'), allow_source_change=True)) == \
+        fingerprint(_seed_projection(seed, allow_source_change=True))
+
+
+def test_seed_mismatch_names_the_differing_fields(fake_sn, monkeypatch):
+    from rag_eval import runtime_environment
+    seed = fake_sn.run('seed')
+    original = runtime_environment.configure_environment
+
+    def other_models(project, run, **kwargs):
+        settings, runtime = original(project, run, **kwargs)
+        return settings, dict(runtime, service_config_sha256='other-services')
+    monkeypatch.setattr(runtime_environment, 'configure_environment', other_models)
+    with pytest.raises(ValueError, match='differs in bundle, SN source, models, settings or request: product_services$'):
+        fake_sn.run('other', seed_prepared_run=seed, seed_allow_source_change=True)

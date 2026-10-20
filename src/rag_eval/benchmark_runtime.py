@@ -106,7 +106,7 @@ def load_prepared_notebook(cell, documents, *, preparation_policy=DEFAULT_PREPAR
     mapping = read_json(cell / 'document-map.json', {})
     if not state.get('prepared') or not state.get('notebook_id'):
         raise ValueError('Seed notebook was not fully prepared')
-    if state.get('preparation_policy', DEFAULT_PREPARATION_POLICY) != preparation_policy:
+    if (state.get('preparation_policy') or DEFAULT_PREPARATION_POLICY) != preparation_policy:
         raise ValueError('Seed preparation policy does not match requested preparation policy')
     if set(mapping) != {document['id'] for document in documents}:
         raise ValueError('Seed corpus differs from the frozen partition')

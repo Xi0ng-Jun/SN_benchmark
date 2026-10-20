@@ -282,7 +282,8 @@ def test_from_seed_policy_reads_each_seed_and_forwards_source_change(tmp_path):
     _, path, refs, ids = installed(tmp_path)
     for name, policy in (('p', 'deferred-notebook-metadata-v1'), ('o', None)):
         (tmp_path / name).mkdir()
-        identity = {} if policy is None else {'preparation_policy': policy}
+        # An explicit null (older runs) means the default policy, like an absent field.
+        identity = {'preparation_policy': policy}
         (tmp_path / name / 'manifest.json').write_text(json.dumps({'identity': identity}))
     seeds = tmp_path / 'seeds.json'
     seeds.write_text(json.dumps({'qasper:q': str(tmp_path / 'p'), 'qasper:second': str(tmp_path / 'p'),

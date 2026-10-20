@@ -115,7 +115,8 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                     seed_manifest = json.loads((Path(seed) / 'manifest.json').read_text(encoding='utf-8'))
                 except (OSError, ValueError):
                     raise ValueError('Seed run manifest is unreadable') from None
-                policy = (seed_manifest.get('identity') or {}).get('preparation_policy', DEFAULT_PREPARATION_POLICY)
+                # Runs from before the policy was recorded used the default.
+                policy = (seed_manifest.get('identity') or {}).get('preparation_policy') or DEFAULT_PREPARATION_POLICY
                 validate_preparation_policy(policy)
         argv.extend(['--preparation-policy', policy])
         jobs.append(dict(partition_id=pid, case_ids=ids, run_dir=str(run), mode=mode,

@@ -81,16 +81,17 @@ PREPARED_SEED_FORMAT = 'sn-prepared-seed-v1'
 _SEED_FILES = ('runtime/database.db', 'product-artifacts/state.json', 'product-artifacts/document-map.json')
 
 
-def _seed_family(identity, mode, *, allow_source_change):
+def _seed_projection(identity, *, allow_source_change):
     from .benchmark_submission import sn_submission_identity
     config = sn_submission_identity(identity)
     if allow_source_change:
         # A candidate that changes only the answer path asks again on the
-        # parent's prepared notebook. Every other condition must still match.
+        # parent's prepared notebook. Every other condition must still match;
+        # who runs it (task, candidate association) is not a condition.
         config['code'] = {'versions': (config.get('code') or {}).get('versions')}
-        config.pop('runtime_model_services', None)
-        config.pop('task_worktree', None)
-    return fingerprint({'identity': config, 'mode': mode})
+        for key in ('runtime_model_services', 'task_worktree', 'candidate'):
+            config.pop(key, None)
+    return config
 
 
 def _source_summary(identity):
@@ -121,11 +122,15 @@ def validate_prepared_seed(seed, *, run, mode, partition_id, identity, preparati
     if seed_identity.get('notebook_context', {}).get('partition_id') != partition_id \
             or seed_identity.get('product_bundle') != identity['product_bundle']:
         raise ValueError('Prepared seed uses a different partition corpus')
-    if seed_identity.get('preparation_policy', DEFAULT_PREPARATION_POLICY) != preparation_policy:
+    if (seed_identity.get('preparation_policy') or DEFAULT_PREPARATION_POLICY) != preparation_policy:
         raise ValueError('Prepared seed preparation policy does not match requested preparation policy')
-    family = lambda value: _seed_family(value, mode, allow_source_change=allow_source_change)
-    if family(seed_identity) != family(identity):
-        raise ValueError('Prepared seed differs in bundle, SN source, models, settings or request')
+    left = _seed_projection(seed_identity, allow_source_change=allow_source_change)
+    right = _seed_projection(identity, allow_source_change=allow_source_change)
+    if fingerprint(left) != fingerprint(right):
+        # Name only the differing identity fields; values may be private.
+        differing = sorted(key for key in set(left) | set(right) if fingerprint(left.get(key)) != fingerprint(right.get(key)))
+        raise ValueError('Prepared seed differs in bundle, SN source, models, settings or request: '
+                         + ', '.join(differing))
     return seed, manifest
 
 
