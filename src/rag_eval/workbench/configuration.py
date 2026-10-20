@@ -59,7 +59,7 @@ def load_config(path):
     if isinstance(execution, dict) and execution.get('output_root'):
         execution['output_root'] = str((path.parent / execution['output_root']).resolve())
         for key in ('python', 'artifact_root', 'project_root', 'model_config',
-                    'dependency_requirements', 'runtime_expectation', 'scorer_sources'):
+                    'dependency_requirements', 'runtime_expectation', 'scorer_sources', 'adoptable_runs'):
             if execution.get(key):
                 target = path.parent / execution[key]
                 # The symlink invocation selects the virtual environment.

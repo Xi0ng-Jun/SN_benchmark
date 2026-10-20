@@ -704,10 +704,26 @@ class IterationService:
                     candidate_id=candidate_id, attempt=attempt, frozen_commit=candidate['frozen_commit'],
                     preparation_id=row['preparation_id'])
 
-    def run(self, candidate_id, *, budget, actor, request_key):
+    def _seed_runs(self, iteration):
+        """{case_id: run dir} of the root's reference measurement, or None."""
+        root = self.candidate(iteration['root_candidate_id'])
+        reference = root.get('reference')
+        if reference is None:
+            return None
+        execution = self._execution(iteration['task_id'], reference['execution_id'])
+        if execution is None:
+            return None
+        jobs = json.loads((Path(execution['run_dir']) / 'batch-plan.json').read_text())
+        return {cid: job['run_dir'] for job in jobs for cid in job['case_ids']}
+
+    def run(self, candidate_id, *, budget, actor, request_key, adopt=False):
         """Prepare a Job on the iteration plan with the frozen capture, then dispatch.
 
         A new request key is a new attempt; failures and cancellations stay.
+        ``adopt`` (root only) registers the server-configured finished runs as
+        this attempt instead of generating; the runner checks they match the
+        plan, the frozen source and the conditions. With ``seed_from_root``
+        configured, other candidates ask again on the root's prepared notebooks.
         """
         actor = _text(actor, 'actor', limit=200)
         _text(request_key, 'request key', limit=200)
@@ -717,6 +733,8 @@ class IterationService:
             iteration = self._iteration(conn, candidate['iteration_id'])
         if iteration['origin'] != 'native':
             raise Conflict('Legacy iterations are read-only')
+        if adopt and candidate['origin'] != 'root':
+            raise Conflict('Only the root candidate adopts finished runs')
         if candidate['status'] != 'frozen':
             raise Conflict('Freeze the candidate before running it')
         if None in (self.jobs, self.executions, self.build_spec) or not isinstance(self.preparation_config, dict):
@@ -749,6 +767,16 @@ class IterationService:
             else:
                 attempt = row['attempt']
         config = dict(self.execution_config or {}, task_worktree=self.association(candidate_id, attempt))
+        config.pop('adoptable_runs', None)
+        if adopt:
+            path = (self.execution_config or {}).get('adoptable_runs')
+            if type(path) is not str or not path:
+                raise ValueError('No adoptable runs are configured on this server')
+            config['adopt_runs'] = json.loads(Path(path).read_text(encoding='utf-8'))
+        elif (self.execution_config or {}).get('seed_from_root') is True:
+            seeds = self._seed_runs(iteration)
+            if seeds is not None:
+                config['seed_runs'] = seeds
         prior = self.executions.run_receipt(task_id, job['job_id'], job['state_version'], prepared['preparation_id'],
                                             budget, actor=actor, request_key=key)
         if prior is None:

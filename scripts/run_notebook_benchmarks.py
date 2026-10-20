@@ -85,6 +85,8 @@ def main():
     parser.add_argument('--seed-prepared-run', type=Path,
                         help='Copy the prepared SN notebook of this earlier run (same partition and conditions) '
                              'instead of importing documents again')
+    parser.add_argument('--seed-allow-source-change', action='store_true',
+                        help='Accept a seed prepared by different SN source (answer-path changes only); recorded')
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
                         help='Generation request contract (default: v3 without gold fields); explicit v1/v2 preserve historical requests.')
@@ -170,6 +172,7 @@ def main():
                     case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root,
                     artifact_index_id=args.artifact_index_id, reasoning_protocol=args.reasoning_protocol,
                     preparation_policy=args.preparation_policy, seed_prepared_run=args.seed_prepared_run,
+                    seed_allow_source_change=args.seed_allow_source_change,
                     **startup_kwargs)
     except BaseException as exc:
         details = getattr(exc, '_rag_eval_diagnostic_details', None) or exception_details(

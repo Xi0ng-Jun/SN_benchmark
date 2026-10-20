@@ -42,12 +42,14 @@ def initialize(args):
                 '--sn-root must be the root of a Git checkout')
         require((sn / 'backend').is_dir(), '--sn-root must contain SN backend/')
         require(not path.resolve().is_relative_to(sn), 'Config must be outside the SN checkout')
-    store = path.parent / 'artifacts'
+    # Reuse an existing campaign store so finished runs, seeds and new runs share inputs.
+    store = args.artifact_root.resolve() if args.artifact_root else path.parent / 'artifacts'
     config = {
         'workspace': {'title': 'SN 服务器评测', 'location': str(ROOT)},
         'sources': [], 'inputs': [],
         'task_worktrees': {'project_root': str(sn), 'artifact_root': str(store),
-                          'registrations': [], 'create_from_hypothesis': bool(args.workspace_id)},
+                          'registrations': [], 'create_from_hypothesis': bool(args.workspace_id),
+                          'create_candidates': bool(args.workspace_id)},
         'job_preparation': {'artifact_root': str(store), 'inputs': {}},
     }
     if args.workspace_id:
@@ -138,6 +140,8 @@ def main():
     init.add_argument('--workspace-id', help='Paseo workspace ID for THIS evaluator checkout, not SN')
     init.add_argument('--paseo-url', default='ws://127.0.0.1:6767/ws')
     init.add_argument('--bundle', action='append', default=[], help='Repeat ID=PATH for frozen bundles')
+    init.add_argument('--artifact-root', type=Path,
+                      help='Existing artifact store to reuse (default: a new store beside the config)')
     doctor = commands.add_parser('check')
     doctor.add_argument('--config', type=Path, required=True)
     doctor.add_argument('--execution', action='store_true', help='Also require local execution configuration')

@@ -19,12 +19,15 @@ class Views:
         return [SimpleNamespace(id=f'{execution_id}-{i}', suite='qasper', mode='chunk', case_ids=tuple(cases))
                 for i, cases in enumerate(self.partitions.get(execution_id, [('a', 'b')]), 1)]
 
-    def admission(self, run_id):
+    def shared_bundle(self, run_id):
+        return {'shared': run_id}
+
+    def admission(self, run_id, bundle=None):
         self.admission_calls.append(run_id)
         return dict(status='not_admitted', reason='3/3 error') if run_id in self.bad_runs else dict(
             status='admitted', reason=None)
 
-    def flips(self, left, right):
+    def flips(self, left, right, bundle=None):
         self.flip_calls.append((left, right))
         base = dict(left_run=left, right_run=right, metric='answer_f1', rows=[])
         if (left, right) in self.unpaired:

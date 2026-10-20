@@ -21,18 +21,30 @@ from .benchmark_runtime import DEFAULT_PREPARATION_POLICY, validate_preparation_
 from .identity import fingerprint
 from .execution_diagnostics import exception_details, persist_stderr, sanitize_diagnostic
 
+SEED_POLICY = 'from-seed'
+
 
 def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                output_root, project_root, python=None, model_config=None,
                sn_source_ref=None, dependency_requirements=None, runtime_expectation=None,
                root=None, budget_ledger=None, task_worktree_ref=None,
                reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
-               seed_prepared_map=None):
-    """Validate all selected IDs before any process; retain frozen case order."""
+               seed_prepared_map=None, seed_allow_source_change=False):
+    """Validate all selected IDs before any process; retain frozen case order.
+
+    With a seed map, preparation_policy='from-seed' takes each job's policy from
+    its seed run, since one batch may join seeds prepared under both policies.
+    """
     from .bundle_index import find_installed_bundle, load_partition
     from .notebook_bundle import OFFICIAL_REQUEST_REVISION
     from .notebook_runner import load_case_ids_file
-    validate_preparation_policy(preparation_policy)
+    from_seed = preparation_policy == SEED_POLICY
+    if from_seed and seed_prepared_map is None:
+        raise ValueError('preparation_policy from-seed requires a seed map')
+    if not from_seed:
+        validate_preparation_policy(preparation_policy)
+    if seed_allow_source_change and seed_prepared_map is None:
+        raise ValueError('seed_allow_source_change requires a seed map')
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Mode must be chunk or reasoning')
     from .reasoning_protocol import protocol_identity
@@ -80,8 +92,7 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                 '--artifact-index-id', artifact_index_id, '--partition-id', pid,
                 '--mode', mode, '--run-dir', str(run), '--project-root', str(project_root),
                 '--request-revision', OFFICIAL_REQUEST_REVISION,
-                '--reasoning-protocol', reasoning_protocol,
-                '--preparation-policy', preparation_policy]
+                '--reasoning-protocol', reasoning_protocol]
         for flag, value in (('--model-config', model_config), ('--sn-source-ref', sn_source_ref),
                             ('--dependency-requirements', dependency_requirements),
                             ('--runtime-expectation', runtime_expectation), ('--budget-ledger', budget_ledger), ('--task-worktree-ref', task_worktree_ref)):
@@ -89,7 +100,7 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                 argv.extend([flag, str(Path(value).resolve())])
         for cid in ids:
             argv.extend(['--case-id', cid])
-        seed = None
+        seed, policy = None, preparation_policy
         if seeds is not None:
             # One partition is one prepared notebook; its cases must share the seed.
             seed_runs = {seeds[cid] for cid in ids}
@@ -97,9 +108,19 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                 raise ValueError('Cases of one partition must share one prepared seed run')
             seed = seed_runs.pop()
             argv.extend(['--seed-prepared-run', seed])
+            if seed_allow_source_change:
+                argv.append('--seed-allow-source-change')
+            if from_seed:
+                try:
+                    seed_manifest = json.loads((Path(seed) / 'manifest.json').read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    raise ValueError('Seed run manifest is unreadable') from None
+                policy = (seed_manifest.get('identity') or {}).get('preparation_policy', DEFAULT_PREPARATION_POLICY)
+                validate_preparation_policy(policy)
+        argv.extend(['--preparation-policy', policy])
         jobs.append(dict(partition_id=pid, case_ids=ids, run_dir=str(run), mode=mode,
                          **({'seed_prepared_run': seed} if seed is not None else {}),
-                         reasoning_protocol=reasoning_protocol, preparation_policy=preparation_policy,
+                         reasoning_protocol=reasoning_protocol, preparation_policy=policy,
                          suite=index['source_manifest']['suite'], bundle_id=fingerprint(index['source_manifest']),
                          bundle=str(bundle), artifact_root=str(artifact_root),
                          artifact_index_id=artifact_index_id, case_id_file=str(Path(case_id_file).resolve()),

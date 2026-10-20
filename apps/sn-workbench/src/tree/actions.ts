@@ -4,7 +4,8 @@ import { ActionRequest, Candidate, IterationTree, Proposal, short, verbLabels } 
 
 // The person's writes (design §8): each builds a confirm spec whose request key is
 // fixed when the dialog opens, so a retry inside one dialog cannot run twice.
-export const RUN_BUDGET = { timeout_seconds: 3600 };
+// A full benchmark plan (hundreds of partitions) needs hours, even when asking again on prepared notebooks.
+export const RUN_BUDGET = { timeout_seconds: 43200 };
 
 export function makeActions(tree: IterationTree, label: (candidateId: string | null) => string) {
   const node = (c: Candidate) => [{ label: '候选', value: `${label(c.id)} · ${short(c.id)}` }];
@@ -24,6 +25,16 @@ export function makeActions(tree: IterationTree, label: (candidateId: string | n
           { label: '预算', value: `超时 ${RUN_BUDGET.timeout_seconds} 秒；不设费用上限，因此没有费用账本` },
           { label: '模型', value: '调用评测配置里的真实模型服务，会产生费用' }],
         run: () => api(`/candidates/${c.id}/run`, { budget: RUN_BUDGET, request_key: key }),
+      };
+    },
+    adopt: (c: Candidate): ConfirmSpec => {
+      const key = requestKey();
+      return {
+        title: `为 ${label(c.id)} 挂接已有结果（新 attempt ${c.attempts.length + 1}）`, confirmLabel: '挂接',
+        lines: [...node(c), { label: '源码', value: c.frozen_commit ?? '—' },
+          { label: '来源', value: '服务器配置的已完成 run；逐个核对题单、分区、模式、请求与 SN 源码后补算官方分' },
+          { label: '模型', value: '不调用模型' }],
+        run: () => api(`/candidates/${c.id}/adopt`, { budget: RUN_BUDGET, request_key: key }),
       };
     },
     derive: (c: Candidate): ConfirmSpec => {

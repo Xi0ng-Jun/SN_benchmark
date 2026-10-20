@@ -81,13 +81,33 @@ PREPARED_SEED_FORMAT = 'sn-prepared-seed-v1'
 _SEED_FILES = ('runtime/database.db', 'product-artifacts/state.json', 'product-artifacts/document-map.json')
 
 
-def validate_prepared_seed(seed, *, run, mode, partition_id, identity, preparation_policy):
+def _seed_family(identity, mode, *, allow_source_change):
+    from .benchmark_submission import sn_submission_identity
+    config = sn_submission_identity(identity)
+    if allow_source_change:
+        # A candidate that changes only the answer path asks again on the
+        # parent's prepared notebook. Every other condition must still match.
+        config['code'] = {'versions': (config.get('code') or {}).get('versions')}
+        config.pop('runtime_model_services', None)
+        config.pop('task_worktree', None)
+    return fingerprint({'identity': config, 'mode': mode})
+
+
+def _source_summary(identity):
+    code = identity.get('code') or {}
+    return {key: code.get(key) for key in ('head_revision', 'head_tree', 'source_manifest_sha256')}
+
+
+def validate_prepared_seed(seed, *, run, mode, partition_id, identity, preparation_policy,
+                           allow_source_change=False):
     """Accept only a prepared run of the same partition and answer conditions.
 
     The comparison is the export family used for merging runs into one
     submission, so a seeded retry can join its original batch and nothing else.
+    allow_source_change additionally accepts a seed prepared by different SN
+    source, for candidates whose change is confined to answering; both source
+    identities are recorded.
     """
-    from .benchmark_submission import sn_submission_identity
     seed = Path(seed).resolve()
     if seed == run or seed.is_relative_to(run) or run.is_relative_to(seed):
         raise ValueError('Prepared seed must be separate from the new run')
@@ -103,10 +123,10 @@ def validate_prepared_seed(seed, *, run, mode, partition_id, identity, preparati
         raise ValueError('Prepared seed uses a different partition corpus')
     if seed_identity.get('preparation_policy', DEFAULT_PREPARATION_POLICY) != preparation_policy:
         raise ValueError('Prepared seed preparation policy does not match requested preparation policy')
-    family = lambda value: fingerprint({'identity': sn_submission_identity(value), 'mode': mode})
+    family = lambda value: _seed_family(value, mode, allow_source_change=allow_source_change)
     if family(seed_identity) != family(identity):
         raise ValueError('Prepared seed differs in bundle, SN source, models, settings or request')
-    return seed
+    return seed, manifest
 
 
 def install_prepared_seed(seed, run):
@@ -327,7 +347,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
             sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
             reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
-            seed_prepared_run=None):
+            seed_prepared_run=None, seed_allow_source_change=False):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
@@ -521,10 +541,15 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             identity['multihop_retrieval'] = ranking_identity()
         if case_ids is not None:
             identity['notebook_context']['case_ids'] = [case['case_id'] for case in cases]
-        seed = None
+        seed = seed_record = None
         if seed_prepared_run is not None:
-            seed = validate_prepared_seed(seed_prepared_run, run=run, mode=mode, partition_id=partition_id,
-                                          identity=identity, preparation_policy=preparation_policy)
+            seed, seed_manifest = validate_prepared_seed(
+                seed_prepared_run, run=run, mode=mode, partition_id=partition_id, identity=identity,
+                preparation_policy=preparation_policy, allow_source_change=seed_allow_source_change)
+            seed_source = _source_summary(seed_manifest.get('identity') or {})
+            seed_record = dict(seed_run_id=seed.name, seed_manifest_sha256=digest(seed / 'manifest.json'))
+            if seed_source != _source_summary(identity):
+                seed_record.update(source_change=True, seed_source=seed_source)
         if agent_config is not None:
             identity['agent_evaluation'] = {'protocol': tracing.NATIVE_TRACE_VERSION, 'sdk_version': '4.2.2',
                                             'metrics': list(agent_metrics), 'sdk_timeout': sdk_timeout_identity(),
@@ -539,8 +564,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                   product_protocol=VERSION, planned_sha256=digest(run / 'planned.jsonl'),
                   planned_predictions=len(cases), planned_scores=len(planned), identity=identity,
                   human_calibration='pending', release_gate=False,
-                  **({'prepared_seed': dict(seed_run_id=seed.name, seed_manifest_sha256=digest(seed / 'manifest.json'))}
-                     if seed is not None else {})))
+                  **({'prepared_seed': seed_record} if seed is not None else {})))
         if seed is not None:
             install_prepared_seed(seed, run)
         with ExitStack() as stack:

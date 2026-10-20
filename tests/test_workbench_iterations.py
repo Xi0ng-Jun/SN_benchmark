@@ -513,3 +513,30 @@ def test_sn_eval_drafts_under_the_analysts_own_node(env, monkeypatch, tmp_path, 
     agent_tools.main(base)
     drafted = json.loads(capsys.readouterr().out)['card']
     assert drafted['parent_candidate_id'] == root['id']
+
+
+def test_root_adopts_configured_runs_and_children_seed_from_the_roots_reference(env, tmp_path):
+    service = env['service']
+    adoptable = tmp_path / 'adoptable.json'
+    adoptable.write_text(json.dumps({'qasper:q': '/finished/q'}))
+    service.execution_config = dict(service.execution_config, adoptable_runs=str(adoptable), seed_from_root=True)
+    tree = iteration(env)
+    root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='adopt', adopt=True)
+    maps = payload(env, root)['run_maps']
+    assert maps['keys'] == ['adopt_runs']
+    assert json.loads(Path(maps['path']).read_text()) == {'adopt_runs': {'qasper:q': '/finished/q'}}
+    assert 'adoptable_runs' not in json.dumps(payload(env, root))
+    finish(env, root)
+    record = env['executions'].get(tree['task_id'], root['attempts'][-1]['execution_id'])
+    Path(record['run_dir']).mkdir(parents=True, exist_ok=True)
+    (Path(record['run_dir']) / 'batch-plan.json').write_text(json.dumps([
+        dict(partition_id='p', case_ids=['qasper:q'], run_dir='/finished/q', adopted=True)]))
+    proposal = approved(env, tree, root['id'])
+    child = service.derive(root['id'], proposal_id=proposal, actor='alice', request_key='c')
+    with pytest.raises(Conflict, match='Only the root'):
+        service.run(child['id'], budget=BUDGET, actor='alice', request_key='bad', adopt=True)
+    (Path(child['worktree']['path']) / 'backend/app/__init__.py').write_text('VALUE = 5\n')
+    service.freeze(child['id'], actor='alice')
+    ran = service.run(child['id'], budget=BUDGET, actor='alice', request_key='c1')
+    maps = payload(env, ran)['run_maps']
+    assert json.loads(Path(maps['path']).read_text()) == {'seed_runs': {'qasper:q': '/finished/q'}}

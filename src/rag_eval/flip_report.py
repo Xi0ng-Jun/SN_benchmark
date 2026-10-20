@@ -155,7 +155,7 @@ def _admit_side(bundle, side, entry):
 
 
 def compare_runs_flips(before, after, *, before_scores=None, after_scores=None,
-                       before_submission=None, after_submission=None, bundle_directory=None):
+                       before_submission=None, after_submission=None, bundle_directory=None, bundle=None):
     """Return a report for two run paths or run-ledger rows; never raises admission errors.
 
     Scores default to run/scores.json, submissions to scores.parent/submission.json.
@@ -164,7 +164,9 @@ def compare_runs_flips(before, after, *, before_scores=None, after_scores=None,
     run's immutable input through RunReadContext. A self comparison validates
     the original artifact once and projects its reflexive per-case identity;
     it neither renames methods nor modifies score hashes. Nonidentical attempts
-    with the same method use the explicit flip comparison option.
+    with the same method use the explicit flip comparison option. ``bundle`` is
+    an already verified and loaded frozen bundle shared by many partition
+    comparisons; each side's submission is still checked against it.
     """
     left, a = _read_side(before, before_scores, before_submission)
     right, b = _read_side(after, after_scores, after_submission)
@@ -173,9 +175,10 @@ def compare_runs_flips(before, after, *, before_scores=None, after_scores=None,
                   interpretation='Directions describe each official quality metric independently; '
                                  'statuses have no invented ranking; unavailable values are not zeros.')
     try:
-        if bundle_directory is None:
-            bundle_directory = RunReadContext().input_directory(_run_path(before))
-        bundle = load_bundle(Path(bundle_directory).resolve())
+        if bundle is None:
+            if bundle_directory is None:
+                bundle_directory = RunReadContext().input_directory(_run_path(before))
+            bundle = load_bundle(Path(bundle_directory).resolve())
     except (OSError, ValueError, KeyError, TypeError) as exc:
         report['admission']['reason'] = 'Frozen bundle unavailable: ' + _reason(exc)
     else:

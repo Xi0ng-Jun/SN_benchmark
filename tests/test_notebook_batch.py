@@ -275,3 +275,27 @@ def test_seed_map_forwards_one_prepared_run_per_partition(tmp_path):
         with pytest.raises(ValueError, match='[Ss]eed'):
             planned(bad)
     assert not (tmp_path / 'batch').exists()
+
+
+def test_from_seed_policy_reads_each_seed_and_forwards_source_change(tmp_path):
+    from rag_eval.notebook_batch import plan_batch
+    _, path, refs, ids = installed(tmp_path)
+    for name, policy in (('p', 'deferred-notebook-metadata-v1'), ('o', None)):
+        (tmp_path / name).mkdir()
+        identity = {} if policy is None else {'preparation_policy': policy}
+        (tmp_path / name / 'manifest.json').write_text(json.dumps({'identity': identity}))
+    seeds = tmp_path / 'seeds.json'
+    seeds.write_text(json.dumps({'qasper:q': str(tmp_path / 'p'), 'qasper:second': str(tmp_path / 'p'),
+                                 'qasper:other': str(tmp_path / 'o')}))
+    jobs = plan_batch(bundle=path, artifact_root=tmp_path / 'store', artifact_index_id=refs['index']['id'],
+                      case_id_file=ids, mode='chunk', output_root=tmp_path / 'batch',
+                      project_root=tmp_path / 'synthetic-project', seed_prepared_map=seeds,
+                      preparation_policy='from-seed', seed_allow_source_change=True)
+    assert [j['preparation_policy'] for j in jobs] == ['deferred-notebook-metadata-v1', 'per-source-metadata-v1']
+    for job in jobs:
+        assert job['argv'][job['argv'].index('--preparation-policy') + 1] == job['preparation_policy']
+        assert '--seed-allow-source-change' in job['argv']
+    with pytest.raises(ValueError, match='seed map'):
+        plan_batch(bundle=path, artifact_root=tmp_path / 'store', artifact_index_id=refs['index']['id'],
+                   case_id_file=ids, mode='chunk', output_root=tmp_path / 'batch',
+                   project_root=tmp_path / 'synthetic-project', preparation_policy='from-seed')

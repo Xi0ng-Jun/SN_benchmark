@@ -125,3 +125,17 @@ def test_seed_refuses_hidden_references_and_changed_corpus(fake_sn):
     mapping_path.write_text(json.dumps(mapping))
     with pytest.raises(ValueError, match='text differs'):
         fake_sn.run('changed', seed_prepared_run=clean)
+
+
+def test_source_change_needs_explicit_permission_and_is_recorded(fake_sn, monkeypatch):
+    from rag_eval import runtime_environment
+    seed = fake_sn.run('seed')
+    monkeypatch.setattr(runtime_environment, 'snapshot_sources',
+                        lambda *a, **k: {'revision': 'test', 'head_revision': 'b' * 40})
+    with pytest.raises(ValueError, match='differs in bundle, SN source'):
+        fake_sn.run('candidate', seed_prepared_run=seed)
+    run = fake_sn.run('candidate-allowed', seed_prepared_run=seed, seed_allow_source_change=True)
+    assert fake_sn.prepared == 1
+    record = json.loads((run / 'manifest.json').read_text())['prepared_seed']
+    assert record['source_change'] is True and record['seed_source']['head_revision'] is None
+    assert load_run(run)['outputs'][0]['status'] == 'success'

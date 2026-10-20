@@ -19,11 +19,14 @@ def main(argv=None):
     run.add_argument('--artifact-root', '--store', dest='artifact_root', type=Path, required=True)
     run.add_argument('--artifact-index-id', '--index', dest='artifact_index_id', required=True)
     run.add_argument('--mode', choices=('chunk', 'reasoning'), required=True)
-    run.add_argument('--preparation-policy', choices=PREPARATION_POLICIES, default=DEFAULT_PREPARATION_POLICY)
+    run.add_argument('--preparation-policy', choices=(*PREPARATION_POLICIES, 'from-seed'),
+                     default=DEFAULT_PREPARATION_POLICY, help='from-seed: each job uses its seed run policy')
     run.add_argument('--reasoning-protocol', choices=('reasoning-v1', 'reasoning-no-clarification-v1'),
                      default='reasoning-v1')
     run.add_argument('--seed-prepared-map', type=Path,
                      help='JSON {case_id: earlier run dir}; ask again on copied prepared notebooks')
+    run.add_argument('--seed-allow-source-change', action='store_true',
+                     help='Accept seeds prepared by different SN source (answer-path changes only)')
     run.add_argument('--parallel', type=int, default=1)
     run.add_argument('--python', default=sys.executable)
     run.add_argument('--ledger', dest='ledger_path', type=Path,

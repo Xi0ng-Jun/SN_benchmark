@@ -7,6 +7,9 @@ name a candidate; nothing here depends on what the browser has selected.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +18,7 @@ from .comparisons import Admission, ComparisonService, summary
 from .hypotheses import HypothesisStore, leak_check
 from .iterations import IterationService
 from .jobs_api import build_execution_spec
+from .notebook_job import SUMMARY
 from .repository import Conflict, UnknownIdentity
 
 
@@ -86,10 +90,21 @@ class IterationAPI:
         self.repository = repository
 
     def primary(self, candidate):
-        """The reference run's official primary metric; several partitions are not averaged here."""
+        """The reference's official primary metric.
+
+        Several partitions use the execution's own case-weighted summary, written
+        once at scoring time over every planned case; otherwise none is shown.
+        """
         reference = candidate.get('reference')
         if reference is None:
             return None
+        execution = self.service._execution(self.service.view(candidate['id']).task_id, reference['execution_id'])
+        summary_path = Path(execution['run_dir']) / SUMMARY if execution else None
+        if summary_path is not None and summary_path.is_file() and not summary_path.is_symlink():
+            saved = json.loads(summary_path.read_text(encoding='utf-8'))
+            if saved.get('scored') == saved.get('planned') and saved.get('mean') is not None:
+                return dict(metric=saved['metric'], value=saved['mean'], partitions=saved['partitions'],
+                            cases=saved['planned'])
         runs = self.views.execution_runs(reference['execution_id'])
         if len(runs) != 1:
             return dict(metric=None, value=None, reason=f'{len(runs)} partitions')
@@ -253,6 +268,14 @@ class IterationAPI:
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
+
+        @router.post('/api/candidates/{candidate_id}/adopt')
+        def node_adopt(candidate_id: str, command: Run):
+            """Root only: register the server-configured finished runs as an attempt."""
+            self._write()
+            self._scope(candidate_id=candidate_id)
+            return service.run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key,
+                               adopt=True)
 
         @router.post('/api/candidates/{candidate_id}/proposals')
         def proposal_draft(candidate_id: str, command: Proposal):

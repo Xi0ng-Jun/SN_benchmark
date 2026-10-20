@@ -9,6 +9,11 @@
     "dependency_requirements": "/absolute/evaluator/var/sn-workbench-server/private/dependency-requirements.txt",
     "runtime_expectation": "/absolute/evaluator/var/sn-workbench-server/private/runtime-expectation.json",
     "scorer_sources": "/absolute/evaluator/var/sn-workbench-server/scorers",
-    "model_names": []
+    "model_names": [],
+    "parallel": 8,
+    "retry_rounds": 5,
+    "preparation_policy": "deferred-notebook-metadata-v1",
+    "seed_from_root": true,
+    "adoptable_runs": "/absolute/evaluator/var/sn-workbench-server/private/adoptable-runs.json"
   }
 }

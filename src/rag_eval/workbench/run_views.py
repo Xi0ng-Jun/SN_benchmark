@@ -186,7 +186,20 @@ class RunViews:
     def _discover_executions(self):
         if self._execution_records is None:
             return
-        for record in self._execution_records():
+        records = self._execution_records()
+        # Hundreds of partitions are looked up one by one; rescan only when a record or plan changed.
+        def stamp(record):
+            plan = Path(record['run_dir']) / 'batch-plan.json'
+            try:
+                stat = plan.stat()
+            except OSError:
+                return (record.get('execution_id'), record.get('state'), None)
+            return (record.get('execution_id'), record.get('state'), stat.st_mtime_ns, stat.st_size)
+        signature = tuple(stamp(record) for record in records)
+        if signature == getattr(self, '_discovered', None):
+            return
+        self._discovered = signature
+        for record in records:
             root = Path(record['run_dir'])
             plan = root / 'batch-plan.json'
             if root.is_symlink() or plan.is_symlink():
@@ -196,16 +209,27 @@ class RunViews:
                 run_state = record.get('run_state') or {}
                 failures = [*run_state.get('generation_failures', []),
                             *run_state.get('scoring_failures', [])]
+                adopted = None
+                if (root / 'adopted-runs.json').is_file() and not (root / 'adopted-runs.json').is_symlink():
+                    adopted = set(_json(root / 'adopted-runs.json'))
                 for ordinal, job in enumerate(jobs, 1):
                     path = Path(job['run_dir'])
-                    relative = path.relative_to(root)
-                    if not relative.parts or any((root.joinpath(*relative.parts[:i])).is_symlink()
-                                                  for i in range(1, len(relative.parts) + 1)):
-                        continue
-                    if '..' in relative.parts or not path.resolve().is_relative_to(root.resolve()):
-                        continue
+                    if job.get('adopted') is True:
+                        # A finished run registered by this execution's own adoption step.
+                        if adopted is None or str(path) not in adopted or path.is_symlink() or not path.is_absolute():
+                            continue
+                    else:
+                        relative = path.relative_to(root)
+                        if not relative.parts or any((root.joinpath(*relative.parts[:i])).is_symlink()
+                                                      for i in range(1, len(relative.parts) + 1)):
+                            continue
+                        if '..' in relative.parts or not path.resolve().is_relative_to(root.resolve()):
+                            continue
                     identity = _registered_id(record['execution_id'] + '-' + str(ordinal), 'run')
-                    scores = root / 'official' / path.name / 'scores' / 'scores.json'
+                    name = job.get('official_name', path.name)
+                    if type(name) is not str or not _ID.match(name):
+                        continue
+                    scores = root / 'official' / name / 'scores' / 'scores.json'
                     self._runs[identity] = RunEntry(identity, path.resolve(), scores,
                         task_id=record['task_id'], case_ids=tuple(job['case_ids']),
                         execution_state=record.get('state') if record.get('terminal') else None,
@@ -599,12 +623,22 @@ class RunViews:
                 {'run_id': run_id, 'case_id': case_id})
 
     # ----------------------------------------------------------------- flips
-    def flips(self, left_id: str, right_id: str) -> dict:
+    def shared_bundle(self, run_id: str):
+        """Verify and load a run's frozen bundle once, for many partitions of one comparison."""
+        from ..notebook_bundle import load_bundle
+        from ..run_reader import RunReadContext
+        try:
+            return load_bundle(RunReadContext().input_directory(self._entry(run_id).run_dir))
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def flips(self, left_id: str, right_id: str, *, bundle=None) -> dict:
         from ..flip_report import compare_runs_flips
         left, right = self._entry(left_id), self._entry(right_id)
-        metric = self._load(left_id)['official'].get('primary_metric')
-        report = compare_runs_flips(left.run_dir, right.run_dir,
-                                   before_scores=left.scores, after_scores=right.scores)
+        metric = (self._official_scores(left) or {}).get('primary_metric') if bundle is not None else \
+            self._load(left_id)['official'].get('primary_metric')
+        report = compare_runs_flips(left.run_dir, right.run_dir, before_scores=left.scores,
+                                   after_scores=right.scores, bundle=bundle)
         rows, counts = [], dict(better=0, worse=0, same=0, unpaired=0)
         for row in report['cases']:
             value = row['metrics'].get(metric, {})
@@ -624,12 +658,24 @@ class RunViews:
         found = [e for i, e in self._runs.items() if i.startswith(prefix) and i[len(prefix):].isdigit()]
         return sorted(found, key=lambda e: int(e.id[len(prefix):]))
 
-    def admission(self, run_id: str) -> dict:
+    @staticmethod
+    def _official_scores(entry: RunEntry) -> dict | None:
+        """The registered scores' primary metric without building the whole run view."""
+        if entry.scores is None or not entry.scores.is_file():
+            return None
+        scores = _json(entry.scores)
+        metrics = scores.get('metrics') or {}
+        primary = PRIMARY_METRIC.get(scores.get('suite'))
+        if primary not in metrics:
+            primary = next(iter(scores.get('metric_denominators') or metrics), None)
+        return dict(primary_metric=primary)
+
+    def admission(self, run_id: str, *, bundle=None) -> dict:
         """Formal admission of one run on its own: the flip report's self comparison."""
         from ..flip_report import compare_runs_flips
         entry = self._entry(run_id)
         report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
-                                    after_scores=entry.scores)
+                                    after_scores=entry.scores, bundle=bundle)
         status = report['admission']['status']
         return dict(status=status, reason=None if status == 'admitted' else
                     report['before'].get('reason') or report['admission']['reason'])

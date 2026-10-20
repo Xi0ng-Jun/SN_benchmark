@@ -129,10 +129,12 @@ def sn_submission_identity(identity):
     return config
 
 
-def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, qasper_evidence=False):
+def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, qasper_evidence=False,
+                   context=None):
+    """``context`` lets a caller exporting many partitions reuse one read cache."""
     from .run_reader import RunReadContext
     from .run_report import load_run
-    context = RunReadContext()
+    context = context or RunReadContext()
     bundle_directory = Path(bundle_directory).resolve()
     bundle = context.bundle(bundle_directory)
     if qasper_evidence and not bundle.get('qasper_evidence_catalogues'):

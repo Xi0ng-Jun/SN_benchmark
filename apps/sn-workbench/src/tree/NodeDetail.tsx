@@ -143,6 +143,8 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         {c.state === 'implementing' && <Button label="冻结" primary={step?.action === 'freeze'} onPress={() => onConfirm(actions.freeze(c))} testID="act-freeze" />}
         {['frozen', 'failed', 'evaluated'].includes(c.state) && <Button label={c.attempts.length ? '再运行一次' : '运行'} primary={step?.action === 'run'}
           onPress={() => onConfirm(actions.run(c))} testID="act-run" />}
+        {isRoot && ['frozen', 'failed'].includes(c.state) && <Button label="挂接已有结果"
+          onPress={() => onConfirm(actions.adopt(c))} testID="act-adopt-runs" />}
         {canCheck && <Button label="核对预测" primary={step?.action === 'check'} onPress={() => onConfirm(actions.check(c))} testID="act-check" />}
         {['evaluated', 'failed'].includes(c.state) && !(step?.action === 'open-agent' && agents.some(a => a.sessionId === step.sessionId && a.role === 'analyst')) &&
           <Button label={agents.some(a => a.role === 'analyst') ? '打开分析 Agent' : '分析这个节点'} primary={step?.action === 'analyst'} onPress={onAnalyst} testID="act-analyst" />}

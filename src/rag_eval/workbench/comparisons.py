@@ -52,8 +52,11 @@ class Admission:
             runs = self.views.execution_runs(execution_id)
             result = dict(status='admitted', reason=None) if runs else dict(
                 status='not_admitted', reason='no run discovered for this execution')
+            # Partitions of one execution share a frozen bundle: verify and load it once.
+            bundle = self.views.shared_bundle(runs[0].id) if len(runs) > 1 else None
             for run in runs:
-                single = self.views.admission(run.id)
+                single = (self.views.admission(run.id, bundle=bundle) if bundle is not None
+                          else self.views.admission(run.id))
                 if single['status'] != 'admitted':
                     result = dict(status='not_admitted', reason=f'{run.id}: {single["reason"]}')
                     break
@@ -103,8 +106,11 @@ class ComparisonService:
             body['admission'] = dict(status='not_admitted', reason='两端的分区集合不一致')
         else:
             reasons, metrics = [], set()
+            first = next(iter(reference_by.values()), None)
+            bundle = self.views.shared_bundle(first.id) if first is not None and len(reference_by) > 1 else None
             for partition in sorted(reference_by):
-                flips = self.views.flips(reference_by[partition].id, subject_by[partition].id)
+                pair = reference_by[partition].id, subject_by[partition].id
+                flips = self.views.flips(*pair, bundle=bundle) if bundle is not None else self.views.flips(*pair)
                 metrics.add(flips['metric'])
                 body['partitions'].append(dict(reference_run=flips['left_run'], subject_run=flips['right_run'],
                                                admission=flips['admission'], reason=flips['note']))
