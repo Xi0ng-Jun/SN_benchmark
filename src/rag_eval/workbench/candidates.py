@@ -90,7 +90,9 @@ class CandidateStore:
         candidates = {event['object_id']: dict(event['content'], decision=None, decisions=[])
                       for event in history if event['kind'] == 'candidate.saved'}
         for event in history:
-            if event['kind'] == 'candidate.decided':
+            # Iteration candidates record their decisions under the same event kind;
+            # only decisions on saved findings belong here.
+            if event['kind'] == 'candidate.decided' and event['object_id'] in candidates:
                 candidate = candidates[event['object_id']]
                 candidate['decisions'].append(event['content'])
                 candidate['decision'] = event['content']

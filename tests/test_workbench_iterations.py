@@ -311,6 +311,9 @@ def test_decisions_need_an_evaluated_candidate(env):
     finish(env, root)
     decided = env['service'].decide(root['id'], 'adopted', actor='human', note='keep')
     assert decided['decision']['decision'] == 'adopted' and decided['state'] == 'evaluated'
+    # The decision event shares its kind with saved findings; the findings list ignores it.
+    from rag_eval.workbench.candidates import CandidateStore
+    assert CandidateStore(env['repo']).list(tree['task_id']) == []
 
 
 def test_implementer_agent_is_created_in_the_candidate_worktree(env):
@@ -448,3 +451,65 @@ def test_provision_resets_a_stranded_dispatch_marker_and_retries(env):
     env['service'].creator = env['creator']
     recovered = env['service'].provision(child_id)
     assert recovered['worktree']['status'] == 'ready' and recovered['state'] == 'implementing'
+
+
+def test_an_analyst_bound_to_a_node_is_briefed_with_that_node_and_its_path(env):
+    from types import SimpleNamespace
+    from rag_eval.workbench.agent_creations import AgentCreationStore
+    from rag_eval.workbench.briefs import resolve_brief
+    tree, root = evaluated_root(env)
+    service = env['service']
+    proposal = approved(env, tree, root['id'])
+    child = service.derive(root['id'], proposal_id=proposal, actor='alice', request_key='a')
+    creations = AgentCreationStore(env['repo'], {env['workspace']['id']: {
+        'workspaceId': 'wks-eval', 'profiles': {'sol': {'provider': 'codex/model', 'modeId': 'full-access'}}}})
+    # An analyst reads a frozen node; a candidate still being implemented has nothing to read.
+    with pytest.raises(ValueError, match='frozen'):
+        creations.prepare(tree['task_id'], 'sol', actor='a', request_key='x', role='analyst', candidate_id=child['id'])
+    Path(child['worktree']['path'], 'backend/app/__init__.py').write_text('VALUE = 3\n')
+    service.freeze(child['id'], actor='alice')
+    finish(env, service.run(child['id'], budget=BUDGET, actor='alice', request_key='a1'))
+    intent = creations.prepare(tree['task_id'], 'sol', actor='a', request_key='an', role='analyst',
+                               candidate_id=child['id'])
+    assert intent['command']['expectedCwd'] == env['workspace']['location']
+
+    def run(execution_id):
+        return [SimpleNamespace(id=execution_id + '-1', suite='qasper', mode='chunk', case_ids=['qasper:q'])]
+    flips = lambda left, right: dict(metric='answer_f1', left_run=left, right_run=right, admission='admitted', note=None,
+                                     rows=[dict(case_id='qasper:q', left=0.25, right=0.5, delta=0.25, flip='better')])
+    views = SimpleNamespace(_worktree_service=service.trees, execution_runs=run, flips=flips,
+                            run=lambda run_id: dict(official=dict(primary_metric='answer_f1', metrics=dict(answer_f1=0.5))),
+                            admission=lambda run_id: dict(status='admitted', reason=None))
+    with env['repo'].connect(write=True) as conn:
+        conn.execute("INSERT INTO task_sessions(id,task_id,agent_id,role,cwd,candidate_id) "
+                     "VALUES('s1',?,'agent-1','analyst','/eval',?)", (tree['task_id'], child['id']))
+    # Sending a message resolves the brief inside its own write transaction: no second writer.
+    with env['repo'].connect(write=True):
+        title, text, refs = resolve_brief(env['repo'], tree['task_id'], 's1', tool='sn-eval', run_views=views)
+    assert title.endswith('节点 A') and refs['candidate_id'] == child['id']
+    assert '本会话分析节点 **A**' in text and f'--node {child["id"]}' in text
+    assert '本轮分析对象：A' in text and '从根到 A 的路径' in text and '**C0**' in text
+    assert 'answer_f1 Δ +0.250，好 1 / 差 0 / 平 0' in text and 'Δ根：同父' in text
+    assert f'提议「{CARD["title"]}」' in text and '预测未核对' in text and '结论：未下' in text
+    assert '自动挂在 A 下' in text and '--parent <候选 id>' not in text
+    assert f"`{root['attempts'][0]['execution_id']}-1`（answer_f1 0.500）" in text
+
+
+def test_sn_eval_drafts_under_the_analysts_own_node(env, monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+    from rag_eval.workbench import agent_tools
+    tree, root = evaluated_root(env)
+    views = SimpleNamespace(_worktree_service=env['service'].trees,
+                            execution_runs=lambda execution_id: [SimpleNamespace(id='run')],
+                            admission=lambda run_id: dict(status='admitted', reason=None),
+                            task_runs_context=lambda task_id: ('', json.dumps(dict(runs=[])), {}))
+    monkeypatch.setattr(agent_tools, 'build', lambda state, config: (env['repo'], views))
+    monkeypatch.setattr(agent_tools, '_draft_leak', lambda views, task_id, card: None)
+    card = tmp_path / 'card.json'
+    card.write_text(json.dumps(CARD))
+    base = ['--task', tree['task_id'], '--node', root['id'], '--file', str(card), 'proposal', 'draft']
+    with pytest.raises(SystemExit, match='bound to node'):
+        agent_tools.main(base + ['--parent', 'f' * 32])
+    agent_tools.main(base)
+    drafted = json.loads(capsys.readouterr().out)['card']
+    assert drafted['parent_candidate_id'] == root['id']

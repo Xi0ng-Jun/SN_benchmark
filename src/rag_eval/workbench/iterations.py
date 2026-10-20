@@ -142,7 +142,8 @@ class _CandidateWorktreeView(TaskWorktreeService):
 
 class IterationService:
     def __init__(self, repository, task_worktree_service, *, plans=None, jobs=None, executions=None,
-                 creator=None, preparation_config=None, execution_config=None, build_spec=None, admission=None):
+                 creator=None, preparation_config=None, execution_config=None, build_spec=None, admission=None,
+                 initialize=True):
         self.repository = repository
         self.trees = task_worktree_service
         self.plans = plans
@@ -155,7 +156,10 @@ class IterationService:
         # Judges one measurement (attempt or evidence link) on its own; without
         # it no candidate counts as evaluated.
         self.admission = admission
-        initialize_iterations(repository)
+        # A reader inside another write transaction (an Agent brief resolved while a
+        # message is prepared) must not open a second writer.
+        if initialize:
+            initialize_iterations(repository)
 
     # ------------------------------------------------------------ reading
     def _iteration(self, conn, iteration_id):

@@ -71,11 +71,12 @@ def _mean(values):
 
 
 class ComparisonService:
-    def __init__(self, repository, iterations, run_views):
+    def __init__(self, repository, iterations, run_views, *, initialize=True):
         self.repository = repository
         self.iterations = iterations
         self.views = run_views
-        initialize_comparisons(repository)
+        if initialize:
+            initialize_comparisons(repository)
 
     # ------------------------------------------------------------ computing
     def _side(self, candidate):
@@ -142,27 +143,34 @@ class ComparisonService:
             raise UnknownIdentity('Unknown comparison identity')
         return self._record(row)
 
-    def _stored(self, subject, reference, kind, actor):
-        """The immutable record for these two references, created on first request."""
+    def _stored(self, subject, reference, kind, actor, store=True):
+        """The immutable record for these two references, created on first request.
+
+        ``store=False`` reads an existing record or computes one without saving it.
+        """
         ends = (subject['id'], kind, reference['id'],
                 (subject.get('reference') or {}).get('execution_id'),
                 (reference.get('reference') or {}).get('execution_id'))
         query = ('SELECT * FROM candidate_comparisons WHERE candidate_id=? AND kind=? AND reference_candidate_id=? '
                  'AND subject_execution=? AND reference_execution=?')
         with self.repository.connect() as conn:
-            row = conn.execute(query, ends).fetchone()
+            # A reader that did not initialize may meet a state with no records yet.
+            row = conn.execute(query, ends).fetchone() if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='candidate_comparisons'").fetchone() else None
         if row is not None:
             return self._record(row)
         body, reason = self._compute(subject, reference, kind)
         if body is None:
             return dict(kind=kind, status='unavailable', reason=reason, reference_candidate_id=reference['id'])
+        if not store:
+            return dict(body, id=None, candidate_id=subject['id'], reference_candidate_id=reference['id'], stored=False)
         with self.repository.connect(write=True) as conn:
             conn.execute('INSERT OR IGNORE INTO candidate_comparisons VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                          (uuid.uuid4().hex, subject['iteration_id'], *ends, json.dumps(body, ensure_ascii=False),
                           _hash(body), actor, now()))
             return self._record(conn.execute(query, ends).fetchone())
 
-    def for_candidate(self, candidate_id, *, actor, iteration=None):
+    def for_candidate(self, candidate_id, *, actor, iteration=None, store=True):
         """Δ父 and Δ根 of one candidate; a root has neither, a child of the root shares one record.
 
         Records are derived on first request (reading never changes an existing one).
@@ -176,11 +184,11 @@ class ComparisonService:
             note = '根候选' if subject['id'] == root_id else '没有父候选'
             return dict(candidate_id=candidate_id, parent=dict(kind='parent', status='none', reason=note),
                         root=dict(kind='root', status='none', reason=note))
-        parent = self._stored(subject, by_id[parent_id], 'parent', actor)
+        parent = self._stored(subject, by_id[parent_id], 'parent', actor, store)
         if parent_id == root_id:
             root = dict(kind='root', status='same_as_parent', comparison_id=parent.get('id'))
         elif root_id in by_id:
-            root = self._stored(subject, by_id[root_id], 'root', actor)
+            root = self._stored(subject, by_id[root_id], 'root', actor, store)
         else:
             root = dict(kind='root', status='unavailable', reason='迭代没有根候选')
         return dict(candidate_id=candidate_id, parent=parent, root=root)

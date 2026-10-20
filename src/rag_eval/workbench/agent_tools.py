@@ -41,13 +41,13 @@ def build(state, config_path):
     return repository, views
 
 
-def iteration_service(repository, views):
+def iteration_service(repository, views, *, initialize=True):
     """The CLI's IterationService; it must see executions to know which candidates are evaluated."""
     from .comparisons import Admission
     from .iterations import IterationService
     from .job_execution import JobExecutionStore
     return IterationService(repository, views._worktree_service, executions=JobExecutionStore(repository),
-                            admission=Admission(views))
+                            admission=Admission(views), initialize=initialize)
 
 
 def task_run_ids(views, task_id):
@@ -66,6 +66,7 @@ def main(argv=None):
     parser.add_argument('--role', choices=('analyst', 'implementer'), default='analyst')
     parser.add_argument('--hypothesis')
     parser.add_argument('--candidate', help="the implementer's own iteration candidate")
+    parser.add_argument('--node', help="the analyst's own node: drafted proposals hang under it")
     parser.add_argument('--parent', help='evaluated candidate a drafted proposal hangs under')
     parser.add_argument('--reason', help='why a person should confirm this request')
     parser.add_argument('--proposal', help='approved proposal a derive request starts from')
@@ -119,13 +120,17 @@ def main(argv=None):
             saved=True, card=store.draft(task_id, card, author='agent:analyst'),
             next='a person approves or rejects it on the Changes page')
     elif command == 'proposal draft':
-        if not options.parent or not options.file:
+        if options.node and options.parent and options.parent != options.node:
+            raise SystemExit(f'this analyst is bound to node {options.node}; propose under another node '
+                             'from an analyst bound to that node')
+        parent = options.parent or options.node
+        if not parent or not options.file:
             raise SystemExit('proposal draft needs --parent <candidate> and --file card.json')
         tools = IterationTools(repository, views, task_id, options.role)
-        tools.own(options.parent)
+        tools.own(parent)
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
         out = _draft_leak(views, task_id, card) or dict(
-            saved=True, card=tools.service.draft_proposal(options.parent, card, author='agent:analyst'),
+            saved=True, card=tools.service.draft_proposal(parent, card, author='agent:analyst'),
             next='a person approves or rejects this proposal')
     elif command in ('iteration show', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
                      *REQUEST_COMMANDS):

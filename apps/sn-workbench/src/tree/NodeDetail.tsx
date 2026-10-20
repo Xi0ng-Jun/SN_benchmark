@@ -7,7 +7,7 @@ import type { ConfirmSpec } from './parts';
 import { Badge, Delta, Eyebrow, KeyValue, Mono, Section } from './parts';
 import type { Step } from './next';
 
-export type NodeAgent = { sessionId: string; label: string; status: string | null };
+export type NodeAgent = { sessionId: string; role: 'analyst' | 'implementer'; label: string; status: string | null };
 import { ActionRequest, Candidate, CandidateChanges, CandidateComparisons, ChangedFile, ComparisonRecord, decisionLabels,
   IterationTree, Proposal, requestStatusLabels, short, stateLabels, verbLabels } from './contracts';
 
@@ -137,13 +137,15 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         {c.state === 'provisioning' && <Button label="重新准备" onPress={() => onConfirm(actions.provision(c))} testID="act-provision" />}
         {(step?.action === 'proposal' || step?.action === 'derive-proposal') && step.proposalId &&
           <Button label="看提议" primary onPress={() => onProposal(step.proposalId!)} testID="act-proposal" />}
-        {step?.action === 'open-agent' && step.sessionId && <Button label="打开实现 Agent 对话" primary={step.who === 'you'} onPress={() => onOpenAgent(step.sessionId!)} testID="act-open-agent" />}
+        {step?.action === 'open-agent' && step.sessionId && <Button label={`打开${agents.find(a => a.sessionId === step.sessionId)?.role === 'analyst' ? '分析' : '实现'} Agent 对话`}
+          primary={step.who === 'you'} onPress={() => onOpenAgent(step.sessionId!)} testID="act-open-agent" />}
         {c.state === 'implementing' && proposal && !agents.length && <Button label="新建实现 Agent" primary={step?.action === 'implementer'} onPress={() => onImplementer(c, proposal)} testID="act-implementer" />}
         {c.state === 'implementing' && <Button label="冻结" primary={step?.action === 'freeze'} onPress={() => onConfirm(actions.freeze(c))} testID="act-freeze" />}
         {['frozen', 'failed', 'evaluated'].includes(c.state) && <Button label={c.attempts.length ? '再运行一次' : '运行'} primary={step?.action === 'run'}
           onPress={() => onConfirm(actions.run(c))} testID="act-run" />}
         {canCheck && <Button label="核对预测" primary={step?.action === 'check'} onPress={() => onConfirm(actions.check(c))} testID="act-check" />}
-        {step?.action === 'analyst' && <Button label={step.who === 'you' ? '新建分析 Agent' : '打开分析 Agent'} primary={step.who === 'you'} onPress={onAnalyst} testID="act-analyst" />}
+        {['evaluated', 'failed'].includes(c.state) && !(step?.action === 'open-agent' && agents.some(a => a.sessionId === step.sessionId && a.role === 'analyst')) &&
+          <Button label={agents.some(a => a.role === 'analyst') ? '打开分析 Agent' : '分析这个节点'} primary={step?.action === 'analyst'} onPress={onAnalyst} testID="act-analyst" />}
         {c.state === 'evaluated' && <Button label="派生子节点" onPress={() => onConfirm(actions.derive(c))} testID="act-derive" />}
         {c.state === 'evaluated' && !isRoot && <Button label="采纳" onPress={() => onConfirm(actions.decide(c, 'adopted'))} testID="act-adopt" />}
         {c.state === 'evaluated' && !isRoot && <Button label="放弃" onPress={() => onConfirm(actions.decide(c, 'rejected'))} testID="act-reject" />}
@@ -156,7 +158,7 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         <Text style={{ fontSize: 11, color: theme.muted }}>{a.status === 'running' || a.status === 'initializing' ? '正在工作' : a.status === 'idle' ? '空闲' : a.status ?? '状态未知'}</Text>
         <Button label="打开对话" onPress={() => onOpenAgent(a.sessionId)} testID={'open-agent-' + a.sessionId} />
       </View>)}
-      {!agents.length && <Copy small muted>这个候选还没有实现 Agent。它只在该候选的 worktree 里工作，只拿到提议里给实现者的字段。</Copy>}
+      {!agents.some(a => a.role === 'implementer') && c.state === 'implementing' && <Copy small muted>这个候选还没有实现 Agent。它只在该候选的 worktree 里工作，只拿到提议里给实现者的字段。</Copy>}
     </Section>}
     {mine.some(r => r.status === 'pending') && <Section title="待确认请求" testID="section-requests"
       meta={<Badge label={String(mine.filter(r => r.status === 'pending').length)} tone="warning" />}>

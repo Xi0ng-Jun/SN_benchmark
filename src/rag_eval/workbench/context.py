@@ -46,7 +46,8 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
         from .briefs import resolve_brief
         workspace = next(w for w in repository.workspaces() if w['id'] == task['workspace_id'])
         tool = f'{Path(workspace["location"]) / "scripts/sn-eval"} --state {repository.root}'
-        title, text, source_refs = resolve_brief(repository, task_id, reference['session_id'], tool=tool)
+        title, text, source_refs = resolve_brief(repository, task_id, reference['session_id'], tool=tool,
+                                                  run_views=run_views)
         return _snapshot(reference, title, text, source_refs)
     if kind == 'task_runs':
         if run_views is None:

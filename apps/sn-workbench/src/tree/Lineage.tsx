@@ -6,7 +6,9 @@ import { Candidate, decisionLabels, DeltaSummary, IterationTree, ProposalRow, ro
 import { Delta, Mono } from './parts';
 import type { Step } from './next';
 
-export type AgentMark = { sessionId: string; status: string | null };
+export type AgentMark = { sessionId: string; role: 'analyst' | 'implementer'; status: string | null };
+// The row shows one Agent mark: a working one before the latest idle one.
+const working = (mark: AgentMark) => mark.status === 'running' || mark.status === 'initializing';
 
 // Tree order by default (parent before children, siblings by derivation time);
 // ranking by Δ根 is a flat view and never reorders the tree (design §7, §11).
@@ -141,9 +143,9 @@ export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectPr
                 {labels[c.id] ?? short(c.id)}<Text style={{ fontWeight: '400', color: theme.muted }}>{titles[c.id] ? '  ' + titles[c.id] : ''}</Text></Text>
               <StepLine step={steps[c.id]} />
             </View>
-            {(agents[c.id] ?? []).slice(-1).map(mark => <Pressable key={mark.sessionId} accessibilityRole="button" testID={'lineage-agent-' + c.id}
-              accessibilityLabel={`打开 ${labels[c.id]} 的实现 Agent 对话`} onPress={() => onOpenAgent(mark.sessionId)}
-              {...({ title: `实现 Agent · ${mark.status === 'running' || mark.status === 'initializing' ? '正在工作' : mark.status ?? '状态未知'}` } as object)}
+            {[...(agents[c.id] ?? [])].sort((x, y) => Number(working(x)) - Number(working(y))).slice(-1).map(mark => <Pressable key={mark.sessionId} accessibilityRole="button" testID={'lineage-agent-' + c.id}
+              accessibilityLabel={`打开 ${labels[c.id]} 的${mark.role === 'analyst' ? '分析' : '实现'} Agent 对话`} onPress={() => onOpenAgent(mark.sessionId)}
+              {...({ title: `${mark.role === 'analyst' ? '分析' : '实现'} Agent · ${mark.status === 'running' || mark.status === 'initializing' ? '正在工作' : mark.status ?? '状态未知'}` } as object)}
               style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
               <Bot size={14} strokeWidth={1.75} color={mark.status === 'running' || mark.status === 'initializing' ? theme.primary : theme.muted} />
             </Pressable>)}

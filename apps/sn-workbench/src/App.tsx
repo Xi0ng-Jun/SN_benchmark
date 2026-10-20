@@ -16,8 +16,8 @@ import { CandidateDetail, ProposalDetail } from './tree/NodeDetail';
 import { CompareMatrix } from './tree/CompareMatrix';
 import { CommandPalette, PaletteItem } from './tree/CommandPalette';
 import { NewIterationDialog } from './tree/NewIterationDialog';
-import { AgentDrawer, ImplementerTarget } from './tree/AgentDrawer';
-import { implementersOf, stepsOf } from './tree/next';
+import { AgentDrawer, AgentTarget } from './tree/AgentDrawer';
+import { agentsOf, analystsOf, stepsOf } from './tree/next';
 import { useLive } from './tree/useLive';
 
 // Project → iteration → candidate tree (design §7). The five-tab Task surface was
@@ -51,13 +51,12 @@ export default function App() {
   const [picked, setPicked] = useState<string[]>([]);
   const [reader, setReader] = useState<{ runId: string; caseId: string | null } | null>(null);
   const [drawer, setDrawer] = useState(false);
-  const [target, setTarget] = useState<ImplementerTarget | null>(null);
+  const [target, setTarget] = useState<AgentTarget | null>(null);
   const [focus, setFocus] = useState<{ sessionId: string; nonce: number } | null>(null);
-  const [askAnalyst, setAskAnalyst] = useState(0);
 
   const iterations = useResource<Iteration[]>(boot ? '/iterations' : null, refresh);
   const iterationId = route.iteration ?? iterations.data?.at(-1)?.id ?? null;
-  const treeState = useResource<IterationTree>(iterationId ? `/iterations/${iterationId}` : null, refresh);
+  const treeState = useResource<IterationTree>(boot && iterationId ? `/iterations/${iterationId}` : null, refresh);
   const tree = treeState.data?.id === iterationId ? treeState.data : undefined;
   const proposals = useResource<Proposal[]>(tree ? `/tasks/${tree.task_id}/hypotheses` : null, refresh);
   const requests = useResource<ActionRequest[]>(boot ? '/action-requests' : null, refresh);
@@ -75,8 +74,14 @@ export default function App() {
   const task = taskState.data?.id === tree?.task_id ? taskState.data : undefined;
   const { live, changes, ready: liveReady } = useLive(task, tree, refresh);
   const steps = tree && task && liveReady && proposals.data ? stepsOf({ tree, proposals: proposalById, requests: treeRequests, sessions: task?.sessions ?? [], live, changes }) : {};
-  const agentMarks = Object.fromEntries((tree?.candidates ?? []).map(c => [c.id, implementersOf(c.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, status: live[s.id]?.status ?? null }))]));
+  const agentMarks = Object.fromEntries((tree?.candidates ?? []).map(c => [c.id, agentsOf(c.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, role: s.role!, status: live[s.id]?.status ?? null }))]));
   const openAgent = (sessionId: string) => { setTarget(null); setFocus({ sessionId, nonce: Date.now() }); setDrawer(true); };
+  // Analysis is per node: continue the node's latest analyst, or create one bound to it.
+  const analyse = (c: Candidate) => {
+    const bound = analystsOf(c.id, task?.sessions ?? []).at(-1);
+    if (bound) openAgent(bound.id);
+    else { setTarget({ role: 'analyst', candidateId: c.id, label: label(c.id) }); setDrawer(true); }
+  };
 
   // Poll while something moves: a run in flight or a request being executed.
   const moving = Boolean(tree?.candidates.some(c => c.state === 'running' || c.state === 'provisioning') || allRequests.some(r => r.status === 'confirmed'));
@@ -161,10 +166,11 @@ export default function App() {
     ...(candidate && actions ? [
       candidate.state === 'implementing' && { id: 'a-freeze', label: `冻结 ${label(candidate.id)}`, run: () => setConfirm(actions.freeze(candidate)) },
       ['frozen', 'failed', 'evaluated'].includes(candidate.state) && { id: 'a-run', label: `运行 ${label(candidate.id)}`, run: () => setConfirm(actions.run(candidate)) },
+      ['evaluated', 'failed'].includes(candidate.state) && { id: 'a-analyse', label: `分析 ${label(candidate.id)}`, run: () => analyse(candidate) },
       candidate.state === 'evaluated' && { id: 'a-derive', label: `从 ${label(candidate.id)} 派生`, run: () => setConfirm(actions.derive(candidate)) },
       candidate.state === 'evaluated' && candidate.id !== tree?.root_candidate_id && { id: 'a-adopt', label: `采纳 ${label(candidate.id)}`, run: () => setConfirm(actions.decide(candidate, 'adopted')) },
       candidate.state === 'evaluated' && candidate.id !== tree?.root_candidate_id && { id: 'a-reject', label: `放弃 ${label(candidate.id)}`, run: () => setConfirm(actions.decide(candidate, 'rejected')) },
-    ].filter((x): x is { id: string; label: string; run: () => void } => Boolean(x)).map(x => ({ ...x, group: '当前候选的动作', hint: '需确认' })) : []),
+    ].filter((x): x is { id: string; label: string; run: () => void } => Boolean(x)).map(x => ({ ...x, group: '当前候选的动作', hint: x.id === 'a-analyse' ? 'Agent' : '需确认' })) : []),
     ...allRequests.filter(r => r.status === 'pending').map(r => ({ id: 'r-' + r.id, group: '待确认请求', label: `${verbLabels[r.verb] ?? r.verb} ${r.target_id ? label(r.target_id) : ''}`,
       hint: r.requested_by, run: () => actions && setConfirm(actions.confirmRequest(r)) })),
     ...(picked.length ? [{ id: 'compare', group: '视图', label: `比较所选（${picked.length}）`, run: () => update({ matrix: true }) }] : []),
@@ -188,11 +194,11 @@ export default function App() {
     : tree && actions && candidate ? <CandidateDetail key={candidate.id} tree={tree} candidate={candidate} labels={labels} refreshKey={refresh}
       proposal={candidate.proposal_id ? proposalById[candidate.proposal_id] : undefined} requests={treeRequests} actions={actions} onConfirm={setConfirm}
       onReadRun={runId => setReader({ runId, caseId: null })}
-      onImplementer={(c: Candidate, p: Proposal) => { setTarget({ candidateId: c.id, hypothesisId: p.id, label: label(c.id) }); setDrawer(true); }}
+      onImplementer={(c: Candidate, p: Proposal) => { setTarget({ role: 'implementer', candidateId: c.id, hypothesisId: p.id, label: label(c.id) }); setDrawer(true); }}
       step={steps[candidate.id] ?? null} onOpenAgent={openAgent} onProposal={id => update({ proposal: id, node: null })}
-      onAnalyst={() => { setTarget(null); setAskAnalyst(n => n + 1); setDrawer(true); }}
-      agents={implementersOf(candidate.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, status: live[s.id]?.status ?? null,
-        label: `实现 Agent · ${s.agent_id.slice(0, 8)} · ${date(s.linked_at)} 关联` }))} />
+      onAnalyst={() => analyse(candidate)}
+      agents={agentsOf(candidate.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, role: s.role!, status: live[s.id]?.status ?? null,
+        label: `${s.role === 'analyst' ? '分析' : '实现'} Agent · ${s.agent_id.slice(0, 8)} · ${date(s.linked_at)} 关联` }))} />
     : <View style={{ gap: 8, paddingTop: 8 }}><Copy small muted>选一个候选看详情：假设与预测、对父的翻转、代码差异、运行与准入。</Copy>
       {treeRequests.some(r => r.status === 'pending') && <Copy small style={{ color: theme.warning }}>有 {treeRequests.filter(r => r.status === 'pending').length} 条待确认请求，见左栏“待处理”。</Copy>}</View>;
   const detailOpen = Boolean(reader || proposal || candidate);
@@ -248,7 +254,7 @@ export default function App() {
               {reader && runList.data ? detail : <ScrollView contentContainerStyle={{ padding: 18 }}>{detail}</ScrollView>}
             </View>}
           </View>
-          <AgentDrawer task={task} boot={boot} compact={compact} open={drawer} available={height - 44} labels={labels} focus={focus} askAnalyst={askAnalyst}
+          <AgentDrawer task={task} boot={boot} compact={compact} open={drawer} available={height - 44} labels={labels} focus={focus}
             onToggle={() => setDrawer(d => !d)} hasRuns={Boolean(tree?.candidates.some(c => c.attempts.length))}
             target={target} onTargetDone={() => setTarget(null)} onTaskChanged={bump} />
         </View>

@@ -20,6 +20,15 @@ export function implementersOf(candidateId: string, sessions: TaskSession[]) {
   return sessions.filter(s => s.role === 'implementer' && s.candidate_id === candidateId);
 }
 
+// An analyst is bound to the node it analyses; one bound to the whole iteration is the earlier kind.
+export function analystsOf(candidateId: string, sessions: TaskSession[]) {
+  return sessions.filter(s => s.role === 'analyst' && s.candidate_id === candidateId);
+}
+
+export function agentsOf(candidateId: string, sessions: TaskSession[]) {
+  return sessions.filter(s => s.candidate_id === candidateId && (s.role === 'analyst' || s.role === 'implementer'));
+}
+
 export function nextStep(c: Candidate, ctx: NextContext): Step | null {
   const isRoot = c.id === ctx.tree.root_candidate_id;
   const proposal = c.proposal_id ? ctx.proposals[c.proposal_id] : undefined;
@@ -53,10 +62,12 @@ export function nextStep(c: Candidate, ctx: NextContext): Step | null {
         return { who: 'you', text: '有结果了，核对提议的逐题预测', action: 'check', rank: 2 };
       if (!isRoot && !c.decision) return { who: 'you', text: '下结论：采纳、放弃，或再跑一次看波动', action: 'decide', rank: 6 };
       const frontier = (isRoot || c.decision?.decision === 'adopted') && !ctx.tree.candidates.some(x => x.parent_candidate_id === c.id) && !under.length;
-      if (frontier) return ctx.sessions.some(s => s.role === 'analyst')
-        ? { who: 'agent', text: '让分析 Agent 读题并提议', action: 'analyst', rank: 7 }
-        : { who: 'you', text: '建分析 Agent，从这里提下一个假设', action: 'analyst', rank: 7 };
-      return null;
+      if (!frontier) return null;
+      const analysts = analystsOf(c.id, ctx.sessions);
+      const reading = analysts.find(s => busy(ctx.live[s.id]?.status));
+      if (reading) return { who: 'agent', text: '分析 Agent 正在读这里的结果', action: 'open-agent', sessionId: reading.id, rank: 8 };
+      if (analysts.length) return { who: 'you', text: '分析 Agent 空闲，还没有提议；在对话里让它提一个', action: 'open-agent', sessionId: analysts.at(-1)!.id, rank: 5 };
+      return { who: 'you', text: '开分析 Agent，从这里提下一个假设', action: 'analyst', rank: 7 };
     }
     default: return null;
   }

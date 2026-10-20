@@ -120,8 +120,8 @@ class AgentCreationStore:
             raise ValueError('Invalid Agent role')
         if (role == 'implementer') != (hypothesis_id is not None):
             raise ValueError('An implementer Agent is created for exactly one approved hypothesis card')
-        if candidate_id is not None and role != 'implementer':
-            raise ValueError('Only an implementer Agent is created for a candidate')
+        if candidate_id is not None and role not in ('analyst', 'implementer'):
+            raise ValueError('Only an analyst or implementer Agent is created for a candidate')
         payload = {'profile_id': profile_id, 'title': title}
         if role is not None:
             payload.update(role=role, hypothesis_id=hypothesis_id)
@@ -146,8 +146,12 @@ class AgentCreationStore:
                     'SELECT c.status,c.proposal_id FROM candidates c JOIN iterations i ON i.id=c.iteration_id '
                     'WHERE c.id=? AND i.task_id=?', (candidate_id, task_id)).fetchone() \
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='candidates'").fetchone() else None
-                if candidate is None or candidate['proposal_id'] != hypothesis_id or candidate['status'] != 'ready':
-                    raise ValueError('The candidate is not implementing this proposal')
+                # An analyst reads one frozen node (its runs are the evidence it cites);
+                # an implementer changes one candidate that is still being implemented.
+                if candidate is None or (candidate['status'] != 'frozen' if role == 'analyst' else (
+                        candidate['proposal_id'] != hypothesis_id or candidate['status'] != 'ready')):
+                    raise ValueError('The candidate is not frozen for analysis' if role == 'analyst'
+                                     else 'The candidate is not implementing this proposal')
             intent_id, agent_id = uid(), str(uuid.uuid4())
             command = self._command(conn, task, profile_id, title, agent_id, 'creation:' + intent_id, role, hypothesis_id,
                                     candidate_id)

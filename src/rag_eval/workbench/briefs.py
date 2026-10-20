@@ -55,10 +55,20 @@ $S request withdraw <请求> --reason '…'   # 撤回误提且仍待确认的�
 '''
 
 
-def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None):
-    """``candidates`` are (id, frozen_commit, worktree) rows when the Task backs an iteration."""
+def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node=None):
+    """``candidates`` are (id, frozen_commit, worktree) rows when the Task backs an iteration.
+
+    ``node`` (from ``node_context``) binds the analyst to one evaluated candidate:
+    the brief then carries that node, its path from the root, and drafts default
+    to it, instead of listing the whole tree.
+    """
     s = f'{tool} --task {task["id"]}'
-    if candidates:
+    if node:
+        s += f' --node {node["id"]}'
+        target = node['section'] + ('\n你只读候选 worktree 来定位代码，**不要修改 SN 代码**。'
+                                    f'本节点的 worktree：`{node["worktree"] or "未就绪"}`。')
+        draft = f'`$S proposal draft --file card.json`（自动挂在 {node["label"]} 下；要从别的节点提议，请在那个节点另开分析 Agent）'
+    elif candidates:
         rows = '\n'.join(f'- 候选 `{c}`：冻结 commit `{commit or "未冻结"}`，worktree `{path or "未就绪"}`'
                          for c, commit, path in candidates)
         target = ('本任务是一个迭代的载体，被测代码按候选区分（`$S node list` 看谱系与 Δ父／Δ根）：\n' + rows +
@@ -71,12 +81,11 @@ def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None):
     docs = '\n'.join(f'- `{eval_root}/{path}`：{note}' for path, note in ANALYST_DOCS)
     return f'''# 你的角色：分析 Agent（Silicon Notebook 评测）
 
-任务：{task["title"]}
-目标：{task["goal"] or "（未填写）"}
-评测仓库：`{eval_root}`。你的工作目录：`{cwd}`{"（这个 Agent 按旧方式建在 SN worktree 里；角色仍是分析，不要修改 SN 代码）" if worktree and cwd == worktree else ""}。
+{"迭代" if node else "任务"}：{task["title"]}{"　·　本会话分析节点 **" + node["label"] + "**" if node else ""}
+{"" if node else "目标：" + (task["goal"] or "（未填写）") + chr(10)}评测仓库：`{eval_root}`。你的工作目录：`{cwd}`{"（这个 Agent 按旧方式建在 SN worktree 里；角色仍是分析，不要修改 SN 代码）" if worktree and cwd == worktree else ""}。
 {target}
 
-你的职责：读评测结果和案例证据，做失败归类，提出可证伪的假设卡草稿。你能看 gold；正因为能看 gold，你不写 SN 代码，改码由另一个看不到 gold 的实现 Agent 完成。
+你的职责：{"读节点 " + node["label"] + " 的评测结果和案例证据（与它的父节点对照）" if node else "读评测结果和案例证据"}，做失败归类，提出可证伪的假设卡草稿。你能看 gold；正因为能看 gold，你不写 SN 代码，改码由另一个看不到 gold 的实现 Agent 完成。
 
 ## 查询工具（只读、免费，随时可用）
 ```
@@ -99,7 +108,7 @@ $S docs                       # 下方文档索引
 - predictions 是逐题预测：expect 取 improve / unchanged / not_worse / worse；guard=true 表示守护题（不应变差）。验证时按翻转表逐条核对，不看均分。
 - implementer_brief 是唯一会交给实现 Agent 的说明：写机制和改法，**不得包含题面、gold、case id、论文内容或分数**，提交前会做泄漏扫描。
 
-{ITERATION_VERBS.format(s=s) if candidates else ""}## 可参考的评测文档
+{ITERATION_VERBS.format(s=s) if candidates or node else ""}## 可参考的评测文档
 {docs}
 
 ## 规则
@@ -143,7 +152,7 @@ worktree 起点已有这些未提交改动，它们属于用户，不要覆盖�
 '''
 
 
-def resolve_brief(repository, task_id, session_id, *, tool):
+def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
     """Snapshot pieces for the `brief` context kind."""
     with repository.connect() as conn:
         task = repository._require(conn, 'tasks', task_id)
@@ -182,7 +191,124 @@ def resolve_brief(repository, task_id, session_id, *, tool):
                                  start_dirty=[d['path'] for d in start.get('dirty', [])], candidate_id=candidate_id)
         title = '实现 Agent 工作说明 · ' + card['title']
     else:
+        node = node_context(repository, run_views, task_id, candidate_id) if candidate_id else None
         text = analyst_brief(task, eval_root=str(Path(workspace['location'])), tool=tool, worktree=worktree, cwd=cwd,
-                             candidates=candidates)
-        title = '分析 Agent 工作说明 · ' + task['title']
-    return title, text, {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst'}
+                             candidates=candidates, node=node)
+        title = '分析 Agent 工作说明 · ' + task['title'] + (' · 节点 ' + node['label'] if node else '')
+    refs = {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst'}
+    if candidate_id:
+        refs['candidate_id'] = candidate_id
+    return title, text, refs
+
+
+def tree_labels(tree):
+    """C0, A, B, A1, A1.1 …: the same names the workbench draws (apps/sn-workbench/src/tree/actions.ts)."""
+    labels, children, ids = {}, {}, {c['id'] for c in tree['candidates']}
+    for c in tree['candidates']:
+        children.setdefault(c['parent_candidate_id'] or '', []).append(c)
+
+    def visit(c, name):
+        labels[c['id']] = name
+        for i, child in enumerate(children.get(c['id'], [])):
+            visit(child, chr(65 + i % 26) + (str(i // 26) if i >= 26 else '') if name == 'C0'
+                  else f'{name}.{i + 1}' if name[-1].isdigit() else f'{name}{i + 1}')
+    roots = [c for c in tree['candidates'] if not c['parent_candidate_id'] or c['parent_candidate_id'] not in ids]
+    for i, root in enumerate(roots):
+        visit(root, 'C0' if root['id'] == tree['root_candidate_id'] else f'L{i}')
+    return labels
+
+
+def _delta(entry):
+    """One side of ``comparisons.summary`` as a sentence."""
+    status = entry.get('status')
+    if status == 'none':
+        return None
+    if status == 'same_as_parent':
+        return '同父（父即根）'
+    if status != 'admitted':
+        return '不可用：' + str(entry.get('reason') or status)
+    counts = entry['counts']
+    delta = entry['mean_delta']
+    line = (f'{entry["metric"]} Δ {delta:+.3f}' if delta is not None else f'{entry["metric"]} Δ —') + \
+        f'，好 {counts["better"]} / 差 {counts["worse"]} / 平 {counts["same"]}'
+    if entry.get('regressed'):
+        line += '；下降的题：' + '、'.join(f'`{c}`' for c in entry['regressed'])
+    return line
+
+
+def node_context(repository, run_views, task_id, candidate_id):
+    """The analyst's node: its reference runs, Δ父／Δ根, its proposal and the path from the root.
+
+    Memory across rounds lives in these records (proposal, prediction check,
+    comparison, decision), not in one ever-growing conversation.
+    """
+    from .agent_tools import iteration_service
+    from .comparisons import ComparisonService, summary
+    if run_views is None:
+        raise ValueError('Run views are needed to brief an analyst bound to a candidate')
+    # Read-only: a brief is also resolved inside the message-sending write transaction.
+    service = iteration_service(repository, run_views, initialize=False)
+    comparisons = ComparisonService(repository, service, run_views, initialize=False)
+    tree = service.iteration(service.candidate(candidate_id)['iteration_id'])
+    if tree['task_id'] != task_id:
+        raise ValueError('The candidate belongs to another Task')
+    labels, by_id = tree_labels(tree), {c['id']: c for c in tree['candidates']}
+    path, cursor = [], by_id[candidate_id]
+    while cursor is not None:
+        path.insert(0, cursor)
+        cursor = by_id.get(cursor['parent_candidate_id'])
+
+    def runs(c):
+        def score(run_id):
+            official = run_views.run(run_id).get('official') or {}
+            metric = official.get('primary_metric')
+            value = (official.get('metrics') or {}).get(metric)
+            return f'（{metric} {value:.3f}）' if isinstance(value, (int, float)) else ''
+        ids = lambda execution_id: '、'.join(f'`{r.id}`{score(r.id)}' for r in run_views.execution_runs(execution_id)) or '无 run'
+        reference = c.get('reference')
+        if reference is not None:
+            return f'参考运行（attempt {reference["attempt"]}）' + ids(reference['execution_id'])
+        # A node without an admitted run: each attempt's state and runs, to diagnose why.
+        tried = [f'attempt {a["attempt"]} {a["execution_state"] or "状态未知"}'
+                 + (f' {ids(a["execution_id"])}' if a.get('execution_id') else '') for a in c['attempts']]
+        return '没有通过准入的运行' + ('（' + '；'.join(tried) + '）' if tried else '')
+
+    def step(c, detail):
+        label, lines = labels[c['id']], []
+        both = comparisons.for_candidate(c['id'], actor='workbench:brief', iteration=tree, store=False)
+        parent, root = summary(both['parent']), summary(both['root'])
+        head = f'**{label}**（`{c["id"]}`）commit `{c["frozen_commit"] or "未冻结"}` · {runs(c)}'
+        if c['parent_candidate_id'] is None:
+            lines.append(head + ' · 起点')
+        else:
+            lines.append(head + f' · 父 {labels.get(c["parent_candidate_id"], "?")}')
+        if c['proposal_id']:
+            with repository.connect() as conn:
+                row = conn.execute('SELECT card,verification FROM hypotheses WHERE id=? AND task_id=?',
+                                   (c['proposal_id'], task_id)).fetchone()
+            body = json.loads(row['card'])
+            check = json.loads(row['verification']) if row['verification'] else None
+            lines.append(f'提议「{body.get("title")}」：{body.get("mechanism")}' +
+                         (f'；逐题预测 {check["held"]}/{check["decided"]} 兑现' if check else '；预测未核对'))
+        elif c['parent_candidate_id'] is not None:
+            lines.append('手工派生（没有提议）' + (f'：{c["note"]}' if c.get('note') else ''))
+        for name, side in (('Δ父', parent), ('Δ根', root)):
+            text = _delta(side)
+            if text and (detail or name == 'Δ父'):
+                lines.append(f'{name}：{text}')
+        decision = c.get('decision') or {}
+        if c['parent_candidate_id'] is not None:
+            lines.append('结论：' + ({'adopted': '采纳', 'rejected': '放弃', 'undecided': '未决'}.get(
+                decision.get('decision'), '未下') + (f'（{decision["note"]}）' if decision.get('note') else '')))
+        return lines
+
+    node = by_id[candidate_id]
+    focus = step(node, True)
+    section = f'\n## 本轮分析对象：{labels[candidate_id]}\n' + '\n'.join('- ' + line for line in focus)
+    if len(path) > 1:
+        section += '\n\n## 从根到 ' + labels[candidate_id] + ' 的路径（之前各轮的记录）\n' + '\n'.join(
+            f'{i}. ' + '\n   '.join(step(c, False)) for i, c in enumerate(path[:-1], 1))
+    section += ('\n\n其他分支不在这里；需要时 `$S node list`、`$S node show <候选>`。'
+                '比较以父节点为准：Δ父 回答“这一步带来了什么”，Δ根 只作守护参考。')
+    worktree = (node.get('worktree') or {}).get('path')
+    return dict(id=candidate_id, label=labels[candidate_id], section=section, worktree=worktree)

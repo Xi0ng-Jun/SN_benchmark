@@ -32,13 +32,13 @@ for (const scheme of ['light', 'dark']) {
     assert.match(await page.getByTestId('next-step').innerText(), /下一步/);
     await shot(page, 'landing');
   }
-  // An Agent marker on a row opens that implementer's conversation; the header says what it is bound to.
+  // An Agent marker on a row opens that Agent's conversation; the header says what it is bound to.
   const marker = page.locator('[data-testid^="lineage-agent-"]').first();
   if (await marker.count()) {
     const bound = (await marker.getAttribute('data-testid')).replace('lineage-agent-', '');
     await marker.click();
     await page.getByTestId('agent-binding').waitFor();
-    await page.waitForFunction(() => /实现 · 候选/.test(document.querySelector('[data-testid="agent-binding"]')?.textContent ?? ''), null, { timeout: 15000 });
+    await page.waitForFunction(() => /(实现|分析) · 候选/.test(document.querySelector('[data-testid="agent-binding"]')?.textContent ?? ''), null, { timeout: 15000 });
     await shot(page, 'agent-bound');
     const before = (await page.getByTestId('agent-drawer').boundingBox()).height;
     await page.getByTestId('maximize-drawer').click();
@@ -59,6 +59,24 @@ for (const scheme of ['light', 'dark']) {
   await page.getByTestId('parent-flips').waitFor({ timeout: 15000 });
   assert.match(await page.getByTestId('parent-flips').innerText(), /记录 [0-9a-f]{8}/);
   await shot(page, 'detail');
+
+  // Analysis is per node: "分析" continues the node's own analyst, or offers to create one
+  // bound to it (cancelled here, nothing is created).
+  const nodeLabel = (await rows.nth(1).innerText()).trim().split(/\s+/)[0];
+  await page.getByTestId('act-analyst').click();
+  const target = page.getByTestId('analyst-target');
+  await Promise.race([target.waitFor({ timeout: 15000 }),
+    page.waitForFunction(() => /分析 · 候选/.test(document.querySelector('[data-testid="agent-binding"]')?.textContent ?? ''), null, { timeout: 15000 })]);
+  if (await target.count()) {
+    assert.match(await target.innerText(), new RegExp(`为候选 ${nodeLabel} 新建分析 Agent`));
+    await shot(page, 'analyst-target');
+    await target.getByText('取消').click();
+    assert.equal(await target.count(), 0);
+  } else {
+    assert.match(await page.getByTestId('agent-binding').innerText(), new RegExp(`分析 · 候选 ${nodeLabel}`));
+    await shot(page, 'analyst-bound');
+  }
+  await page.getByTestId('toggle-drawer').click();
 
   // Every write goes through the confirm dialog; cancelling runs nothing.
   const before = await page.evaluate(async () => (await (await fetch(location.origin + '/api/iterations')).json()).length);
