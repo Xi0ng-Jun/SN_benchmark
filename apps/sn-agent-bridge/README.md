@@ -165,7 +165,7 @@ text保留原值，最多16384 UTF-16 units且32768 UTF-8 bytes，拒绝全空�
 所以不要求remote workspaceId。服务器持有授权、配置、冻结消息意图及本地cwd范围。
 
 precheck严格archivedAt=null、已知空pendingPermissions、已知activeTurn形状，保守
-允许idle/running，拒绝权限attention、providerUnavailable=true、其他状态及缺字段。
+允许idle/running/error（上一轮provider错误后可续接），拒绝权限attention、providerUnavailable=true、其他状态及缺字段。
 预检与send非原子，不能避免检查后远端状态变化，也不提供原子reject-busy或Agent沙箱。
 steer可能取消重启；工作台UI要求显式选择行为，不能承诺不打断。
 

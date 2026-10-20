@@ -296,8 +296,8 @@ Task-session显式关联只存Agent ID，Task本地workspace.location由server�
 precheck公共完整ID handle.refresh返回agent.id完全匹配；归档字段严格null。
 status、archivedAt、pendingPermissions、activeTurn缺失或activeTurn形状无效为
 INCOMPLETE_SNAPSHOT。pendingPermissions必须数组且为空；非空或attentionReason为
-permission则PERMISSION_REQUIRED。保守只允许idle/running且providerUnavailable不为true；
-initializing/error/closed/未知状态为AGENT_UNAVAILABLE。activeTurn只确认已知null或
+permission则PERMISSION_REQUIRED。只允许idle/running/error（error是上一轮因provider／连接错误结束，Paseo在下一条消息时续接同一会话）且providerUnavailable不为true；
+initializing/closed/未知状态为AGENT_UNAVAILABLE。activeTurn只确认已知null或
 {turnId:非空string,startedAt:null|string}，不将idle或turn观察视为完成。
 expectedCwd与快照原cwd经canonical现存目录匹配，不符SCOPE_MISMATCH，预期路径异常
 INVALID_INPUT，实际路径／读取异常READ_FAILED，不回显路径或异常。

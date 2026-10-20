@@ -300,7 +300,9 @@ export function createBridge(
         return notAttempted("INCOMPLETE_SNAPSHOT");
       if (agent.archivedAt !== null) return notAttempted("AGENT_ARCHIVED");
       if (agent.pendingPermissions.length || agent.attentionReason === "permission") return notAttempted("PERMISSION_REQUIRED");
-      if (!["idle", "running"].includes(agent.status) || agent.providerUnavailable === true)
+      // "error" is a turn that ended on a provider/connection failure; Paseo resumes the
+      // same session on the next prompt, so a person can retry from the workbench.
+      if (!["idle", "running", "error"].includes(agent.status) || agent.providerUnavailable === true)
         return notAttempted("AGENT_UNAVAILABLE");
       const expected = await untilClosed(canonicalDirectory(options.expectedCwd, "INVALID_INPUT"));
       assertLive();

@@ -44,6 +44,13 @@ test("send preserves exact frozen text/UUID/explicit behavior once with canonica
   }
 });
 
+test("an Agent whose last turn ended in a provider error can be sent to again", async (t) => {
+  const f = await fixture(t);
+  Object.assign(f.snapshot, { status: "error" });
+  assert.deepEqual(await f.bridge.sendAgent(f.options), acknowledged);
+  assert.equal(f.calls.length, 1);
+});
+
 test("closed send input schema rejects UUID aliases, missing behavior, extras, empty/NUL/oversize text before SDK reads", async (t) => {
   const f = await fixture(t);
   for (const changed of [
@@ -66,7 +73,7 @@ test("send prechecks reject missing/alias/archived/incomplete/permissions/nonrea
     ["missingArchive", "INCOMPLETE_SNAPSHOT"], ["missingStatus", "INCOMPLETE_SNAPSHOT"], ["missingPermissions", "INCOMPLETE_SNAPSHOT"],
     ["badPermissions", "INCOMPLETE_SNAPSHOT"], ["missingTurn", "INCOMPLETE_SNAPSHOT"], ["badTurn", "INCOMPLETE_SNAPSHOT"],
     ["permissions", "PERMISSION_REQUIRED"], ["permissionAttention", "PERMISSION_REQUIRED"],
-    ["initializing", "AGENT_UNAVAILABLE"], ["closed", "AGENT_UNAVAILABLE"], ["error", "AGENT_UNAVAILABLE"],
+    ["initializing", "AGENT_UNAVAILABLE"], ["closed", "AGENT_UNAVAILABLE"],
     ["providerUnavailable", "AGENT_UNAVAILABLE"], ["readError", "READ_FAILED"],
   ] as const;
   for (const [kind, code] of cases) {
@@ -84,7 +91,7 @@ test("send prechecks reject missing/alias/archived/incomplete/permissions/nonrea
       if (kind === "badTurn") Object.assign(f.snapshot, { activeTurn: {} });
       if (kind === "permissions") Object.assign(f.snapshot, { pendingPermissions: [{ secret: "private-sentinel" }] });
       if (kind === "permissionAttention") Object.assign(f.snapshot, { attentionReason: "permission" });
-      if (["initializing", "closed", "error"].includes(kind)) Object.assign(f.snapshot, { status: kind });
+      if (["initializing", "closed"].includes(kind)) Object.assign(f.snapshot, { status: kind });
       if (kind === "providerUnavailable") Object.assign(f.snapshot, { providerUnavailable: true });
     }
     const result = await f.bridge.sendAgent(f.options);

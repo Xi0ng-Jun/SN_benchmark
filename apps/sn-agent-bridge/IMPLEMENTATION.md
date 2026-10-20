@@ -481,7 +481,7 @@ remote workspaceId无适用于全部引用的可靠映射，creation binding不�
 同目录。服务器负责授权、配置、持久冻结消息意图与产品选择，桥接不持有Task数据。
 
 precheck完整Agent ID／canonical现存cwd，严格archivedAt=null、已知空pendingPermissions
-及activeTurn形状；保守只允许idle/running，权限attention／providerUnavailable拒绝。
+及activeTurn形状；只允许idle/running/error（2026-10-20：error可续接），权限attention／providerUnavailable拒绝。
 缺字段、归档、权限、不可用状态固定not_attempted，减少已观察资源的隐式unarchive／
 权限清理风险；不宣称非原子预检之后状态不变。所有async预检后及最后调用边界核
 生命周期／实例／releaseFailed／connected，恰一次公共handle.send。首个await前复制
