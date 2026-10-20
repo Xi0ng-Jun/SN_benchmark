@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native';
 import { PanelLeftOpen, X } from 'lucide-react-native';
-import { api, Bootstrap, Task, useResource } from './contracts';
+import { api, Bootstrap, date, Task, useResource } from './contracts';
 import { Button, Copy, Input, ThemeContext, themes } from './ui';
 import { IconButton, ResizeHandle, useShellLayout } from './shell';
 import { WorkspaceConfiguration } from './workspace/WorkspaceConfiguration';
@@ -10,13 +10,15 @@ import type { RunList } from './runs/contracts';
 import { ActionRequest, Candidate, Iteration, IterationTree, Proposal, short, verbLabels } from './tree/contracts';
 import { makeActions, treeLabels } from './tree/actions';
 import { ConfirmDialog, ConfirmSpec, Mono } from './tree/parts';
-import { IterationSidebar, IterationStatus } from './tree/IterationSidebar';
+import { IterationSidebar, IterationStatus, Todo } from './tree/IterationSidebar';
 import { Lineage } from './tree/Lineage';
 import { CandidateDetail, ProposalDetail } from './tree/NodeDetail';
 import { CompareMatrix } from './tree/CompareMatrix';
 import { CommandPalette, PaletteItem } from './tree/CommandPalette';
 import { NewIterationDialog } from './tree/NewIterationDialog';
 import { AgentDrawer, ImplementerTarget } from './tree/AgentDrawer';
+import { implementersOf, stepsOf } from './tree/next';
+import { useLive } from './tree/useLive';
 
 // Project → iteration → candidate tree (design §7). The five-tab Task surface was
 // removed on 2026-10-20 (DELETION_LOG.md); backend routes are unchanged.
@@ -50,6 +52,8 @@ export default function App() {
   const [reader, setReader] = useState<{ runId: string; caseId: string | null } | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [target, setTarget] = useState<ImplementerTarget | null>(null);
+  const [focus, setFocus] = useState<{ sessionId: string; nonce: number } | null>(null);
+  const [askAnalyst, setAskAnalyst] = useState(0);
 
   const iterations = useResource<Iteration[]>(boot ? '/iterations' : null, refresh);
   const iterationId = route.iteration ?? iterations.data?.at(-1)?.id ?? null;
@@ -68,6 +72,11 @@ export default function App() {
   const proposal = route.proposal ? proposalById[route.proposal] : undefined;
   const allRequests = requests.data ?? [];
   const treeRequests = tree ? allRequests.filter(r => r.task_id === tree.task_id) : [];
+  const task = taskState.data?.id === tree?.task_id ? taskState.data : undefined;
+  const { live, changes, ready: liveReady } = useLive(task, tree, refresh);
+  const steps = tree && task && liveReady && proposals.data ? stepsOf({ tree, proposals: proposalById, requests: treeRequests, sessions: task?.sessions ?? [], live, changes }) : {};
+  const agentMarks = Object.fromEntries((tree?.candidates ?? []).map(c => [c.id, implementersOf(c.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, status: live[s.id]?.status ?? null }))]));
+  const openAgent = (sessionId: string) => { setTarget(null); setFocus({ sessionId, nonce: Date.now() }); setDrawer(true); };
 
   // Poll while something moves: a run in flight or a request being executed.
   const moving = Boolean(tree?.candidates.some(c => c.state === 'running' || c.state === 'provisioning') || allRequests.some(r => r.status === 'confirmed'));
@@ -120,9 +129,29 @@ export default function App() {
     else if (actions) setConfirm(actions.confirmRequest(r));
     setNav(false);
   };
+  // Everything waiting on the person: next steps in this iteration, then requests elsewhere.
+  const todo: Todo[] = [
+    ...(tree?.candidates ?? []).flatMap(c => {
+      const step = steps[c.id];
+      if (step?.who !== 'you') return [];
+      return [{ id: 'step-' + c.id, rank: step.rank, label: `${label(c.id)} · ${step.text}`, detail: tree!.title,
+        kind: step.action === 'request' ? 'request' as const : step.action === 'proposal' ? 'proposal' as const : 'step' as const,
+        onPress: () => { setReader(null); setNav(false); step.action === 'proposal' && step.proposalId ? update({ proposal: step.proposalId, node: null }) : update({ node: c.id, proposal: null }); } }];
+    }).sort((a, b) => a.rank - b.rank),
+    ...allRequests.filter(r => r.status === 'pending' && (r.task_id !== tree?.task_id || !r.target_id)).map(r => ({ id: 'request-' + r.id,
+      label: `${verbLabels[r.verb] ?? r.verb}请求`, detail: iterations.data?.find(i => i.task_id === r.task_id)?.title ?? '其他迭代', kind: 'request' as const, onPress: () => openRequest(r) })),
+  ];
+  // Opening an iteration lands on what needs the person most — once every fact the
+  // inference reads has loaded, and not on narrow screens where detail covers the list.
+  const landed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!tree || landed.current === tree.id || !task || !proposals.data || !liveReady) return;
+    landed.current = tree.id;
+    if (route.node || route.proposal || compact) return;
+    todo.find(t => t.id.startsWith('step-'))?.onPress();
+  }, [tree?.id, Boolean(task), Boolean(proposals.data), liveReady]);
   const statuses: Record<string, IterationStatus> = Object.fromEntries((iterations.data ?? []).map(it => {
-    const waiting = allRequests.filter(r => r.task_id === it.task_id && r.status === 'pending').length
-      + (it.id === tree?.id ? tree.proposals.filter(p => p.status === 'draft').length : 0);
+    const waiting = it.id === tree?.id ? todo.length : allRequests.filter(r => r.task_id === it.task_id && r.status === 'pending').length;
     const running = it.id === tree?.id && tree.candidates.some(c => c.state === 'running');
     return [it.id, running ? { tone: 'running', label: '运行中' } : waiting ? { tone: 'warning', label: `${waiting} 项待处理` } : { tone: null, label: '' }];
   }));
@@ -148,9 +177,8 @@ export default function App() {
   const dock = layout.sizes(!compact);
   const detailWidth = compact ? width : Math.max(360, dock.right);
   const sidebar = <IterationSidebar width={compact ? Math.min(320, width - 40) : dock.left} compact={compact} project={boot?.workspaces[0]?.title ?? '项目'}
-    iterations={iterations.data ?? []} statuses={statuses} iterationId={iterationId} requests={allRequests} proposals={tree?.proposals ?? []} label={label}
-    onIteration={selectIteration} onRequest={openRequest} onProposal={p => { setReader(null); update({ proposal: p.id, node: null }); setNav(false); }}
-    onNew={() => { setNewIteration(true); setNav(false); }} onPalette={() => setPalette(true)} onSettings={() => setSettingsOpen(true)}
+    iterations={iterations.data ?? []} statuses={statuses} iterationId={iterationId} todo={todo}
+    onIteration={selectIteration} onNew={() => { setNewIteration(true); setNav(false); }} onPalette={() => setPalette(true)} onSettings={() => setSettingsOpen(true)}
     onClose={() => compact ? setNav(false) : layout.toggleLeft()} />;
   const detail = reader && runList.data ? <RunMaterials runs={runList.data.runs} compact={compact}
     selection={{ runId: reader.runId, caseId: reader.caseId, panel: 'run-cases', needsRead: false, against: null, provenance: false }}
@@ -160,11 +188,14 @@ export default function App() {
     : tree && actions && candidate ? <CandidateDetail key={candidate.id} tree={tree} candidate={candidate} labels={labels} refreshKey={refresh}
       proposal={candidate.proposal_id ? proposalById[candidate.proposal_id] : undefined} requests={treeRequests} actions={actions} onConfirm={setConfirm}
       onReadRun={runId => setReader({ runId, caseId: null })}
-      onImplementer={(c: Candidate, p: Proposal) => { setTarget({ candidateId: c.id, hypothesisId: p.id, label: label(c.id) }); setDrawer(true); }} />
+      onImplementer={(c: Candidate, p: Proposal) => { setTarget({ candidateId: c.id, hypothesisId: p.id, label: label(c.id) }); setDrawer(true); }}
+      step={steps[candidate.id] ?? null} onOpenAgent={openAgent} onProposal={id => update({ proposal: id, node: null })}
+      onAnalyst={() => { setTarget(null); setAskAnalyst(n => n + 1); setDrawer(true); }}
+      agents={implementersOf(candidate.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, status: live[s.id]?.status ?? null,
+        label: `实现 Agent · ${s.agent_id.slice(0, 8)} · ${date(s.linked_at)} 关联` }))} />
     : <View style={{ gap: 8, paddingTop: 8 }}><Copy small muted>选一个候选看详情：假设与预测、对父的翻转、代码差异、运行与准入。</Copy>
       {treeRequests.some(r => r.status === 'pending') && <Copy small style={{ color: theme.warning }}>有 {treeRequests.filter(r => r.status === 'pending').length} 条待确认请求，见左栏“待处理”。</Copy>}</View>;
   const detailOpen = Boolean(reader || proposal || candidate);
-  const drawerHeight = Math.round(Math.max(260, height * 0.42));
 
   return <ThemeContext.Provider value={theme}>
     <View style={{ flex: 1, backgroundColor: theme.bg, flexDirection: 'row' }}>
@@ -206,7 +237,8 @@ export default function App() {
                         onReadCase={(runId, caseId) => setReader({ runId, caseId })} />
                         : <Lineage tree={tree} labels={labels} titles={titles} selectedId={route.proposal ?? route.node} onSelect={selectNode}
                           onSelectProposal={id => { setReader(null); update({ proposal: id, node: null }); }} rank={route.rank} onRank={rank => update({ rank })}
-                          picked={picked} onPick={id => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])} onCompare={() => update({ matrix: true })} compact={compact} />}
+                          picked={picked} onPick={id => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])} onCompare={() => update({ matrix: true })} compact={compact}
+                          steps={steps} agents={agentMarks} onOpenAgent={openAgent} />}
                   {tree && tree.unassigned_executions.length > 0 && <Copy small muted>{tree.unassigned_executions.length} 次执行未归属任何候选（保留，不计入比较）。</Copy>}
                 </View>
               </ScrollView>
@@ -216,7 +248,7 @@ export default function App() {
               {reader && runList.data ? detail : <ScrollView contentContainerStyle={{ padding: 18 }}>{detail}</ScrollView>}
             </View>}
           </View>
-          <AgentDrawer task={taskState.data?.id === tree?.task_id ? taskState.data : undefined} boot={boot} compact={compact} open={drawer} height={drawerHeight}
+          <AgentDrawer task={task} boot={boot} compact={compact} open={drawer} available={height - 44} labels={labels} focus={focus} askAnalyst={askAnalyst}
             onToggle={() => setDrawer(d => !d)} hasRuns={Boolean(tree?.candidates.some(c => c.attempts.length))}
             target={target} onTargetDone={() => setTarget(null)} onTaskChanged={bump} />
         </View>

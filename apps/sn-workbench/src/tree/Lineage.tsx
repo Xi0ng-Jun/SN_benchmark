@@ -1,9 +1,12 @@
 import React from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { Check } from 'lucide-react-native';
+import { Bot, Check } from 'lucide-react-native';
 import { Button, fmt, hover, useTheme } from '../ui';
 import { Candidate, decisionLabels, DeltaSummary, IterationTree, ProposalRow, rootSide, short, stateLabels } from './contracts';
 import { Delta, Mono } from './parts';
+import type { Step } from './next';
+
+export type AgentMark = { sessionId: string; status: string | null };
 
 // Tree order by default (parent before children, siblings by derivation time);
 // ranking by Δ根 is a flat view and never reorders the tree (design §7, §11).
@@ -60,8 +63,19 @@ function DeltaCell({ side, isRoot }: { side: DeltaSummary | undefined; isRoot: b
   </View>;
 }
 
-export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectProposal, rank, onRank, picked, onPick, onCompare, compact }: {
+function StepLine({ step }: { step: Step | null | undefined }) {
+  const theme = useTheme();
+  if (!step) return null;
+  return <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+    {step.who === 'you' && <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: theme.warning }} />}
+    <Text numberOfLines={1} style={{ flex: 1, fontSize: 11, lineHeight: 15, color: step.who === 'you' ? theme.warning : theme.muted }}>{step.text}</Text>
+  </View>;
+}
+
+export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectProposal, rank, onRank, picked, onPick, onCompare, compact,
+  steps, agents, onOpenAgent }: {
   tree: IterationTree; labels: Record<string, string>; titles: Record<string, string>; selectedId: string | null;
+  steps: Record<string, Step | null>; agents: Record<string, AgentMark[]>; onOpenAgent: (sessionId: string) => void;
   onSelect: (id: string) => void; onSelectProposal: (id: string) => void; rank: boolean; onRank: (rank: boolean) => void;
   picked: string[]; onPick: (id: string) => void; onCompare: () => void; compact: boolean;
 }) {
@@ -122,10 +136,17 @@ export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectPr
             {rank ? <Mono muted size={11}>{String(index + 1).padStart(2, ' ')}  </Mono> : <Rails guides={row.guides} last={row.last} depth={c.depth ?? 0} />}
             <View style={{ width: 10, height: 10, borderRadius: 5, marginHorizontal: 4, backgroundColor: c.decision?.decision === 'adopted' ? theme.primary : stateTone(c, theme),
               opacity: c.decision?.decision === 'rejected' ? .35 : 1 }} />
-            <View style={{ flex: 1, minWidth: 0, paddingVertical: 4 }}>
+            <View style={{ flex: 1, minWidth: 0, paddingVertical: 5, gap: 1 }}>
               <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '500', color: theme.text, textDecorationLine: c.decision?.decision === 'rejected' ? 'line-through' : 'none' }}>
                 {labels[c.id] ?? short(c.id)}<Text style={{ fontWeight: '400', color: theme.muted }}>{titles[c.id] ? '  ' + titles[c.id] : ''}</Text></Text>
+              <StepLine step={steps[c.id]} />
             </View>
+            {(agents[c.id] ?? []).slice(-1).map(mark => <Pressable key={mark.sessionId} accessibilityRole="button" testID={'lineage-agent-' + c.id}
+              accessibilityLabel={`打开 ${labels[c.id]} 的实现 Agent 对话`} onPress={() => onOpenAgent(mark.sessionId)}
+              {...({ title: `实现 Agent · ${mark.status === 'running' || mark.status === 'initializing' ? '正在工作' : mark.status ?? '状态未知'}` } as object)}
+              style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
+              <Bot size={14} strokeWidth={1.75} color={mark.status === 'running' || mark.status === 'initializing' ? theme.primary : theme.muted} />
+            </Pressable>)}
           </View>
           <Text numberOfLines={1} style={{ width: COLS.state, fontSize: 12, color: stateTone(c, theme) }}>
             {stateLabels[c.state] ?? c.state}{c.decision ? ' · ' + decisionLabels[c.decision.decision] : ''}</Text>

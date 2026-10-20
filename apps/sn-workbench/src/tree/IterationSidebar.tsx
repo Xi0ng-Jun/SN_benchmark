@@ -4,7 +4,9 @@ import { Command, GitBranch, Inbox, PanelLeftClose, Plus, Settings } from 'lucid
 import { hover, StatusDot, useTheme } from '../ui';
 import type { DotTone } from '../ui';
 import { CHROME_HEIGHT, IconButton } from '../shell';
-import { ActionRequest, Iteration, ProposalRow, verbLabels } from './contracts';
+import type { Iteration } from './contracts';
+
+export type Todo = { id: string; label: string; detail: string; kind: 'request' | 'proposal' | 'step'; onPress: () => void };
 
 export type IterationStatus = { tone: DotTone; label: string };
 
@@ -30,16 +32,13 @@ function Heading({ children, trailing }: { children: React.ReactNode; trailing?:
   </View>;
 }
 
-export function IterationSidebar({ width, compact, project, iterations, statuses, iterationId, requests, proposals, label,
-  onIteration, onRequest, onProposal, onNew, onPalette, onSettings, onClose }: {
+export function IterationSidebar({ width, compact, project, iterations, statuses, iterationId, todo,
+  onIteration, onNew, onPalette, onSettings, onClose }: {
   width: number; compact: boolean; project: string; iterations: Iteration[]; statuses: Record<string, IterationStatus>;
-  iterationId: string | null; requests: ActionRequest[]; proposals: ProposalRow[]; label: (candidateId: string | null) => string;
-  onIteration: (id: string) => void; onRequest: (request: ActionRequest) => void; onProposal: (proposal: ProposalRow) => void;
-  onNew: () => void; onPalette: () => void; onSettings: () => void; onClose: () => void;
+  iterationId: string | null; todo: Todo[];
+  onIteration: (id: string) => void; onNew: () => void; onPalette: () => void; onSettings: () => void; onClose: () => void;
 }) {
   const theme = useTheme();
-  const pending = requests.filter(r => r.status === 'pending');
-  const drafts = proposals.filter(p => p.status === 'draft');
   return <View testID="iteration-sidebar" style={{ width, height: '100%', backgroundColor: theme.sidebar, borderRightWidth: 1, borderColor: theme.line }}>
     <View style={{ height: compact ? 48 : CHROME_HEIGHT + 8, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       <Text style={{ flex: 1, color: theme.text, fontSize: 13, fontWeight: '600' }}>Silicon Notebook</Text>
@@ -54,14 +53,12 @@ export function IterationSidebar({ width, compact, project, iterations, statuses
         leading={<View style={{ width: 14, alignItems: 'center' }}>{statuses[it.id]?.tone
           ? <StatusDot tone={statuses[it.id].tone} /> : <GitBranch size={13} strokeWidth={1.75} color={theme.muted} />}</View>} />)}
       {!iterations.length && <Text style={{ color: theme.muted, fontSize: 12, padding: 8 }}>还没有迭代。新建一个：选起点 commit 和冻结题单。</Text>}
-      <Heading trailing={pending.length + drafts.length ? <Text testID="pending-count" style={{ fontSize: 11, color: theme.warning, fontVariant: ['tabular-nums'] }}>{pending.length + drafts.length}</Text> : null}>待处理</Heading>
-      {pending.map(r => <Row key={r.id} testID={'pending-request-' + r.id} onPress={() => onRequest(r)}
-        label={`${verbLabels[r.verb] ?? r.verb} ${r.target_id ? label(r.target_id) : ''}`.trim()} detail={`请求 · ${r.requested_by}`}
-        leading={<Inbox size={14} strokeWidth={1.75} color={theme.warning} />} />)}
-      {drafts.map(p => <Row key={p.id} testID={'pending-proposal-' + p.id} onPress={() => onProposal(p)}
-        label={p.title ?? '提议'} detail={`提议待批 · 挂在 ${label(p.parent_candidate_id)}`}
-        leading={<View style={{ width: 14, height: 14, borderRadius: 7, borderWidth: 1, borderStyle: 'dashed', borderColor: theme.warning }} />} />)}
-      {!pending.length && !drafts.length && <Text style={{ color: theme.muted, fontSize: 12, paddingHorizontal: 8, paddingVertical: 4 }}>没有等你处理的事</Text>}
+      <Heading trailing={todo.length ? <Text testID="pending-count" style={{ fontSize: 11, color: theme.warning, fontVariant: ['tabular-nums'] }}>{todo.length}</Text> : null}>等你处理</Heading>
+      {todo.map(item => <Row key={item.id} testID={'todo-' + item.id} onPress={item.onPress} label={item.label} detail={item.detail}
+        leading={item.kind === 'request' ? <Inbox size={14} strokeWidth={1.75} color={theme.warning} />
+          : item.kind === 'proposal' ? <View style={{ width: 13, height: 13, borderRadius: 7, borderWidth: 1, borderStyle: 'dashed', borderColor: theme.warning }} />
+            : <View style={{ width: 14, alignItems: 'center' }}><View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.warning }} /></View>} />)}
+      {!todo.length && <Text style={{ color: theme.muted, fontSize: 12, paddingHorizontal: 8, paddingVertical: 4 }}>没有等你处理的事</Text>}
     </ScrollView>
     <View style={{ height: 40, paddingHorizontal: 8, borderTopWidth: 1, borderColor: theme.line, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
       <Text style={{ flex: 1, color: theme.muted, fontSize: 12, paddingLeft: 4 }}>本地工作台</Text>

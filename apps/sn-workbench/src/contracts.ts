@@ -15,7 +15,7 @@ export type Review = {
 };
 export type History = { seq: number; kind: string; object_id: string; content: Record<string, unknown>; registered_at: string };
 export type TaskSession = { id: string; task_id: string; agent_id: string; linked_by: string; linked_at: string;
-  role?: 'analyst' | 'implementer' | null; hypothesis_id?: string | null };
+  role?: 'analyst' | 'implementer' | null; hypothesis_id?: string | null; candidate_id?: string | null };
 export type BridgeRelease = { status: 'ok' | 'unavailable' | 'not_needed'; code?: string };
 export type ReadResult<T> = ({ status: 'ok' } & T) | { status: 'missing' | 'unavailable'; code: string };
 export type ReadEnvelope<T> = { result: ReadResult<T>; release: BridgeRelease; observed_at: string };

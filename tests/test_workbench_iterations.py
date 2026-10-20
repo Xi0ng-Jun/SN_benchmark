@@ -172,6 +172,11 @@ def test_analyst_brief_of_an_iteration_task_names_candidates_and_parent_drafting
         conn.execute("INSERT INTO task_sessions(id,task_id,agent_id,role,cwd) VALUES('s1',?,'agent-1','analyst','/eval')",
                      (tree['task_id'],))
     _, text, _ = resolve_brief(env['repo'], tree['task_id'], 's1', tool='sn-eval')
+    with env['repo'].connect(write=True) as conn:
+        conn.execute("INSERT INTO task_sessions(id,task_id,agent_id,role,candidate_id) VALUES('s2',?,'agent-2','implementer',?)",
+                     (tree['task_id'], root['id']))
+    sessions = {s['id']: s for s in env['repo'].task(tree['task_id'])['sessions']}
+    assert sessions['s2']['candidate_id'] == root['id'] and 'candidate_id' not in sessions['s1']
     assert root['id'] in text and root['worktree']['path'] in text and env['start'] in text
     assert 'proposal draft --parent <候选 id>' in text and '本任务未绑定' not in text
     assert 'node run <候选>' in text and 'scripts/sn-workbench' in text

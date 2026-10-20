@@ -161,10 +161,11 @@ class WorkbenchRepository:
     def task(self, task_id):
         with self.connect() as conn:
             task = self._require(conn, 'tasks', task_id)
-            # cwd stays on the server; the browser sees the role only.
-            task['sessions'] = [{k: v for k, v in dict(row).items() if v is not None or k not in ('role', 'hypothesis_id')}
+            # cwd stays on the server; the browser sees the role and, for an implementer, its candidate.
+            candidate = ',candidate_id' if 'candidate_id' in {r['name'] for r in conn.execute('PRAGMA table_info(task_sessions)')} else ''
+            task['sessions'] = [{k: v for k, v in dict(row).items() if v is not None or k not in ('role', 'hypothesis_id', 'candidate_id')}
                                 for row in conn.execute(
-                'SELECT id,task_id,agent_id,linked_by,linked_at,role,hypothesis_id FROM task_sessions WHERE task_id=? ORDER BY rowid',
+                f'SELECT id,task_id,agent_id,linked_by,linked_at,role,hypothesis_id{candidate} FROM task_sessions WHERE task_id=? ORDER BY rowid',
                 (task_id,))]
             task['results'] = [dict(json.loads(row['summary']), attached_at=row['attached_at']) for row in conn.execute(
                 'SELECT * FROM task_results WHERE task_id=? ORDER BY attached_at,result_id', (task_id,))]

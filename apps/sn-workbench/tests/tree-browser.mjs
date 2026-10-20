@@ -25,6 +25,33 @@ for (const scheme of ['light', 'dark']) {
   await shot(page, `${scheme}-lineage`);
   if (scheme === 'dark') { await page.close(); continue; }
 
+  // Landing: with nothing selected, the page opens the node that waits on the person,
+  // whose detail leads with one sentence and one primary action; the sidebar lists the rest.
+  if (await page.locator('[data-testid^="todo-step-"]').count()) {
+    await page.getByTestId('next-step').waitFor({ timeout: 15000 });
+    assert.match(await page.getByTestId('next-step').innerText(), /下一步/);
+    await shot(page, 'landing');
+  }
+  // An Agent marker on a row opens that implementer's conversation; the header says what it is bound to.
+  const marker = page.locator('[data-testid^="lineage-agent-"]').first();
+  if (await marker.count()) {
+    const bound = (await marker.getAttribute('data-testid')).replace('lineage-agent-', '');
+    await marker.click();
+    await page.getByTestId('agent-binding').waitFor();
+    await page.waitForFunction(() => /实现 · 候选/.test(document.querySelector('[data-testid="agent-binding"]')?.textContent ?? ''), null, { timeout: 15000 });
+    await shot(page, 'agent-bound');
+    const before = (await page.getByTestId('agent-drawer').boundingBox()).height;
+    await page.getByTestId('maximize-drawer').click();
+    assert.ok((await page.getByTestId('agent-drawer').boundingBox()).height > before + 100, 'maximize grows the drawer');
+    await shot(page, 'agent-max');
+    await page.getByTestId('maximize-drawer').click();
+    const handle = await page.getByTestId('resize-drawer').boundingBox();
+    await page.mouse.move(handle.x + 200, handle.y + 3); await page.mouse.down(); await page.mouse.move(handle.x + 200, handle.y - 120); await page.mouse.up();
+    assert.ok((await page.getByTestId('agent-drawer').boundingBox()).height > before + 60, 'dragging the top edge resizes the drawer');
+    await page.getByTestId('toggle-drawer').click();
+    void bound;
+  }
+
   // Node detail: sections stack in one column; Δ父 comes from the stored record.
   await rows.nth(1).click();
   await page.getByTestId('node-detail').waitFor();
@@ -98,7 +125,8 @@ for (const scheme of ['light', 'dark']) {
   for (const [env, testid, note] of [['WORKBENCH_CONFIRM_REQUEST', 'request-confirm-', '浏览器验收：确认'], ['WORKBENCH_REJECT_REQUEST', 'request-reject-', '浏览器验收：驳回']]) {
     const id = process.env[env];
     if (!id) continue;
-    await page.getByTestId('pending-request-' + id).click();
+    const node = await page.evaluate(async rid => (await (await fetch(location.origin + '/api/action-requests/' + rid)).json()).target_id, id);
+    await page.getByTestId('lineage-row-' + node).click();
     await page.getByTestId(testid + id).click();
     await page.getByTestId('confirm-dialog').waitFor();
     await shot(page, env === 'WORKBENCH_CONFIRM_REQUEST' ? 'request-confirm' : 'request-reject');

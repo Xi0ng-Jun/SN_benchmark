@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
-import { ChevronDown, ChevronUp, Lightbulb } from 'lucide-react-native';
+import { Platform, ScrollView, Text, View } from 'react-native';
+import { ChevronDown, ChevronUp, Lightbulb, Maximize2, Minimize2 } from 'lucide-react-native';
 import { AgentMessageRecord, Bootstrap, date, Task, useResource } from '../contracts';
 import { Button, Copy, useTheme } from '../ui';
 import { IconButton } from '../shell';
@@ -35,11 +35,34 @@ function plainTitle(title: string | null): string | null {
 // The conversation machinery is the pre-tree workbench's, moved here unchanged:
 // sessions, message intents, attachments (brief and run summary auto-attached),
 // Agent creation, and findings (发现) from assistant messages.
-export function AgentDrawer({ task, boot, compact, open, height, onToggle, hasRuns, target, onTargetDone, onTaskChanged }: {
-  task: Task | undefined; boot: Bootstrap; compact: boolean; open: boolean; height: number; onToggle: () => void; hasRuns: boolean;
+const SIZE_KEY = 'sn-workbench-drawer-v1';
+const readSize = () => { try { const n = Number(localStorage.getItem(SIZE_KEY)); return Number.isFinite(n) && n >= 200 ? n : 380; } catch { return 380; } };
+
+// Drag the top edge to resize; the height is remembered. Web only, like the side handles.
+function TopHandle({ height, onResize }: { height: number; onResize: (n: number) => void }) {
+  const theme = useTheme();
+  const drag = useRef<{ y: number; height: number } | null>(null);
+  const [active, setActive] = useState(false);
+  if (Platform.OS !== 'web') return null;
+  return <div data-testid="resize-drawer" role="separator" aria-label="调整 Agent 抽屉高度" aria-orientation="horizontal" tabIndex={0}
+    style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, top: -3, height: 6, cursor: 'row-resize', touchAction: 'none', background: active ? theme.lineStrong : 'transparent' }}
+    onPointerEnter={() => setActive(true)} onPointerLeave={() => { if (!drag.current) setActive(false); }}
+    onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); drag.current = { y: e.clientY, height }; setActive(true); }}
+    onPointerMove={e => { if (drag.current) onResize(drag.current.height - (e.clientY - drag.current.y)); }}
+    onPointerUp={e => { drag.current = null; e.currentTarget.releasePointerCapture(e.pointerId); setActive(false); }}
+    onKeyDown={e => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); onResize(height + (e.key === 'ArrowUp' ? 40 : -40)); } }} />;
+}
+
+export function AgentDrawer({ task, boot, compact, open, available, onToggle, hasRuns, target, onTargetDone, onTaskChanged, labels, focus, askAnalyst }: {
+  task: Task | undefined; boot: Bootstrap; compact: boolean; open: boolean; available: number; onToggle: () => void; hasRuns: boolean;
   target: ImplementerTarget | null; onTargetDone: () => void; onTaskChanged: () => void;
+  labels: Record<string, string>; focus: { sessionId: string; nonce: number } | null; askAnalyst: number;
 }) {
   const theme = useTheme();
+  const [size, setSize] = useState(readSize);
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => { try { localStorage.setItem(SIZE_KEY, String(Math.round(size))); } catch { /* optional */ } }, [size]);
+  const height = maximized ? available : Math.max(200, Math.min(size, available - 80));
   const taskRef = useRef(task?.id);
   taskRef.current = task?.id;
   const changed = (id: string) => { if (taskRef.current === id) onTaskChanged(); };
@@ -61,14 +84,30 @@ export function AgentDrawer({ task, boot, compact, open, height, onToggle, hasRu
   const creations = useAgentCreations(task, boot.actor, compact, boot.capabilities?.agent_create === true, boot.creation_profiles ?? [], changed);
 
   useEffect(() => { if (target) setMenu('agent'); }, [target?.candidateId]);
-  const sessionOptions = (task?.sessions ?? []).slice().sort((a, b) => b.linked_at.localeCompare(a.linked_at)).map(saved => {
+  useEffect(() => {
+    if (focus && focus.sessionId !== session?.id && task?.sessions.some(s => s.id === focus.sessionId)) {
+      contexts.invalidate(); candidates.invalidateSource(); sessions.selectSession(focus.sessionId); setChatError(null);
+    }
+  }, [focus?.nonce]);
+  useEffect(() => {
+    if (!askAnalyst) return;
+    const analyst = (task?.sessions ?? []).filter(s => s.role === 'analyst').at(-1);
+    if (analyst && analyst.id !== session?.id) { contexts.invalidate(); candidates.invalidateSource(); sessions.selectSession(analyst.id); }
+    if (!analyst) { if (target) onTargetDone(); setMenu('agent'); }
+  }, [askAnalyst]);
+  // What an Agent works on: an implementer is bound to one candidate, an analyst to the whole iteration.
+  const binding = (saved: { role?: string | null; candidate_id?: string | null } | undefined) => !saved ? ''
+    : saved.role === 'implementer' ? `候选 ${saved.candidate_id ? labels[saved.candidate_id] ?? saved.candidate_id.slice(0, 8) : '?'}` : '整个迭代';
+  const order = (saved: { role?: string | null }) => saved.role === 'implementer' ? 1 : 0;
+  const sessionOptions = (task?.sessions ?? []).slice().sort((a, b) => order(a) - order(b)
+    || binding(a).localeCompare(binding(b)) || b.linked_at.localeCompare(a.linked_at)).map(saved => {
     const created = creations.records.find(record => record.agent_id === saved.agent_id && record.status === 'created');
     const agent = created?.envelope?.result.agent;
     const live = saved.id === session?.id && sessions.remote.status === 'available' ? sessions.remote : null;
     const provider = live?.agentProvider ?? agent?.provider;
     const model = live?.agentModel ?? agent?.model;
     const title = plainTitle(live?.agentTitle ?? agent?.title ?? null);
-    const label = (saved.role ? roleLabels[saved.role] + ' · ' : '') + (provider ? [provider, model].filter(Boolean).join(' · ') : 'Agent ' + saved.agent_id.slice(0, 8));
+    const label = [saved.role ? roleLabels[saved.role] : null, binding(saved), provider ? [provider, model].filter(Boolean).join(' · ') : 'Agent ' + saved.agent_id.slice(0, 8)].filter(Boolean).join(' · ');
     return { id: saved.id, label, selected: saved.id === session?.id,
       detail: [title, `${date(saved.linked_at)} 关联`, saved.agent_id.slice(0, 8)].filter(Boolean).join(' · ') };
   });
@@ -161,13 +200,16 @@ export function AgentDrawer({ task, boot, compact, open, height, onToggle, hasRu
     : null;
   const role = session?.role ?? 'analyst';
   const Chevron = open ? ChevronDown : ChevronUp;
-  return <View testID="agent-drawer" style={{ height: open ? height : 38, borderTopWidth: 1, borderColor: theme.line, backgroundColor: theme.bg }}>
+  return <View testID="agent-drawer" style={{ position: 'relative', height: open ? height : 38, borderTopWidth: 1, borderColor: theme.line, backgroundColor: theme.bg }}>
+    {open && !maximized && <TopHandle height={height} onResize={n => setSize(Math.max(200, Math.min(n, available - 80)))} />}
     <View style={{ height: 38, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: open ? 1 : 0, borderColor: theme.line }}>
       <IconButton label={open ? '收起 Agent 抽屉' : '展开 Agent 抽屉'} icon={Chevron} onPress={onToggle} testID="toggle-drawer" />
-      <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '500', color: theme.text }}>{currentAgent ? currentAgent.label : 'Agent'}</Text>
+      <Text testID="agent-binding" numberOfLines={1} style={{ fontSize: 13, fontWeight: '500', color: theme.text }}>
+        {session ? `${roleLabels[role]} · ${binding(task?.sessions.find(s => s.id === session.id))}` : 'Agent'}</Text>
       {session && <Text testID="agent-scope" numberOfLines={1} style={{ flexShrink: 1, fontSize: 11, color: theme.muted }}>{scopes[role]}</Text>}
       <View style={{ flex: 1 }} />
       {open && candidates.recordsPanel && <IconButton label="发现记录" icon={Lightbulb} selected={findingsOpen} onPress={() => setFindingsOpen(v => !v)} testID="toggle-findings" />}
+      {open && <IconButton label={maximized ? '还原抽屉' : '最大化对话'} icon={maximized ? Minimize2 : Maximize2} selected={maximized} onPress={() => setMaximized(m => !m)} testID="maximize-drawer" />}
     </View>
     {open && <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
       <View style={{ flex: 1, minWidth: 0 }}>
@@ -179,6 +221,7 @@ export function AgentDrawer({ task, boot, compact, open, height, onToggle, hasRu
           onScroll={event => { const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
             stickToBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 120; }}
           onContentSizeChange={() => { if (stickToBottom.current) scrollRef.current?.scrollToEnd({ animated: false }); }}>
+          <View style={{ width: '100%', maxWidth: 820, alignSelf: 'center', gap: 12 }}>
           <AgentChat hasSession={Boolean(session)} remote={sessions.remote} page={sessions.page} viewingTail={sessions.viewingTail}
             outgoing={shownOutgoing} running={sessions.running} candidateReason={candidateReason}
             onOlder={sessions.older ? () => { candidates.invalidateSource(); sessions.older?.(); } : undefined}
@@ -193,8 +236,9 @@ export function AgentDrawer({ task, boot, compact, open, height, onToggle, hasRu
             <View style={{ display: candidateOpen ? 'flex' : 'none' }}><CandidateDraftPanel compact={compact} {...candidates.draftPanel} closeLabel="收起草稿" onCancel={() => setCandidateOpen(false)} /></View>
             {candidates.checkCandidateReceipt && <Button label="核对发现保存回执" testID="candidate-check-receipt" onPress={candidates.checkCandidateReceipt} disabled={candidates.checkingCandidate} />}
           </View>}
+          </View>
         </ScrollView>
-        {task && <ChatComposer compact={compact} value={messageText} onChange={contexts.message.onChange} editable={Boolean(session) && !messages.editingLocked}
+        {task && <View style={{ width: '100%', maxWidth: 868, alignSelf: 'center' }}><ChatComposer compact={compact} value={messageText} onChange={contexts.message.onChange} editable={Boolean(session) && !messages.editingLocked}
           canSend={canSend} onSend={send} placeholder={session ? '给 Agent 发消息（Enter 发送，Shift+Enter 换行）' : '先选择或新建一个 Agent'}
           attachments={contexts.message.attachments.map(item => ({ id: item.id, label: item.title }))}
           onOpenAttachment={id => { setMenu('context'); contexts.open(id); }} onRemoveAttachment={contexts.message.onRemoveReference}
@@ -220,7 +264,7 @@ export function AgentDrawer({ task, boot, compact, open, height, onToggle, hasRu
               options={contexts.selection.options} selectedId={contexts.selection.selectedOptionId} onSelect={contexts.selection.onSelectOption}
               path={contexts.selection.pathValue} onPathChange={contexts.selection.onPathChange} onPreview={contexts.requestPreview}
               preview={contexts.preview} addBlockedReason={contexts.addBlockedReason} onAdd={contexts.add} onClose={() => setMenu('none')} />
-            : null} />}
+            : null} /></View>}
       </View>
       {findingsOpen && candidates.recordsPanel && <ScrollView testID="findings" style={{ width: compact ? '100%' : 380, borderLeftWidth: 1, borderColor: theme.line }}
         contentContainerStyle={{ padding: 12, gap: 8 }}>
