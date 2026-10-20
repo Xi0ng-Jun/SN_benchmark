@@ -31,6 +31,8 @@ TERMINAL = {'finished', 'finished_with_errors', 'failed', 'interrupted', 'cancel
 # fall back to the first per-case metric the scores file declares.
 PRIMARY_METRIC = {'qasper': 'answer_f1', 'hotpotqa': 'answer_f1', 'multihop_rag': 'accuracy',
                   'qmsum': 'rougeL', 'alce': 'str_em'}
+# Above this many partitions an execution is summarized instead of listed run by run.
+COLLAPSE_PARTITIONS = 20
 NEEDS_READ_THRESHOLDS = {suite: (0.5 if suite == 'qasper' else 1.0) for suite in PRIMARY_METRIC}
 _ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 _SHA = re.compile(r'^[0-9a-f]{40}$')
@@ -182,6 +184,12 @@ class RunViews:
         self._execution_config = execution_config if isinstance(execution_config, dict) else None
         self._cache: dict[str, tuple[tuple, dict]] = {}
         self._execution_records = execution_records
+        # Store objects are content-addressed and immutable: once verified, the
+        # same bundle serves every partition view instead of being re-hashed
+        # and reloaded per run (hundreds of partitions for one execution).
+        from ..run_reader import RunReadContext
+        self._read_context = RunReadContext()
+        self._partition_context = RunReadContext(partition_only=True)
 
     def _discover_executions(self):
         if self._execution_records is None:
@@ -308,7 +316,7 @@ class RunViews:
             try:
                 from ..run_reader import RunReadContext
                 from ..stage_metrics import compute_stage_metrics
-                context = RunReadContext(partition_only=True)
+                context = self._partition_context
                 bundle = context.bundle_for_run(run)
                 stage = compute_stage_metrics(run, context=context)
             except (OSError, ValueError, KeyError, TypeError) as error:
@@ -386,7 +394,7 @@ class RunViews:
             side, artifacts = _read_side(entry.run_dir, entry.scores, None)
             if artifacts is None or side.get('reason'):
                 raise ValueError('Official answer sheet is not bound to this run')
-            bundle = RunReadContext().bundle_for_run(entry.run_dir)
+            bundle = self._read_context.bundle_for_run(entry.run_dir)
             validate_scored_submission(bundle, artifacts['submission'], artifacts['scores'])
         except (OSError, ValueError, KeyError, TypeError):
             return dict(status='mismatch', reason='official artifacts failed run binding or scorer validation')
@@ -573,8 +581,20 @@ class RunViews:
         if not ids:
             self._discover_executions()
             ids = [run_id for run_id, entry in self._runs.items() if entry.task_id == task_id]
-        runs = []
+        runs, collapsed = [], set()
+        groups = {}
         for run_id in ids:
+            prefix, _, ordinal = run_id.rpartition('-')
+            if prefix and ordinal.isdigit():
+                groups.setdefault(prefix, []).append(run_id)
+        for run_id in ids:
+            prefix = run_id.rpartition('-')[0]
+            if len(groups.get(prefix, ())) > COLLAPSE_PARTITIONS:
+                # A whole-benchmark execution: one summary line, cases via execution-cases.
+                if prefix not in collapsed:
+                    collapsed.add(prefix)
+                    runs.append(self._execution_summary(prefix, len(groups[prefix])))
+                continue
             view = self.run(run_id)
             stage = view.get('stage') or {}
             runs.append(dict(
@@ -592,6 +612,48 @@ class RunViews:
                  'or read outputs.jsonl / planned.jsonl under run_dir',
             task_id=task_id, worktree=overview.get('worktree'), runs=runs)
         return (f'本任务的评测运行 · {len(runs)} 个', json.dumps(content, ensure_ascii=False, indent=1), {'task_id': task_id})
+
+    def task_run_ids(self, task_id: str) -> list[str]:
+        """Every run of a Task, with summarized executions expanded to their partition runs."""
+        from .agent_tools import task_run_ids
+        return task_run_ids(self, task_id)
+
+    def _execution_record(self, execution_id: str) -> dict | None:
+        if self._execution_records is None:
+            return None
+        return next((r for r in self._execution_records() if r.get('execution_id') == execution_id), None)
+
+    def _execution_summary(self, execution_id: str, partitions: int) -> dict:
+        record = self._execution_record(execution_id) or {}
+        summary = None
+        path = Path(record['run_dir']) / 'official-summary.json' if record.get('run_dir') else None
+        if path is not None and path.is_file() and not path.is_symlink():
+            summary = _json(path)
+        return dict(id=execution_id, kind='execution', partitions=partitions, phase=record.get('state'),
+                    summary=summary, run_dir=record.get('run_dir'),
+                    note=f'{partitions} 个分区（每个分区一个 run，ID 为 {execution_id}-<序号>）；'
+                         f'逐题分数用 `execution-cases {execution_id}`，单题证据用 `case <run_id> <case_id>`')
+
+    def execution_cases(self, execution_id: str) -> dict:
+        """Per-case primary scores of one execution, lowest first, read from its official score files.
+
+        This is an analysis listing; formal admission and comparison are separate.
+        """
+        runs = self.execution_runs(execution_id)
+        rows, metric = [], None
+        for entry in runs:
+            scores = _json(entry.scores) if entry.scores is not None and entry.scores.is_file() else None
+            if scores is None:
+                rows.extend(dict(case_id=cid, run_id=entry.id, status='unscored', value=None) for cid in entry.case_ids)
+                continue
+            metric = metric or PRIMARY_METRIC.get(scores.get('suite'))
+            for row in scores.get('per_case', []):
+                rows.append(dict(case_id=row['case_id'], run_id=entry.id, status=row.get('status'),
+                                 value=(row.get('metrics') or {}).get(metric), metrics=row.get('metrics')))
+        rows.sort(key=lambda r: (r['value'] is not None, r['value'] if r['value'] is not None else 0, r['case_id']))
+        values = [r['value'] for r in rows if r['value'] is not None]
+        return dict(execution_id=execution_id, metric=metric, partitions=len(runs), cases=len(rows),
+                    mean=sum(values) / len(values) if values else None, rows=rows)
 
     def case_context(self, run_id: str, case_id: str) -> tuple[str, str, dict]:
         """One run case as analysis material for an Agent message.
@@ -907,6 +969,10 @@ class RunViews:
         @router.get('/api/run-views/runs')
         def runs():
             return guard(self.list_runs)
+
+        @router.get('/api/run-views/executions/{execution_id}/cases')
+        def execution_cases(execution_id: str):
+            return guard(lambda: self.execution_cases(_registered_id(execution_id, 'execution')))
 
         @router.get('/api/run-views/flips')
         def flips(left: str, right: str):

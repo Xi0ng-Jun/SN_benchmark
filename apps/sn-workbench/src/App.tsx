@@ -5,7 +5,7 @@ import { api, Bootstrap, date, Task, useResource } from './contracts';
 import { Button, Copy, Input, ThemeContext, themes } from './ui';
 import { IconButton, ResizeHandle, useShellLayout } from './shell';
 import { WorkspaceConfiguration } from './workspace/WorkspaceConfiguration';
-import { RunMaterials } from './runs/RunMaterials';
+import { ExecutionCases, RunMaterials } from './runs/RunMaterials';
 import type { RunList } from './runs/contracts';
 import { ActionRequest, Candidate, Iteration, IterationTree, Proposal, short, verbLabels } from './tree/contracts';
 import { makeActions, treeLabels } from './tree/actions';
@@ -49,7 +49,7 @@ export default function App() {
   const [palette, setPalette] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
-  const [reader, setReader] = useState<{ runId: string; caseId: string | null } | null>(null);
+  const [reader, setReader] = useState<{ runId: string; caseId: string | null; execution?: string } | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [target, setTarget] = useState<AgentTarget | null>(null);
   const [focus, setFocus] = useState<{ sessionId: string; nonce: number } | null>(null);
@@ -61,7 +61,7 @@ export default function App() {
   const proposals = useResource<Proposal[]>(tree ? `/tasks/${tree.task_id}/hypotheses` : null, refresh);
   const requests = useResource<ActionRequest[]>(boot ? '/action-requests' : null, refresh);
   const taskState = useResource<Task>(tree ? `/tasks/${tree.task_id}` : null, refresh);
-  const runList = useResource<RunList>(reader ? '/run-views/runs' : null, refresh);
+  const runList = useResource<RunList>(reader && !reader.execution ? '/run-views/runs' : null, refresh);
   const labels = useMemo(() => tree ? treeLabels(tree) : {}, [tree]);
   const label = (id: string | null) => id ? labels[id] ?? short(id) : '—';
   const proposalById = Object.fromEntries((proposals.data ?? []).map(p => [p.id, p]));
@@ -186,14 +186,18 @@ export default function App() {
     iterations={iterations.data ?? []} statuses={statuses} iterationId={iterationId} todo={todo}
     onIteration={selectIteration} onNew={() => { setNewIteration(true); setNav(false); }} onPalette={() => setPalette(true)} onSettings={() => setSettingsOpen(true)}
     onClose={() => compact ? setNav(false) : layout.toggleLeft()} />;
-  const detail = reader && runList.data ? <RunMaterials runs={runList.data.runs} compact={compact}
+  const detail = reader?.execution ? <ExecutionCases executionId={reader.execution}
+    selected={reader.caseId ? { runId: reader.runId, caseId: reader.caseId } : null}
+    onSelect={(runId, caseId) => setReader({ runId, caseId, execution: reader.execution })}
+    onBack={() => setReader({ runId: '', caseId: null, execution: reader.execution })} onClose={() => setReader(null)} />
+    : reader && runList.data ? <RunMaterials runs={runList.data.runs} compact={compact}
     selection={{ runId: reader.runId, caseId: reader.caseId, panel: 'run-cases', needsRead: false, against: null, provenance: false }}
     onClose={() => setReader(null)} onChange={changes => setReader(prev => prev && ({ runId: changes.runId ?? prev.runId, caseId: changes.caseId !== undefined ? changes.caseId : prev.caseId }))} />
     : reader ? <Copy small muted>正在读取运行…</Copy>
     : tree && actions && proposal ? <ProposalDetail proposal={proposal} labels={labels} actions={actions} onConfirm={setConfirm} />
     : tree && actions && candidate ? <CandidateDetail key={candidate.id} tree={tree} candidate={candidate} labels={labels} refreshKey={refresh}
       proposal={candidate.proposal_id ? proposalById[candidate.proposal_id] : undefined} requests={treeRequests} actions={actions} onConfirm={setConfirm}
-      onReadRun={runId => setReader({ runId, caseId: null })}
+      onReadRun={(runId, execution) => setReader({ runId, caseId: null, execution })}
       onImplementer={(c: Candidate, p: Proposal) => { setTarget({ role: 'implementer', candidateId: c.id, hypothesisId: p.id, label: label(c.id) }); setDrawer(true); }}
       step={steps[candidate.id] ?? null} onOpenAgent={openAgent} onProposal={id => update({ proposal: id, node: null })}
       onAnalyst={() => analyse(candidate)}

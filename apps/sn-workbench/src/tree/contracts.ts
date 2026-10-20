@@ -17,7 +17,7 @@ export type Candidate = {
   worktree: { status: string; branch: string; base_revision: string; path: string | null } | null;
   reference: { attempt: number | null; execution_id: string } | null;
   depth?: number; comparisons?: { parent: DeltaSummary; root: DeltaSummary };
-  primary?: { metric: string | null; value: number | null; run_id?: string; reason?: string } | null;
+  primary?: { metric: string | null; value: number | null; run_id?: string; reason?: string; partitions?: number; cases?: number } | null;
 };
 export type ProposalRow = { id: string; status: string; title: string | null; parent_candidate_id: string | null; created_at: string };
 export type Iteration = {

@@ -98,7 +98,7 @@ function Predictions({ proposal }: { proposal: Proposal }) {
 export function CandidateDetail({ tree, candidate, labels, proposal, requests, actions, onConfirm, onReadRun, onImplementer, refreshKey,
   step, agents, onOpenAgent, onProposal, onAnalyst }: {
   tree: IterationTree; candidate: Candidate; labels: Record<string, string>; proposal: Proposal | undefined; requests: ActionRequest[];
-  actions: Actions; onConfirm: (spec: ConfirmSpec) => void; onReadRun: (runId: string) => void; onImplementer: (c: Candidate, p: Proposal) => void; refreshKey: number;
+  actions: Actions; onConfirm: (spec: ConfirmSpec) => void; onReadRun: (runId: string, execution?: string) => void; onImplementer: (c: Candidate, p: Proposal) => void; refreshKey: number;
   step: Step | null; agents: NodeAgent[]; onOpenAgent: (sessionId: string) => void; onProposal: (id: string) => void; onAnalyst: () => void;
 }) {
   const theme = useTheme();
@@ -197,7 +197,7 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
               {m.execution_state ?? '未知'} · {m.admission?.status === 'admitted' ? '通过准入' : m.admission?.status === 'pending' ? '运行中' : '未准入：' + (m.admission?.reason ?? '—')}</Text>
             <Mono size={11} muted>{short(m.execution_id, 12)}{isReference ? ' · 参考运行' : ''}</Mono>
           </View>
-          {m.execution_state === 'finished' && <Button label="读题" onPress={() => onReadRun(runId)} testID={'read-run-' + m.execution_id} />}
+          {m.execution_state === 'finished' && <Button label="读题" onPress={() => onReadRun(runId, (c.primary?.partitions ?? 1) > 1 ? m.execution_id : undefined)} testID={'read-run-' + m.execution_id} />}
         </View>;
       })}
       {!c.attempts.length && !c.links.length && <Copy small muted>还没有运行</Copy>}

@@ -330,7 +330,7 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
     tree_creation_enabled = config.get('task_worktrees', {}).get('create_from_hypothesis') is True
 
     def task_run_ids(task_id):
-        return [run['id'] for run in json.loads(views.task_runs_context(task_id)[1])['runs']]
+        return views.task_run_ids(task_id)
 
     @app.get('/api/tasks/{task_id}/hypotheses')
     def list_hypotheses(task_id: str):

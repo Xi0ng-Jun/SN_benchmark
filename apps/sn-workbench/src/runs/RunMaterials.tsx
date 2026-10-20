@@ -334,3 +334,35 @@ export function RunMaterials({ runs, selection, compact, onChange, onClose, onAt
     {run && selection.provenance && <ProvenanceDrawer run={run} onClose={() => onChange({ provenance: false })} />}
   </View>;
 }
+
+type ExecutionCaseRow = { case_id: string; run_id: string; status: string | null; value: number | null };
+type ExecutionCaseList = { execution_id: string; metric: string | null; partitions: number; cases: number; mean: number | null; rows: ExecutionCaseRow[] };
+
+// A whole-benchmark execution has one run per partition; read it as one case table, lowest score first.
+export function ExecutionCases({ executionId, selected, onSelect, onBack, onClose }: { executionId: string;
+  selected: { runId: string; caseId: string } | null; onSelect: (runId: string, caseId: string) => void; onBack: () => void; onClose: () => void }) {
+  const theme = useTheme();
+  const list = useResource<ExecutionCaseList>(`/run-views/executions/${encodeURIComponent(executionId)}/cases`);
+  const [query, setQuery] = useState('');
+  const header = <View style={[s.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+    {selected ? <Button label="返回逐题表" icon={ChevronLeft} onPress={onBack} testID="execution-cases-back" />
+      : <Copy small muted>{list.data ? `${list.data.cases} 题 · ${list.data.partitions} 个分区 · ${list.data.metric ?? '主指标'} 均值 ${fmt(list.data.mean)}` : '正在读取逐题分数…'}</Copy>}
+    <IconButton label="关闭" icon={X} onPress={onClose} testID="execution-cases-close" />
+  </View>;
+  if (selected) return <View style={{ gap: 10 }}>{header}<CaseDetail key={selected.runId + selected.caseId} runId={selected.runId} caseId={selected.caseId} /></View>;
+  if (list.error) return <View style={{ gap: 10 }}>{header}<Copy small style={{ color: theme.error }}>{list.error}</Copy></View>;
+  const rows = (list.data?.rows ?? []).filter(row => row.case_id.toLowerCase().includes(query.toLowerCase()));
+  return <View testID="execution-case-list" style={{ gap: 10 }}>
+    {header}
+    <Input label="搜索案例" value={query} onChange={setQuery} placeholder="案例 ID，例如 alce:12" />
+    {rows.slice(0, 300).map(row => <Pressable key={row.case_id} onPress={() => onSelect(row.run_id, row.case_id)}
+      testID={'execution-case-' + row.case_id}
+      style={hover(hovered => ({ flexDirection: 'row', gap: 10, paddingVertical: 4, paddingHorizontal: 6, borderRadius: 6,
+        backgroundColor: hovered ? theme.selected : 'transparent' }))}>
+      <Text style={{ width: 90, fontSize: 12, color: theme.text }}>{row.case_id}</Text>
+      <Text style={{ width: 70, fontSize: 12, textAlign: 'right', color: theme.text }}>{fmt(row.value)}</Text>
+      <Text style={{ flex: 1, fontSize: 12, color: theme.muted }}>{row.status ?? '—'}</Text>
+    </Pressable>)}
+    {rows.length > 300 && <Copy small muted>只显示前 300 题（低分在前）；用搜索找其余案例。</Copy>}
+  </View>;
+}

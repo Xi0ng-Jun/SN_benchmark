@@ -157,3 +157,24 @@ def test_adoption_refuses_a_run_from_different_source(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='SN source'):
         execute(payload)
     assert not (Path(payload['run_dir']) / 'adopted-runs.json').exists()
+
+
+def test_whole_benchmark_execution_is_summarized_for_agents(tmp_path, monkeypatch):
+    from rag_eval.workbench import run_views as module
+    from rag_eval.workbench.agent_tools import task_run_ids
+    payload, adopted, finished, case_ids = adoption(tmp_path, monkeypatch, 'many')
+    assert execute(payload) == 0
+    run = Path(payload['run_dir'])
+    record = dict(execution_id='exec', task_id='task', run_dir=str(run), state='finished', terminal=True)
+    views = module.RunViews([], execution_records=lambda: [record])
+    monkeypatch.setattr(module, 'COLLAPSE_PARTITIONS', 0)
+    monkeypatch.setattr(views, 'task_overview', lambda task_id: dict(status='unbound', runs=[]))
+    monkeypatch.setattr(views, 'run', lambda run_id: pytest.fail('summarized executions must not build run views'))
+    context = json.loads(views.task_runs_context('task')[1])
+    [entry] = context['runs']
+    assert entry['kind'] == 'execution' and entry['partitions'] == len(case_ids)
+    assert entry['summary']['mean'] == pytest.approx(0.25)
+    assert task_run_ids(views, 'task') == [f'exec-{i}' for i in range(1, len(case_ids) + 1)]
+    cases = views.execution_cases('exec')
+    assert cases['metric'] == 'str_em' and cases['cases'] == len(case_ids)
+    assert {r['run_id'] for r in cases['rows']} == set(task_run_ids(views, 'task'))

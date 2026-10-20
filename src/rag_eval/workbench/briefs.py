@@ -94,6 +94,7 @@ $S task                       # 本任务目标、worktree、运行、假设卡
 $S runs                       # 本任务的运行（--all 看全部已登记运行）
 $S cases <run_id> --needs-read   # 待读题；去掉 --needs-read 看全部
 $S case <run_id> <case_id>    # 单题完整证据：问题、SN 答案、逐题分、gold、引用、按排名的检索块
+$S execution-cases <execution_id>  # 整套 benchmark 的执行（几百个分区）：逐题分数表，低分在前；再用 case 看单题
 $S flips <left_run> <right_run>  # 同题配对翻转表
 $S hypotheses                 # 本任务假设卡及验证结果
 $S docs                       # 下方文档索引

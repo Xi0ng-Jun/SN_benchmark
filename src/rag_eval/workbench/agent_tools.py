@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node adopt', 'node reject', 'iteration create')
-ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
+ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
                     'request withdraw', *REQUEST_COMMANDS)
 IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'requests', 'request withdraw')
@@ -51,8 +51,14 @@ def iteration_service(repository, views, *, initialize=True):
 
 
 def task_run_ids(views, task_id):
-    content = json.loads(views.task_runs_context(task_id)[1])
-    return [run['id'] for run in content['runs']]
+    """Every run of a Task; a summarized whole-benchmark execution expands to its partition runs."""
+    ids = []
+    for run in json.loads(views.task_runs_context(task_id)[1])['runs']:
+        if run.get('kind') == 'execution':
+            ids.extend(entry.id for entry in views.execution_runs(run['id']))
+        else:
+            ids.append(run['id'])
+    return ids
 
 
 def main(argv=None):
@@ -97,7 +103,7 @@ def main(argv=None):
         runs = json.loads(views.task_runs_context(task_id)[1])
         out = dict(task={k: task[k] for k in ('id', 'title', 'goal')}, worktree=runs['worktree'], runs=runs['runs'],
                    hypotheses=[_card_summary(c) for c in store.list(task_id)])
-        iteration = _iteration_summary(repository, views, task_id, [run['id'] for run in runs['runs']])
+        iteration = _iteration_summary(repository, views, task_id, task_run_ids(views, task_id))
         if iteration is not None:
             out['iteration'] = iteration
     elif command == 'runs':
@@ -106,6 +112,8 @@ def main(argv=None):
         out = views.cases(a[0], status=options.status, needs_read=True if options.needs_read else None)
     elif command == 'case':
         out = views.case(a[0], a[1])
+    elif command == 'execution-cases':
+        out = views.execution_cases(a[0])
     elif command == 'flips':
         out = views.flips(a[0], a[1])
     elif command == 'hypotheses':
