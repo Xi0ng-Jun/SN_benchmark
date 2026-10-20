@@ -84,7 +84,8 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
   const candidates = useCandidates(task, boot.actor, sessions, changed);
   const creations = useAgentCreations(task, boot.actor, compact, boot.capabilities?.agent_create === true, boot.creation_profiles ?? [], changed);
 
-  useEffect(() => { if (target) setMenu('agent'); }, [target?.candidateId, target?.role]);
+  // A creation target carries its own model buttons; the Agent menu stays closed.
+  useEffect(() => { if (target) setMenu('none'); }, [target?.candidateId, target?.role]);
   useEffect(() => {
     if (focus && focus.sessionId !== session?.id && task?.sessions.some(s => s.id === focus.sessionId)) {
       contexts.invalidate(); candidates.invalidateSource(); sessions.selectSession(focus.sessionId); setChatError(null);
@@ -184,6 +185,9 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
     creations.panel?.onProfileSelect(profileId);
     creations.panel?.onCreate?.();
   };
+  const createEnabled = creations.available && creations.status !== 'saving' && creations.status !== 'unknown' && !creations.checking
+    && (creations.panel?.blockedReason == null || creations.canNewIntent);
+  const createReason = !creations.available ? '服务器未开放 Agent 创建' : creations.panel?.blockedReason && !creations.canNewIntent ? creations.panel.blockedReason : null;
   const adopted = useRef(new Set<string>());
   const createdSession = creations.panel?.receipt?.sessionId;
   useEffect(() => {
@@ -213,9 +217,17 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
       <View style={{ flex: 1, minWidth: 0 }}>
         {target && <View testID={target.role + '-target'} style={{ margin: 10, marginBottom: 0, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: theme.primary, gap: 6 }}>
           <Copy small>{target.role === 'analyst'
-            ? `为候选 ${target.label} 新建分析 Agent：在下方选择模型。它读 ${target.label} 的运行、对父的翻转和从根到这里每一轮的记录，提议默认挂在 ${target.label} 下。`
-            : `为候选 ${target.label} 新建实现 Agent：在下方选择模型。它在该候选的 worktree 里工作，只拿到已批准提议中给实现者的字段。`}</Copy>
-          <View style={{ flexDirection: 'row' }}><Button label="取消" onPress={onTargetDone} /></View>
+            ? `为候选 ${target.label} 新建分析 Agent。它读 ${target.label} 的运行、对父的翻转和从根到这里每一轮的记录，提议默认挂在 ${target.label} 下。`
+            : `为候选 ${target.label} 新建实现 Agent。它在该候选的 worktree 里工作，只拿到已批准提议中给实现者的字段。`}</Copy>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+            {creations.profiles.map((profile, i) => <Button key={profile.id} label={`用 ${profile.providerLabel} · ${profile.modelLabel} 新建`}
+              primary={i === 0} disabled={!createEnabled} onPress={() => createAgent(profile.id)} testID={'target-create-' + profile.id} />)}
+            <Button label="取消" onPress={onTargetDone} />
+          </View>
+          {!creations.profiles.length && <Copy small muted>服务器未配置可用的模型</Copy>}
+          {createReason && <Copy small muted>{createReason}</Copy>}
+          {creationStatus && <Text testID="target-creation-status" style={{ fontSize: 12, color: creationStatus.tone === 'error' ? theme.error : theme.muted }}>{creationStatus.text}</Text>}
+          {creationStatus?.action && <View style={{ flexDirection: 'row' }}><Button label={creationStatus.action.label} onPress={creationStatus.action.onPress} /></View>}
         </View>}
         <ScrollView ref={scrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: compact ? 12 : 18, gap: 12 }} scrollEventThrottle={100}
           onScroll={event => { const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
@@ -251,12 +263,11 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
             onSelect={id => { if (id !== session?.id) { contexts.invalidate(); candidates.invalidateSource(); sessions.selectSession(id); setChatError(null); } }}
             profiles={creations.profiles.map(profile => ({ id: profile.id, label: `${profile.providerLabel} · ${profile.modelLabel}`,
               detail: [profile.effortLabel && '思考 ' + profile.effortLabel, profile.modeLabel && '模式 ' + profile.modeLabel].filter(Boolean).join(' · ') || profile.id }))}
-            createEnabled={creations.available && creations.status !== 'saving' && creations.status !== 'unknown' && !creations.checking
-              && (creations.panel?.blockedReason == null || creations.canNewIntent)}
-            createReason={!creations.available ? '服务器未开放 Agent 创建' : creations.panel?.blockedReason && !creations.canNewIntent ? creations.panel.blockedReason : null}
+            createEnabled={createEnabled} createReason={createReason}
             onCreate={createAgent} creation={creationStatus}
             link={{ value: sessions.link.value, onChange: sessions.link.onChange, onSubmit: sessions.link.onRequestLink,
               statusText: sessions.link.status === 'linking' ? '关联中…' : sessions.link.status === 'linked' ? '已关联' : sessions.link.status === 'error' ? '关联失败：' + (sessions.link.detail ?? '') : null }}
+            maxHeight={Math.max(180, Math.min(420, height - 38 - 150 - (target ? 100 : 0)))}
             cwdLabel={target?.role === 'implementer' ? `新建的是 ${target.label} 的实现 Agent，工作目录为该候选 worktree`
               : target ? `新建的是 ${target.label} 的分析 Agent：工作目录为评测仓库，对 SN 只读`
               : '新建的是整个迭代的分析 Agent（不绑定候选）；要分析某个候选，在它的详情里点“分析这个节点”'}

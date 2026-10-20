@@ -69,6 +69,7 @@ for (const scheme of ['light', 'dark']) {
     page.waitForFunction(() => /分析 · 候选/.test(document.querySelector('[data-testid="agent-binding"]')?.textContent ?? ''), null, { timeout: 15000 })]);
   if (await target.count()) {
     assert.match(await target.innerText(), new RegExp(`为候选 ${nodeLabel} 新建分析 Agent`));
+    assert.ok(await target.locator('[data-testid^="target-create-"]').count() > 0, 'the target offers its model buttons in place');
     await shot(page, 'analyst-target');
     await target.getByText('取消').click();
     assert.equal(await target.count(), 0);

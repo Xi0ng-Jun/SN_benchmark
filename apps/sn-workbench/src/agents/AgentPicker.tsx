@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Bot, Check, ChevronDown, Plus } from 'lucide-react-native';
 import { Button, Copy, hover, Input, StatusDot, useTheme } from '../ui';
 import type { DotTone } from '../ui';
@@ -55,22 +55,27 @@ export type AgentMenuProps = {
   link: { value: string; onChange: (value: string) => void; onSubmit: () => void; statusText: string | null };
   /** Where a new Agent works: the Task's SN worktree when bound, else the workspace. */
   cwdLabel: string;
+  /** The space the drawer leaves for the menu; the Agent list scrolls inside it. */
+  maxHeight?: number;
   onClose: () => void;
 };
 
 /** Agent list for this Task plus "new Agent" per server-allowed model profile. */
-export function AgentMenu({ agents, onSelect, profiles, createEnabled, createReason, onCreate, creation, link, cwdLabel, onClose }: AgentMenuProps) {
+export function AgentMenu({ agents, onSelect, profiles, createEnabled, createReason, onCreate, creation, link, cwdLabel, maxHeight = 420, onClose }: AgentMenuProps) {
   const theme = useTheme();
   const [linkOpen, setLinkOpen] = React.useState(false);
   return <View testID="agent-menu" style={{ borderWidth: 1, borderColor: theme.line, borderRadius: 12, backgroundColor: theme.bg, padding: 6, gap: 2,
-    maxHeight: 420, shadowColor: '#000', shadowOpacity: .08, shadowRadius: 12 }}>
+    maxHeight, shadowColor: '#000', shadowOpacity: .08, shadowRadius: 12 }}>
     <Text style={{ fontSize: 11, color: theme.muted, paddingHorizontal: 10, paddingTop: 4 }}>此任务的 Agent</Text>
-    {agents.map(agent => <Row key={agent.id} label={agent.label} detail={agent.detail} selected={agent.selected}
-      icon={agent.selected ? <Check size={13} color={theme.text} /> : null} testID={'agent-option-' + agent.id}
-      onPress={() => { onSelect(agent.id); onClose(); }} />)}
+    {/* The list scrolls so a long history never pushes the create rows out of the menu. */}
+    <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 2 }}>
+      {agents.map(agent => <Row key={agent.id} label={agent.label} detail={agent.detail} selected={agent.selected}
+        icon={agent.selected ? <Check size={13} color={theme.text} /> : null} testID={'agent-option-' + agent.id}
+        onPress={() => { onSelect(agent.id); onClose(); }} />)}
+    </ScrollView>
     {!agents.length && <Copy small muted style={{ paddingHorizontal: 10 }}>还没有 Agent，从下面选一个模型新建</Copy>}
     <View style={{ height: 1, backgroundColor: theme.line, marginVertical: 4 }} />
-    <Text style={{ fontSize: 11, color: theme.muted, paddingHorizontal: 10 }}>{`新建分析 Agent · ${cwdLabel}`}</Text>
+    <Text style={{ fontSize: 11, color: theme.muted, paddingHorizontal: 10 }}>{cwdLabel}</Text>
     {profiles.map(profile => <Row key={profile.id} label={profile.label} detail={profile.detail} disabled={!createEnabled}
       icon={<Plus size={13} color={theme.muted} />} testID={'agent-create-' + profile.id} onPress={() => onCreate(profile.id)} />)}
     {!profiles.length && <Copy small muted style={{ paddingHorizontal: 10 }}>服务器未配置可用的模型</Copy>}
