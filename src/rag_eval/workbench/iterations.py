@@ -36,6 +36,10 @@ DECISIONS = ('adopted', 'rejected', 'undecided')
 INTEGRATION_METHODS = ('merge', 'cherry-pick', 'rewrite')
 
 
+# Branches the workbench creates for candidates and legacy hypotheses; not offered as start refs.
+_CANDIDATE_REFS = ('sn-cand-', 'sn-hyp-')
+
+
 def initialize_iterations(repository):
     with repository.connect(write=True) as conn:
         conn.executescript('''
@@ -298,6 +302,54 @@ class IterationService:
         if resolved != commit:
             raise ValueError('Start commit is not in the trusted project repository')
         return commit
+
+    def project_commits(self, workspace_id, *, query=None, limit=30):
+        """Start-commit choices: HEAD, branch and tag tips, recent history — or one commit resolved
+        from a short hash, branch or tag — plus frozen candidates a new iteration can be seeded from.
+
+        Read-only; candidate branches are left out of the refs, they appear as seeds instead.
+        """
+        project = self.trees.project_root
+        fmt = '--format=%H%x1f%s%x1f%cI%x1f%D'
+
+        def log(*args):
+            text = _text_git(project, 'log', fmt, *args)
+            return [dict(zip(('commit', 'subject', 'date', 'refs'), line.split('\x1f'))) for line in text.splitlines() if line]
+        if query is not None:
+            query = _text(query, 'commit query', limit=200).strip()
+            try:
+                if query.startswith('-'):
+                    raise ValueError
+                found = _text_git(project, 'rev-parse', '--verify', '--end-of-options', query + '^{commit}')
+            except ValueError:
+                raise ValueError('在 SN 仓库里找不到这个 commit、分支或 tag') from None
+            rows = log('--no-walk', found)
+        else:
+            tips = [line.split('\x1f') for line in _text_git(
+                project, 'for-each-ref', '--format=%(objectname)\x1f%(*objectname)\x1f%(refname:short)', 'refs/heads', 'refs/tags').splitlines()]
+            tips = [peeled or obj for obj, peeled, name in tips if not name.startswith(_CANDIDATE_REFS)]
+            head = _text_git(project, 'rev-parse', 'HEAD')
+            rows = log('--no-walk', head) + (log('--no-walk=sorted', *dict.fromkeys(tips)) if tips else []) + log('-n', str(limit), 'HEAD')
+        seen, commits = set(), []
+        for row in rows:
+            if row['commit'] in seen:
+                continue
+            seen.add(row['commit'])
+            decorations = [r for r in row.pop('refs').split(', ') if r]
+            refs = [r.removeprefix('HEAD -> ') for r in decorations if r != 'HEAD']
+            commits.append(dict(row, head=query is None and not commits,
+                                refs=[r for r in refs if not r.removeprefix('tag: ').startswith(_CANDIDATE_REFS)]))
+        with self.repository.connect() as conn:
+            seeds = [dict(iteration_id=r['iteration_id'], iteration_title=r['title'], candidate_id=r['id'],
+                          root=r['id'] == r['root_candidate_id'], frozen_commit=r['frozen_commit'], note=r['note'],
+                          decision=json.loads(r['decision_json']).get('decision') if r['decision_json'] else None)
+                     for r in conn.execute(
+                         "SELECT c.id, c.iteration_id, c.frozen_commit, c.note, c.decision_json, c.created_at, i.title, "
+                         "i.root_candidate_id FROM candidates c JOIN iterations i ON i.id=c.iteration_id "
+                         "JOIN tasks t ON t.id=i.task_id WHERE t.workspace_id=? AND i.origin='native' "
+                         "AND c.status='frozen' AND c.frozen_commit IS NOT NULL ORDER BY c.created_at DESC", (workspace_id,))]
+        seeds.sort(key=lambda s: s['decision'] != 'adopted')
+        return dict(commits=commits, seeds=seeds[:20])
 
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
                          case_ids, mode, actor, request_key, seeded_from=None):

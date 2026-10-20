@@ -158,6 +158,10 @@ class IterationAPI:
         def iteration_list():
             return service.iterations(self.workspace['id'])
 
+        @router.get('/api/project/commits')
+        def project_commits(q: str | None = None):
+            return service.project_commits(self.workspace['id'], query=q)
+
         @router.post('/api/iterations')
         def iteration_create(command: CreateIteration):
             self._write()

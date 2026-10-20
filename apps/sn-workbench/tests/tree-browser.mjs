@@ -69,6 +69,24 @@ for (const scheme of ['light', 'dark']) {
   await shot(page, 'palette');
   await page.keyboard.press('Escape');
 
+  // New iteration: the start defaults to HEAD; a short hash resolves to the full commit;
+  // a frozen candidate can be the seed. Cancelling creates nothing.
+  await page.getByTestId('new-iteration').click();
+  await page.getByTestId('start-selected').waitFor({ timeout: 15000 });
+  assert.match(await page.getByTestId('start-selected').innerText(), /[0-9a-f]{40}[\s\S]*当前 HEAD/);
+  const rootCommit = await page.evaluate(async () => {
+    const its = await (await fetch(location.origin + '/api/iterations')).json();
+    const tree = await (await fetch(location.origin + '/api/iterations/' + its.at(-1).id)).json();
+    return tree.start_commit;
+  });
+  await page.getByTestId('start-query').fill(rootCommit.slice(0, 9));
+  await page.getByTestId('start-resolve').click();
+  await page.waitForFunction(full => document.querySelector('[data-testid="start-selected"]')?.textContent?.includes(full), rootCommit);
+  const seed = page.locator('[data-testid^="start-seed-"]').first();
+  if (await seed.count()) { await seed.click(); assert.match(await page.getByTestId('start-selected').innerText(), /继续/); }
+  await shot(page, 'new-iteration');
+  await page.getByRole('button', { name: '取消', exact: true }).last().click();
+
   // The Agent drawer states what the selected Agent can see.
   await page.getByTestId('toggle-drawer').click();
   await page.getByTestId('agent-drawer').waitFor();

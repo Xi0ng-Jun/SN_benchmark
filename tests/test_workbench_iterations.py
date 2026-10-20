@@ -177,6 +177,27 @@ def test_analyst_brief_of_an_iteration_task_names_candidates_and_parent_drafting
     assert 'node run <候选>' in text and 'scripts/sn-workbench' in text
 
 
+def test_start_commit_choices_resolve_refs_and_offer_frozen_candidates_as_seeds(env):
+    service, workspace = env['service'], env['workspace']['id']
+    git(env['project'], 'tag', 'v1', env['start'])
+    tree, root = evaluated_root(env)
+    choices = service.project_commits(workspace)
+    commits = [c['commit'] for c in choices['commits']]
+    assert commits[0] == env['head'] and choices['commits'][0]['head'] and env['start'] in commits
+    assert any('tag: v1' in c['refs'] for c in choices['commits'])
+    assert not any(r.startswith('sn-cand-') for c in choices['commits'] for r in c['refs'])
+    assert [s['candidate_id'] for s in choices['seeds']] == [root['id']] and choices['seeds'][0]['root']
+    assert service.project_commits(workspace, query=env['start'][:9])['commits'][0]['commit'] == env['start']
+    assert service.project_commits(workspace, query='v1')['commits'][0]['commit'] == env['start']
+    for bad in ('no-such-ref', '--all'):
+        with pytest.raises(ValueError, match='找不到'):
+            service.project_commits(workspace, query=bad)
+    seed = choices['seeds'][0]
+    seeded = iteration(env, title='I2', mode='reasoning', request_key='i2', start_commit=seed['frozen_commit'],
+                       seeded_from=dict(iteration_id=seed['iteration_id'], candidate_id=seed['candidate_id']))
+    assert seeded['start_commit'] == env['start'] and seeded['id'] != tree['id']
+
+
 def test_child_starts_at_parent_frozen_commit_and_the_coordinator_freezes_it(env):
     tree, root = evaluated_root(env)
     service = env['service']
