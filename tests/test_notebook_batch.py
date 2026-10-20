@@ -254,3 +254,24 @@ def test_stage_metric_failure_retains_saved_answer_but_fails_batch_bookkeeping(t
     assert result['exit_code'] == 1 and result['runs'][0]['exit_code'] == 0
     assert result['runs'][0]['stage_metrics_error'] == 'ValueError'
     assert (Path(jobs[0]['run_dir']) / 'outputs.jsonl').read_text() == '{invalid}\n'
+
+
+def test_seed_map_forwards_one_prepared_run_per_partition(tmp_path):
+    from rag_eval.notebook_batch import plan_batch
+    _, path, refs, ids = installed(tmp_path)
+    seeds = tmp_path / 'seeds.json'
+
+    def planned(mapping):
+        seeds.write_text(json.dumps(mapping))
+        return plan_batch(bundle=path, artifact_root=tmp_path / 'store', artifact_index_id=refs['index']['id'],
+                          case_id_file=ids, mode='chunk', output_root=tmp_path / 'batch',
+                          project_root=tmp_path / 'synthetic-project', seed_prepared_map=seeds)
+    jobs = planned({'qasper:q': '/runs/p', 'qasper:second': '/runs/p', 'qasper:other': '/runs/o'})
+    assert [j['seed_prepared_run'] for j in jobs] == ['/runs/p', '/runs/o']
+    for job in jobs:
+        assert job['argv'][job['argv'].index('--seed-prepared-run') + 1] == job['seed_prepared_run']
+    for bad in ({'qasper:q': '/runs/p', 'qasper:second': '/runs/x', 'qasper:other': '/runs/o'},
+                {'qasper:q': '/runs/p'}, {'qasper:q': 'rel', 'qasper:second': 'rel', 'qasper:other': '/o'}):
+        with pytest.raises(ValueError, match='[Ss]eed'):
+            planned(bad)
+    assert not (tmp_path / 'batch').exists()

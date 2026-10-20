@@ -99,6 +99,26 @@ def prepare_notebook(repo, cell, documents, dataset, *, preparation_policy=DEFAU
         save_json(cell / 'state.json', state)
     return notebook, mapping
 
+def load_prepared_notebook(cell, documents, *, preparation_policy=DEFAULT_PREPARATION_POLICY):
+    """Accept a copied, fully prepared notebook without importing documents again."""
+    validate_preparation_policy(preparation_policy)
+    state = read_json(cell / 'state.json', {})
+    mapping = read_json(cell / 'document-map.json', {})
+    if not state.get('prepared') or not state.get('notebook_id'):
+        raise ValueError('Seed notebook was not fully prepared')
+    if state.get('preparation_policy', DEFAULT_PREPARATION_POLICY) != preparation_policy:
+        raise ValueError('Seed preparation policy does not match requested preparation policy')
+    if set(mapping) != {document['id'] for document in documents}:
+        raise ValueError('Seed corpus differs from the frozen partition')
+    for document in documents:
+        item = mapping[document['id']]
+        if item.get('text_sha256') != hashlib.sha256(document['text'].encode('utf-8')).hexdigest():
+            raise ValueError('Seed document text differs from the frozen partition')
+        if not item.get('source_id') or not item.get('chunk_ids'):
+            raise ValueError('Seed document without source or chunks')
+    return state['notebook_id'], mapping
+
+
 def evidence_checks(repo, record, mapping):
     source_to_public = {m['source_id']: key for key, m in mapping.items()}
     public_ids = [source_to_public[s] for s in record.get('source_ids', []) if s in source_to_public]

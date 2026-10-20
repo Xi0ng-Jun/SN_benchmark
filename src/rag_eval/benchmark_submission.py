@@ -177,6 +177,9 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
         evaluator_source = fingerprint(evaluator_hashes) if evaluator_hashes is not None else None
         provenance = dict(identity_sha256=fingerprint(identity), preparation_policy=preparation_policy,
                           evaluator_source_sha256=evaluator_source)
+        if manifest.get('prepared_seed') is not None:
+            # Answers were asked again on a copied prepared notebook.
+            provenance['prepared_seed'] = deepcopy(manifest['prepared_seed'])
         preparation_policies.add(preparation_policy)
         if evaluator_source is not None:
             evaluator_sources.add(evaluator_source)

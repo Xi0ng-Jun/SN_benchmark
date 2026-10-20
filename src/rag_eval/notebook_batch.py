@@ -26,7 +26,8 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                output_root, project_root, python=None, model_config=None,
                sn_source_ref=None, dependency_requirements=None, runtime_expectation=None,
                root=None, budget_ledger=None, task_worktree_ref=None,
-               reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY):
+               reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
+               seed_prepared_map=None):
     """Validate all selected IDs before any process; retain frozen case order."""
     from .bundle_index import find_installed_bundle, load_partition
     from .notebook_bundle import OFFICIAL_REQUEST_REVISION
@@ -65,6 +66,12 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
             groups.append((pid, ids))
     if seen != selected:
         raise ValueError('Case ID file contains IDs outside frozen bundle')
+    seeds = None
+    if seed_prepared_map is not None:
+        seeds = json.loads(Path(seed_prepared_map).read_text(encoding='utf-8'))
+        if (type(seeds) is not dict or set(seeds) != selected
+                or any(type(value) is not str or not Path(value).is_absolute() for value in seeds.values())):
+            raise ValueError('Seed map must give an absolute earlier run directory for every selected case')
     jobs = []
     for ordinal, (pid, ids) in enumerate(groups, 1):
         run = output_root / ('%04d-' % ordinal + hashlib.sha256(pid.encode()).hexdigest()[:16] + '-' + mode)
@@ -82,7 +89,16 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                 argv.extend([flag, str(Path(value).resolve())])
         for cid in ids:
             argv.extend(['--case-id', cid])
+        seed = None
+        if seeds is not None:
+            # One partition is one prepared notebook; its cases must share the seed.
+            seed_runs = {seeds[cid] for cid in ids}
+            if len(seed_runs) != 1:
+                raise ValueError('Cases of one partition must share one prepared seed run')
+            seed = seed_runs.pop()
+            argv.extend(['--seed-prepared-run', seed])
         jobs.append(dict(partition_id=pid, case_ids=ids, run_dir=str(run), mode=mode,
+                         **({'seed_prepared_run': seed} if seed is not None else {}),
                          reasoning_protocol=reasoning_protocol, preparation_policy=preparation_policy,
                          suite=index['source_manifest']['suite'], bundle_id=fingerprint(index['source_manifest']),
                          bundle=str(bundle), artifact_root=str(artifact_root),
