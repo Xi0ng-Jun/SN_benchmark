@@ -23,8 +23,15 @@ export type AgentSnapshot = { id: string; title: string | null; status: string; 
 export type TimelineCursor = { epoch: string; seq: number };
 export type SourceLocator = { epoch: string; seq_start: number; seq_end: number;
   source_seq_ranges: { start_seq: number; end_seq: number }[]; turn_id: string | null; sha256: string };
+export type TimelineText = { text: string; truncated: boolean; originalLength: number };
+// Flattened Paseo ToolCallDetail: kind is the SDK detail type (shell/read/edit/...).
+export type ToolDetail = { kind: string; fields: Record<string, TimelineText | number | boolean | null> };
+export type TodoItem = { text: TimelineText | null; completed: boolean; status: string | null };
+// Activity-only display fields (absent on user/assistant entries).
+export type ActivityFields = { title?: string | null; status?: string | null; detail?: ToolDetail | null;
+  error?: TimelineText | null; items?: TodoItem[] | null; itemsOmitted?: number | null };
 export type TimelineEntry = { id: string; label: string; kind: 'user' | 'assistant' | 'activity'; text: string | null;
-  truncated: boolean; activityType: string | null; candidateBlockedReason: string | null; source_locator: SourceLocator };
+  truncated: boolean; activityType: string | null; candidateBlockedReason: string | null; source_locator: SourceLocator } & ActivityFields;
 export type TimelinePage = { agentId: string; direction: 'tail' | 'before' | 'after'; projection: 'projected' | 'canonical';
   epoch: string; reset: boolean; staleCursor: boolean; gap: boolean; window: { minSeq: number; maxSeq: number; nextSeq: number };
   startCursor: TimelineCursor | null; endCursor: TimelineCursor | null; hasOlder: boolean; hasNewer: boolean;

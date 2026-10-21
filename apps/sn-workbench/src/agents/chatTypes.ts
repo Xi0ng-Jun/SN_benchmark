@@ -1,4 +1,5 @@
 // View-state types shared by the Agent chat hooks and components.
+import type { ActivityFields } from '../contracts';
 
 export type SessionLinkStatus = 'idle' | 'linking' | 'linked' | 'error';
 
@@ -24,7 +25,7 @@ export type SessionEntry = {
   truncated: boolean;
   activityType?: string;
   candidateBlockedReason: string | null;
-};
+} & ActivityFields;
 
 export type SessionPageStatus = 'idle' | 'loading' | 'ready' | 'error';
 

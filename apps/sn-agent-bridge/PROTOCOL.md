@@ -143,12 +143,34 @@ refresh、路径检查、refetch 仍非原子，检查之后 Agent cwd 或符号
 或 seqStart..seqEnd 包络猜来源身份。后续服务器按 epoch 与实际 entry 校验来源。
 SDK 返回超过 100 条时整页失败，不截断条目。
 
-item 始终含 type/text/title/status。user_message 和 assistant_message 只保留文本；
-tool_call 只保留有界 name 标题和 status。reasoning/todo/error/notification/compaction/plugin
-保留类型及固定标题，compaction 另保留 status，不输出其私有文本／payload。
-未知类型若 SDK 已交付给投影层，则映射 activity，固定标题 Activity、原类型放在
-有界 sourceType，text/status 为 null；不输出 unknown payload。
-发布 SDK 的解析层是否接受未来未知类型尚未真实验证，替身仅证明投影边界行为。
+item 始终含 type/text/title/status。投影目标是让人在工作台看到与 Paseo 相同的
+Agent 轨迹（早先的“最小暴露”投影已由用户决定取代；隔离约束针对发给 Agent 的内容，
+不针对人看到的内容）：
+
+- user_message／assistant_message：text 为消息正文，title/status 为 null。
+- tool_call：title 为有界 name，status 为 running/completed/failed/canceled；另含
+  `detail` 与 `error`。detail 是展平的 ToolCallDetail：
+  `{"kind":"shell","fields":{"command":<文本>,"cwd":<文本>,"output":<文本>,"exitCode":0}}`。
+  kind 取 SDK detail.type；fields 只含该类型已有字段，值为文本片段、有限数字、布尔或
+  null。各类型字段：shell command/cwd/output/exitCode；read filePath/content/offset/limit；
+  edit filePath/oldString/newString/unifiedDiff；write filePath/content；search
+  query/toolName/content/mode/truncated/numFiles/numMatches/filePaths/webResults/annotations
+  （列表按行拼接）；fetch url/prompt/result/code/codeText；worktree_setup
+  worktreePath/branchName/log；sub_agent subAgentType/description/log/actions（每行
+  `toolName: summary`）；plain_text label/text；plan text；unknown input/output（JSON 文本）。
+  未来未知 detail 类型映射 kind unknown，整个 detail 作为 input JSON。缺少 detail 时为 null。
+  error 在失败时为错误文本（非字符串按 JSON 文本），否则 null。callId/metadata 不输出。
+- reasoning：text 为思考正文；error：text 为 message；notification：text 为 message，
+  status 为 level；todo：`items:[{text,completed,status}]` 最多 100 项，其余计入
+  `itemsOmitted`；compaction：status；plugin：仅固定标题，不输出 payload。
+- 未知类型若 SDK 已交付给投影层，则映射 activity，固定标题 Activity、原类型放在
+  有界 sourceType，text/status 为 null；不输出 unknown payload。
+  发布 SDK 的解析层是否接受未来未知类型尚未真实验证，替身仅证明投影边界行为。
+
+活动文本（reasoning、tool detail/error、todo 项、error/notification）每个仍按下述
+8192 UTF-16 units 片段裁剪，另共享每页 2.5 MiB（JSON UTF-8 字节）预算，从最新
+条目向前分配；预算耗尽后旧条目只保留极短前缀并标 truncated。整页输出因此远低于
+CLI 4 MiB 上限，不会因长工具输出整页失败。消息正文不计入该预算。
 
 文本／标题／sourceType 使用：
 

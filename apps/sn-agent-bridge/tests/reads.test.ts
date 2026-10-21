@@ -68,7 +68,7 @@ test("optional snapshot fields that the SDK did not observe remain unknown", asy
   await bridge.close();
 });
 
-test("timeline preserves server pagination, disjoint source ranges and recovery flags without tool payload", async () => {
+test("timeline preserves server pagination, disjoint source ranges and recovery flags with bounded tool detail", async () => {
   const f = readFixture();
   Object.assign(f.data.page, {
     reset: true, staleCursor: true, gap: true, hasOlder: true, hasNewer: true,
@@ -80,7 +80,7 @@ test("timeline preserves server pagination, disjoint source ranges and recovery 
       { provider: "example", timestamp: "now", seqStart: 26, seqEnd: 26,
         sourceSeqRanges: [{ startSeq: 26, endSeq: 26 }], collapsed: ["tool_lifecycle"],
         item: { type: "tool_call", callId: "private-sentinel", name: "Read file", status: "completed", error: null,
-          detail: { type: "unknown", input: "private-sentinel", output: "private-sentinel" }, metadata: { secret: "private-sentinel" } } },
+          detail: { type: "read", filePath: "/repo/a.ts", content: "body", offset: 3 }, metadata: { secret: "private-sentinel" } } },
     ],
   });
   const bridge = createBridge(config, () => f.client);
@@ -101,7 +101,10 @@ test("timeline preserves server pagination, disjoint source ranges and recovery 
         item: { type: "assistant_message", text: { value: "hello", truncated: false, originalLength: 5, lengthUnit: "utf16" }, title: null, status: null } },
       { provider: "example", timestamp: "now", seqStart: 26, seqEnd: 26,
         sourceSeqRanges: [{ startSeq: 26, endSeq: 26 }], collapsed: ["tool_lifecycle"], turnId: null,
-        item: { type: "tool_call", text: null, title: { value: "Read file", truncated: false, originalLength: 9, lengthUnit: "utf16" }, status: "completed" } },
+        item: { type: "tool_call", text: null, title: { value: "Read file", truncated: false, originalLength: 9, lengthUnit: "utf16" }, status: "completed",
+          error: null, detail: { kind: "read", fields: { offset: 3,
+            filePath: { value: "/repo/a.ts", truncated: false, originalLength: 10, lengthUnit: "utf16" },
+            content: { value: "body", truncated: false, originalLength: 4, lengthUnit: "utf16" } } } } },
     ] });
   assert.equal(JSON.stringify(result).includes("private-sentinel"), false);
   await bridge.close();
@@ -182,13 +185,16 @@ test("closing during timeline's identity read prevents a late follow-up timeline
   assert.deepEqual(f.queries, []);
 });
 
-test("non-message activities keep type without reasoning, error, plugin or task private content", async () => {
+const frag = (value: string, originalLength = value.length) =>
+  ({ value, truncated: value.length < originalLength, originalLength, lengthUnit: "utf16" });
+
+test("non-message activities expose reasoning, errors, notifications and task items as bounded text", async () => {
   const f = readFixture();
   f.data.page.entries = [
-    { type: "reasoning", text: "private-sentinel" },
-    { type: "error", message: "private-sentinel" },
-    { type: "notification", message: "private-sentinel", level: "error" },
-    { type: "todo", items: [{ text: "private-sentinel", completed: false }] },
+    { type: "reasoning", text: "think" },
+    { type: "error", message: "boom" },
+    { type: "notification", message: "note", level: "warning" },
+    { type: "todo", items: [{ text: "a", completed: true }, { text: "b", completed: false, status: "in_progress" }] },
     { type: "plugin", id: "p", pluginId: "private-sentinel", kind: "private-sentinel", version: 1, data: "private-sentinel" },
     { type: "compaction", status: "loading", extra: "private-sentinel" },
   ].map((item, i) => ({ provider: "example", timestamp: "now", seqStart: i + 10, seqEnd: i + 10,
@@ -198,9 +204,72 @@ test("non-message activities keep type without reasoning, error, plugin or task 
   const result = await bridge.readTimeline("agent-example");
   assert.equal(result.status, "ok");
   if (result.status !== "ok") return;
-  assert.deepEqual(result.entries.map((entry) => entry.item.type), ["reasoning", "error", "notification", "todo", "plugin", "compaction"]);
+  assert.deepEqual(result.entries.map((entry) => entry.item), [
+    { type: "reasoning", text: frag("think"), title: frag("Reasoning"), status: null },
+    { type: "error", text: frag("boom"), title: frag("Error"), status: null },
+    { type: "notification", text: frag("note"), title: frag("Notification"), status: "warning" },
+    { type: "todo", text: null, title: frag("Tasks"), status: null, itemsOmitted: 0, items: [
+      { text: frag("a"), completed: true, status: null }, { text: frag("b"), completed: false, status: "in_progress" }] },
+    { type: "plugin", text: null, title: frag("Plugin activity"), status: null },
+    { type: "compaction", text: null, title: frag("Compaction"), status: "loading" },
+  ]);
+  // Plugin payloads and unlisted item fields still stay out.
   assert.equal(JSON.stringify(result).includes("private-sentinel"), false);
-  assert.ok(result.entries.every((entry) => entry.item.text === null));
+  await bridge.close();
+});
+
+test("tool details flatten every SDK kind, keep failures and wrap future kinds as unknown input", async () => {
+  const f = readFixture();
+  const tool = (detail: unknown, extra: Record<string, unknown> = {}) =>
+    ({ type: "tool_call", callId: "c", name: "t", status: "completed", error: null, detail, ...extra });
+  f.data.page.entries = [
+    tool({ type: "shell", command: "ls", cwd: "/r", output: "x", exitCode: null }, { status: "failed", error: { reason: "denied" } }),
+    tool({ type: "edit", filePath: "a", unifiedDiff: "@@" }),
+    tool({ type: "search", query: "q", filePaths: ["a", "b"], webResults: [{ title: "T", url: "u" }], truncated: true }),
+    tool({ type: "sub_agent", log: "l", actions: [{ index: 0, toolName: "Read", summary: "s" }] }),
+    tool({ type: "unknown", input: { a: 1 }, output: null }),
+    tool({ type: "future_kind", value: 1 }),
+    tool(undefined),
+  ].map((item, i) => ({ provider: "example", timestamp: "now", seqStart: i + 1, seqEnd: i + 1,
+    sourceSeqRanges: [{ startSeq: i + 1, endSeq: i + 1 }], collapsed: [], item })) as typeof f.data.page.entries;
+  const bridge = createBridge(config, () => f.client);
+  await bridge.connect();
+  const result = await bridge.readTimeline("agent-example");
+  assert.equal(result.status, "ok");
+  if (result.status !== "ok") return;
+  const items = result.entries.map((entry) => entry.item);
+  assert.equal(items[0]!.status, "failed");
+  assert.deepEqual(items[0]!.error, frag(JSON.stringify({ reason: "denied" }, null, 2)));
+  assert.deepEqual(items.map((item) => item.detail), [
+    { kind: "shell", fields: { command: frag("ls"), cwd: frag("/r"), output: frag("x"), exitCode: null } },
+    { kind: "edit", fields: { filePath: frag("a"), unifiedDiff: frag("@@") } },
+    { kind: "search", fields: { query: frag("q"), truncated: true, filePaths: frag("a\nb"), webResults: frag("T u") } },
+    { kind: "sub_agent", fields: { log: frag("l"), actions: frag("Read: s") } },
+    { kind: "unknown", fields: { input: frag(JSON.stringify({ a: 1 }, null, 2)), output: frag("null") } },
+    { kind: "unknown", fields: { input: frag(JSON.stringify({ type: "future_kind", value: 1 }, null, 2)) } },
+    null,
+  ]);
+  await bridge.close();
+});
+
+test("activity text keeps the 8192-unit bound and a page budget spent newest first", async () => {
+  const f = readFixture();
+  const long = "y".repeat(10000);
+  f.data.page.entries = Array.from({ length: 100 }, (_, i) => ({ provider: "example", timestamp: "now",
+    seqStart: i + 1, seqEnd: i + 1, sourceSeqRanges: [{ startSeq: i + 1, endSeq: i + 1 }], collapsed: [],
+    item: { type: "tool_call", callId: "c", name: "t", status: "failed", error: long,
+      detail: { type: "edit", filePath: "a", oldString: long, newString: long, unifiedDiff: long } } })) as typeof f.data.page.entries;
+  const bridge = createBridge(config, () => f.client);
+  await bridge.connect();
+  const result = await bridge.readTimeline("agent-example");
+  assert.equal(result.status, "ok");
+  if (result.status !== "ok") return;
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) < 3 * 1024 * 1024);
+  const newest = result.entries[99]!.item.detail!.fields.unifiedDiff as { value: string; truncated: boolean; originalLength: number };
+  assert.deepEqual([newest.value.length, newest.truncated, newest.originalLength], [8192, true, 10000]);
+  const oldest = result.entries[0]!.item.detail!.fields.unifiedDiff as { value: string; truncated: boolean; originalLength: number };
+  // Older entries get what is left once the budget runs out, still flagged truncated.
+  assert.deepEqual([oldest.value.length < 100, oldest.truncated, oldest.originalLength], [true, true, 10000]);
   await bridge.close();
 });
 

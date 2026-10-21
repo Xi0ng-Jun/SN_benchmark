@@ -136,3 +136,42 @@ def test_valid_empty_page_and_unsupported_locator_remain_honest(tmp_path):
         entry = service.read_page(task['id'], session['id'])['result']['entries'][1]
         assert entry['candidateBlockedReason'] is not None
         assert entry['source_locator']['epoch' if field == 'epoch' else 'turn_id'] == ('e' if field == 'epoch' else 't') * 201
+
+
+def _frag(value, original=None):
+    return {'value': value, 'truncated': original is not None, 'originalLength': original or len(value), 'lengthUnit': 'utf16'}
+
+
+def test_activity_trajectory_is_relayed_for_display_but_never_a_candidate(tmp_path):
+    source = page()
+    base = source['result']['entries'][1]
+    tool = {'type': 'tool_call', 'text': None, 'title': _frag('Bash'), 'status': 'failed', 'error': _frag('exit 1'),
+            'detail': {'kind': 'shell', 'fields': {'command': _frag('ls', 9000), 'exitCode': 1, 'cwd': None}}}
+    reasoning = {'type': 'reasoning', 'text': _frag('think'), 'title': _frag('Reasoning'), 'status': None}
+    todo = {'type': 'todo', 'text': None, 'title': _frag('Tasks'), 'status': None, 'itemsOmitted': 0,
+            'items': [{'text': _frag('a'), 'completed': True, 'status': 'completed'}]}
+    source['result']['entries'] += [{**base, 'seqStart': 14 + i, 'seqEnd': 14 + i,
+                                     'sourceSeqRanges': [{'startSeq': 14 + i, 'endSeq': 14 + i}], 'item': item}
+                                    for i, item in enumerate((tool, reasoning, todo))]
+    _, task, session, bridge, service = setup_timeline(tmp_path, source)
+    entries = service.read_page(task['id'], session['id'])['result']['entries']
+    shell, thought, tasks = entries[2:]
+    assert shell['kind'] == 'activity' and shell['activityType'] == 'tool_call'
+    assert (shell['title'], shell['status'], shell['text']) == ('Bash', 'failed', None)
+    assert shell['error'] == {'text': 'exit 1', 'truncated': False, 'originalLength': 6}
+    assert shell['detail'] == {'kind': 'shell', 'fields': {
+        'command': {'text': 'ls', 'truncated': True, 'originalLength': 9000}, 'exitCode': 1, 'cwd': None}}
+    assert thought['text'] == 'think' and thought['title'] == 'Reasoning'
+    assert tasks['items'] == [{'text': {'text': 'a', 'truncated': False, 'originalLength': 1},
+                               'completed': True, 'status': 'completed'}]
+    assert all(e['candidateBlockedReason'] for e in entries[2:])
+    assert 'detail' not in entries[1] and entries[1]['candidateBlockedReason'] is None
+
+    for broken in ({'detail': {'kind': 'shell', 'fields': {'command': 'raw'}}},
+                   {'detail': {'kind': '', 'fields': {}}},
+                   {'detail': {'kind': 'shell', 'fields': {'exitCode': float('nan')}}},
+                   {'error': 'raw'}, {'status': 7},
+                   {'items': [{'text': _frag('a'), 'completed': 'yes'}]}, {'itemsOmitted': -1}):
+        bridge.response = copy.deepcopy(source)
+        bridge.response['result']['entries'][2]['item'].update(broken)
+        assert service.read_page(task['id'], session['id'])['result'] == {'status': 'unavailable', 'code': 'BRIDGE_INVALID_RESPONSE'}

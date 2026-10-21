@@ -111,9 +111,11 @@ canonical；此接口按实际结果报告。SDK 可将短 ID 解析到完整 ID
 timeline 的返回 ID 均严格核对请求，防止读到另一会话。
 
 Agent 白名单保留真实 cwd、最小 activeTurn 和公开 capability flags；未知可选字段
-保持省略，未知 capability 保持 null。timeline 只保留 user/assistant 文本、其他
-活动类型及必要标题。长字符串有明确 truncated/originalLength/utf16 标记，未知
-item 映射 activity；不发完整 tool args/output 或 private metadata。
+保持省略，未知 capability 保持 null。timeline 保留 user/assistant 文本，以及
+reasoning 正文、tool_call 的展平 detail（命令／路径／输出／diff 等）与失败 error、todo
+项、error/notification 消息（2026-10 起取代原先只给类型和标题的最小投影，见
+PROTOCOL.md“历史页”）。长字符串有明确 truncated/originalLength/utf16 标记，活动文本
+另有每页 2.5 MiB 预算；未知 item 映射 activity；不发 callId、tool metadata 或 plugin payload。
 
 CLI config 仅服务端提供，严格白名单 op/参数；输入64 KiB、输出4 MiB，超限整份
 result 失败并保留 release。connect 成功执行一个读取，finally close；成功读取与

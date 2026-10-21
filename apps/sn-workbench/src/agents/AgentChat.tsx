@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
-import { ChevronDown, ChevronRight, Wrench } from 'lucide-react-native';
-import { Button, Copy, useTheme } from '../ui';
+import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Bell, Bot, Brain, ChevronDown, ChevronRight, CircleAlert, Eye, FilePlus, Globe, ListChecks, NotebookPen, Pencil, Search,
+  Shrink, Square, SquareCheck, SquareTerminal, Wrench } from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
+import { Button, Copy, s, useTheme } from '../ui';
+import type { TimelineText } from '../contracts';
 import type { SessionEntry, SessionPage, SessionRemote } from './chatTypes';
 
 export type CandidateKind = 'finding' | 'direction' | 'next_step';
@@ -31,18 +34,165 @@ function userText(text: string | null): { text: string; attached: string[] } {
   return { text: text ?? '', attached: [] };
 }
 
-// The bridge projects only a tool name or a fixed English title per activity
-// (no arguments or error text), so these labels are all the page can show.
-const fixedActivities: Record<string, string> = {
-  reasoning: '思考', todo: '任务清单', error: '出错（详情只在 Paseo 中可见）', notification: '通知',
-  compaction: '上下文压缩', plugin: '插件活动',
+type Field = TimelineText | number | boolean | null | undefined;
+const isText = (value: Field): value is TimelineText => typeof value === 'object' && value !== null;
+const firstLine = (text: string) => text.split('\n').find(line => line.trim())?.trim() ?? '';
+const truncNote = (value: { truncated: boolean; originalLength?: number }) =>
+  value.truncated ? `已截断${value.originalLength ? `，原长 ${value.originalLength} 字符` : ''}` : null;
+
+const toolIcons: Record<string, LucideIcon> = {
+  shell: SquareTerminal, worktree_setup: SquareTerminal, read: Eye, edit: Pencil, write: FilePlus, search: Search,
+  fetch: Globe, sub_agent: Bot, plan: NotebookPen,
 };
-const activityLabel = (entry: SessionEntry) => {
+const fieldLabels: Record<string, string> = {
+  command: '命令', cwd: '目录', output: '输出', exitCode: '退出码', filePath: '文件', content: '内容', offset: '起始行',
+  limit: '行数', oldString: '替换前', newString: '替换后', unifiedDiff: '改动', query: '查询', toolName: '工具', mode: '模式',
+  truncated: '结果已截断', numFiles: '文件数', numMatches: '匹配数', filePaths: '文件列表', webResults: '网页结果',
+  annotations: '注释', url: '地址', prompt: '提示', result: '结果', code: '状态码', codeText: '状态', worktreePath: '工作树',
+  branchName: '分支', log: '日志', subAgentType: '子 Agent', description: '描述', actions: '动作', label: '标签', text: '正文',
+  input: '输入',
+};
+
+// One-line summary like Paseo: `$ command`, the file path, query or URL.
+function toolSummary(entry: SessionEntry): string {
+  const fields = entry.detail?.fields ?? {};
+  const text = (name: string) => { const value = fields[name]; return isText(value) ? value.text : ''; };
+  switch (entry.detail?.kind) {
+    case 'shell': return text('command') && '$ ' + firstLine(text('command'));
+    case 'read': case 'write': case 'edit': return text('filePath');
+    case 'search': return text('query');
+    case 'fetch': return text('url');
+    case 'sub_agent': return text('description') || text('subAgentType');
+    case 'plain_text': return text('label') || firstLine(text('text'));
+    case 'plan': return firstLine(text('text'));
+    case 'worktree_setup': return text('branchName');
+    default: return '';
+  }
+}
+
+// Monospace output capped at ~300px, scrolling inside like Paseo's tool panes.
+function CodeBlock({ value, color, diff = false }: { value: TimelineText; color?: string; diff?: boolean }) {
+  const theme = useTheme();
+  const note = truncNote(value);
+  const lineColor = (line: string) => !diff ? color ?? theme.secondary
+    : line.startsWith('+') && !line.startsWith('+++') ? theme.add : line.startsWith('-') && !line.startsWith('---') ? theme.del
+      : line.startsWith('@@') ? theme.primary : theme.secondary;
+  return <View style={{ gap: 2 }}>
+    <ScrollView nestedScrollEnabled style={{ maxHeight: 300, borderWidth: 1, borderColor: theme.line, borderRadius: 6,
+      backgroundColor: theme.surface }} contentContainerStyle={{ padding: 8 }}>
+      {diff ? value.text.split('\n').map((line, i) => <Text key={i} selectable style={[s.mono, { color: lineColor(line) }]}>{line || ' '}</Text>)
+        : <Text selectable style={[s.mono, { color: lineColor('') }]}>{value.text || ' '}</Text>}
+    </ScrollView>
+    {note && <Text style={{ fontSize: 11, color: theme.muted }}>{note}</Text>}
+  </View>;
+}
+
+function ToolBody({ entry }: { entry: SessionEntry }) {
+  const theme = useTheme();
+  const fields = Object.entries(entry.detail?.fields ?? {}).filter(([, value]) => value !== null);
+  return <View style={{ gap: 6 }}>
+    {fields.map(([name, value]) => {
+      const label = fieldLabels[name] ?? name;
+      // Short single-line values sit inline; anything longer gets a scrolling block.
+      if (!isText(value) || (!value.text.includes('\n') && value.text.length < 200 && !value.truncated))
+        return <Text key={name} selectable style={{ fontSize: 12, lineHeight: 18, color: theme.muted }}>{label + '  '}
+          <Text style={[s.mono, { color: theme.secondary }]}>
+            {isText(value) ? (name === 'command' ? '$ ' : '') + value.text : typeof value === 'boolean' ? (value ? '是' : '否') : String(value)}</Text>
+        </Text>;
+      return <View key={name} style={{ gap: 2 }}>
+        <Text style={{ fontSize: 11, color: theme.muted }}>{label}</Text>
+        <CodeBlock value={value} diff={name === 'unifiedDiff'} />
+      </View>;
+    })}
+    {entry.error && <View style={{ gap: 2 }}>
+      <Text style={{ fontSize: 11, color: theme.error }}>错误</Text>
+      <CodeBlock value={entry.error} color={theme.error} />
+    </View>}
+    {!fields.length && !entry.error && <Text style={{ fontSize: 12, color: theme.muted }}>没有可显示的详情</Text>}
+  </View>;
+}
+
+const toolStatus: Record<string, { label: string; tone: 'running' | 'error' | 'muted' }> = {
+  running: { label: '运行中…', tone: 'running' }, failed: { label: '失败', tone: 'error' }, canceled: { label: '已取消', tone: 'muted' },
+};
+
+// A row header: icon, name, one-line summary, status; expands to `body`.
+function Row({ icon: Icon, name, summary, mono = false, status, color, body, testID }: {
+  icon: LucideIcon; name: string; summary?: string; mono?: boolean; status?: { label: string; color: string } | null;
+  color?: string; body?: React.ReactNode; testID?: string;
+}) {
+  const theme = useTheme();
+  const [open, setOpen] = useState(false);
+  const Chevron = open ? ChevronDown : ChevronRight;
+  const head = <>
+    <Icon size={12} strokeWidth={1.6} color={color ?? theme.muted} />
+    <Text style={{ fontSize: 12, fontWeight: '500', color: color ?? theme.secondary }}>{name}</Text>
+    {summary ? <Text numberOfLines={1} style={[mono ? s.mono : { fontSize: 12 }, { flexShrink: 1, color: theme.muted }]}>{summary}</Text> : null}
+    {status && <Text style={{ fontSize: 12, color: status.color }}>{status.label}</Text>}
+    {body ? <Chevron size={12} color={theme.muted} /> : null}
+  </>;
+  const rowStyle = { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, paddingVertical: 2 };
+  return <View testID={testID} style={{ gap: 4 }}>
+    {body ? <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(o => !o)} style={rowStyle}>
+      {head}</Pressable> : <View style={rowStyle}>{head}</View>}
+    {open && body ? <View style={{ paddingLeft: 18 }}>{body}</View> : null}
+  </View>;
+}
+
+function ActivityRow({ entry }: { entry: SessionEntry }) {
+  const theme = useTheme();
   const type = entry.activityType ?? '';
-  if (fixedActivities[type]) return fixedActivities[type];
-  if (type === 'tool_call') return '工具 · ' + (entry.text ?? '未知');
-  return [type && type !== 'activity' ? type : null, entry.text].filter(Boolean).join(' · ') || '活动';
-};
+  if (type === 'tool_call') {
+    const status = entry.status ? toolStatus[entry.status] : undefined;
+    const tone = status && { running: theme.running, error: theme.error, muted: theme.muted }[status.tone];
+    return <View style={{ gap: 2 }}>
+      <Row testID="chat-tool" icon={toolIcons[entry.detail?.kind ?? ''] ?? Wrench} name={entry.title ?? '工具'} mono
+        summary={toolSummary(entry)} status={status && tone ? { label: status.label, color: tone } : null}
+        body={<ToolBody entry={entry} />} />
+      {entry.status === 'failed' && entry.error && <Text numberOfLines={2} selectable
+        style={{ paddingLeft: 18, fontSize: 12, lineHeight: 18, color: theme.error }}>{firstLine(entry.error.text)}</Text>}
+    </View>;
+  }
+  if (type === 'reasoning') {
+    const note = truncNote(entry);
+    return <Row testID="chat-reasoning" icon={Brain} name="思考" summary={firstLine(entry.text ?? '')}
+      body={entry.text ? <View style={{ gap: 2 }}>
+        <Text selectable style={{ fontSize: 12, lineHeight: 19, color: theme.muted }}>{entry.text}</Text>
+        {note && <Text style={{ fontSize: 11, color: theme.muted }}>{note}</Text>}
+      </View> : undefined} />;
+  }
+  if (type === 'todo') {
+    const items = entry.items ?? [];
+    return <View testID="chat-todo" style={{ gap: 2 }}>
+      <Row icon={ListChecks} name="任务清单" summary={`完成 ${items.filter(i => i.completed).length}/${items.length}`} />
+      <View style={{ paddingLeft: 18, gap: 2 }}>
+        {items.map((item, i) => {
+          const Check = item.completed ? SquareCheck : Square;
+          const active = !item.completed && item.status === 'in_progress';
+          return <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6 }}>
+            <View style={{ paddingTop: 3 }}><Check size={12} color={active ? theme.running : theme.muted} /></View>
+            <Text selectable style={{ flexShrink: 1, fontSize: 12, lineHeight: 18, color: active ? theme.running : item.completed ? theme.muted : theme.secondary,
+              textDecorationLine: item.completed ? 'line-through' : 'none' }}>{item.text?.text ?? ''}</Text>
+          </View>;
+        })}
+        {entry.itemsOmitted ? <Text style={{ fontSize: 11, color: theme.muted }}>{`另有 ${entry.itemsOmitted} 项未显示`}</Text> : null}
+      </View>
+    </View>;
+  }
+  if (type === 'error' || type === 'notification') {
+    const color = type === 'error' || entry.status === 'error' ? theme.error : entry.status === 'warning' ? theme.warning : theme.muted;
+    const Icon = type === 'error' ? CircleAlert : Bell;
+    return <View testID={`chat-${type}`} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6 }}>
+      <View style={{ paddingTop: 3 }}><Icon size={12} strokeWidth={1.6} color={color} /></View>
+      <Text selectable style={{ flexShrink: 1, fontSize: 12, lineHeight: 18, color }}>
+        {(entry.text ?? (type === 'error' ? '出错' : '通知')) + (entry.truncated ? '（已截断）' : '')}</Text>
+    </View>;
+  }
+  if (type === 'compaction')
+    return <Row icon={Shrink} name="上下文压缩"
+      summary={entry.status === 'loading' ? '进行中…' : entry.status === 'completed' ? '完成' : undefined} />;
+  return <Row icon={Wrench} name={type === 'plugin' ? '插件活动' : type && type !== 'activity' ? type : '活动'} />;
+}
 
 type Group = { kind: 'message'; entry: SessionEntry } | { kind: 'activity'; id: string; entries: SessionEntry[] };
 function group(entries: readonly SessionEntry[]): Group[] {
@@ -55,25 +205,9 @@ function group(entries: readonly SessionEntry[]): Group[] {
   return groups;
 }
 
-// Tool calls and other activity collapse to one line per run, like Paseo.
+// Consecutive activity stays together, one row per item, like Paseo.
 function ActivityGroup({ entries }: { entries: SessionEntry[] }) {
-  const theme = useTheme();
-  const [open, setOpen] = useState(false);
-  const Chevron = open ? ChevronDown : ChevronRight;
-  const last = entries[entries.length - 1];
-  return <View style={{ gap: 4 }}>
-    <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(o => !o)}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 }}>
-      <Wrench size={12} strokeWidth={1.6} color={theme.muted} />
-      <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 12, color: theme.muted }}>
-        {entries.length > 1 ? `${entries.length} 项活动 · 最近：` : ''}{activityLabel(last)}</Text>
-      <Chevron size={12} color={theme.muted} />
-    </Pressable>
-    {open && <View style={{ paddingLeft: 18, gap: 2 }}>
-      {entries.map(entry => <Text key={entry.id} selectable style={{ fontSize: 12, lineHeight: 18, color: theme.muted }}>
-        {activityLabel(entry)}</Text>)}
-    </View>}
-  </View>;
+  return <View style={{ gap: 4 }}>{entries.map(entry => <ActivityRow key={entry.id} entry={entry} />)}</View>;
 }
 
 function UserBubble({ text, note, testID }: { text: string; note?: string; testID?: string }) {
@@ -119,7 +253,7 @@ export type AgentChatProps = {
   empty: React.ReactNode;
 };
 
-/** Conversation with the selected Agent: user bubbles, assistant text, folded activity. */
+/** Conversation with the selected Agent: user bubbles, assistant text, the activity trajectory. */
 export function AgentChat({ hasSession, remote, page, viewingTail, outgoing, running, onOlder, onLatest, candidateReason, onCandidate, empty }: AgentChatProps) {
   const theme = useTheme();
   if (!hasSession) return <View testID="chat-empty">{empty}</View>;

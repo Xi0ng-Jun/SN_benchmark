@@ -84,10 +84,28 @@ export interface TimelineEntry {
   item: {
     type: SdkTimelinePage["entries"][number]["item"]["type"] | "activity";
     sourceType?: TextFragment;
+    /** Message, reasoning, error or notification text. */
     text: TextFragment | null;
     title: TextFragment | null;
     status: string | null;
+    /** tool_call only. */
+    detail?: ToolDetail | null;
+    error?: TextFragment | null;
+    /** todo only; at most 100 items, the rest counted in itemsOmitted. */
+    items?: TodoEntry[];
+    itemsOmitted?: number;
   };
+}
+export type DetailValue = TextFragment | number | boolean | null;
+/** Flattened ToolCallDetail: `kind` is the SDK detail type, fields keep its named values. */
+export interface ToolDetail {
+  kind: string;
+  fields: Record<string, DetailValue>;
+}
+export interface TodoEntry {
+  text: TextFragment;
+  completed: boolean;
+  status: string | null;
 }
 export type TimelinePage = Pick<SdkTimelinePage,
   "agentId" | "direction" | "projection" | "epoch" | "reset" | "staleCursor" | "gap"

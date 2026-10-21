@@ -44,6 +44,73 @@ def _fragment(value):
     return value['value'], value['truncated']
 
 
+def _view(value):
+    """A bridge fragment as {text, truncated, originalLength} for display."""
+    text, truncated = _fragment(value)
+    if text is None:
+        return None
+    original = value.get('originalLength')
+    if original is None:
+        original = len(text)
+    if type(original) is not int or original < 0:
+        raise ValueError('Invalid timeline fragment')
+    return {'text': text, 'truncated': truncated, 'originalLength': original}
+
+
+def _name(value, limit=64):
+    if not isinstance(value, str) or not value or len(value) > limit:
+        raise ValueError('Invalid timeline name')
+    return value
+
+
+def _detail(raw):
+    # Flattened ToolCallDetail; any field name, values are fragments or scalars.
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get('fields'), dict) or len(raw['fields']) > 32:
+        raise ValueError('Invalid tool detail')
+    fields = {}
+    for key, value in raw['fields'].items():
+        _name(key)
+        if value is None or type(value) is bool:
+            fields[key] = value
+        elif type(value) in (int, float):
+            if value != value or value in (float('inf'), float('-inf')):
+                raise ValueError('Invalid tool detail')
+            fields[key] = value
+        else:
+            fields[key] = _view(value)
+    return {'kind': _name(raw.get('kind')), 'fields': fields}
+
+
+def _todo(raw):
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise ValueError('Invalid todo items')
+    items = []
+    for task in raw:
+        status = task.get('status') if isinstance(task, dict) else None
+        if (not isinstance(task, dict) or type(task.get('completed')) is not bool
+                or (status is not None and not isinstance(status, str))):
+            raise ValueError('Invalid todo item')
+        items.append({'text': _view(task.get('text')), 'completed': task['completed'], 'status': status})
+    return items
+
+
+def _activity(item):
+    """Display-only activity fields; none of them feed source identities."""
+    status = item.get('status')
+    if status is not None:
+        _name(status)
+    omitted = item.get('itemsOmitted')
+    if omitted is not None and (type(omitted) is not int or omitted < 0):
+        raise ValueError('Invalid todo items')
+    title, _ = _fragment(item.get('title'))
+    return {'title': title, 'status': status, 'detail': _detail(item.get('detail')),
+            'error': _view(item.get('error')), 'items': _todo(item.get('items')), 'itemsOmitted': omitted}
+
+
 def _entry(entry, agent_id, epoch, page_blocked):
     start, end = entry['seqStart'], entry['seqEnd']
     if not _sequence(start) or not _sequence(end) or start > end:
@@ -62,7 +129,7 @@ def _entry(entry, agent_id, epoch, page_blocked):
     if not isinstance(item, dict) or not isinstance(item['type'], str) or not item['type']:
         raise ValueError('Invalid timeline item')
     kind = {'user_message': 'user', 'assistant_message': 'assistant'}.get(item['type'], 'activity')
-    text, truncated = _fragment(item.get('text') if kind != 'activity' else item.get('title'))
+    text, truncated = _fragment(item.get('text'))
     source_type = item.get('sourceType')
     activity_type, _ = _fragment(source_type) if source_type is not None else (item['type'], False)
     locator = {'epoch': epoch, 'seq_start': start, 'seq_end': end,
@@ -83,6 +150,7 @@ def _entry(entry, agent_id, epoch, page_blocked):
         reason = '来源标识超出当前候选保存范围'
     return {'id': identity, 'label': f'序号 {start}–{end}', 'kind': kind, 'text': text,
             'truncated': truncated, 'activityType': activity_type if kind == 'activity' else None,
+            **(_activity(item) if kind == 'activity' else {}),
             'candidateBlockedReason': reason, 'source_locator': locator}
 
 
