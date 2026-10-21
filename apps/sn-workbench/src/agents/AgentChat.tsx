@@ -6,6 +6,7 @@ import type { LucideIcon } from 'lucide-react-native';
 import { Button, Copy, s, useTheme } from '../ui';
 import type { TimelineText } from '../contracts';
 import type { SessionEntry, SessionPage, SessionRemote } from './chatTypes';
+import { Markdown } from './Markdown';
 
 export type CandidateKind = 'finding' | 'direction' | 'next_step';
 // `before`: entry ids already on the page when it was sent, so the bubble sits
@@ -227,7 +228,7 @@ function AssistantMessage({ entry, candidateReason, onCandidate }: {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   return <View testID="chat-assistant" style={{ gap: 4 }} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
-    {entry.text !== null ? <Copy>{entry.text}</Copy> : <Copy muted>此条目没有可显示正文</Copy>}
+    {entry.text !== null ? <Markdown text={entry.text} /> : <Copy muted>此条目没有可显示正文</Copy>}
     {entry.truncated && <Copy small muted>正文已截断</Copy>}
     {onCandidate && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, marginLeft: -8, flexWrap: 'wrap', minHeight: 32,
       opacity: hovered || open ? 1 : 0 }}>
