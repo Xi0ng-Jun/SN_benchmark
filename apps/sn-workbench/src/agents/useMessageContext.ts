@@ -62,6 +62,8 @@ export function useMessageContext(task: Task | undefined, session: TaskSession |
   const active = () => scope.current.key === key && scope.current.generation === generation;
 
   const [drafts, setDrafts] = useState<Record<string, MessageDraft>>({});
+  // The draft whose automatic attachments (brief, summaries) are still loading.
+  const [autoFor, setAutoFor] = useState<string | null>(null);
   const draftsRef = useRef(drafts);
   // The ref is authoritative between React renders; writes update it synchronously.
   const draft = drafts[draftId] ?? { text: '', attachments: [] };
@@ -126,13 +128,16 @@ export function useMessageContext(task: Task | undefined, session: TaskSession |
     if (!task || !session) return;
     const captured = { taskId: task.id, draftId };
     const fresh: Attachment[] = [];
-    for (const { reference: ref, skipSha } of wanted) {
-      try {
-        const snapshot = await api<ContextSnapshot>(`/tasks/${captured.taskId}/context`, { reference: ref });
-        if (snapshot && typeof snapshot.text === 'string' && /^[a-f0-9]{64}$/.test(snapshot.sha256 ?? '')
-            && snapshot.reference?.kind === ref.kind && snapshot.sha256 !== skipSha) fresh.push({ ...snapshot, id: requestKey() });
-      } catch { /* optional convenience; the user can still attach it manually */ }
-    }
+    setAutoFor(captured.draftId);
+    try {
+      for (const { reference: ref, skipSha } of wanted) {
+        try {
+          const snapshot = await api<ContextSnapshot>(`/tasks/${captured.taskId}/context`, { reference: ref });
+          if (snapshot && typeof snapshot.text === 'string' && /^[a-f0-9]{64}$/.test(snapshot.sha256 ?? '')
+              && snapshot.reference?.kind === ref.kind && snapshot.sha256 !== skipSha) fresh.push({ ...snapshot, id: requestKey() });
+        } catch { /* optional convenience; the user can still attach it manually */ }
+      }
+    } finally { setAutoFor(current => current === captured.draftId ? null : current); }
     const saved = draftsRef.current[captured.draftId] ?? { text: '', attachments: [] };
     const missing = fresh.filter(item => !saved.attachments.some(old => referenceKey(old.reference) === referenceKey(item.reference)));
     if (latestDraft.current !== captured.draftId || !missing.length) return;
@@ -160,6 +165,7 @@ export function useMessageContext(task: Task | undefined, session: TaskSession |
     addBlockedReason: edit && !edit.canWrite() ? '当前消息意图已冻结，请核对或显式开始新草稿' : !session ? '请先明确选择消息草稿目的地' : duplicate ? '此来源快照已在当前消息草稿中' : null,
     requestPreview: () => { void requestPreview(); }, add, open, invalidate,
     autoAttach: (wanted: { reference: ContextReference; skipSha: string | null }[]) => { void autoAttach(wanted); },
+    autoAttaching: autoFor !== null && autoFor === draftId,
     readDraft: () => draftsRef.current[draftId] ?? { text: '', attachments: [] },
     // Only the intent owner calls this after moving to a new, unlocked draft.
     clearDraft: () => updateDraft({ text: '', attachments: [] }),

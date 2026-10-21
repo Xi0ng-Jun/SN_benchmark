@@ -5,6 +5,7 @@ import { useResource } from '../contracts';
 import type { Actions } from './actions';
 import type { ConfirmSpec } from './parts';
 import { Badge, Delta, Eyebrow, KeyValue, Mono, RemoveConfirm, Section } from './parts';
+import { agentStatusLabels } from '../agents/AgentPicker';
 import type { Step } from './next';
 
 export type NodeAgent = { sessionId: string; role: 'analyst' | 'implementer'; label: string; status: string | null };
@@ -161,7 +162,7 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
       {agents.map(a => <View key={a.sessionId} testID={'node-agent-' + a.sessionId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: a.status === 'running' || a.status === 'initializing' ? theme.primary : theme.lineStrong }} />
         <Text numberOfLines={1} style={{ flex: 1, minWidth: 140, fontSize: 12, color: theme.text }}>{a.label}</Text>
-        <Text style={{ fontSize: 11, color: theme.muted }}>{a.status === 'running' || a.status === 'initializing' ? '正在工作' : a.status === 'idle' ? '空闲' : a.status ?? '状态未知'}</Text>
+        <Text style={{ fontSize: 11, color: theme.muted }}>{a.status === 'running' || a.status === 'initializing' ? '正在工作' : a.status ? agentStatusLabels[a.status] ?? a.status : '读取中…'}</Text>
         <Button label="打开对话" onPress={() => onOpenAgent(a.sessionId)} testID={'open-agent-' + a.sessionId} />
         <RemoveConfirm onRemove={() => onRemoveAgent(a.sessionId)} testID={'remove-agent-' + a.sessionId} />
       </View>)}

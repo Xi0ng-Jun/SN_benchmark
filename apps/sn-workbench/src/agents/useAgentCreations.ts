@@ -313,8 +313,10 @@ export function useAgentCreations(task: Task | undefined, actor: string, compact
     open: () => setOpened(true), close: () => setOpened(false),
     // Binding of the next creation: an implementer is always for one approved card; an
     // analyst reads one node or (scope 'iteration') the whole tree.
-    setTarget: (role: Role, hypothesisId?: string, candidateId?: string, scope?: 'iteration') => { if (current && current.status !== 'saving' && current.status !== 'unknown') {
-      current.role = role; current.hypothesisId = hypothesisId; current.candidateId = candidateId; current.scope = scope; } },
+    // `title` names the Agent in Paseo; without one Paseo shows the first message body.
+    setTarget: (role: Role, hypothesisId?: string, candidateId?: string, scope?: 'iteration', title?: string) => { if (current && current.status !== 'saving' && current.status !== 'unknown') {
+      current.role = role; current.hypothesisId = hypothesisId; current.candidateId = candidateId; current.scope = scope;
+      if (title !== undefined) current.title = title; } },
     newIntent, check, checkPending: check, selectRecord,
     canNewIntent: mayStartNewIntent(),
     canCheckPending: Boolean(current?.key && !current.intentId && (current.status === 'unknown' || current.status === 'error')),

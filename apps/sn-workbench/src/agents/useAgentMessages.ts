@@ -40,6 +40,7 @@ const refusalContracts = [
   [422, 'MESSAGE_CONTEXT_UNAVAILABLE_PREWRITE', 'Selected message context unavailable before write'],
   [422, 'MESSAGE_BRIDGE_UNCONFIGURED_PREWRITE', 'Message bridge is not configured'],
   [422, 'MESSAGE_INPUT_REJECTED_PREWRITE', 'Message input rejected before write'],
+  [422, 'AGENT_REMOVED_PREWRITE', '这个 Agent 已从工作台移除，不能再发消息'],
 ] as const;
 const refused = (status: number, value: unknown, key: string): value is Omit<Refusal, 'status'> =>
   closed(value, ['error', 'code', 'request_key']) && obj(value) && value.request_key === key

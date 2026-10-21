@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .agent_messages import (
     AgentMessageStore, MessageContextChanged, MessageContextUnavailable,
-    MessageInputRejected, MAX_MESSAGE_BYTES, MAX_REFERENCES,
+    MessageInputRejected, SessionRemoved, MAX_MESSAGE_BYTES, MAX_REFERENCES,
 )
 from .message_bridge import validate_send_request
 
@@ -171,6 +171,9 @@ class MessageAPI:
             except MessageContextUnavailable:
                 return _prewrite_refusal('MESSAGE_CONTEXT_UNAVAILABLE_PREWRITE',
                                          'Selected message context unavailable before write', command.request_key)
+            except SessionRemoved:
+                return _prewrite_refusal('AGENT_REMOVED_PREWRITE', '这个 Agent 已从工作台移除，不能再发消息',
+                                         command.request_key)
             except MessageInputRejected:
                 return _prewrite_refusal('MESSAGE_INPUT_REJECTED_PREWRITE',
                                          'Message input rejected before write', command.request_key)

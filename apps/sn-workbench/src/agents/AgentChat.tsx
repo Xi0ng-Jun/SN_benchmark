@@ -126,7 +126,7 @@ function Row({ icon: Icon, name, summary, mono = false, status, color, body, tes
   const Chevron = open ? ChevronDown : ChevronRight;
   const head = <>
     <Icon size={12} strokeWidth={1.6} color={color ?? theme.muted} />
-    <Text style={{ fontSize: 12, fontWeight: '500', color: color ?? theme.secondary }}>{name}</Text>
+    <Text style={{ flexShrink: 0, fontSize: 12, fontWeight: '500', color: color ?? theme.secondary }}>{name}</Text>
     {summary ? <Text numberOfLines={1} style={[mono ? s.mono : { fontSize: 12 }, { flexShrink: 1, color: theme.muted }]}>{summary}</Text> : null}
     {status && <Text style={{ fontSize: 12, color: status.color }}>{status.label}</Text>}
     {body ? <Chevron size={12} color={theme.muted} /> : null}

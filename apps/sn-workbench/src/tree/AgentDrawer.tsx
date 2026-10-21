@@ -184,6 +184,8 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
   }, [session?.id, messages.draftId, messages.editingLocked, messages.status, Boolean(sentRecords.data), recordsAt, sentTick, hasRuns]);
   const shownOutgoing = outgoing && outgoing.sessionId === session?.id ? outgoing : null;
   const shownError = chatError && chatError.sessionId === session?.id ? chatError.text : null;
+  // The first message must carry the role brief: wait for the automatic attachments.
+  const attaching = Boolean(session) && ((!sentRecords.data && !sentRecords.error) || contexts.autoAttaching);
   const composerStatus: ComposerStatus | null = !task || !session ? null
     : messages.status === 'unknown' ? { text: '上一条消息的发送结果未确认，确认前不能再发。' + (messages.detail ? `（${messages.detail}）` : ''), tone: 'error',
       action: messages.checking ? undefined : { label: '核对', onPress: messages.check } }
@@ -191,8 +193,9 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
     : sessions.remote.status === 'loading' && !sessions.remote.agentStatusLabel ? { text: '正在连接 Agent…', tone: 'muted' }
     : sessions.remote.status === 'missing' || sessions.remote.status === 'unavailable' ? null
     : messages.blockedReason && !/正在取得消息写入权|当前意图已冻结/.test(messages.blockedReason) ? { text: messages.blockedReason, tone: 'muted' }
-    : sessions.running ? { text: 'Agent 正在运行：现在发送会打断当前这一轮', tone: 'muted' } : null;
-  const canSend = Boolean(session) && messages.blockedReason === null && messages.status === 'idle' && messageText.trim().length > 0;
+    : sessions.running ? { text: 'Agent 正在运行：现在发送会打断当前这一轮', tone: 'muted' }
+    : attaching ? { text: '正在附上工作说明与材料…', tone: 'muted' } : null;
+  const canSend = Boolean(session) && !attaching && messages.blockedReason === null && messages.status === 'idle' && messageText.trim().length > 0;
   // The menu creates for the current context: the pending target, else the selected node,
   // else the iteration. Nothing creates an unbound analyst any more.
   const nodeTarget: AgentTarget | null = !node ? null
@@ -207,7 +210,9 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
   const createAgent = (profileId: string) => {
     if (!createFor) return;
     if (creations.canNewIntent) creations.newIntent();
-    creations.setTarget(createFor.role, createFor.hypothesisId, createFor.candidateId, createFor.scope);
+    const name = `${roleLabels[createFor.role]} · ${createFor.scope === 'iteration' ? '迭代' : '候选 ' + createFor.label} · ${task?.title ?? ''}`;
+    creations.setTarget(createFor.role, createFor.hypothesisId, createFor.candidateId, createFor.scope,
+      name.replace(/\s+/g, ' ').trim().slice(0, 80).trim());
     creations.panel?.onProfileSelect(profileId);
     creations.panel?.onCreate?.();
   };

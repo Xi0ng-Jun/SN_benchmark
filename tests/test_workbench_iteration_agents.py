@@ -110,6 +110,10 @@ def test_removing_a_session_archives_the_agent_and_keeps_its_record(env):
     missing = TaskSessionReader(env['repo'], Bridge({'status': 'missing', 'code': 'AGENT_NOT_FOUND'})).remove(
         tree['task_id'], 's1', actor='alice')
     assert missing['archive'] == {'status': 'not_found'}
+    # A removed Agent is not silently linked back.
+    from rag_eval.workbench.repository import Conflict
+    with pytest.raises(Conflict, match='removed'):
+        env['repo'].attach_session(tree['task_id'], 'agent-1', actor='alice', request_key='relink')
 
 
 def test_merge_derivation_requests_name_folded_candidates(env, monkeypatch, tmp_path, capsys):

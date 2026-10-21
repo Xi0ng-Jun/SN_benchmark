@@ -192,6 +192,8 @@ class WorkbenchRepository:
                 return prior
             existing = conn.execute('SELECT * FROM task_sessions WHERE task_id=? AND agent_id=?',
                                     (task_id, agent_id)).fetchone()
+            if existing and 'removed_at' in existing.keys() and existing['removed_at'] is not None:
+                raise Conflict('This Agent was removed from the workbench; create a new one instead')
             if existing:
                 result = dict(existing)
             else:

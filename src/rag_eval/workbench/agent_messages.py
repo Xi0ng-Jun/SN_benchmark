@@ -38,6 +38,10 @@ class MessageInputRejected(ValueError):
     """A new intent failed a pure budget check before INSERT."""
 
 
+class SessionRemoved(MessageInputRejected):
+    """The session was removed from the workbench; its Agent is archived."""
+
+
 def _opaque(value, name):
     _text(value, name, limit=200)
     if value.strip() != value or '\0' in value:
@@ -149,7 +153,7 @@ class AgentMessageStore:
             task = self._task(conn, task_id)
             session, location = self._session(conn, task, session_id)
             if 'removed_at' in session.keys() and session['removed_at'] is not None:
-                raise MessageInputRejected('This Agent was removed from the workbench')
+                raise SessionRemoved('This Agent was removed from the workbench')
             prior = conn.execute('SELECT * FROM agent_message_intents WHERE task_id=? AND actor=? AND request_key=?',
                                  (task_id, actor, request_key)).fetchone()
             if prior is not None:
