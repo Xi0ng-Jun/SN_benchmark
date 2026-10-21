@@ -54,6 +54,15 @@ def test_iteration_analysts_are_bound_and_need_two_evaluated_candidates(env):
     with pytest.raises(ValueError, match='without a candidate'):
         store.prepare(tree['task_id'], 'sol', actor='a', request_key='x', role='analyst', candidate_id=root['id'],
                       scope='iteration')
+    # A frozen node that has not finished a run has nothing to analyse yet.
+    store.candidate_state = lambda candidate_id: env['service'].candidate(candidate_id)['state']
+    unrun = env['service'].derive(root['id'], note='unrun', actor='alice', request_key='unrun')
+    Path(unrun['worktree']['path'], 'backend/app/__init__.py').write_text('VALUE = 4\n')
+    env['service'].freeze(unrun['id'], actor='alice')
+    assert env['service'].candidate(unrun['id'])['state'] == 'frozen'
+    with pytest.raises(ValueError, match='no finished run'):
+        store.prepare(tree['task_id'], 'sol', actor='a', request_key='f', role='analyst', candidate_id=unrun['id'])
+    assert store.prepare(tree['task_id'], 'sol', actor='a', request_key='r', role='analyst', candidate_id=root['id'])['candidate_id'] == root['id']
     store.evaluated_count = lambda task_id: 1
     with pytest.raises(ValueError, match='two evaluated'):
         store.prepare(tree['task_id'], 'sol', actor='a', request_key='i', role='analyst', scope='iteration')

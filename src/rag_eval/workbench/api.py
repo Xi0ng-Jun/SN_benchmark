@@ -204,6 +204,7 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
         return sum(c['state'] == 'evaluated' for c in iteration_api.service.iteration(found[0]['id'])['candidates']) \
             if found else None
     creation_api.store.evaluated_count = evaluated_count
+    creation_api.store.candidate_state = lambda candidate_id: iteration_api.service.candidate(candidate_id)['state']
     app.include_router(views.router())
     message_api.store.run_views = views
 

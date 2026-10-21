@@ -41,6 +41,8 @@ class AgentCreationStore:
         # The server wires the iteration service here; without it an iteration
         # analyst cannot be created.
         self.evaluated_count = None
+        # candidate_id -> derived state; an analyst needs a node that has finished a run.
+        self.candidate_state = None
         self._bindings = copy.deepcopy(bindings)
         with repository.connect(write=True) as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS agent_creation_intents(
@@ -137,6 +139,8 @@ class AgentCreationStore:
             payload['scope'] = scope
         # Read before the write transaction: evaluated states come from run admission.
         evaluated = self.evaluated_count(task_id) if scope and callable(self.evaluated_count) else None
+        state = (self.candidate_state(candidate_id)
+                 if role == 'analyst' and candidate_id is not None and callable(self.candidate_state) else None)
         repo = self.repository
         with repo.connect(write=True) as conn:
             task = repo._require(conn, 'tasks', task_id)
@@ -170,6 +174,10 @@ class AgentCreationStore:
                         candidate['proposal_id'] != hypothesis_id or candidate['status'] != 'ready')):
                     raise ValueError('The candidate is not frozen for analysis' if role == 'analyst'
                                      else 'The candidate is not implementing this proposal')
+                # Evaluated or not admitted: there are runs to read. Frozen-but-unrun and
+                # running nodes have nothing yet (the workbench offers no button there either).
+                if role == 'analyst' and state is not None and state not in ('evaluated', 'failed'):
+                    raise ValueError('The candidate has no finished run to analyse yet')
             intent_id, agent_id = uid(), str(uuid.uuid4())
             command = self._command(conn, task, profile_id, title, agent_id, 'creation:' + intent_id, role, hypothesis_id,
                                     candidate_id)
