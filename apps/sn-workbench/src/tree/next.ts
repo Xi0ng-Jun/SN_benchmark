@@ -1,4 +1,4 @@
-import type { TaskSession } from '../contracts';
+import { liveSessions, TaskSession } from '../contracts';
 import type { ActionRequest, Candidate, IterationTree, Proposal } from './contracts';
 
 // What each node is waiting for, inferred only from recorded state: candidate state,
@@ -16,17 +16,27 @@ export type NextContext = {
 
 const busy = (status: string | null | undefined) => status === 'running' || status === 'initializing';
 
+// Removed sessions are hidden everywhere.
 export function implementersOf(candidateId: string, sessions: TaskSession[]) {
-  return sessions.filter(s => s.role === 'implementer' && s.candidate_id === candidateId);
+  return liveSessions(sessions).filter(s => s.role === 'implementer' && s.candidate_id === candidateId);
 }
 
-// An analyst is bound to the node it analyses; one bound to the whole iteration is the earlier kind.
+// An analyst is bound to the node it analyses, or explicitly to the whole iteration
+// (scope 'iteration'); one with neither is the earlier, unbound kind.
 export function analystsOf(candidateId: string, sessions: TaskSession[]) {
-  return sessions.filter(s => s.role === 'analyst' && s.candidate_id === candidateId);
+  return liveSessions(sessions).filter(s => s.role === 'analyst' && s.candidate_id === candidateId);
 }
+
+export function iterationAnalystsOf(sessions: TaskSession[]) {
+  return liveSessions(sessions).filter(s => s.role === 'analyst' && s.scope === 'iteration' && !s.candidate_id);
+}
+
+// The iteration analyst compares nodes: it needs the root and at least one evaluated child.
+export const ITERATION_MIN_EVALUATED = 2;
+export const iterationBlockedReason = '至少两个已评测节点（根和一个子节点）后才能新建';
 
 export function agentsOf(candidateId: string, sessions: TaskSession[]) {
-  return sessions.filter(s => s.candidate_id === candidateId && (s.role === 'analyst' || s.role === 'implementer'));
+  return liveSessions(sessions).filter(s => s.candidate_id === candidateId && (s.role === 'analyst' || s.role === 'implementer'));
 }
 
 export function nextStep(c: Candidate, ctx: NextContext): Step | null {

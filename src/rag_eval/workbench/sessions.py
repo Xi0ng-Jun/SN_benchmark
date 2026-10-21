@@ -55,3 +55,29 @@ class TaskSessionReader:
                                ('id', 'title', 'status', 'provider', 'model')}} if matched
                               else {'status': 'unavailable', 'code': 'AGENT_SCOPE_MISMATCH'})
         return {'result': result, 'release': _outcome(envelope['release']), 'observed_at': now()}
+
+    def remove(self, task_id, session_id, *, actor):
+        """Hide a session from the workbench and archive its Paseo Agent.
+
+        The row, its messages and findings stay; removal is recorded even when
+        archiving fails, and the archive outcome is reported as observed.
+        """
+        session, _ = self.scope(task_id, session_id)
+        actor = _text(actor, 'actor', limit=200)
+        with self.repository.connect(write=True) as conn:
+            if session['removed_at'] is None:
+                stamp = now()
+                conn.execute('UPDATE task_sessions SET removed_at=?, removed_by=? WHERE id=?', (stamp, actor, session_id))
+                self.repository._event(conn, task_id, 'session.removed', session_id,
+                                       {'agent_id': session['agent_id'], 'removed_by': actor})
+                session.update(removed_at=stamp, removed_by=actor)
+        if self.bridge is None:
+            archive = {'status': 'unavailable', 'code': 'BRIDGE_NOT_CONFIGURED'}
+        else:
+            raw = self.bridge.call({'op': 'archiveAgent', 'agentId': session['agent_id']})['result']
+            archive = ({'status': 'already_archived' if raw.get('already') is True else 'archived'} if raw['status'] == 'ok'
+                       else {'status': 'not_found'} if raw['status'] == 'missing' else _outcome(raw))
+        visible = ('id', 'task_id', 'agent_id', 'linked_by', 'linked_at', 'role', 'hypothesis_id', 'candidate_id',
+                   'scope', 'removed_at', 'removed_by')
+        return {'session': {k: session[k] for k in visible if session.get(k) is not None or k in visible[:5]},
+                'archive': archive}

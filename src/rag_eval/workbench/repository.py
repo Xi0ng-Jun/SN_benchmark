@@ -63,7 +63,9 @@ class WorkbenchRepository:
             # Agent role and creation cwd. NULL keeps the legacy rule for sessions
             # linked before roles existed: bound Task worktree, else workspace.
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(task_sessions)')}
-            for column in ('role', 'cwd', 'hypothesis_id'):
+            # scope='iteration' marks an analyst of the whole iteration; removed_* hide a
+            # session from the workbench while keeping its record and history.
+            for column in ('role', 'cwd', 'hypothesis_id', 'scope', 'removed_at', 'removed_by'):
                 if column not in columns:
                     conn.execute(f'ALTER TABLE task_sessions ADD COLUMN {column} TEXT')
             conn.execute('PRAGMA user_version=4')
@@ -163,9 +165,11 @@ class WorkbenchRepository:
             task = self._require(conn, 'tasks', task_id)
             # cwd stays on the server; the browser sees the role and, for an implementer, its candidate.
             candidate = ',candidate_id' if 'candidate_id' in {r['name'] for r in conn.execute('PRAGMA table_info(task_sessions)')} else ''
-            task['sessions'] = [{k: v for k, v in dict(row).items() if v is not None or k not in ('role', 'hypothesis_id', 'candidate_id')}
+            optional = ('role', 'hypothesis_id', 'candidate_id', 'scope', 'removed_at', 'removed_by')
+            task['sessions'] = [{k: v for k, v in dict(row).items() if v is not None or k not in optional}
                                 for row in conn.execute(
-                f'SELECT id,task_id,agent_id,linked_by,linked_at,role,hypothesis_id{candidate} FROM task_sessions WHERE task_id=? ORDER BY rowid',
+                f'SELECT id,task_id,agent_id,linked_by,linked_at,role,hypothesis_id,scope,removed_at,removed_by{candidate} '
+                'FROM task_sessions WHERE task_id=? ORDER BY rowid',
                 (task_id,))]
             task['results'] = [dict(json.loads(row['summary']), attached_at=row['attached_at']) for row in conn.execute(
                 'SELECT * FROM task_results WHERE task_id=? ORDER BY attached_at,result_id', (task_id,))]

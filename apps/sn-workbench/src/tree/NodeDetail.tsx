@@ -4,7 +4,7 @@ import { Button, Copy, fmt, MONO, useTheme } from '../ui';
 import { useResource } from '../contracts';
 import type { Actions } from './actions';
 import type { ConfirmSpec } from './parts';
-import { Badge, Delta, Eyebrow, KeyValue, Mono, Section } from './parts';
+import { Badge, Delta, Eyebrow, KeyValue, Mono, RemoveConfirm, Section } from './parts';
 import type { Step } from './next';
 
 export type NodeAgent = { sessionId: string; role: 'analyst' | 'implementer'; label: string; status: string | null };
@@ -96,10 +96,11 @@ function Predictions({ proposal }: { proposal: Proposal }) {
 }
 
 export function CandidateDetail({ tree, candidate, labels, proposal, requests, actions, onConfirm, onReadRun, onImplementer, refreshKey,
-  step, agents, onOpenAgent, onProposal, onAnalyst }: {
+  step, agents, onOpenAgent, onProposal, onAnalyst, onNewAnalyst, onRemoveAgent }: {
   tree: IterationTree; candidate: Candidate; labels: Record<string, string>; proposal: Proposal | undefined; requests: ActionRequest[];
   actions: Actions; onConfirm: (spec: ConfirmSpec) => void; onReadRun: (runId: string, execution?: string) => void; onImplementer: (c: Candidate, p: Proposal) => void; refreshKey: number;
   step: Step | null; agents: NodeAgent[]; onOpenAgent: (sessionId: string) => void; onProposal: (id: string) => void; onAnalyst: () => void;
+  onNewAnalyst: () => void; onRemoveAgent: (sessionId: string) => Promise<unknown>;
 }) {
   const theme = useTheme();
   const c = candidate;
@@ -112,6 +113,9 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
   // Marked only where Δ父 and Δ根 differ; under the root they are the same record.
   const rootRegressed = c.parent_candidate_id !== tree.root_candidate_id ? rootRecord?.regressed ?? [] : [];
   const mine = requests.filter(r => r.target_id === c.id);
+  // A node can have several Agents; new ones are offered whenever the state allows.
+  const canAnalyse = ['evaluated', 'failed'].includes(c.state);
+  const canImplement = c.state === 'implementing' && Boolean(proposal);
   const canCheck = Boolean(proposal && parentRecord?.admission?.status === 'admitted' && ['approved', 'implementing', 'verified'].includes(proposal.status));
   return <View testID="node-detail" style={{ gap: 4 }}>
     <View style={{ gap: 6, paddingBottom: 12 }}>
@@ -139,28 +143,33 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
           <Button label="看提议" primary onPress={() => onProposal(step.proposalId!)} testID="act-proposal" />}
         {step?.action === 'open-agent' && step.sessionId && <Button label={`打开${agents.find(a => a.sessionId === step.sessionId)?.role === 'analyst' ? '分析' : '实现'} Agent 对话`}
           primary={step.who === 'you'} onPress={() => onOpenAgent(step.sessionId!)} testID="act-open-agent" />}
-        {c.state === 'implementing' && proposal && !agents.length && <Button label="新建实现 Agent" primary={step?.action === 'implementer'} onPress={() => onImplementer(c, proposal)} testID="act-implementer" />}
+        {canImplement && proposal && !agents.some(a => a.role === 'implementer') && <Button label="新建实现 Agent" primary={step?.action === 'implementer'} onPress={() => onImplementer(c, proposal)} testID="act-implementer" />}
         {c.state === 'implementing' && <Button label="冻结" primary={step?.action === 'freeze'} onPress={() => onConfirm(actions.freeze(c))} testID="act-freeze" />}
         {['frozen', 'failed', 'evaluated'].includes(c.state) && <Button label={c.attempts.length ? '再运行一次' : '运行'} primary={step?.action === 'run'}
           onPress={() => onConfirm(actions.run(c))} testID="act-run" />}
         {isRoot && ['frozen', 'failed'].includes(c.state) && <Button label="挂接已有结果"
           onPress={() => onConfirm(actions.adopt(c))} testID="act-adopt-runs" />}
         {canCheck && <Button label="核对预测" primary={step?.action === 'check'} onPress={() => onConfirm(actions.check(c))} testID="act-check" />}
-        {['evaluated', 'failed'].includes(c.state) && !(step?.action === 'open-agent' && agents.some(a => a.sessionId === step.sessionId && a.role === 'analyst')) &&
+        {canAnalyse && !(step?.action === 'open-agent' && agents.some(a => a.sessionId === step.sessionId && a.role === 'analyst')) &&
           <Button label={agents.some(a => a.role === 'analyst') ? '打开分析 Agent' : '分析这个节点'} primary={step?.action === 'analyst'} onPress={onAnalyst} testID="act-analyst" />}
         {c.state === 'evaluated' && <Button label="派生子节点" onPress={() => onConfirm(actions.derive(c))} testID="act-derive" />}
         {c.state === 'evaluated' && !isRoot && <Button label="采纳" onPress={() => onConfirm(actions.decide(c, 'adopted'))} testID="act-adopt" />}
         {c.state === 'evaluated' && !isRoot && <Button label="放弃" onPress={() => onConfirm(actions.decide(c, 'rejected'))} testID="act-reject" />}
       </View>
     </View>
-    {(agents.length > 0 || c.state === 'implementing') && <Section title="Agent" testID="section-agents" meta={<Text style={{ fontSize: 11, color: theme.muted }}>{agents.length ? `${agents.length} 个` : '无'}</Text>}>
-      {agents.map(a => <View key={a.sessionId} testID={'node-agent-' + a.sessionId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+    {(agents.length > 0 || canAnalyse || c.state === 'implementing') && <Section title="Agent" testID="section-agents" meta={<Text style={{ fontSize: 11, color: theme.muted }}>{agents.length ? `${agents.length} 个` : '无'}</Text>}>
+      {agents.map(a => <View key={a.sessionId} testID={'node-agent-' + a.sessionId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: a.status === 'running' || a.status === 'initializing' ? theme.primary : theme.lineStrong }} />
-        <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, color: theme.text }}>{a.label}</Text>
+        <Text numberOfLines={1} style={{ flex: 1, minWidth: 140, fontSize: 12, color: theme.text }}>{a.label}</Text>
         <Text style={{ fontSize: 11, color: theme.muted }}>{a.status === 'running' || a.status === 'initializing' ? '正在工作' : a.status === 'idle' ? '空闲' : a.status ?? '状态未知'}</Text>
         <Button label="打开对话" onPress={() => onOpenAgent(a.sessionId)} testID={'open-agent-' + a.sessionId} />
+        <RemoveConfirm onRemove={() => onRemoveAgent(a.sessionId)} testID={'remove-agent-' + a.sessionId} />
       </View>)}
       {!agents.some(a => a.role === 'implementer') && c.state === 'implementing' && <Copy small muted>这个候选还没有实现 Agent。它只在该候选的 worktree 里工作，只拿到提议里给实现者的字段。</Copy>}
+      {(canAnalyse || canImplement) && <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+        {canAnalyse && <Button label="新建分析 Agent" onPress={onNewAnalyst} testID="agent-new-analyst" />}
+        {canImplement && proposal && <Button label="新建实现 Agent" onPress={() => onImplementer(c, proposal)} testID="agent-new-implementer" />}
+      </View>}
     </Section>}
     {mine.some(r => r.status === 'pending') && <Section title="待确认请求" testID="section-requests"
       meta={<Badge label={String(mine.filter(r => r.status === 'pending').length)} tone="warning" />}>

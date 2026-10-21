@@ -195,9 +195,15 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
                                  execution_config=config.get('job_execution'),
                                  execution_records=lambda: job_api.execution.records(workspace['id']))
     from .iterations_api import IterationAPI
-    app.include_router(IterationAPI(repository, workspace, worktree_service, plans=plans, job_api=job_api,
-                                    actor=actor, config=config, run_views=views,
-                                    creator=hypothesis_worktree_creator).router())
+    iteration_api = IterationAPI(repository, workspace, worktree_service, plans=plans, job_api=job_api,
+                                 actor=actor, config=config, run_views=views, creator=hypothesis_worktree_creator)
+    app.include_router(iteration_api.router())
+
+    def evaluated_count(task_id):
+        found = [i for i in iteration_api.service.iterations() if i['task_id'] == task_id]
+        return sum(c['state'] == 'evaluated' for c in iteration_api.service.iteration(found[0]['id'])['candidates']) \
+            if found else None
+    creation_api.store.evaluated_count = evaluated_count
     app.include_router(views.router())
     message_api.store.run_views = views
 
@@ -314,6 +320,10 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
     @app.post('/api/tasks/{task_id}/sessions')
     def attach_session(task_id: str, command: AttachSession):
         return repository.attach_session(task_id, command.agent_id, actor=actor, request_key=command.request_key)
+
+    @app.post('/api/tasks/{task_id}/sessions/{session_id}/remove')
+    def remove_session(task_id: str, session_id: str):
+        return session_reader.remove(task_id, session_id, actor=actor)
 
     @app.get('/api/tasks/{task_id}/sessions/{session_id}/agent')
     def read_session_agent(task_id: str, session_id: str):

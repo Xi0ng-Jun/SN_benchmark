@@ -58,6 +58,23 @@ export function KeyValue({ label, children }: { label: string; children: React.R
   </View>;
 }
 
+// Removing an Agent from the workbench: "移除" asks once more inline before it runs.
+export function RemoveConfirm({ onRemove, testID }: { onRemove: () => Promise<unknown>; testID?: string }) {
+  const theme = useTheme();
+  const [state, setState] = useState<'idle' | 'confirm' | 'busy'>('idle');
+  const [error, setError] = useState('');
+  const run = async () => {
+    setState('busy'); setError('');
+    try { await onRemove(); setState('idle'); } catch (e) { setError((e as Error).message); setState('confirm'); }
+  };
+  if (state === 'idle') return <Button label="移除" onPress={() => setState('confirm')} testID={testID} />;
+  return <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 1 }}>
+    {!!error && <Text numberOfLines={2} style={{ flexShrink: 1, fontSize: 11, color: theme.error }}>{error}</Text>}
+    <Button label={state === 'busy' ? '移除中…' : '确认移除'} primary disabled={state === 'busy'} onPress={run} testID={testID && testID + '-confirm'} />
+    <Button label="取消" disabled={state === 'busy'} onPress={() => { setState('idle'); setError(''); }} testID={testID && testID + '-cancel'} />
+  </View>;
+}
+
 export type ConfirmSpec = {
   title: string; lines: { label: string; value: string }[]; confirmLabel: string; danger?: boolean;
   note?: { label: string; required: boolean; placeholder?: string };

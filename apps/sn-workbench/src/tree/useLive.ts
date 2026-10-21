@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, AgentSnapshot, ReadEnvelope, Task } from '../contracts';
+import { api, AgentSnapshot, liveSessions, ReadEnvelope, Task } from '../contracts';
 import type { CandidateChanges, IterationTree } from './contracts';
 import type { AgentLive } from './next';
 
@@ -11,7 +11,7 @@ export function useLive(task: Task | undefined, tree: IterationTree | undefined,
   const [changes, setChanges] = useState<Record<string, number | undefined>>({});
   const [tick, setTick] = useState(0);
   const [readyFor, setReadyFor] = useState<string | null>(null);
-  const sessions = (task?.sessions ?? []).slice(-12);
+  const sessions = liveSessions(task?.sessions ?? []).slice(-12);
   const implementing = (tree?.candidates ?? []).filter(c => c.state === 'implementing' && c.worktree?.status === 'ready');
   const key = `${task?.id}|${sessions.map(s => s.id).join()}|${implementing.map(c => c.id).join()}|${refresh}|${tick}`;
   useEffect(() => {

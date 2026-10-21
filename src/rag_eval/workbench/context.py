@@ -32,7 +32,7 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
     """
     fields = {'goal': {'kind'}, 'file': {'kind', 'path'},
               'result': {'kind', 'result_id'}, 'case': {'kind', 'result_id', 'case_id'},
-              'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'brief': {'kind', 'session_id'}}
+              'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'iteration_tree': {'kind'}, 'brief': {'kind', 'session_id'}}
     if (not isinstance(reference, dict) or not isinstance(reference.get('kind'), str)
             or reference['kind'] not in fields or set(reference) != fields[reference['kind']]
             or any(not isinstance(v, str) or not v.strip() for v in reference.values())):
@@ -53,6 +53,10 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
         if run_views is None:
             raise ValueError('Run context is not configured')
         title, text, source_refs = run_views.task_runs_context(task_id)
+        return _snapshot(reference, title, text, source_refs)
+    if kind == 'iteration_tree':
+        from .briefs import iteration_tree_context
+        title, text, source_refs = iteration_tree_context(repository, run_views, task_id)
         return _snapshot(reference, title, text, source_refs)
     if kind == 'run_case':
         if run_views is None:

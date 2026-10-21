@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Platform, ScrollView, Text, View } from 'react-native';
 import { ChevronDown, ChevronUp, Lightbulb, Maximize2, Minimize2 } from 'lucide-react-native';
-import { AgentMessageRecord, Bootstrap, date, Task, useResource } from '../contracts';
+import { AgentMessageRecord, Bootstrap, date, liveSessions, Task, TaskSession, useResource } from '../contracts';
 import { Button, Copy, useTheme } from '../ui';
 import { IconButton } from '../shell';
 import { useTaskSessions } from '../agents/useTaskSessions';
@@ -16,9 +16,14 @@ import { ChatComposer, ComposerStatus } from '../agents/ChatComposer';
 import { AgentButton, AgentMenu } from '../agents/AgentPicker';
 import { ContextMenu } from '../agents/ContextMenu';
 import type { SessionEntry } from '../agents/chatTypes';
+import { RemoveConfirm } from './parts';
+import { ITERATION_MIN_EVALUATED } from './next';
 
-// A new Agent's binding: an analyst reads one node, an implementer changes one candidate.
-export type AgentTarget = { role: 'analyst' | 'implementer'; candidateId: string; hypothesisId?: string; label: string };
+// A new Agent's binding: an analyst reads one node or (scope 'iteration') the whole
+// tree, an implementer changes one candidate.
+export type AgentTarget = { role: 'analyst' | 'implementer'; candidateId?: string; hypothesisId?: string; scope?: 'iteration'; label: string };
+// The candidate selected in the main view: what the menu's "new" creates for.
+export type NodeContext = { candidateId: string; label: string; state: string; hypothesisId?: string };
 
 const roleLabels: Record<string, string> = { analyst: '分析', implementer: '实现' };
 // Each Agent's header states what it can see (design §7). The isolation is
@@ -54,10 +59,12 @@ function TopHandle({ height, onResize }: { height: number; onResize: (n: number)
     onKeyDown={e => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); onResize(height + (e.key === 'ArrowUp' ? 40 : -40)); } }} />;
 }
 
-export function AgentDrawer({ task, boot, compact, open, available, onToggle, hasRuns, target, onTargetDone, onTaskChanged, labels, focus }: {
+export function AgentDrawer({ task, boot, compact, open, available, onToggle, hasRuns, target, onTargetDone, onTaskChanged, labels, focus,
+  node, evaluated, onRemoveAgent }: {
   task: Task | undefined; boot: Bootstrap; compact: boolean; open: boolean; available: number; onToggle: () => void; hasRuns: boolean;
   target: AgentTarget | null; onTargetDone: () => void; onTaskChanged: () => void;
   labels: Record<string, string>; focus: { sessionId: string; nonce: number } | null;
+  node: NodeContext | null; evaluated: number; onRemoveAgent: (sessionId: string) => Promise<unknown>;
 }) {
   const theme = useTheme();
   const [size, setSize] = useState(readSize);
@@ -85,20 +92,26 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
   const creations = useAgentCreations(task, boot.actor, compact, boot.capabilities?.agent_create === true, boot.creation_profiles ?? [], changed);
 
   // A creation target carries its own model buttons; the Agent menu stays closed.
-  useEffect(() => { if (target) setMenu('none'); }, [target?.candidateId, target?.role]);
+  useEffect(() => { if (target) setMenu('none'); }, [target?.candidateId, target?.role, target?.scope]);
   useEffect(() => {
     if (focus && focus.sessionId !== session?.id && task?.sessions.some(s => s.id === focus.sessionId)) {
       contexts.invalidate(); candidates.invalidateSource(); sessions.selectSession(focus.sessionId); setChatError(null);
     }
   }, [focus?.nonce]);
   // What an Agent works on: an implementer changes one candidate, an analyst reads one node
-  // (an analyst without a node is the earlier kind, bound to the whole iteration).
-  const binding = (saved: { role?: string | null; candidate_id?: string | null } | undefined) => !saved ? ''
+  // or, explicitly, the whole iteration; an analyst with neither is the earlier unbound kind.
+  const binding = (saved: TaskSession | undefined) => !saved ? ''
     : saved.candidate_id ? `候选 ${labels[saved.candidate_id] ?? saved.candidate_id.slice(0, 8)}`
-    : saved.role === 'implementer' ? '候选 ?' : '整个迭代';
+    : saved.scope === 'iteration' ? '迭代'
+    : saved.role === 'implementer' ? '候选 ?' : '未绑定（旧）';
+  // Menu groups: the iteration first, then candidates in tree order, then legacy sessions.
+  const nodeOrder = Object.keys(labels);
+  const groupOf = (saved: TaskSession) => saved.candidate_id ? binding(saved) : saved.scope === 'iteration' ? '本迭代' : '历史（未绑定）';
+  const groupRank = (saved: TaskSession) => saved.candidate_id ? 1 + (nodeOrder.indexOf(saved.candidate_id) + 1 || nodeOrder.length + 1)
+    : saved.scope === 'iteration' ? 0 : 1e6;
   const order = (saved: { role?: string | null }) => saved.role === 'implementer' ? 1 : 0;
-  const sessionOptions = (task?.sessions ?? []).slice().sort((a, b) => order(a) - order(b)
-    || binding(a).localeCompare(binding(b)) || b.linked_at.localeCompare(a.linked_at)).map(saved => {
+  const sessionOptions = liveSessions(task?.sessions ?? []).sort((a, b) => groupRank(a) - groupRank(b)
+    || groupOf(a).localeCompare(groupOf(b)) || order(a) - order(b) || b.linked_at.localeCompare(a.linked_at)).map(saved => {
     const created = creations.records.find(record => record.agent_id === saved.agent_id && record.status === 'created');
     const agent = created?.envelope?.result.agent;
     const live = saved.id === session?.id && sessions.remote.status === 'available' ? sessions.remote : null;
@@ -106,7 +119,7 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
     const model = live?.agentModel ?? agent?.model;
     const title = plainTitle(live?.agentTitle ?? agent?.title ?? null);
     const label = [saved.role ? roleLabels[saved.role] : null, binding(saved), provider ? [provider, model].filter(Boolean).join(' · ') : 'Agent ' + saved.agent_id.slice(0, 8)].filter(Boolean).join(' · ');
-    return { id: saved.id, label, selected: saved.id === session?.id,
+    return { id: saved.id, label, selected: saved.id === session?.id, group: groupOf(saved),
       detail: [title, `${date(saved.linked_at)} 关联`, saved.agent_id.slice(0, 8)].filter(Boolean).join(' · ') };
   });
   const currentAgent = sessionOptions.find(option => option.selected);
@@ -157,8 +170,10 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
     const lastSha = (kind: string) => delivered.filter(c => c.reference.kind === kind).at(-1)?.sha256 ?? null;
     const wanted = [
       { reference: { kind: 'brief' as const, session_id: session.id }, skipSha: lastSha('brief') },
-      // A node-bound analyst's brief already carries its node's runs and path.
-      ...(session.role !== 'implementer' && !session.candidate_id && hasRuns ? [{ reference: { kind: 'task_runs' as const }, skipSha: lastSha('task_runs') }] : []),
+      // A node-bound analyst's brief already carries its node's runs and path; an iteration
+      // analyst gets a fresh tree summary; a legacy unbound one the Task's runs.
+      ...(session.scope === 'iteration' ? [{ reference: { kind: 'iteration_tree' as const }, skipSha: lastSha('iteration_tree') }]
+        : session.role !== 'implementer' && !session.candidate_id && hasRuns ? [{ reference: { kind: 'task_runs' as const }, skipSha: lastSha('task_runs') }] : []),
     ].filter(({ reference }) => {
       const key = `${messages.draftId}:${reference.kind}`;
       if (autoTried.current.has(key)) return false;
@@ -178,16 +193,31 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
     : messages.blockedReason && !/正在取得消息写入权|当前意图已冻结/.test(messages.blockedReason) ? { text: messages.blockedReason, tone: 'muted' }
     : sessions.running ? { text: 'Agent 正在运行：现在发送会打断当前这一轮', tone: 'muted' } : null;
   const canSend = Boolean(session) && messages.blockedReason === null && messages.status === 'idle' && messageText.trim().length > 0;
+  // The menu creates for the current context: the pending target, else the selected node,
+  // else the iteration. Nothing creates an unbound analyst any more.
+  const nodeTarget: AgentTarget | null = !node ? null
+    : ['evaluated', 'failed'].includes(node.state) ? { role: 'analyst', candidateId: node.candidateId, label: node.label }
+    : node.state === 'implementing' && node.hypothesisId ? { role: 'implementer', candidateId: node.candidateId, hypothesisId: node.hypothesisId, label: node.label }
+    : null;
+  const createFor: AgentTarget | null = target ?? (node ? nodeTarget
+    : evaluated >= ITERATION_MIN_EVALUATED ? { role: 'analyst', scope: 'iteration', label: '迭代' } : null);
+  const contextReason = createFor ? null
+    : node ? `${node.label} 现在不能新建 Agent：分析要先评测完，实现要在实现中且有提议`
+    : '先在谱系里选一个候选';
   const createAgent = (profileId: string) => {
+    if (!createFor) return;
     if (creations.canNewIntent) creations.newIntent();
-    if (target) creations.setTarget(target.role, target.hypothesisId, target.candidateId);
-    else creations.setTarget('analyst');
+    creations.setTarget(createFor.role, createFor.hypothesisId, createFor.candidateId, createFor.scope);
     creations.panel?.onProfileSelect(profileId);
     creations.panel?.onCreate?.();
   };
   const createEnabled = creations.available && creations.status !== 'saving' && creations.status !== 'unknown' && !creations.checking
     && (creations.panel?.blockedReason == null || creations.canNewIntent);
   const createReason = !creations.available ? '服务器未开放 Agent 创建' : creations.panel?.blockedReason && !creations.canNewIntent ? creations.panel.blockedReason : null;
+  const removeCurrent = async (id: string) => {
+    await onRemoveAgent(id);
+    if (id === session?.id) { contexts.invalidate(); candidates.invalidateSource(); setChatError(null); setMenu('none'); }
+  };
   const adopted = useRef(new Set<string>());
   const createdSession = creations.panel?.receipt?.sessionId;
   useEffect(() => {
@@ -210,13 +240,16 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
         {session ? `${roleLabels[role]} · ${binding(task?.sessions.find(s => s.id === session.id))}` : 'Agent'}</Text>
       {session && <Text testID="agent-scope" numberOfLines={1} style={{ flexShrink: 1, fontSize: 11, color: theme.muted }}>{scopes[role]}</Text>}
       <View style={{ flex: 1 }} />
+      {open && session && <RemoveConfirm key={session.id} onRemove={() => removeCurrent(session.id)} testID="drawer-remove-agent" />}
       {open && candidates.recordsPanel && <IconButton label="发现记录" icon={Lightbulb} selected={findingsOpen} onPress={() => setFindingsOpen(v => !v)} testID="toggle-findings" />}
       {open && <IconButton label={maximized ? '还原抽屉' : '最大化对话'} icon={maximized ? Minimize2 : Maximize2} selected={maximized} onPress={() => setMaximized(m => !m)} testID="maximize-drawer" />}
     </View>
     {open && <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
       <View style={{ flex: 1, minWidth: 0 }}>
-        {target && <View testID={target.role + '-target'} style={{ margin: 10, marginBottom: 0, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: theme.primary, gap: 6 }}>
-          <Copy small>{target.role === 'analyst'
+        {target && <View testID={target.scope === 'iteration' ? 'iteration-target' : target.role + '-target'} style={{ margin: 10, marginBottom: 0, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: theme.primary, gap: 6 }}>
+          <Copy small>{target.scope === 'iteration'
+            ? '新建迭代分析 Agent：它读整棵候选树（各节点的运行、Δ父／Δ根、提议与预测核对、采纳决定），做横向比较、假设复盘和合并建议；提议必须指定挂在哪个已评测节点下。'
+            : target.role === 'analyst'
             ? `为候选 ${target.label} 新建分析 Agent。它读 ${target.label} 的运行、对父的翻转和从根到这里每一轮的记录，提议默认挂在 ${target.label} 下。`
             : `为候选 ${target.label} 新建实现 Agent。它在该候选的 worktree 里工作，只拿到已批准提议中给实现者的字段。`}</Copy>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -240,7 +273,7 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
             onLatest={() => { candidates.invalidateSource(); sessions.refresh(); }}
             onCandidate={(id, kind) => { candidates.requestCandidate(id, kind); setCandidateOpen(true); }}
             empty={<View style={{ gap: 8, alignItems: 'flex-start' }}>
-              <Copy muted>这个迭代还没有 Agent。分析 Agent 绑定一个已评测候选，读它的运行与证据并在它下面提提议；实现 Agent 绑定一个候选，在它的 worktree 里改码。都从候选详情里新建；写动作只能申请，由你确认。</Copy>
+              <Copy muted>这个迭代还没有 Agent。节点 Agent 从候选详情里新建：分析 Agent 绑定一个已评测候选，读它的运行与证据并在它下面提提议；实现 Agent 绑定一个候选，在它的 worktree 里改码。迭代分析 Agent 从谱系头部的“分析整个迭代”新建，读整棵树做横向比较。写动作只能申请，由你确认。</Copy>
             </View>} />
           {candidates.draftPanel && <View style={{ gap: 8 }}>
             {!candidateOpen && <Button label="继续发现草稿" testID="candidate-draft-reopen" onPress={() => setCandidateOpen(true)} />}
@@ -263,14 +296,15 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
             onSelect={id => { if (id !== session?.id) { contexts.invalidate(); candidates.invalidateSource(); sessions.selectSession(id); setChatError(null); } }}
             profiles={creations.profiles.map(profile => ({ id: profile.id, label: `${profile.providerLabel} · ${profile.modelLabel}`,
               detail: [profile.effortLabel && '思考 ' + profile.effortLabel, profile.modeLabel && '模式 ' + profile.modeLabel].filter(Boolean).join(' · ') || profile.id }))}
-            createEnabled={createEnabled} createReason={createReason}
+            createEnabled={createEnabled && Boolean(createFor)} createReason={createReason ?? contextReason}
             onCreate={createAgent} creation={creationStatus}
             link={{ value: sessions.link.value, onChange: sessions.link.onChange, onSubmit: sessions.link.onRequestLink,
               statusText: sessions.link.status === 'linking' ? '关联中…' : sessions.link.status === 'linked' ? '已关联' : sessions.link.status === 'error' ? '关联失败：' + (sessions.link.detail ?? '') : null }}
             maxHeight={Math.max(180, Math.min(420, height - 38 - 150 - (target ? 100 : 0)))}
-            cwdLabel={target?.role === 'implementer' ? `新建的是 ${target.label} 的实现 Agent，工作目录为该候选 worktree`
-              : target ? `新建的是 ${target.label} 的分析 Agent：工作目录为评测仓库，对 SN 只读`
-              : '新建的是整个迭代的分析 Agent（不绑定候选）；要分析某个候选，在它的详情里点“分析这个节点”'}
+            cwdLabel={!createFor ? '新建 Agent：节点 Agent 绑定所选候选，迭代分析 Agent 从谱系头部新建'
+              : createFor.role === 'implementer' ? `新建的是 ${createFor.label} 的实现 Agent，工作目录为该候选 worktree`
+              : createFor.scope === 'iteration' ? '新建的是迭代分析 Agent：读整棵候选树，对 SN 只读；提议须指定挂在哪个已评测节点下'
+              : `新建的是 ${createFor.label} 的分析 Agent：工作目录为评测仓库，对 SN 只读`}
             onClose={() => setMenu('none')} />
             : menu === 'context' ? <ContextMenu mode={contexts.selection.mode} onModeChange={contexts.selection.onModeChange}
               options={contexts.selection.options} selectedId={contexts.selection.selectedOptionId} onSelect={contexts.selection.onSelectOption}

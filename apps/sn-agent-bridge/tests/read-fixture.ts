@@ -23,10 +23,12 @@ export function readFixture() {
       hasOlder: false, hasNewer: false, entries: [], error: null },
   };
   const references: string[] = [];
+  const archived: string[] = [];
   const queries: { id: string; options?: TimelineReadOptions }[] = [];
   const handle: ReturnType<DirectoryClient["agents"]["ref"]> = {
     refresh: async () => data.agent ? { agent: data.agent, project: null } : null,
     send: async () => { throw Error("unexpected send"); },
+    archive: async () => { archived.push("agent-example"); data.agent = data.agent && { ...data.agent, archivedAt: "2026-10-21T00:00:00Z" }; return { archivedAt: "2026-10-21T00:00:00Z" }; },
     timeline: { refetch: async (options) => { queries.push({ id: "agent-example", options }); return data.page; } },
   };
   const client: DirectoryClient = {
@@ -39,5 +41,5 @@ export function readFixture() {
     workspaces: { ref: () => { throw Error("unexpected workspace read"); },
       list: async () => ({ entries: [], requestId: "r", pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } }) },
   };
-  return { data, client, handle, references, queries, released: () => released };
+  return { data, client, handle, references, queries, archived, released: () => released };
 }

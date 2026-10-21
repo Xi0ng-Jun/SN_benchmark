@@ -62,6 +62,7 @@ FastAPI 同源入口可启动 `node apps/sn-agent-bridge/dist/cli.js`，将服�
 | `listModels(provider, { cwd? }?)` | `entries, provider, fetchedAt` | `providers.listModels()` |
 | `listWorkspaces({ cursor?, limit? }?)` | `entries, pageInfo` | `workspaces.list()`，不带 subscribe |
 | `readAgent(agentId)` | `agent: AgentSnapshot` | `agents.ref(id).refresh()` |
+| `archiveAgent(agentId)` | `archivedAt, already` | `agents.ref(id).refresh()` + `archive()` |
 | `readTimeline(agentId, options?)` | 历史页字段及投影后的 `entries` | `refresh()` 校验身份后 `timeline.refetch()` |
 | `createAgent(options)` | `not_attempted / created / unknown`，见协议 | workspace `refresh()`、既有 ID `refresh()`、workspace `agents.create()`、返回 handle `refresh()` |
 | `sendAgent(options)` | `not_attempted / acknowledged / unknown`，见 A07a 协议 | 完整 ID `refresh()`、本地目录核对、恰一次 handle `send()` |

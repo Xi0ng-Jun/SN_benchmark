@@ -55,15 +55,38 @@ $S request withdraw <请求> --reason '…'   # 撤回误提且仍待确认的�
 '''
 
 
-def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node=None):
+ITERATION_DUTIES = (
+    '跨节点看整棵候选树，单个节点的分析交给绑定该节点的分析 Agent：'
+    '（1）横向比较——兄弟或任意两节点谁好、各自好在哪些题差在哪些题，哪些题所有候选都答错（顽固题）；'
+    '（2）假设复盘——各提议的逐题预测兑现了多少，哪类改动有效、哪类无效，下一步往哪投入；'
+    '（3）合并建议——改动互补（好转的题少重叠）时建议合并派生；'
+    '（4）全树守护——同一批题反复来回翻转（过拟合信号）、采纳路径上相对根下降的题。'
+    '结论落到可证伪的假设卡草稿或合并派生申请。')
+
+ITERATION_SCOPE_REQUESTS = (
+    '作为迭代分析 Agent，你**只申请派生**：从某个已评测候选派生（`--proposal` 指定已批准提议），'
+    '或合并派生 `$S node derive <主父候选> --integrate <被并入候选> --method merge|cherry-pick|rewrite --reason \'…\'`'
+    '（合并后的候选必须自己重跑，不用分差相加估计）。冻结、运行、采纳／放弃属于具体候选，不要申请。\n\n')
+
+
+def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node=None, tree=None):
     """``candidates`` are (id, frozen_commit, worktree) rows when the Task backs an iteration.
 
     ``node`` (from ``node_context``) binds the analyst to one evaluated candidate:
     the brief then carries that node, its path from the root, and drafts default
-    to it, instead of listing the whole tree.
+    to it, instead of listing the whole tree. ``tree`` (from ``iteration_context``)
+    binds it to the whole iteration: cross-node comparison, review and merging.
     """
     s = f'{tool} --task {task["id"]}'
-    if node:
+    if tree:
+        s += ' --scope iteration'
+        rows = '\n'.join(f'- 候选 `{c}`：冻结 commit `{commit or "未冻结"}`，worktree `{path or "未就绪"}`'
+                         for c, commit, path in candidates or ())
+        target = (tree['section'] + '\n\n## 各候选的代码\n' + rows +
+                  '\n你只读这些 worktree 来定位代码，**不要修改 SN 代码**。每条新消息会附上最新的候选树摘要。')
+        draft = ('提议必须**指定**挂在哪个已评测候选下（它的运行就是你引用的证据）：'
+                 '`$S proposal draft --parent <候选 id> --file card.json`')
+    elif node:
         s += f' --node {node["id"]}'
         target = node['section'] + ('\n你只读候选 worktree 来定位代码，**不要修改 SN 代码**。'
                                     f'本节点的 worktree：`{node["worktree"] or "未就绪"}`。')
@@ -81,11 +104,11 @@ def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node
     docs = '\n'.join(f'- `{eval_root}/{path}`：{note}' for path, note in ANALYST_DOCS)
     return f'''# 你的角色：分析 Agent（Silicon Notebook 评测）
 
-{"迭代" if node else "任务"}：{task["title"]}{"　·　本会话分析节点 **" + node["label"] + "**" if node else ""}
-{"" if node else "目标：" + (task["goal"] or "（未填写）") + chr(10)}评测仓库：`{eval_root}`。你的工作目录：`{cwd}`{"（这个 Agent 按旧方式建在 SN worktree 里；角色仍是分析，不要修改 SN 代码）" if worktree and cwd == worktree else ""}。
+{"迭代" if node or tree else "任务"}：{task["title"]}{"　·　本会话分析节点 **" + node["label"] + "**" if node else "　·　本会话分析**整个迭代**" if tree else ""}
+{"" if node or tree else "目标：" + (task["goal"] or "（未填写）") + chr(10)}评测仓库：`{eval_root}`。你的工作目录：`{cwd}`{"（这个 Agent 按旧方式建在 SN worktree 里；角色仍是分析，不要修改 SN 代码）" if worktree and cwd == worktree else ""}。
 {target}
 
-你的职责：{"读节点 " + node["label"] + " 的评测结果和案例证据（与它的父节点对照）" if node else "读评测结果和案例证据"}，做失败归类，提出可证伪的假设卡草稿。你能看 gold；正因为能看 gold，你不写 SN 代码，改码由另一个看不到 gold 的实现 Agent 完成。
+你的职责：{ITERATION_DUTIES if tree else ("读节点 " + node["label"] + " 的评测结果和案例证据（与它的父节点对照）" if node else "读评测结果和案例证据") + "，做失败归类，提出可证伪的假设卡草稿。"}你能看 gold；正因为能看 gold，你不写 SN 代码，改码由另一个看不到 gold 的实现 Agent 完成。
 
 ## 查询工具（只读、免费，随时可用）
 ```
@@ -109,7 +132,7 @@ $S docs                       # 下方文档索引
 - predictions 是逐题预测：expect 取 improve / unchanged / not_worse / worse；guard=true 表示守护题（不应变差）。验证时按翻转表逐条核对，不看均分。
 - implementer_brief 是唯一会交给实现 Agent 的说明：写机制和改法，**不得包含题面、gold、case id、论文内容或分数**，提交前会做泄漏扫描。
 
-{ITERATION_VERBS.format(s=s) if candidates or node else ""}## 可参考的评测文档
+{ITERATION_VERBS if candidates or node or tree else ""}{ITERATION_SCOPE_REQUESTS if tree else ""}## 可参考的评测文档
 {docs}
 
 ## 规则
@@ -193,9 +216,11 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
         title = '实现 Agent 工作说明 · ' + card['title']
     else:
         node = node_context(repository, run_views, task_id, candidate_id) if candidate_id else None
+        scoped = 'scope' in session.keys() and session['scope'] == 'iteration'
+        tree = iteration_context(repository, run_views, task_id) if scoped else None
         text = analyst_brief(task, eval_root=str(Path(workspace['location'])), tool=tool, worktree=worktree, cwd=cwd,
-                             candidates=candidates, node=node)
-        title = '分析 Agent 工作说明 · ' + task['title'] + (' · 节点 ' + node['label'] if node else '')
+                             candidates=candidates, node=node, tree=tree)
+        title = '分析 Agent 工作说明 · ' + task['title'] + (' · 节点 ' + node['label'] if node else ' · 整个迭代' if tree else '')
     refs = {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst'}
     if candidate_id:
         refs['candidate_id'] = candidate_id
@@ -232,32 +257,34 @@ def _delta(entry):
     delta = entry['mean_delta']
     line = (f'{entry["metric"]} Δ {delta:+.3f}' if delta is not None else f'{entry["metric"]} Δ —') + \
         f'，好 {counts["better"]} / 差 {counts["worse"]} / 平 {counts["same"]}'
-    if entry.get('regressed'):
-        line += '；下降的题：' + '、'.join(f'`{c}`' for c in entry['regressed'])
+    regressed = entry.get('regressed') or []
+    if regressed:
+        # A full benchmark can regress hundreds of cases; the comparison record keeps them all.
+        line += '；下降的题：' + '、'.join(f'`{c}`' for c in regressed[:20]) + (
+            f' 等 {len(regressed)} 题' if len(regressed) > 20 else '')
     return line
 
 
-def node_context(repository, run_views, task_id, candidate_id):
-    """The analyst's node: its reference runs, Δ父／Δ根, its proposal and the path from the root.
-
-    Memory across rounds lives in these records (proposal, prediction check,
-    comparison, decision), not in one ever-growing conversation.
-    """
+def _tree_reader(repository, run_views, task_id, candidate_id=None):
+    """The iteration a Task backs, its labels and a per-candidate summary ``step(c, detail)``."""
     from .agent_tools import iteration_service
     from .comparisons import ComparisonService, summary
     if run_views is None:
-        raise ValueError('Run views are needed to brief an analyst bound to a candidate')
+        raise ValueError('Run views are needed to brief an analyst of an iteration')
     # Read-only: a brief is also resolved inside the message-sending write transaction.
     service = iteration_service(repository, run_views, initialize=False)
     comparisons = ComparisonService(repository, service, run_views, initialize=False)
-    tree = service.iteration(service.candidate(candidate_id)['iteration_id'])
+    if candidate_id is not None:
+        iteration_id = service.candidate(candidate_id)['iteration_id']
+    else:
+        found = [i for i in service.iterations() if i['task_id'] == task_id]
+        if not found:
+            raise ValueError('This Task backs no iteration')
+        iteration_id = found[0]['id']
+    tree = service.iteration(iteration_id)
     if tree['task_id'] != task_id:
         raise ValueError('The candidate belongs to another Task')
-    labels, by_id = tree_labels(tree), {c['id']: c for c in tree['candidates']}
-    path, cursor = [], by_id[candidate_id]
-    while cursor is not None:
-        path.insert(0, cursor)
-        cursor = by_id.get(cursor['parent_candidate_id'])
+    labels = tree_labels(tree)
 
     def runs(c):
         def score(run_id):
@@ -265,7 +292,13 @@ def node_context(repository, run_views, task_id, candidate_id):
             metric = official.get('primary_metric')
             value = (official.get('metrics') or {}).get(metric)
             return f'（{metric} {value:.3f}）' if isinstance(value, (int, float)) else ''
-        ids = lambda execution_id: '、'.join(f'`{r.id}`{score(r.id)}' for r in run_views.execution_runs(execution_id)) or '无 run'
+
+        def ids(execution_id):
+            found = run_views.execution_runs(execution_id)
+            # A whole-benchmark execution has hundreds of partitions: point at the table instead.
+            if len(found) > 5:
+                return f'execution `{execution_id}`（{len(found)} 个分区，逐题看 `$S execution-cases {execution_id}`）'
+            return '、'.join(f'`{r.id}`{score(r.id)}' for r in found) or '无 run'
         reference = c.get('reference')
         if reference is not None:
             return f'参考运行（attempt {reference["attempt"]}）' + ids(reference['execution_id'])
@@ -293,6 +326,8 @@ def node_context(repository, run_views, task_id, candidate_id):
                          (f'；逐题预测 {check["held"]}/{check["decided"]} 兑现' if check else '；预测未核对'))
         elif c['parent_candidate_id'] is not None:
             lines.append('手工派生（没有提议）' + (f'：{c["note"]}' if c.get('note') else ''))
+        if c.get('integrated_from'):
+            lines.append('并入：' + '、'.join(labels.get(i.get('candidate_id'), '?') for i in c['integrated_from']))
         for name, side in (('Δ父', parent), ('Δ根', root)):
             text = _delta(side)
             if text and (detail or name == 'Δ父'):
@@ -302,7 +337,21 @@ def node_context(repository, run_views, task_id, candidate_id):
             lines.append('结论：' + ({'adopted': '采纳', 'rejected': '放弃', 'undecided': '未决'}.get(
                 decision.get('decision'), '未下') + (f'（{decision["note"]}）' if decision.get('note') else '')))
         return lines
+    return tree, labels, step
 
+
+def node_context(repository, run_views, task_id, candidate_id):
+    """The analyst's node: its reference runs, Δ父／Δ根, its proposal and the path from the root.
+
+    Memory across rounds lives in these records (proposal, prediction check,
+    comparison, decision), not in one ever-growing conversation.
+    """
+    tree, labels, step = _tree_reader(repository, run_views, task_id, candidate_id)
+    by_id = {c['id']: c for c in tree['candidates']}
+    path, cursor = [], by_id[candidate_id]
+    while cursor is not None:
+        path.insert(0, cursor)
+        cursor = by_id.get(cursor['parent_candidate_id'])
     node = by_id[candidate_id]
     focus = step(node, True)
     section = f'\n## 本轮分析对象：{labels[candidate_id]}\n' + '\n'.join('- ' + line for line in focus)
@@ -313,3 +362,29 @@ def node_context(repository, run_views, task_id, candidate_id):
                 '比较以父节点为准：Δ父 回答“这一步带来了什么”，Δ根 只作守护参考。')
     worktree = (node.get('worktree') or {}).get('path')
     return dict(id=candidate_id, label=labels[candidate_id], section=section, worktree=worktree)
+
+
+def iteration_context(repository, run_views, task_id):
+    """The whole tree for an iteration analyst: every candidate in tree order with Δ父／Δ根 and its record.
+
+    Per-case rows stay out (an execution can hold hundreds of partitions); the
+    Agent reads them with ``execution-cases``, ``compare`` and ``case``.
+    """
+    tree, labels, step = _tree_reader(repository, run_views, task_id)
+    states = {'evaluated': '已评测', 'failed': '失败', 'running': '运行中', 'frozen': '已冻结', 'implementing': '实施中',
+              'provisioning': '准备中', 'legacy': '遗留'}
+    blocks = [f'{"  " * c["depth"]}- [{states.get(c["state"], c["state"])}] ' + '\n  '.join(
+        ('  ' * c['depth'] + line if i else line) for i, line in enumerate(step(c, True)))
+        for c in tree['candidates']]
+    evaluated = sum(c['state'] == 'evaluated' for c in tree['candidates'])
+    section = (f'\n## 候选树（{len(tree["candidates"])} 个候选，{evaluated} 个已评测；树序：父在前、兄弟按派生时间）\n'
+               + '\n'.join(blocks) +
+               '\n\nΔ父 回答“这一步带来了什么”，Δ根 是从起点累计；均值变好不等于每题不退化。'
+               '任意两节点用 `$S compare <候选> <参考候选>`（非父／根为临时比较）。')
+    return dict(id=tree['id'], section=section, labels=labels)
+
+
+def iteration_tree_context(repository, run_views, task_id):
+    """The ``iteration_tree`` message context: a fresh tree summary for an iteration analyst."""
+    tree = iteration_context(repository, run_views, task_id)
+    return '迭代候选树（最新）', tree['section'].strip(), {'task_id': task_id, 'iteration_id': tree['id']}

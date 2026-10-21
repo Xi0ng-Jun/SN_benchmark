@@ -74,6 +74,10 @@ def main(argv=None):
     parser.add_argument('--candidate', help="the implementer's own iteration candidate")
     parser.add_argument('--node', help="the analyst's own node: drafted proposals hang under it")
     parser.add_argument('--parent', help='evaluated candidate a drafted proposal hangs under')
+    parser.add_argument('--scope', choices=('iteration',), help="an iteration analyst: drafts name --parent; requests derive only")
+    parser.add_argument('--integrate', help='node derive: comma-separated candidates folded into the child (merge derivation)')
+    parser.add_argument('--method', choices=('merge', 'cherry-pick', 'rewrite'), default='merge',
+                        help='node derive --integrate: how the folded candidates are brought in')
     parser.add_argument('--reason', help='why a person should confirm this request')
     parser.add_argument('--proposal', help='approved proposal a derive request starts from')
     parser.add_argument('--timeout', type=int, help='run request: timeout_seconds (default 3600)')
@@ -91,6 +95,12 @@ def main(argv=None):
     allowed = IMPLEMENTER_COMMANDS if options.role == 'implementer' else ANALYST_COMMANDS
     if options.command not in allowed:
         parser.error(f'{options.role} commands: ' + ', '.join(allowed))
+    if options.scope == 'iteration' and (options.node or options.role != 'analyst'):
+        parser.error('an iteration analyst is not bound to a node')
+    if options.scope == 'iteration' and options.command in REQUEST_COMMANDS and options.command != 'node derive':
+        parser.error('an iteration analyst requests derivations only; freeze, run and decisions belong to a candidate')
+    if options.integrate and options.command != 'node derive':
+        parser.error('--integrate only applies to node derive')
     if options.command == 'hypothesis-draft' and options.parent:
         parser.error('a proposal under a candidate is `proposal draft --parent <candidate>`')
     from .hypotheses import HypothesisStore, leak_check
@@ -275,6 +285,11 @@ class IterationTools:
                 raise SystemExit('an implementer may only request actions on its own --candidate')
             if verb == 'node-derive' and options.proposal:
                 params['proposal_id'] = options.proposal
+            if verb == 'node-derive' and options.integrate:
+                folded = [self.own(i.strip())['id'] for i in options.integrate.split(',') if i.strip()]
+                if target in folded:
+                    raise SystemExit('a candidate is not folded into its own child')
+                params['integrated_from'] = [dict(candidate_id=i, method=options.method) for i in folded]
             if verb == 'node-run':
                 if options.timeout is not None:
                     params['timeout_seconds'] = options.timeout

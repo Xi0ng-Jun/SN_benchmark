@@ -5,7 +5,7 @@ import { requestKey } from '../contracts';
 
 type Role = 'analyst' | 'implementer';
 type Draft = { taskId: string; actor: string; profileId: string | null; title: string; key: string | null;
-  role?: Role; hypothesisId?: string; candidateId?: string;
+  role?: Role; hypothesisId?: string; candidateId?: string; scope?: 'iteration';
   intentId: string | null; status: AgentCreationStatus; detail?: string; receipt: AgentCreationReceipt | null;
   record: AgentCreationRecord | null; correctable: boolean; checking: boolean };
 type ListState = { status: 'loading' | 'ready' | 'error'; records: AgentCreationRecord[]; detail?: string };
@@ -236,7 +236,7 @@ export function useAgentCreations(task: Task | undefined, actor: string, compact
         || current.status === 'saving' || current.status === 'unknown' || current.status === 'created') return;
     if (current.title !== '' && current.title.trim() === '') return;
     const key = current.key ?? requestKey();
-    const target = { role: current.role, hypothesisId: current.hypothesisId, candidateId: current.candidateId };
+    const target = { role: current.role, hypothesisId: current.hypothesisId, candidateId: current.candidateId, scope: current.scope };
     const intents = intentsRef.current[scopeKey] ??= Object.create(null) as Record<string, Intent>;
     const frozen = intents[key];
     if (frozen && (frozen.profileId !== current.profileId || frozen.title !== current.title)) return;
@@ -253,6 +253,7 @@ export function useAgentCreations(task: Task | undefined, actor: string, compact
       if (target.role) body.role = target.role;
       if (target.hypothesisId) body.hypothesis_id = target.hypothesisId;
       if (target.candidateId) body.candidate_id = target.candidateId;
+      if (target.scope) body.scope = target.scope;
       const { response, value } = await readJson(`/tasks/${encodeURIComponent(taskId)}/agent-creations`, { method: 'POST', body: JSON.stringify(body) });
       if (!active() || draftsRef.current[scopeKey]?.key !== key) return;
       if (!response.ok) {
@@ -310,9 +311,10 @@ export function useAgentCreations(task: Task | undefined, actor: string, compact
     intentId: current?.intentId ?? null, title: current?.title ?? '', records: list.records,
     listStatus: list.status, listDetail: list.detail, checking: current?.checking ?? false,
     open: () => setOpened(true), close: () => setOpened(false),
-    // Role of the next creation; an implementer is always for one approved card.
-    setTarget: (role: Role, hypothesisId?: string, candidateId?: string) => { if (current && current.status !== 'saving' && current.status !== 'unknown') {
-      current.role = role; current.hypothesisId = hypothesisId; current.candidateId = candidateId; } },
+    // Binding of the next creation: an implementer is always for one approved card; an
+    // analyst reads one node or (scope 'iteration') the whole tree.
+    setTarget: (role: Role, hypothesisId?: string, candidateId?: string, scope?: 'iteration') => { if (current && current.status !== 'saving' && current.status !== 'unknown') {
+      current.role = role; current.hypothesisId = hypothesisId; current.candidateId = candidateId; current.scope = scope; } },
     newIntent, check, checkPending: check, selectRecord,
     canNewIntent: mayStartNewIntent(),
     canCheckPending: Boolean(current?.key && !current.intentId && (current.status === 'unknown' || current.status === 'error')),

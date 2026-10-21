@@ -4,7 +4,7 @@ import { Bot, Check, ChevronDown, Plus } from 'lucide-react-native';
 import { Button, Copy, hover, Input, StatusDot, useTheme } from '../ui';
 import type { DotTone } from '../ui';
 
-export type AgentOption = { id: string; label: string; detail: string; selected: boolean };
+export type AgentOption = { id: string; label: string; detail: string; selected: boolean; group?: string };
 export type ProfileOption = { id: string; label: string; detail: string };
 
 export const agentStatusLabels: Record<string, string> = {
@@ -69,9 +69,14 @@ export function AgentMenu({ agents, onSelect, profiles, createEnabled, createRea
     <Text style={{ fontSize: 11, color: theme.muted, paddingHorizontal: 10, paddingTop: 4 }}>此任务的 Agent</Text>
     {/* The list scrolls so a long history never pushes the create rows out of the menu. */}
     <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 2 }}>
-      {agents.map(agent => <Row key={agent.id} label={agent.label} detail={agent.detail} selected={agent.selected}
-        icon={agent.selected ? <Check size={13} color={theme.text} /> : null} testID={'agent-option-' + agent.id}
-        onPress={() => { onSelect(agent.id); onClose(); }} />)}
+      {/* Options arrive grouped; a heading starts each group. */}
+      {agents.map((agent, i) => <React.Fragment key={agent.id}>
+        {agent.group && agent.group !== agents[i - 1]?.group && <Text testID={'agent-group-' + agent.group}
+          style={{ fontSize: 11, fontWeight: '500', color: theme.muted, paddingHorizontal: 10, paddingTop: i ? 8 : 2 }}>{agent.group}</Text>}
+        <Row label={agent.label} detail={agent.detail} selected={agent.selected}
+          icon={agent.selected ? <Check size={13} color={theme.text} /> : null} testID={'agent-option-' + agent.id}
+          onPress={() => { onSelect(agent.id); onClose(); }} />
+      </React.Fragment>)}
     </ScrollView>
     {!agents.length && <Copy small muted style={{ paddingHorizontal: 10 }}>还没有 Agent，从下面选一个模型新建</Copy>}
     <View style={{ height: 1, backgroundColor: theme.line, marginVertical: 4 }} />

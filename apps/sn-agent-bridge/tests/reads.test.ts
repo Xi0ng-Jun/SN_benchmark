@@ -52,6 +52,18 @@ test("missing agent is distinct from unavailable; missing history never fetches 
   await bridge.close();
 });
 
+test("archiveAgent archives once, reports an already archived Agent and keeps missing distinct", async () => {
+  const f = readFixture();
+  const bridge = createBridge(config, () => f.client);
+  await bridge.connect();
+  assert.deepEqual(await bridge.archiveAgent("agent-example"), { status: "ok", archivedAt: "2026-10-21T00:00:00Z", already: false });
+  assert.deepEqual(await bridge.archiveAgent("agent-example"), { status: "ok", archivedAt: "2026-10-21T00:00:00Z", already: true });
+  assert.deepEqual(f.archived, ["agent-example"]);
+  f.data.agent = null;
+  assert.deepEqual(await bridge.archiveAgent("agent-example"), { status: "missing", code: "AGENT_NOT_FOUND" });
+  await bridge.close();
+});
+
 test("optional snapshot fields that the SDK did not observe remain unknown", async () => {
   const f = readFixture();
   delete f.data.agent!.workspaceId;

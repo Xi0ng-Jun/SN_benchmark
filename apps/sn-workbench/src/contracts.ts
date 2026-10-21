@@ -15,7 +15,12 @@ export type Review = {
 };
 export type History = { seq: number; kind: string; object_id: string; content: Record<string, unknown>; registered_at: string };
 export type TaskSession = { id: string; task_id: string; agent_id: string; linked_by: string; linked_at: string;
-  role?: 'analyst' | 'implementer' | null; hypothesis_id?: string | null; candidate_id?: string | null };
+  role?: 'analyst' | 'implementer' | null; hypothesis_id?: string | null; candidate_id?: string | null;
+  // An iteration analyst reads the whole tree; removed sessions stay recorded but are hidden.
+  scope?: 'iteration'; removed_at?: string; removed_by?: string };
+export const liveSessions = (sessions: readonly TaskSession[]) => sessions.filter(s => !s.removed_at);
+export type SessionRemoval = { session: TaskSession;
+  archive: { status: 'archived' | 'already_archived' | 'not_found' | 'unavailable'; code?: string } };
 export type BridgeRelease = { status: 'ok' | 'unavailable' | 'not_needed'; code?: string };
 export type ReadResult<T> = ({ status: 'ok' } & T) | { status: 'missing' | 'unavailable'; code: string };
 export type ReadEnvelope<T> = { result: ReadResult<T>; release: BridgeRelease; observed_at: string };
@@ -39,7 +44,7 @@ export type TimelinePage = { agentId: string; direction: 'tail' | 'before' | 'af
 export type Task = { id: string; title: string; goal: string; workspace_id: string; results: Result[]; sessions: TaskSession[]; history: History[] };
 export type ContextReference = { kind: 'goal' } | { kind: 'file'; path: string }
   | { kind: 'result'; result_id: string } | { kind: 'case'; result_id: string; case_id: string }
-  | { kind: 'run_case'; run_id: string; case_id: string } | { kind: 'task_runs' } | { kind: 'brief'; session_id: string };
+  | { kind: 'run_case'; run_id: string; case_id: string } | { kind: 'task_runs' } | { kind: 'iteration_tree' } | { kind: 'brief'; session_id: string };
 export type ContextSnapshot = { reference: ContextReference; title: string; text: string; sha256: string; source_refs: Record<string, string> };
 export type Workspace = { id: string; title: string; location: string; tasks: Pick<Task, 'id' | 'title' | 'goal'>[] };
 export type Source = { id: string; title: string; description: string };

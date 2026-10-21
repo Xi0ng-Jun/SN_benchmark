@@ -4,7 +4,7 @@ import { Bot, Check } from 'lucide-react-native';
 import { Button, fmt, hover, useTheme } from '../ui';
 import { Candidate, decisionLabels, DeltaSummary, IterationTree, ProposalRow, rootSide, short, stateLabels } from './contracts';
 import { Delta, Mono } from './parts';
-import type { Step } from './next';
+import { ITERATION_MIN_EVALUATED, iterationBlockedReason, Step } from './next';
 
 export type AgentMark = { sessionId: string; role: 'analyst' | 'implementer'; status: string | null };
 // The row shows one Agent mark: a working one before the latest idle one.
@@ -75,9 +75,11 @@ function StepLine({ step }: { step: Step | null | undefined }) {
 }
 
 export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectProposal, rank, onRank, picked, onPick, onCompare, compact,
-  steps, agents, onOpenAgent }: {
+  steps, agents, onOpenAgent, iterationAgent, onIterationAnalyst }: {
   tree: IterationTree; labels: Record<string, string>; titles: Record<string, string>; selectedId: string | null;
   steps: Record<string, Step | null>; agents: Record<string, AgentMark[]>; onOpenAgent: (sessionId: string) => void;
+  /** Latest iteration-scope analyst, if any. */
+  iterationAgent: string | null; onIterationAnalyst: () => void;
   onSelect: (id: string) => void; onSelectProposal: (id: string) => void; rank: boolean; onRank: (rank: boolean) => void;
   picked: string[]; onPick: (id: string) => void; onCompare: () => void; compact: boolean;
 }) {
@@ -88,6 +90,7 @@ export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectPr
     ? tree.candidates.slice().sort((a, b) => (rankValue(a) === null ? 1 : 0) - (rankValue(b) === null ? 1 : 0) || (rankValue(b) ?? 0) - (rankValue(a) ?? 0))
       .map(candidate => ({ kind: 'candidate' as const, candidate, guides: [], last: true }))
     : treeRows(tree, true);
+  const iterationReady = tree.candidates.filter(c => c.state === 'evaluated').length >= ITERATION_MIN_EVALUATED;
   return <View testID="lineage" style={{ gap: 12 }}>
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <View accessibilityRole="tablist" style={{ flexDirection: 'row', gap: 2, padding: 2, borderRadius: 999, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.line }}>
@@ -98,6 +101,10 @@ export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectPr
         </Pressable>)}
       </View>
       <View style={{ flex: 1 }} />
+      {!iterationReady && <Text testID="iteration-analyst-reason" style={{ fontSize: 11, color: theme.muted }}>{iterationBlockedReason}</Text>}
+      <Button label="分析整个迭代" onPress={onIterationAnalyst} disabled={!iterationReady}
+        accessibilityLabel={iterationReady ? '新建迭代分析 Agent' : '分析整个迭代：' + iterationBlockedReason} testID="iteration-analyst-new" />
+      {iterationAgent && <Button label="打开迭代分析 Agent" onPress={() => onOpenAgent(iterationAgent)} testID="iteration-analyst-open" />}
       <Button label={picked.length ? `比较所选（${picked.length}）` : '勾选候选以比较'} onPress={onCompare} disabled={!picked.length} testID="compare-picked" />
     </View>
     <View style={{ borderWidth: 1, borderColor: theme.line, borderRadius: 12, overflow: 'hidden' }}>

@@ -44,7 +44,7 @@ class ContextSelection(BaseModel):
     def reference_shape(cls, value):
         shapes = {'goal': {'kind'}, 'file': {'kind', 'path'},
                   'result': {'kind', 'result_id'}, 'case': {'kind', 'result_id', 'case_id'},
-                  'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'brief': {'kind', 'session_id'}}
+                  'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'iteration_tree': {'kind'}, 'brief': {'kind', 'session_id'}}
         if value.get('kind') not in shapes or set(value) != shapes[value['kind']]:
             raise ValueError('Invalid message context reference')
         for item in value.values():

@@ -37,6 +37,10 @@ class AgentCreationStore:
         if not isinstance(bindings, dict):
             raise ValueError('Invalid creation bindings')
         self.repository = repository
+        # task_id -> evaluated candidates of the iteration it backs (None: no iteration).
+        # The server wires the iteration service here; without it an iteration
+        # analyst cannot be created.
+        self.evaluated_count = None
         self._bindings = copy.deepcopy(bindings)
         with repository.connect(write=True) as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS agent_creation_intents(
@@ -108,7 +112,7 @@ class AgentCreationStore:
         return validate_create_command(command)
 
     def prepare(self, task_id, profile_id, *, actor, request_key, title=None, role=None, hypothesis_id=None,
-                candidate_id=None):
+                candidate_id=None, scope=None):
         task_id = _opaque(task_id, 'task identity')
         profile_id = _opaque(profile_id, 'creation profile')
         actor = _opaque(actor, 'actor')
@@ -122,11 +126,17 @@ class AgentCreationStore:
             raise ValueError('An implementer Agent is created for exactly one approved hypothesis card')
         if candidate_id is not None and role not in ('analyst', 'implementer'):
             raise ValueError('Only an analyst or implementer Agent is created for a candidate')
+        if scope not in (None, 'iteration') or (scope and (role != 'analyst' or candidate_id is not None)):
+            raise ValueError('Only an analyst without a candidate is created for the whole iteration')
         payload = {'profile_id': profile_id, 'title': title}
         if role is not None:
             payload.update(role=role, hypothesis_id=hypothesis_id)
         if candidate_id is not None:
             payload['candidate_id'] = candidate_id
+        if scope is not None:
+            payload['scope'] = scope
+        # Read before the write transaction: evaluated states come from run admission.
+        evaluated = self.evaluated_count(task_id) if scope and callable(self.evaluated_count) else None
         repo = self.repository
         with repo.connect(write=True) as conn:
             task = repo._require(conn, 'tasks', task_id)
@@ -136,6 +146,14 @@ class AgentCreationStore:
                 if json.loads(prior['payload']) != payload:
                     raise Conflict('Creation request key was already used with different content')
                 return self._record(prior)
+            iteration = (conn.execute('SELECT 1 FROM iterations WHERE task_id=?', (task_id,)).fetchone()
+                         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone() else None)
+            # In an iteration every Agent has a binding: a candidate, or the whole
+            # iteration once it has something to compare (root and an evaluated child).
+            if iteration is not None and role != 'implementer' and candidate_id is None and scope is None:
+                raise ValueError('An analyst of an iteration is bound to a candidate or to the whole iteration')
+            if scope is not None and (iteration is None or evaluated is None or evaluated < 2):
+                raise ValueError('An iteration analyst needs at least two evaluated candidates')
             if hypothesis_id is not None:
                 card = conn.execute('SELECT status FROM hypotheses WHERE id=? AND task_id=?', (hypothesis_id, task_id)).fetchone() \
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='hypotheses'").fetchone() else None
@@ -163,7 +181,8 @@ class AgentCreationStore:
             repo._event(conn, task_id, 'agent.creation.prepared', intent_id,
                         {'agent_id': agent_id, 'profile_id': profile_id, 'title': title, 'actor': actor,
                          **({'role': role, 'hypothesis_id': hypothesis_id} if role else {}),
-                         **({'candidate_id': candidate_id} if candidate_id else {})})
+                         **({'candidate_id': candidate_id} if candidate_id else {}),
+                         **({'scope': scope} if scope else {})})
             return self._scope(conn, task_id, intent_id, actor)[1]
 
     def get(self, task_id, intent_id, *, actor):
@@ -244,6 +263,8 @@ class AgentCreationStore:
                     if intent.get('candidate_id'):
                         conn.execute('UPDATE task_sessions SET candidate_id=? WHERE id=?',
                                      (intent['candidate_id'], session['id']))
+                    if intent.get('scope'):
+                        conn.execute('UPDATE task_sessions SET scope=? WHERE id=?', (intent['scope'], session['id']))
                     repo._event(conn, task_id, 'session.attached', session['id'],
                                 dict(session, **({'role': intent['role']} if intent.get('role') else {})))
                     session_id = session['id']

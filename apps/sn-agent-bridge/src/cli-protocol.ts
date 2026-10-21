@@ -60,6 +60,7 @@ export async function executeRequest(
           break;
         }
         case "readAgent": result = await bridge.readAgent(command.agentId); break;
+        case "archiveAgent": result = await bridge.archiveAgent(command.agentId); break;
         case "readTimeline": {
           const { op: _op, agentId: id, ...options } = command;
           result = await bridge.readTimeline(id, options);

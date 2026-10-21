@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native';
 import { PanelLeftOpen, X } from 'lucide-react-native';
-import { api, Bootstrap, date, Task, useResource } from './contracts';
+import { api, Bootstrap, date, SessionRemoval, Task, useResource } from './contracts';
 import { Button, Copy, Input, ThemeContext, themes } from './ui';
 import { IconButton, ResizeHandle, useShellLayout } from './shell';
 import { WorkspaceConfiguration } from './workspace/WorkspaceConfiguration';
@@ -17,7 +17,7 @@ import { CompareMatrix } from './tree/CompareMatrix';
 import { CommandPalette, PaletteItem } from './tree/CommandPalette';
 import { NewIterationDialog } from './tree/NewIterationDialog';
 import { AgentDrawer, AgentTarget } from './tree/AgentDrawer';
-import { agentsOf, analystsOf, stepsOf } from './tree/next';
+import { agentsOf, analystsOf, iterationAnalystsOf, stepsOf } from './tree/next';
 import { useLive } from './tree/useLive';
 
 // Project → iteration → candidate tree (design §7). The five-tab Task surface was
@@ -77,10 +77,20 @@ export default function App() {
   const agentMarks = Object.fromEntries((tree?.candidates ?? []).map(c => [c.id, agentsOf(c.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, role: s.role!, status: live[s.id]?.status ?? null }))]));
   const openAgent = (sessionId: string) => { setTarget(null); setFocus({ sessionId, nonce: Date.now() }); setDrawer(true); };
   // Analysis is per node: continue the node's latest analyst, or create one bound to it.
+  const newAnalyst = (c: Candidate) => { setTarget({ role: 'analyst', candidateId: c.id, label: label(c.id) }); setDrawer(true); };
   const analyse = (c: Candidate) => {
     const bound = analystsOf(c.id, task?.sessions ?? []).at(-1);
-    if (bound) openAgent(bound.id);
-    else { setTarget({ role: 'analyst', candidateId: c.id, label: label(c.id) }); setDrawer(true); }
+    if (bound) openAgent(bound.id); else newAnalyst(c);
+  };
+  const iterationAgent = iterationAnalystsOf(task?.sessions ?? []).at(-1)?.id ?? null;
+  const evaluatedCount = tree?.candidates.filter(c => c.state === 'evaluated').length ?? 0;
+  // Removal hides the session everywhere; the Paseo archive is best effort.
+  const removeAgent = async (sessionId: string) => {
+    if (!task) return;
+    const removed = await api<SessionRemoval>(`/tasks/${task.id}/sessions/${sessionId}/remove`, {});
+    bump();
+    setNotice(removed.archive.status === 'unavailable'
+      ? `已从工作台移除；Paseo 归档失败：${removed.archive.code ?? '未知'}，可在 Paseo 中手动归档` : 'Agent 已从工作台移除');
   };
 
   // Poll while something moves: a run in flight or a request being executed.
@@ -200,7 +210,7 @@ export default function App() {
       onReadRun={(runId, execution) => setReader({ runId, caseId: null, execution })}
       onImplementer={(c: Candidate, p: Proposal) => { setTarget({ role: 'implementer', candidateId: c.id, hypothesisId: p.id, label: label(c.id) }); setDrawer(true); }}
       step={steps[candidate.id] ?? null} onOpenAgent={openAgent} onProposal={id => update({ proposal: id, node: null })}
-      onAnalyst={() => analyse(candidate)}
+      onAnalyst={() => analyse(candidate)} onNewAnalyst={() => newAnalyst(candidate)} onRemoveAgent={removeAgent}
       agents={agentsOf(candidate.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, role: s.role!, status: live[s.id]?.status ?? null,
         label: `${s.role === 'analyst' ? '分析' : '实现'} Agent · ${s.agent_id.slice(0, 8)} · ${date(s.linked_at)} 关联` }))} />
     : <View style={{ gap: 8, paddingTop: 8 }}><Copy small muted>选一个候选看详情：假设与预测、对父的翻转、代码差异、运行与准入。</Copy>
@@ -248,7 +258,8 @@ export default function App() {
                         : <Lineage tree={tree} labels={labels} titles={titles} selectedId={route.proposal ?? route.node} onSelect={selectNode}
                           onSelectProposal={id => { setReader(null); update({ proposal: id, node: null }); }} rank={route.rank} onRank={rank => update({ rank })}
                           picked={picked} onPick={id => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])} onCompare={() => update({ matrix: true })} compact={compact}
-                          steps={steps} agents={agentMarks} onOpenAgent={openAgent} />}
+                          steps={steps} agents={agentMarks} onOpenAgent={openAgent} iterationAgent={iterationAgent}
+                          onIterationAnalyst={() => { setTarget({ role: 'analyst', scope: 'iteration', label: '迭代' }); setDrawer(true); }} />}
                   {tree && tree.unassigned_executions.length > 0 && <Copy small muted>{tree.unassigned_executions.length} 次执行未归属任何候选（保留，不计入比较）。</Copy>}
                 </View>
               </ScrollView>
@@ -260,7 +271,8 @@ export default function App() {
           </View>
           <AgentDrawer task={task} boot={boot} compact={compact} open={drawer} available={height - 44} labels={labels} focus={focus}
             onToggle={() => setDrawer(d => !d)} hasRuns={Boolean(tree?.candidates.some(c => c.attempts.length))}
-            target={target} onTargetDone={() => setTarget(null)} onTaskChanged={bump} />
+            target={target} onTargetDone={() => setTarget(null)} onTaskChanged={bump} onRemoveAgent={removeAgent} evaluated={evaluatedCount}
+            node={candidate ? { candidateId: candidate.id, label: label(candidate.id), state: candidate.state, hypothesisId: candidate.proposal_id ?? undefined } : null} />
         </View>
         {compact && detailOpen && <View style={{ position: 'absolute', zIndex: 15, top: 0, bottom: 0, left: 0, right: 0, backgroundColor: theme.bg }}>
           <View style={{ height: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, borderBottomWidth: 1, borderColor: theme.line }}>

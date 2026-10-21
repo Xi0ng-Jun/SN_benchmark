@@ -113,6 +113,7 @@ export type ReadCommand =
   | { op: "listModels"; provider: string; cwd?: string }
   | { op: "listWorkspaces"; cursor?: string; limit?: number }
   | { op: "readAgent"; agentId: string }
+  | { op: "archiveAgent"; agentId: string }
   | ({ op: "readTimeline"; agentId: string } & TimelineReadOptions);
 export type BridgeCommand = ReadCommand | ({ op: "createAgent" } & CreateAgentOptions)
   | ({ op: "sendAgent" } & SendAgentOptions);
@@ -155,6 +156,7 @@ export function parseRequest(value: unknown): CliRequest {
         ...(command.limit === undefined ? {} : { limit: limit(command.limit) }) } };
     }
     case "readAgent":
+    case "archiveAgent":
       onlyKeys(command, ["op", "agentId"]);
       return { config, command: { op: command.op, agentId: agentId(command.agentId) } };
     case "readTimeline": {

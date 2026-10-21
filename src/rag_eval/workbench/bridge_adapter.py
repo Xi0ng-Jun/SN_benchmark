@@ -11,7 +11,8 @@ import subprocess
 import time
 
 
-_READ_OPERATIONS = {'listProviders', 'listModels', 'listWorkspaces', 'readAgent', 'readTimeline'}
+# archiveAgent is the one lifecycle write here: it shares the read envelope (ok/missing/unavailable).
+_READ_OPERATIONS = {'listProviders', 'listModels', 'listWorkspaces', 'readAgent', 'readTimeline', 'archiveAgent'}
 _MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
 

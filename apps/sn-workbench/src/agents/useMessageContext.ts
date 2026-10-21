@@ -9,7 +9,7 @@ export type MessageDraft = { text: string; attachments: Attachment[] };
 type Preview = { taskId: string; generation: number; value: ContextPreview; full: Attachment | null };
 const initialSelection = (): Selection => ({ mode: 'reference', optionId: null, path: '' });
 const emptyPreview = (): ContextPreview => ({ status: 'idle', current: false, snapshot: null });
-const referenceKey = (ref: ContextReference) => ref.kind === 'goal' ? 'goal' : ref.kind === 'task_runs' ? 'task_runs'
+const referenceKey = (ref: ContextReference) => ref.kind === 'goal' || ref.kind === 'task_runs' || ref.kind === 'iteration_tree' ? ref.kind
   : ref.kind === 'brief' ? JSON.stringify(['brief', ref.session_id])
   : ref.kind === 'file' ? JSON.stringify(['file', ref.path])
     : ref.kind === 'result' ? JSON.stringify(['result', ref.result_id])

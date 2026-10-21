@@ -58,10 +58,10 @@ test("narrow CLI schema rejects writes, extra config and invalid cursors before 
   }
 });
 
-test("CLI whitelist supports all five reads without adding an Agent mutation surface", async () => {
+test("CLI whitelist supports the five reads and archiveAgent", async () => {
   for (const command of [
     { op: "listProviders", cwd: "/example/repo" }, { op: "listModels", provider: "example" },
-    { op: "listWorkspaces", limit: 10 }, { op: "readAgent", agentId: "agent-example" },
+    { op: "listWorkspaces", limit: 10 }, { op: "readAgent", agentId: "agent-example" }, { op: "archiveAgent", agentId: "agent-example" },
     { op: "readTimeline", agentId: "agent-example", direction: "after", cursor: { epoch: "epoch-example", seq: 12 }, limit: 2 },
   ]) {
     const f = readFixture();

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, date, requestKey } from '../contracts';
+import { api, date, liveSessions, requestKey } from '../contracts';
 import type { AgentSnapshot, ReadEnvelope, Task, TaskSession, TimelineCursor, TimelinePage } from '../contracts';
 import type { SessionLinkStatus, SessionPage, SessionRemote } from './chatTypes';
 
@@ -19,8 +19,10 @@ const BURST_MS = 90_000;
 // the tail page is re-read while the Agent runs or shortly after a send.
 export function useTaskSessions(task: Task | undefined, onLinked: (taskId: string) => void, options: { pollPaused?: boolean } = {}) {
   const [selections, setSelections] = useState<Record<string, string>>({});
-  const latestSession = task?.sessions.reduce<TaskSession | undefined>((latest, s) => !latest || s.linked_at > latest.linked_at ? s : latest, undefined);
-  const session = task?.sessions.find(s => s.id === selections[task.id]) ?? latestSession;
+  // Removed sessions are never selected; a removed selection falls back to the latest.
+  const shown = task ? liveSessions(task.sessions) : [];
+  const latestSession = shown.reduce<TaskSession | undefined>((latest, s) => !latest || s.linked_at > latest.linked_at ? s : latest, undefined);
+  const session = shown.find(s => s.id === (task && selections[task.id])) ?? latestSession;
   const key = scopeKey(task?.id, session);
   const scope = useRef({ key, generation: 0 });
   const controllers = useRef(new Map<number, AbortController>());
@@ -132,7 +134,7 @@ export function useTaskSessions(task: Task | undefined, onLinked: (taskId: strin
     } finally { controllers.current.delete(generation); }
   };
   const selectSession = (id: string) => {
-    const selected = task?.sessions.find(s => s.id === id);
+    const selected = task && liveSessions(task.sessions).find(s => s.id === id);
     if (!task || !selected) return;
     changeScope(scopeKey(task.id, selected));
     setSelections(prev => ({ ...prev, [task.id]: id }));

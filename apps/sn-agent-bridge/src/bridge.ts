@@ -8,7 +8,7 @@ import { isAbsolute } from "node:path";
 // Internal injection boundary for offline tests; not exported from the package root.
 export type DirectoryClient = Pick<PaseoClient, "connect" | "close" | "getConnectionState"> & {
   agents: {
-    ref(agentId: string): Pick<PaseoAgentHandle, "refresh" | "send"> & {
+    ref(agentId: string): Pick<PaseoAgentHandle, "refresh" | "send" | "archive"> & {
       timeline: Pick<PaseoAgentHandle["timeline"], "refetch">;
     };
   };
@@ -332,6 +332,14 @@ export function createBridge(
     readAgent: (id) => read(async (client) => {
       const handle = client.agents.ref(agentId(id));
       return { agent: projectAgent(exactAgent((await handle.refresh())?.agent ?? null, id)) };
+    }),
+    // Archiving stops the Agent and drops it from Paseo's active list; its history stays readable there.
+    archiveAgent: (id) => read(async (client) => {
+      const handle = client.agents.ref(agentId(id));
+      const agent = exactAgent((await handle.refresh())?.agent ?? null, id);
+      if (agent.archivedAt) return { archivedAt: agent.archivedAt, already: true };
+      if (closed) throw closedSignal;
+      return { archivedAt: (await handle.archive()).archivedAt, already: false };
     }),
     readTimeline: (id, options) => read(async (client) => {
       const { expectedCwd, ...params } = timelineOptions(options);

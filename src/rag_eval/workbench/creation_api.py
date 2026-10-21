@@ -46,6 +46,7 @@ class CreationRequest(BaseModel):
     role: Literal['analyst', 'implementer'] | None = None
     hypothesis_id: str | None = Field(default=None, strict=True, min_length=1, max_length=200)
     candidate_id: str | None = Field(default=None, strict=True, pattern='^[0-9a-f]{32}$')
+    scope: Literal['iteration'] | None = None
 
     @field_validator('profile_id', 'title')
     @classmethod

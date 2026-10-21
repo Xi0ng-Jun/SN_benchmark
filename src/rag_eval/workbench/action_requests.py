@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 
 from .repository import Conflict, UnknownIdentity, now, uid
 
@@ -47,7 +48,7 @@ def normalize(verb, params):
     if verb not in VERBS:
         raise ValueError('Unknown action verb')
     params = dict(params or {})
-    allowed = {'node-derive': {'proposal_id'}, 'node-freeze': set(), 'node-adopt': set(), 'node-reject': set(),
+    allowed = {'node-derive': {'proposal_id', 'integrated_from'}, 'node-freeze': set(), 'node-adopt': set(), 'node-reject': set(),
                'node-run': {'timeout_seconds', 'limit_cny'}, 'iteration-create': set(ITERATION_FIELDS)}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
@@ -58,6 +59,17 @@ def normalize(verb, params):
         limit = params.get('limit_cny')
         if limit is not None and (type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0):
             raise ValueError('limit_cny must be a positive number')
+    if verb == 'node-derive' and 'integrated_from' in params:
+        # A merge derivation names the candidates folded in; the merged node runs on its own.
+        items = params['integrated_from']
+        if (not isinstance(items, list) or not 1 <= len(items) <= 5 or any(
+                not isinstance(i, dict) or set(i) - {'candidate_id', 'method', 'note'}
+                or not isinstance(i.get('candidate_id'), str) or not re.fullmatch('[0-9a-f]{32}', i['candidate_id'])
+                or i.get('method') not in ('merge', 'cherry-pick', 'rewrite')
+                or not isinstance(i.get('note', ''), str) or len(i.get('note', '')) > 2000 for i in items)
+                or len({i['candidate_id'] for i in items}) != len(items)):
+            raise ValueError('integrated_from lists 1-5 distinct candidates with method merge|cherry-pick|rewrite')
+        params['integrated_from'] = [dict(i, note=i.get('note', '')) for i in items]
     if verb == 'iteration-create' and set(params) != set(ITERATION_FIELDS):
         raise ValueError('iteration-create needs ' + ', '.join(ITERATION_FIELDS))
     return params
@@ -166,7 +178,7 @@ def execute(service, record, *, workspace_id, actor):
     verb, target, params, key = record['verb'], record['target_id'], record['params'], 'action:' + record['id']
     if verb == 'node-derive':
         view = service.derive(target, proposal_id=params.get('proposal_id'), note=record['reason'],
-                              actor=actor, request_key=key)
+                              integrated_from=params.get('integrated_from', ()), actor=actor, request_key=key)
     elif verb == 'node-freeze':
         view = service.freeze(target, actor=actor)
     elif verb == 'node-run':

@@ -149,6 +149,7 @@ export interface AgentBridge {
   sendAgent(options: SendAgentOptions): Promise<SendAgentResult>;
   readAgent(agentId: string): Promise<BridgeResult<{ agent: AgentSnapshot }>>;
   readTimeline(agentId: string, options?: TimelineReadOptions): Promise<BridgeResult<TimelinePage>>;
+  archiveAgent(agentId: string): Promise<BridgeResult<{ archivedAt: string; already: boolean }>>;
   listProviders(options?: { cwd?: string }): Promise<BridgeResult<{
     entries: ProviderEntry[]; generatedAt: string;
   }>>;

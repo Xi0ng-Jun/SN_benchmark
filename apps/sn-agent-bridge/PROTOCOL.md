@@ -34,6 +34,7 @@ connectTimeoutMs 是 1..120000 的整数，默认 10000。
 | listModels | provider, cwd? | status, entries, provider, fetchedAt |
 | listWorkspaces | cursor?, limit? | status, entries, pageInfo |
 | readAgent | agentId | status, agent |
+| archiveAgent | agentId | status, archivedAt, already |
 | readTimeline | agentId, direction?, cursor?, limit?, projection?, expectedCwd? | status 及下述历史页 |
 | createAgent | workspaceId, expectedCwd, agentId, idempotencyKey, config, title? | not_attempted / created / unknown，见 A06a |
 | sendAgent | agentId, expectedCwd, text, messageId, activeTurnBehavior（全部必填） | not_attempted / acknowledged / unknown，见 A07a |
@@ -74,6 +75,8 @@ stdout（包括换行）最多 4 MiB。读取超限整份 result 变为 RESPONSE
 JSON 序列化前的内存占用。没有新增逐 RPC timeout，后续 Python 管理进程预算。
 
 ## Agent 快照
+
+`archiveAgent` 先读快照核对身份：已归档则返回原 `archivedAt` 且 `already:true`，否则调用 SDK `archive()`；找不到为 `missing`。工作台“移除 Agent”使用它，Paseo 中历史仍可读。
 
 `readAgent` 的成功 result 为 `{status:"ok",agent:{...}}`。字段是
 id/cwd/status/title/provider/model，及 SDK 实际存在的 workspaceId/archivedAt/activeTurn。

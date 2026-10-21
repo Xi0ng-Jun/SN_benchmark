@@ -64,7 +64,7 @@ def _input(session_id, text, contexts, behavior):
     if type(contexts) is not list or len(contexts) > MAX_REFERENCES:
         raise ValueError('Message exceeds the current four-reference budget')
     fields = {'goal': {'kind'}, 'file': {'kind', 'path'}, 'result': {'kind', 'result_id'},
-              'case': {'kind', 'result_id', 'case_id'}, 'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'brief': {'kind', 'session_id'}}
+              'case': {'kind', 'result_id', 'case_id'}, 'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'iteration_tree': {'kind'}, 'brief': {'kind', 'session_id'}}
     for selection in contexts:
         if type(selection) is not dict or set(selection) != {'reference', 'sha256'}:
             raise ValueError('Invalid selected context')
@@ -148,6 +148,8 @@ class AgentMessageStore:
         with repo.connect(write=True) as conn:
             task = self._task(conn, task_id)
             session, location = self._session(conn, task, session_id)
+            if 'removed_at' in session.keys() and session['removed_at'] is not None:
+                raise MessageInputRejected('This Agent was removed from the workbench')
             prior = conn.execute('SELECT * FROM agent_message_intents WHERE task_id=? AND actor=? AND request_key=?',
                                  (task_id, actor, request_key)).fetchone()
             if prior is not None:
@@ -156,7 +158,7 @@ class AgentMessageStore:
                 return self._record(prior)
             # Role separation: an implementer never receives benchmark material
             # (cases, run evidence, scores); a brief belongs to its own session.
-            benchmark = {'case', 'run_case', 'task_runs', 'result'}
+            benchmark = {'case', 'run_case', 'task_runs', 'iteration_tree', 'result'}
             for selection in payload['contexts']:
                 reference = selection['reference']
                 if reference['kind'] == 'brief' and reference['session_id'] != session_id:
