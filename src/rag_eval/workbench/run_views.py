@@ -22,6 +22,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 from typing import Any
 from ..execution_diagnostics import sanitize_diagnostic
 
@@ -687,11 +688,11 @@ class RunViews:
     # ----------------------------------------------------------------- flips
     def shared_bundle(self, run_id: str):
         """Verify and load a run's frozen bundle once, for many partitions of one comparison."""
-        from ..notebook_bundle import load_bundle
-        from ..run_reader import RunReadContext
+        # The process read context keeps the verified bundle for later requests.
         try:
-            return load_bundle(RunReadContext().input_directory(self._entry(run_id).run_dir))
-        except (OSError, ValueError, KeyError, TypeError):
+            return self._read_context.bundle(self._read_context.input_directory(self._entry(run_id).run_dir))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f'shared bundle unavailable for {run_id}: {type(exc).__name__}', file=sys.stderr, flush=True)
             return None
 
     def flips(self, left_id: str, right_id: str, *, bundle=None) -> dict:

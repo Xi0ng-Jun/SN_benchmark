@@ -166,3 +166,46 @@ def test_a_pinned_comparison_is_computed_but_never_stored(tree):
     pinned = t['comparisons'].pinned(b, a)
     assert pinned['kind'] == 'pinned' and pinned['stored'] is False and 'id' not in pinned
     assert pinned['counts'] == dict(better=1, worse=1, same=0, unpaired=0) and rows(t) == 0
+
+
+def test_an_admitted_execution_is_saved_and_reread_until_a_partition_file_changes(tmp_path):
+    import threading
+    execution = tmp_path / 'execution'
+    execution.mkdir()
+    runs = []
+    for i in range(1, 4):
+        run = tmp_path / f'run-{i}'
+        (run / 'scores').mkdir(parents=True)
+        for name in ('manifest.json', 'outputs.jsonl', 'scores/scores.json', 'scores/submission.json'):
+            (run / name).write_text('{}')
+        runs.append(SimpleNamespace(id=f'exec-{i}', run_dir=run, scores=run / 'scores/scores.json'))
+
+    class Slow(Views):
+        def execution_runs(self, execution_id):
+            return runs
+
+        def admission(self, run_id, bundle=None):
+            gate.wait(5)
+            return super().admission(run_id, bundle)
+
+    gate, views = threading.Event(), Slow()
+    measurement = dict(execution_state='finished', execution_id='exec', run_dir=str(execution))
+    admission = Admission(views)
+    # Concurrent requests share one computation.
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(admission(measurement))) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    gate.set()
+    for thread in threads:
+        thread.join()
+    assert results == [dict(status='admitted', reason=None)] * 3 and len(views.admission_calls) == 3
+    # A new process rereads the saved result.
+    assert Admission(views)(measurement)['status'] == 'admitted' and len(views.admission_calls) == 3
+    (runs[1].scores).write_text('{"changed": true}')
+    views.bad_runs.add('exec-2')
+    assert Admission(views)(measurement) == dict(status='not_admitted', reason='exec-2: 3/3 error')
+    assert len(views.admission_calls) == 5
+    # A refusal is not saved.
+    Admission(views)(measurement)
+    assert len(views.admission_calls) == 7

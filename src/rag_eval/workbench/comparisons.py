@@ -12,12 +12,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
+import sys
+import threading
+import time
 import uuid
 
+from ..artifacts import save_json
 from .repository import UnknownIdentity, now
 
 FORMAT = 'sn-candidate-comparison-v1'
 KINDS = ('parent', 'root')
+ADMISSION_FORMAT = 'sn-execution-admission-cache-v1'
+ADMISSION_CACHE = 'admission-cache.json'
 
 
 def initialize_comparisons(repository):
@@ -34,11 +41,20 @@ def initialize_comparisons(repository):
 
 
 class Admission:
-    """Per-execution admission, cached once the execution is terminal."""
+    """Per-execution admission, cached once the execution is terminal.
+
+    Hundreds of partitions take minutes to admit, so an admitted result is also
+    saved beside the execution and reused by later processes (the web service
+    after a restart, every sn-eval call) while each partition's manifest,
+    outputs, submission and scores keep their size and mtime. Concurrent
+    requests for one execution wait for a single computation.
+    """
 
     def __init__(self, run_views):
         self.views = run_views
         self._cache = {}
+        self._locks = {}
+        self._guard = threading.Lock()
 
     def __call__(self, measurement):
         state, execution_id = measurement.get('execution_state'), measurement.get('execution_id')
@@ -48,20 +64,67 @@ class Admission:
             return dict(status='pending', reason=None)
         if state != 'finished':
             return dict(status='not_admitted', reason=f'execution {state}')
-        if execution_id not in self._cache:
-            runs = self.views.execution_runs(execution_id)
-            result = dict(status='admitted', reason=None) if runs else dict(
-                status='not_admitted', reason='no run discovered for this execution')
-            # Partitions of one execution share a frozen bundle: verify and load it once.
-            bundle = self.views.shared_bundle(runs[0].id) if len(runs) > 1 else None
-            for run in runs:
-                single = (self.views.admission(run.id, bundle=bundle) if bundle is not None
-                          else self.views.admission(run.id))
-                if single['status'] != 'admitted':
-                    result = dict(status='not_admitted', reason=f'{run.id}: {single["reason"]}')
-                    break
-            self._cache[execution_id] = result
+        if execution_id in self._cache:
+            return self._cache[execution_id]
+        with self._guard:
+            lock = self._locks.setdefault(execution_id, threading.Lock())
+        with lock:
+            if execution_id not in self._cache:
+                self._cache[execution_id] = self._admit(execution_id, measurement.get('run_dir'))
         return self._cache[execution_id]
+
+    def _admit(self, execution_id, execution_dir):
+        runs = self.views.execution_runs(execution_id)
+        saved = Path(execution_dir) / ADMISSION_CACHE if execution_dir and runs else None
+        signature = _signature(runs) if saved is not None else None
+        if signature is not None:
+            try:
+                cached = json.loads(saved.read_text())
+                if cached.get('format') == ADMISSION_FORMAT and cached.get('signature') == signature:
+                    return cached['result']
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                pass
+        started = time.monotonic()
+        result = dict(status='admitted', reason=None) if runs else dict(
+            status='not_admitted', reason='no run discovered for this execution')
+        # Partitions of one execution share a frozen bundle: verify and load it once.
+        bundle = self.views.shared_bundle(runs[0].id) if len(runs) > 1 else None
+        for run in runs:
+            single = (self.views.admission(run.id, bundle=bundle) if bundle is not None
+                      else self.views.admission(run.id))
+            if single['status'] != 'admitted':
+                result = dict(status='not_admitted', reason=f'{run.id}: {single["reason"]}')
+                break
+        if len(runs) > 20:
+            print(f'admission {execution_id}: {len(runs)} partitions, shared bundle '
+                  f'{"yes" if bundle is not None else "no"}, {result["status"]} in '
+                  f'{time.monotonic() - started:.1f}s', file=sys.stderr, flush=True)
+        # Only an admission is saved: a refusal may come from a transient read failure.
+        if signature is not None and result['status'] == 'admitted':
+            try:
+                save_json(saved, dict(format=ADMISSION_FORMAT, signature=signature, result=result))
+            except OSError:
+                pass
+        return result
+
+
+def _signature(runs):
+    """Size and mtime of every file a partition's admission reads; None when a run has no paths."""
+    def stamp(path):
+        try:
+            stat = Path(path).stat()
+        except OSError:
+            return None
+        return [stat.st_size, stat.st_mtime_ns]
+    rows = []
+    for run in runs:
+        run_dir, scores = getattr(run, 'run_dir', None), getattr(run, 'scores', None)
+        if run_dir is None or scores is None:
+            return None
+        files = [Path(run_dir) / 'manifest.json', Path(run_dir) / 'outputs.jsonl', Path(run_dir) / 'planned.jsonl',
+                 Path(run_dir) / 'state.json', Path(scores), Path(scores).parent / 'submission.json']
+        rows.append([run.id, str(run_dir), [stamp(f) for f in files]])
+    return _hash(rows)
 
 
 def _hash(body):
