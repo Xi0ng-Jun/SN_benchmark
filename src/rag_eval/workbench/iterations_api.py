@@ -35,6 +35,10 @@ class CreateIteration(_Command):
     mode: str = Field(pattern='^(chunk|reasoning)$')
     request_key: str = Field(min_length=1, max_length=200)
     seeded_from: dict | None = None
+    sealed_ref: str | None = None
+    split_seed: int = 0
+    fresh_batch_count: int = Field(default=0, ge=0, le=100)
+    fresh_papers_per_batch: int = Field(default=8, ge=1, le=100)
 
 
 class Integration(_Command):
@@ -267,7 +271,14 @@ class IterationAPI:
         def node_run(candidate_id: str, command: Run):
             self._write()
             self._scope(candidate_id=candidate_id)
+            service.fill_validation(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
             return service.run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
+
+        @router.post('/api/candidates/{candidate_id}/fresh-run')
+        def node_fresh_run(candidate_id: str, command: Run):
+            self._write()
+            self._scope(candidate_id=candidate_id)
+            return service.fresh_run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
 
         @router.post('/api/candidates/{candidate_id}/adopt')
         def node_adopt(candidate_id: str, command: Run):

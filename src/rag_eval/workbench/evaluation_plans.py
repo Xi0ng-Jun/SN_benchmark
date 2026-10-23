@@ -76,9 +76,15 @@ def _saved(value, *, task_id, plan_id=None):
                 or re.fullmatch('sha256:[0-9a-f]{64}', source_revision) is None):
             raise ValueError
         selection = content['selection']
-        if (not isinstance(selection, dict) or set(selection) != {
-                'kind', 'case_ids', 'partition_ids', 'selection_hash'} or selection['kind'] != 'explicit'):
+        if (not isinstance(selection, dict) or set(selection) not in ({
+                'kind', 'case_ids', 'partition_ids', 'selection_hash'},
+                {'kind', 'case_ids', 'partition_ids', 'selection_hash', 'roles'}) or selection['kind'] != 'explicit'):
             raise ValueError
+        if 'roles' in selection:
+            from .splits import add_roles
+            checked = add_roles(dict(selection), selection['roles'])
+            if checked != selection:
+                raise ValueError
         _ids(selection['case_ids'], 'case IDs')
         _ids(selection['partition_ids'], 'partition IDs')
         if selection['selection_hash'] != fingerprint({k: v for k, v in selection.items() if k != 'selection_hash'}):
@@ -127,7 +133,7 @@ class PlanDraftStore:
                 for row in conn.execute(query, params)]
 
     def save(self, *, task_id, input_id, expected_bundle_id, case_ids, title, mode,
-             actor, request_key, plan_id=None, base_revision=None):
+             actor, request_key, plan_id=None, base_revision=None, roles=None):
         """Recover an exact original request or append one CAS-guarded revision.
 
         New plans require plan_id/base_revision null. Appends require both the
@@ -139,6 +145,8 @@ class PlanDraftStore:
         payload = deepcopy(dict(task_id=task_id, actor=actor, input_id=input_id,
                                 expected_bundle_id=expected_bundle_id, case_ids=case_ids,
                                 title=title, mode=mode, plan_id=plan_id, base_revision=base_revision))
+        if roles is not None:
+            payload['roles'] = deepcopy(roles)
         repo = self.repository
         with repo.connect(write=True) as conn:
             prior = repo._prior(conn, scope, request_key, payload)
@@ -170,6 +178,9 @@ class PlanDraftStore:
             canonical = self.inputs.canonical(
                 payload['input_id'], case_ids=payload['case_ids'],
                 expected_bundle_id=payload['expected_bundle_id'])
+            if roles is not None:
+                from .splits import add_roles
+                add_roles(canonical['selection'], roles, self.inputs.describe(input_id)['partitions'])
             content = dict(
                 format=FORMAT, title=title, input=canonical['input'], selection=canonical['selection'],
                 execution_intent=dict(entrypoint='scripts/run_notebook_benchmarks.py', mode=mode,

@@ -65,7 +65,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   `check_predictions` 保留；`record_check` 在有 `contract` 时同时写 verdict。verdict 存进比较记录 `verdict_json`，`node show` 与 UI 节点卡显示。门自动写入候选 decision（actor 为 gate）：accept → adopted，reject → rejected，audit / unmeasurable → undecided；人可用 decide 覆盖，必须带理由并保留原 verdict。
   测试：四种判定各一例，含"均分涨但合同未兑现 → audit"与"实现者改了准备代码导致 missing 增多 → unmeasurable"；无 contract 的旧卡走旧路径且输出标注。
 
-- [ ] 3. **任务划分协议**（`splits.py`，改 `iterations.py`、`evaluation_plans.py`、`agent_tools.py`、`run_views.py`）。
+- [x] 3. **任务划分协议**（`splits.py`，改 `iterations.py`、`evaluation_plans.py`、`agent_tools.py`、`run_views.py`）。
   - 创建 iteration 时 selection 的每个 case 带 `role ∈ {search, validation}`；默认按 paper 用固定种子分 60/40。`sealed_ref` 指向现有留出 selection，任何 verb 都不接受 sealed 的 case_id。
   - `fresh_batches`：创建时可指定 N 批、每批 M 篇，从 bundle 里不与 search / validation / sealed 重叠的 paper 中按种子不放回抽取，各自生成 plan 并冻结。状态 `unused → used(by candidate, at)`。
   - 分析 Agent 的 `cases / case / execution-cases / flips / compare` 只返回 role = search 的题；validation 的题对分析者只给汇总（n、均值、η），不给逐题。实现者不变。
@@ -117,3 +117,12 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 验证：完整离线 pytest **2437 passed / 7 skipped**；Node **34 passed**；`npm --prefix apps/sn-workbench run typecheck` 通过。
 - 实现：冻结 lcd-v1 / k_base / 成功阈值；合同与四种判定；verdict 保存全部计算输入；核对时原子写入比较判定、候选 decision（actor=gate）和历史。人工覆盖必须带理由且保留原判定；重复核对同一比较不会覆盖人工意见。节点 UI 展示规则、数字与依据；CURRENT_STATE 说明内部接受规则。
 - 解释与偏离：质量准入会排除基础设施失败，故另计全部终态 attempt 的 error/missing；无准入质量对也保存不可测诊断，未观测到分母时不猜测失败率。不足 k_base、缺合同测量或缺全局比较均不可测。原计划的“decide 不变”按用户新决策改为保留 gate 的带理由覆盖；旧卡仍走标注“无噪声带”的符号检验。
+
+### W3 · 2026-10-24
+
+- 提交：本条所在 `feat(workbench): freeze paper splits and consume fresh validation batches`（W2：`5ff5b5e`）。
+- 验证：完整离线 pytest **2444 passed / 7 skipped**；Node **34 passed**；本项未改 UI。定向覆盖纸级可复现不重叠划分、role hash 到 preparation、sealed 拒绝、CLI/context 的 validation 隔离、fresh 请求恢复／耗尽、完成入池、显式补跑与旧记录保留。
+- 实现：默认 paper 60/40，独立 fresh plans，候选 attempt 的 batch_id，独立领取／完成表；sealed 拒绝；分析者 search 逐题与 validation 汇总；fresh-run 动作及 HTTP 入口。gate 的全局 Δ 和 η 改取 validation。
+- 解释与偏离：`case_ids` 保持字符串数组，角色用同一 selection hash 覆盖的并行 `roles` 映射；只有一篇时 search-only，gate 不可测。真实 holdout 不能读取，故要求 `job_preparation.sealed_selections` 可信登记（bundle_id 与 case_ids），未知 ref 关闭式拒绝；测试登记空合成留出集，未声称接通真实 17 题。冻结协议不回写使用状态，实际状态由附加表与 validation_pool 派生。
+- 异步边界：fresh-run 先领取再派发；后续比较收拢终态、记录 fresh 比较并入池，失败也不释放批次。读取 compare 不隐式调用模型；缺扩展池测量先记录 missing_batches，经确认的 node run 显式补齐候选与父。这替代原稿“下一次比较补跑”，以保持现有只读工具与执行确认边界，执行函数仍接受非人工 actor。
+- 旧测试调整：迭代 fixture 补可信合成封存登记；gate 持久化 fixture 明确 a=search、b=validation，使其在新协议下仍测试可测判定。旧卡、旧 plan 和旧比较记录继续读取。配置与行为已同步到 iteration-tree-design。

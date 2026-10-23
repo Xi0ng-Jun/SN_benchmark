@@ -124,6 +124,12 @@ class HypothesisStore:
     def draft(self, task_id, card, *, author, parent_candidate_id=None):
         card = validate_card(card)
         author = _text(author, 'author', limit=200)
+        from .splits import Policy
+        policy = Policy(self.repository, task_id)
+        ids = [p['case_id'] for p in card['predictions']] + [e['case_id'] for e in card['evidence']]
+        ids += card.get('contract', {}).get('predicted_flips', []) + card.get('contract', {}).get('guards', [])
+        for cid in ids:
+            policy.refuse_sealed(cid)
         with self.repository.connect(write=True) as conn:
             self.repository._require(conn, 'tasks', task_id)
             record = dict(id=uid(), task_id=task_id, status='draft', card=json.dumps(card, ensure_ascii=False),

@@ -37,6 +37,10 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
             or reference['kind'] not in fields or set(reference) != fields[reference['kind']]
             or any(not isinstance(v, str) or not v.strip() for v in reference.values())):
         raise ValueError('Invalid context reference')
+    from .splits import Policy
+    policy = Policy(repository, task_id)
+    if 'case_id' in reference:
+        policy.require_search(reference['case_id'])
     reference = dict(reference)
     task = repository.task(task_id)
     kind = reference['kind']
@@ -48,15 +52,17 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
         tool = f'{Path(workspace["location"]) / "scripts/sn-eval"} --state {repository.root}'
         title, text, source_refs = resolve_brief(repository, task_id, reference['session_id'], tool=tool,
                                                   run_views=run_views)
-        return _snapshot(reference, title, text, source_refs)
+        return _snapshot(reference, title, policy.project(text), source_refs)
     if kind == 'task_runs':
         if run_views is None:
             raise ValueError('Run context is not configured')
         title, text, source_refs = run_views.task_runs_context(task_id)
+        text = json.dumps(policy.project(json.loads(text)), ensure_ascii=False)
         return _snapshot(reference, title, text, source_refs)
     if kind == 'iteration_tree':
         from .briefs import iteration_tree_context
         title, text, source_refs = iteration_tree_context(repository, run_views, task_id)
+        text = policy.project(text)
         return _snapshot(reference, title, text, source_refs)
     if kind == 'run_case':
         if run_views is None:

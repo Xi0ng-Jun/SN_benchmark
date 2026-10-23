@@ -145,7 +145,11 @@ def _canonical(bundle, content):
     selection = dict(kind='explicit', case_ids=[cid for cid in case_ids if cid in selected],
                      partition_ids=[p['partition_id'] for p in bundle['partitions']
                                     if selected.intersection(p['case_ids'])])
-    selection['selection_hash'] = fingerprint(selection)
+    if 'roles' in content['selection']:
+        from .splits import add_roles
+        add_roles(selection, content['selection']['roles'], bundle['partitions'])
+    else:
+        selection['selection_hash'] = fingerprint(selection)
     _require(selection == content['selection'])
     return identity, selection
 

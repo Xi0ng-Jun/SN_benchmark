@@ -281,7 +281,9 @@ def _tree_reader(repository, run_views, task_id, candidate_id=None):
         if not found:
             raise ValueError('This Task backs no iteration')
         iteration_id = found[0]['id']
-    tree = service.iteration(iteration_id)
+    from .splits import Policy
+    policy = Policy(repository, task_id)
+    tree = policy.project(service.iteration(iteration_id))
     if tree['task_id'] != task_id:
         raise ValueError('The candidate belongs to another Task')
     labels = tree_labels(tree)
@@ -310,7 +312,7 @@ def _tree_reader(repository, run_views, task_id, candidate_id=None):
     def step(c, detail):
         label, lines = labels[c['id']], []
         both = comparisons.for_candidate(c['id'], actor='workbench:brief', iteration=tree, store=False)
-        parent, root = summary(both['parent']), summary(both['root'])
+        parent, root = policy.project(summary(both['parent'])), policy.project(summary(both['root']))
         head = f'**{label}**（`{c["id"]}`）commit `{c["frozen_commit"] or "未冻结"}` · {runs(c)}'
         if c['parent_candidate_id'] is None:
             lines.append(head + ' · 起点')
@@ -336,7 +338,7 @@ def _tree_reader(repository, run_views, task_id, candidate_id=None):
         if c['parent_candidate_id'] is not None:
             lines.append('结论：' + ({'adopted': '采纳', 'rejected': '放弃', 'undecided': '未决'}.get(
                 decision.get('decision'), '未下') + (f'（{decision["note"]}）' if decision.get('note') else '')))
-        return lines
+        return policy.project(lines)
     return tree, labels, step
 
 

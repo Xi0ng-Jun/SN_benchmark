@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node adopt', 'node reject', 'iteration create')
+REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node adopt', 'node reject', 'iteration create')
 ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
                     'request withdraw', *REQUEST_COMMANDS)
@@ -109,6 +109,10 @@ def main(argv=None):
     store = HypothesisStore(repository)
     task_id, a = options.task, options.args
     command = options.command
+    from .splits import Policy
+    policy = Policy(repository, task_id)
+    if command == 'case':
+        policy.require_search(a[1])
     if command == 'task':
         task = repository.task(task_id)
         runs = json.loads(views.task_runs_context(task_id)[1])
@@ -166,6 +170,8 @@ def main(argv=None):
         if options.role == 'implementer':
             out['findings'] = [dict(kind=f['kind'], source=f['source']) for f in out['findings']]
             out.pop('runs', None)
+    if options.role == 'analyst':
+        out = policy.project(out)
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
     sys.stdout.write('\n')
 
@@ -291,8 +297,8 @@ class IterationTools:
                 if target in folded:
                     raise SystemExit('a candidate is not folded into its own child')
                 params['integrated_from'] = [dict(candidate_id=i, method=options.method) for i in folded]
-            if verb == 'node-run':
-                if options.attempts is not None:
+            if verb in ('node-run', 'node-fresh-run'):
+                if options.attempts is not None and verb == 'node-run':
                     params['attempts'] = options.attempts
                 if options.timeout is not None:
                     params['timeout_seconds'] = options.timeout

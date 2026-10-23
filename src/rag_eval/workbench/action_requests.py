@@ -23,6 +23,7 @@ VERBS = {
     'node-derive': (True, True),
     'node-freeze': (True, True),
     'node-run': (True, True),
+    'node-fresh-run': (True, True),
     'node-adopt': (True, False),
     'node-reject': (True, False),
     'iteration-create': (False, True),
@@ -49,10 +50,11 @@ def normalize(verb, params):
         raise ValueError('Unknown action verb')
     params = dict(params or {})
     allowed = {'node-derive': {'proposal_id', 'integrated_from'}, 'node-freeze': set(), 'node-adopt': set(), 'node-reject': set(),
-               'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'iteration-create': set(ITERATION_FIELDS)}[verb]
+               'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'node-fresh-run': {'timeout_seconds', 'limit_cny'},
+               'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch'}}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
-    if verb == 'node-run':
+    if verb in ('node-run', 'node-fresh-run'):
         attempts = params.get('attempts', 1)
         if type(attempts) is not int or not 1 <= attempts <= 4:
             raise ValueError('attempts must be an integer between 1 and 4')
@@ -73,7 +75,7 @@ def normalize(verb, params):
                 or len({i['candidate_id'] for i in items}) != len(items)):
             raise ValueError('integrated_from lists 1-5 distinct candidates with method merge|cherry-pick|rewrite')
         params['integrated_from'] = [dict(i, note=i.get('note', '')) for i in items]
-    if verb == 'iteration-create' and set(params) != set(ITERATION_FIELDS):
+    if verb == 'iteration-create' and not set(ITERATION_FIELDS) <= set(params):
         raise ValueError('iteration-create needs ' + ', '.join(ITERATION_FIELDS))
     return params
 
@@ -114,6 +116,10 @@ class ActionRequestStore:
             raise ValueError(f'{verb} {"needs" if needs_target else "takes no"} target candidate')
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 4000:
             raise ValueError('A request needs a reason (at most 4000 characters)')
+        from .splits import Policy
+        policy = Policy(self.repository, task_id)
+        for cid in params.get('case_ids', []):
+            policy.refuse_sealed(cid)
         content = hashlib.sha256(json.dumps([verb, target_id, params], sort_keys=True).encode()).hexdigest()
         with self.repository.connect(write=True) as conn:
             self.repository._require(conn, 'tasks', task_id)
@@ -184,10 +190,14 @@ def execute(service, record, *, workspace_id, actor):
                               integrated_from=params.get('integrated_from', ()), actor=actor, request_key=key)
     elif verb == 'node-freeze':
         view = service.freeze(target, actor=actor)
-    elif verb == 'node-run':
+    elif verb in ('node-run', 'node-fresh-run'):
         budget = dict(timeout_seconds=params['timeout_seconds'])
         if params.get('limit_cny') is not None:
             budget.update(limit_cny=params['limit_cny'], confirmed=True)
+        if verb == 'node-fresh-run':
+            return service.fresh_run(target, budget=budget, actor=actor, request_key=key)
+        if hasattr(service, 'fill_validation'):
+            service.fill_validation(target, budget=budget, actor=actor, request_key=key)
         for index in range(params.get('attempts', 1)):
             attempt_key = key if index == 0 else f'{key}:attempt:{index + 1}'
             view = service.run(target, budget=budget, actor=actor, request_key=attempt_key)

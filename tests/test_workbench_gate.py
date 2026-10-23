@@ -68,6 +68,10 @@ def test_gate_persistence_override_and_failed_attempts(tree):
     candidate = child(t, root, 'candidate', {'a': 1, 'b': 1})
     ran(t, candidate, {'a': 1, 'b': 1}, 'again')
     service, repo = t['env']['service'], t['env']['repo']
+    with repo.connect(write=True) as conn:
+        protocol = json.loads(conn.execute('SELECT protocol_json FROM iterations WHERE id=?', (t['tree']['id'],)).fetchone()[0])
+        protocol['splits'].update(search=['a'], validation=['b'])
+        conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(protocol), t['tree']['id']))
     proposal = service.candidate(candidate)['proposal_id']
     store = HypothesisStore(repo)
     # Register a synthetic preregistered contract; production drafts validate it.

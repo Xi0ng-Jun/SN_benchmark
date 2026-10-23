@@ -55,7 +55,8 @@ def env(tmp_path, monkeypatch):
     creator = Creator(tmp_path / 'trees')
     service = IterationService(
         repo, trees, plans=plans, jobs=EvaluationJobStore(repo), executions=executions, creator=creator,
-        preparation_config=dict(artifact_root=str(store.root),
+        preparation_config=dict(artifact_root=str(store.root), sealed_ref='synthetic-holdout',
+                                sealed_selections={'synthetic-holdout': dict(bundle_id=command['expected_bundle_id'], case_ids=[])},
                                 inputs={'registered': dict(bundle_ref=refs['bundle'], index_ref=refs['index'])}),
         execution_config=settings(tmp_path, dict(artifact_store=store)), build_spec=build_execution_spec,
         admission=finished_is_admitted)

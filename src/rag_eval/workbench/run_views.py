@@ -467,6 +467,7 @@ class RunViews:
         runs = []
         for run_id in list(self._runs):
             try:
+                self._assert_unsealed(run_id)
                 view = self._public(self._load(run_id))
                 view.pop('cases')
                 runs.append(view)
@@ -479,11 +480,25 @@ class RunViews:
                         for r in self._ledger_rows() if str(Path(r.get('run_dir') or '').resolve()) not in registered]
         return dict(format=FORMAT, runs=runs, ledger_only=unregistered)
 
+    def _assert_unsealed(self, run_id, case_id=None):
+        repository = getattr(self._worktree_service, 'repository', None)
+        if repository is not None:
+            from .splits import Policy
+            entry = self._entry(run_id)
+            policy = Policy(repository, entry.task_id)
+            ids = [case_id] if case_id else entry.case_ids
+            if not ids and policy.sealed:
+                ids = [r['case_id'] for r in self._load(run_id)['cases']]
+            for cid in ids:
+                policy.refuse_sealed(cid)
+
     def run(self, run_id: str) -> dict:
+        self._assert_unsealed(run_id)
         return self._public(self._load(run_id))
 
     def cases(self, run_id: str, *, status: str | None = None, needs_read: bool | None = None,
               against: str | None = None, delta: str | None = None) -> dict:
+        self._assert_unsealed(run_id)
         view = self._load(run_id)
         rows = [dict(r) for r in view['cases']]
         metric = view['official'].get('primary_metric')
@@ -503,6 +518,7 @@ class RunViews:
 
     # ------------------------------------------------------------------ case
     def case(self, run_id: str, case_id: str) -> dict:
+        self._assert_unsealed(run_id, case_id)
         view = self._load(run_id)
         row = next((r for r in view['cases'] if r['case_id'] == case_id), None)
         if row is None:
@@ -643,6 +659,7 @@ class RunViews:
         runs = self.execution_runs(execution_id)
         rows, metric = [], None
         for entry in runs:
+            self._assert_unsealed(entry.id)
             scores = _json(entry.scores) if entry.scores is not None and entry.scores.is_file() else None
             if scores is None:
                 rows.extend(dict(case_id=cid, run_id=entry.id, status='unscored', value=None) for cid in entry.case_ids)
@@ -697,6 +714,8 @@ class RunViews:
 
     def flips(self, left_id: str, right_id: str, *, bundle=None) -> dict:
         from ..flip_report import compare_runs_flips
+        self._assert_unsealed(left_id)
+        self._assert_unsealed(right_id)
         left, right = self._entry(left_id), self._entry(right_id)
         metric = (self._official_scores(left) or {}).get('primary_metric') if bundle is not None else \
             self._load(left_id)['official'].get('primary_metric')

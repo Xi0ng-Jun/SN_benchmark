@@ -188,3 +188,13 @@ run:    沿用现有 Job/execution 状态与终态规则
 ## 12. 仍待定
 
 - （已定，2026-10-19）部分题出错的运行不算“已评测”、不作提议依据，见第 10 节第 2 步细则。
+
+### LCD 的划分与新鲜批次（2026-10-24）
+
+新建原生迭代按 paper 固定划分 search / validation，题单仍保留 `case_ids`，另加同一 selection hash 覆盖的 `roles` 映射。单 paper 只能形成 search；没有 validation 时 gate 为不可测。旧迭代没有划分字段时保留原读取方式。
+
+封存身份必须来自服务器 `job_preparation` 的可信登记，不扫描或猜测私有 holdout 文件：`sealed_ref` 选择 `sealed_selections` 中的一项，项结构为 `{ "bundle_id": "<完整 bundle 身份>", "case_ids": ["<留出题身份>"] }`。未显式提供 ref 时使用配置中的 `sealed_ref`，再缺省为 `selection:20261013:holdout`；登记缺失、身份不符或与所选 paper 重叠时拒绝创建。登记的封存题不能通过普通读题、上下文或动作请求访问。本轮没有读取真实留出题单。
+
+创建参数可附 `split_seed`、`fresh_batch_count`、`fresh_papers_per_batch`。fresh 各批单独冻结 plan 与 selection hash；协议中的 `unused` 是创建时事实，实际使用状态看附加表和返回的 `fresh_usage`，不回写冻结协议。分析者用 `node fresh-run <candidate> --reason '…'` 登记请求，确认后先领取批次，再派发候选与父各 k_base 次；未完成或失败也不释放该批次。新鲜 paper 不复用原根节点的 notebook seed。
+
+运行异步完成，后续候选比较读取会收拢已终态的 fresh 尝试、保存 kind=fresh 比较并扩大 `validation_pool`。普通比较只读，不隐式启动模型；缺少扩展池测量时记录 `missing_batches`，经确认的 node run 会补齐候选与父的 validation 尝试。分析者的逐题输出、嵌套噪声／判定依据与上下文只暴露 search，validation 只给 n、均值和 η（不可估时为 null）。

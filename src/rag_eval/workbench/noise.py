@@ -130,3 +130,15 @@ def estimate(candidate, *, success_threshold=.5, k_base=2):
                 cases=cases, pairs=pairs, k=len(attempts), k_base=k_base,
                 k_below_base=len(attempts) < k_base, success_threshold=success_threshold,
                 band='jeffreys90-normal')
+
+
+def summarize_cases(cases):
+    """Recompute aggregate uncertainty for a role/paper subset of frozen case rates."""
+    families = {}
+    for c in cases.values():
+        if c.get('p') is not None:
+            families.setdefault(c['family'], []).append(c['p'])
+    ps = [p for values in families.values() for p in values]
+    icc = icc_from_families(families) if ps else None
+    effective = n_eff(len(ps), len(ps) / len(families), icc) if ps else None
+    return dict(n=len(ps), icc=icc, n_eff=effective, eta=score_se(ps, effective) if ps else None)

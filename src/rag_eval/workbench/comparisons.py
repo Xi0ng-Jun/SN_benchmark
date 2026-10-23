@@ -271,7 +271,7 @@ class ComparisonService:
         return dict(total=sum(r['total'] for r in rows), failed=sum(r['failed'] for r in rows),
                     unobserved=sum(r['unobserved'] for r in rows), attempts=rows)
 
-    def _compute(self, subject, reference, kind):
+    def _compute_scope(self, subject, reference, kind):
         body, reason = self._compute_quality(subject, reference, kind)
         if body is None and self.terminal(subject) and self.terminal(reference):
             def side(c):
@@ -287,9 +287,104 @@ class ComparisonService:
                 ('subject', subject), ('reference', reference))}
         return body, reason
 
+    @classmethod
+    def scoped(cls, candidate, batch_id):
+        attempts = [a for a in candidate.get('attempts', []) if a.get('batch_id') == batch_id]
+        links = candidate.get('links', []) if batch_id is None else []
+        out = dict(candidate, attempts=attempts, links=links, _batch_scope=batch_id)
+        admitted = cls.admitted(out)
+        out['reference'] = admitted[0] if admitted else None
+        return out
+
+    def reconcile_fresh(self, iteration_id, *, actor):
+        """Record terminal fresh measurements and enlarge the validation pool; never dispatch."""
+        from .splits import batches
+        tree = self.iterations.iteration(iteration_id)
+        by_id = {c['id']: c for c in tree['candidates']}
+        for b in batches(self.repository, iteration_id):
+            if b['completed_at']:
+                continue
+            subject = self.scoped(by_id[b['candidate_id']], b['batch_id'])
+            reference = self.scoped(by_id[subject['parent_candidate_id']], b['batch_id'])
+            k = tree['protocol']['k_base']
+            if any(len(c['attempts']) < k or len(self.terminal(c)) != len(c['attempts']) for c in (subject, reference)):
+                continue
+            record = self._stored(subject, reference, 'fresh', actor)
+            if not record.get('id'):
+                continue
+            with self.repository.connect(write=True) as conn:
+                changed = conn.execute('UPDATE iteration_fresh_batches SET completed_at=?,comparison_id=? '
+                    'WHERE iteration_id=? AND batch_id=? AND completed_at IS NULL',
+                    (now(), record['id'], iteration_id, b['batch_id'])).rowcount
+                if changed:
+                    self.repository._event(conn, tree['task_id'], 'iteration.fresh.completed', b['candidate_id'],
+                                           dict(batch_id=b['batch_id'], comparison_id=record['id']))
+
+    def _compute(self, subject, reference, kind):
+        from .splits import batches, roles
+        from .noise import summarize_cases
+        if '_batch_scope' in subject:
+            return self._compute_scope(subject, reference, kind)
+        body, reason = self._compute_scope(self.scoped(subject, None), self.scoped(reference, None), kind)
+        if body is None:
+            return body, reason
+        protocol = self.iterations.iteration(subject['iteration_id']).get('protocol') or {}
+        completed = {b['batch_id'] for b in batches(self.repository, subject['iteration_id'], completed=True)}
+        role_map = roles(protocol, completed)
+        if role_map is None:
+            return body, reason
+        missing = []
+        for b in protocol.get('fresh_batches', []):
+            if b['batch_id'] not in completed:
+                continue
+            extra, _ = self._compute_scope(self.scoped(subject, b['batch_id']), self.scoped(reference, b['batch_id']), kind)
+            if not extra or extra['admission']['status'] != 'admitted':
+                missing.append(b['batch_id'])
+                continue
+            body['rows'].extend(extra['rows'])
+            if 'noise' not in body:
+                body['noise'] = extra['noise']
+                body['attempts_used'] = extra['attempts_used']
+            else:
+                for side in ('reference', 'subject'):
+                    body['attempts_used'][side].extend(extra['attempts_used'][side])
+                    body['noise'][side]['cases'].update({cid: dict(c, family=b['batch_id'] + ':' + c['family'])
+                        for cid, c in extra['noise'][side]['cases'].items()})
+                    body['noise'][side]['pairs'].extend(extra['noise'][side]['pairs'])
+                    body['noise'][side]['k_below_base'] |= extra['noise'][side]['k_below_base']
+                    body['noise'][side]['k'] = min(body['noise'][side]['k'], extra['noise'][side]['k'])
+            for side in ('reference', 'subject'):
+                a, e = body['infrastructure'][side], extra['infrastructure'][side]
+                for key in ('failed', 'total', 'unobserved'):
+                    a[key] += e[key]
+                a['attempts'].extend(e['attempts'])
+        for r in body['rows']:
+            r['role'] = role_map.get(r['case_id'])
+        expected = {cid for cid, role in role_map.items() if role == 'validation'}
+        validation = [r for r in body['rows'] if r['case_id'] in expected]
+        noise = body.get('noise', {})
+        for side in ('reference', 'subject'):
+            if side in noise:
+                noise[side].update(summarize_cases(noise[side]['cases']))
+        validation_noise = summarize_cases({cid: c for cid, c in noise.get('reference', {}).get('cases', {}).items() if cid in expected})
+        noise['eta'] = validation_noise['eta']
+        body['validation'] = dict(n=len(expected), reference=_mean(r['left'] for r in validation),
+            subject=_mean(r['right'] for r in validation), delta=_mean(r['delta'] for r in validation),
+            eta=validation_noise['eta'], incomplete=bool(missing or len(validation) != len(expected) or not expected),
+            missing_batches=missing)
+        body['counts'] = {key: sum(r['flip'] == key for r in body['rows']) for key in body['counts']}
+        body['mean'] = dict(reference=_mean(r['left'] for r in body['rows']), subject=_mean(r['right'] for r in body['rows']),
+                            delta=_mean(r['delta'] for r in body['rows']))
+        body['regressed'] = [r['case_id'] for r in body['rows'] if r['delta'] is not None and r['delta'] < 0]
+        return body, reason
+
     def _measurement_key(self, candidate):
         attempts = self.admitted(candidate)
         terminal = self.terminal(candidate)
+        from .splits import batches
+        pool = [b['batch_id'] for b in batches(self.repository, candidate['iteration_id'], completed=True)]
+        if pool and '_batch_scope' not in candidate:
+            return _hash(dict(attempts=[(m['execution_id'], m['execution_state']) for m in terminal], validation=pool))
         if len(terminal) == len(attempts):
             return attempts[0]['execution_id'] if len(attempts) == 1 else _hash(attempts) if attempts else None
         return _hash([(m['execution_id'], m['execution_state']) for m in terminal])
@@ -345,6 +440,8 @@ class ComparisonService:
         """
         if iteration is None:
             iteration = self.iterations.iteration(self.iterations.candidate(candidate_id)['iteration_id'])
+        if store:
+            self.reconcile_fresh(iteration['id'], actor=actor)
         by_id = {c['id']: c for c in iteration['candidates']}
         subject = by_id[candidate_id]
         root_id, parent_id = iteration['root_candidate_id'], subject['parent_candidate_id']

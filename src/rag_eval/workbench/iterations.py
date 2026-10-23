@@ -80,6 +80,9 @@ def initialize_iterations(repository):
         if 'candidate_id' not in {r['name'] for r in conn.execute('PRAGMA table_info(task_sessions)')}:
             conn.execute('ALTER TABLE task_sessions ADD COLUMN candidate_id TEXT')
 
+    from .splits import initialize
+    initialize(repository)
+
 
 def _json(value):
     return None if value is None else json.loads(value)
@@ -263,7 +266,11 @@ class IterationService:
                     proposals.append(dict(id=r['id'], status=r['status'], title=card.get('title'),
                                           parent_candidate_id=r['parent_candidate_id'], created_at=r['created_at']))
             unassigned = self._unassigned(conn, iteration)
-        return dict(iteration, candidates=ordered, proposals=proposals, unassigned_executions=unassigned)
+        from .splits import batches, roles
+        used = batches(self.repository, iteration_id)
+        pool = roles(iteration.get('protocol'), {b['batch_id'] for b in used if b['completed_at']})
+        return dict(iteration, candidates=ordered, proposals=proposals, unassigned_executions=unassigned,
+                    fresh_usage=used, validation_pool=[c for c, r in (pool or {}).items() if r == 'validation'])
 
     def _unassigned(self, conn, iteration):
         owned = {r['execution_id'] for r in conn.execute(
@@ -356,7 +363,8 @@ class IterationService:
         return dict(commits=commits, seeds=seeds[:20])
 
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
-                         case_ids, mode, actor, request_key, seeded_from=None):
+                         case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
+                         split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8):
         """Create the backing Task, freeze its plan, then provision root C0.
 
         Retrying the same request key completes an interrupted creation: each
@@ -373,7 +381,8 @@ class IterationService:
             raise ValueError('No trusted artifact binding for this iteration input')
         payload = dict(workspace_id=workspace_id, title=title, start_commit=start_commit, input_id=input_id,
                        expected_bundle_id=expected_bundle_id, case_ids=case_ids, mode=mode,
-                       seeded_from=seeded_from, actor=actor)
+                       seeded_from=seeded_from, actor=actor, sealed_ref=sealed_ref, split_seed=split_seed,
+                       fresh_batch_count=fresh_batch_count, fresh_papers_per_batch=fresh_papers_per_batch)
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -388,18 +397,38 @@ class IterationService:
                 raise ValueError('An iteration is seeded only from a frozen candidate of that iteration')
             if source['frozen_commit'] != start_commit:
                 raise ValueError("A seeded iteration starts at the source candidate's frozen commit")
+        from .splits import partition
+        ref = sealed_ref or (self.preparation_config or {}).get('sealed_ref', 'selection:20261013:holdout')
+        registered = (self.preparation_config or {}).get('sealed_selections', {}).get(ref)
+        if (not isinstance(registered, dict) or registered.get('bundle_id') != expected_bundle_id
+                or not isinstance(registered.get('case_ids'), list)):
+            raise ValueError('Unknown or mismatched trusted sealed selection')
+        catalogue = self.plans.inputs.describe(input_id)
+        split = partition(catalogue['partitions'], case_ids, sealed=registered['case_ids'], seed=split_seed,
+                          batches=fresh_batch_count, papers_per_batch=fresh_papers_per_batch)
+        role_map = {c: r for r in ('search', 'validation') for c in split[r]}
         self._project_commit(start_commit)
         task = self.repository.create_task(workspace_id, title, '迭代：起点 ' + start_commit[:12] + '，冻结题单',
                                            request_key='iteration:' + request_key)
         plan = self.plans.save(task_id=task['id'], input_id=input_id, expected_bundle_id=expected_bundle_id,
                                case_ids=case_ids, title=title, mode=mode, actor=actor,
-                               request_key='iteration:' + request_key)
+                               request_key='iteration:' + request_key, roles=role_map)
+        fresh = []
+        for index, ids in enumerate(split['batches'], 1):
+            p = self.plans.save(task_id=task['id'], input_id=input_id, expected_bundle_id=expected_bundle_id,
+                                case_ids=ids, title=f'{title} fresh {index}', mode=mode, actor=actor,
+                                request_key=f'iteration:{request_key}:fresh:{index}', roles={c: 'validation' for c in ids})
+            fresh.append(dict(batch_id=f'f{index}', plan_id=p['plan_id'], plan_revision=p['revision'],
+                              plan_content_hash=p['content_hash'], selection_hash=p['content']['selection']['selection_hash'],
+                              case_ids=ids, status='unused'))
         content = plan['content']
         protocol = dict(mode=content['execution_intent']['mode'],
                         request_revision=content['execution_intent']['request_revision'],
                         reasoning_protocol='reasoning-v1', input=content['input'],
                         bundle_ref=binding['bundle_ref'], index_ref=binding['index_ref'],
                         scorer='recorded-per-run', k_base=2, success_threshold=.5,
+                        splits=dict(search=split['search'], validation=split['validation'],
+                                    sealed_ref=ref, sealed=registered['case_ids'], seed=split_seed), fresh_batches=fresh,
                         gate_rule=dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90'))
         project = self.trees.project_root
         common = str(Path(_text_git(project, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve())
@@ -729,7 +758,7 @@ class IterationService:
             raise Conflict('该候选改动了资料准备相关文件，复用已导入的 notebook 不会反映这些改动: '
                            + ', '.join(hits[:10]))
 
-    def run(self, candidate_id, *, budget, actor, request_key, adopt=False):
+    def run(self, candidate_id, *, budget, actor, request_key, adopt=False, batch_id=None):
         """Prepare a Job on the iteration plan with the frozen capture, then dispatch.
 
         A new request key is a new attempt; failures and cancellations stay.
@@ -753,8 +782,18 @@ class IterationService:
         if None in (self.jobs, self.executions, self.build_spec) or not isinstance(self.preparation_config, dict):
             raise ValueError('Candidate execution is not configured')
         task_id, key = iteration['task_id'], 'candidate:' + candidate_id + ':' + request_key
-        job = self.jobs.prepare(task_id, iteration['plan_id'], iteration['plan_revision'],
-                                iteration['plan_content_hash'], actor=actor, request_key=key)
+        plan_scope = iteration
+        if batch_id is not None:
+            from .splits import batches
+            claimed = next((b for b in batches(self.repository, iteration['id']) if b['batch_id'] == batch_id), None)
+            if adopt or claimed is None:
+                raise ValueError('Fresh runs require a consumed batch')
+            owner = self.candidate(claimed['candidate_id'])
+            if not claimed['completed_at'] and candidate_id not in (owner['id'], owner['parent_candidate_id']):
+                raise Conflict('A fresh batch belongs to its claimed candidate and parent until completion')
+            plan_scope = next(b for b in iteration['protocol']['fresh_batches'] if b['batch_id'] == batch_id)
+        job = self.jobs.prepare(task_id, plan_scope['plan_id'], plan_scope['plan_revision'],
+                                plan_scope['plan_content_hash'], actor=actor, request_key=key)
         protocol = iteration['protocol']
         store = ArtifactStore(self.preparation_config['artifact_root'])
         if store.root != self.trees.store.root:
@@ -771,9 +810,9 @@ class IterationService:
             if row is None:
                 attempt = conn.execute('SELECT COALESCE(MAX(attempt),0)+1 FROM candidate_attempts WHERE candidate_id=?',
                                        (candidate_id,)).fetchone()[0]
-                conn.execute('INSERT INTO candidate_attempts VALUES(?,?,?,?,?,?,?,?)',
+                conn.execute('INSERT INTO candidate_attempts(candidate_id,attempt,task_id,job_id,preparation_id,execution_id,created_by,created_at,batch_id) VALUES(?,?,?,?,?,?,?,?,?)',
                              (candidate_id, attempt, task_id, job['job_id'], prepared['preparation_id'],
-                              None, actor, now()))
+                              None, actor, now(), batch_id))
                 self.repository._event(conn, task_id, 'candidate.attempt.prepared', candidate_id,
                                        dict(attempt=attempt, job_id=job['job_id'],
                                             preparation_id=prepared['preparation_id'], actor=actor))
@@ -786,7 +825,7 @@ class IterationService:
             if type(path) is not str or not path:
                 raise ValueError('No adoptable runs are configured on this server')
             config['adopt_runs'] = json.loads(Path(path).read_text(encoding='utf-8'))
-        elif (self.execution_config or {}).get('seed_from_root') is True:
+        elif batch_id is None and (self.execution_config or {}).get('seed_from_root') is True:
             seeds = self._seed_runs(iteration)
             if seeds is not None:
                 self._guard_seeded_change(iteration, candidate)
@@ -803,6 +842,37 @@ class IterationService:
             conn.execute('UPDATE candidate_attempts SET execution_id=? WHERE candidate_id=? AND attempt=? '
                          'AND execution_id IS NULL', (prior['execution_id'], candidate_id, attempt))
         return self.candidate(candidate_id)
+
+    def fresh_run(self, candidate_id, *, budget, actor, request_key):
+        """Claim one fresh batch and dispatch bounded parent/candidate repetitions."""
+        from .splits import claim
+        candidate = self.candidate(candidate_id)
+        if not candidate['parent_candidate_id'] or candidate['status'] != 'frozen':
+            raise Conflict('fresh-run requires a frozen child candidate')
+        iteration = self.iteration(candidate['iteration_id'])
+        batch = claim(self.repository, iteration, candidate_id, request_key)
+        k = iteration['protocol']['k_base']
+        for cid in (candidate['parent_candidate_id'], candidate_id):
+            existing = [a for a in self.candidate(cid)['attempts'] if a.get('batch_id') == batch['batch_id']]
+            for i in range(k):
+                if i < len(existing) and existing[i]['execution_id']:
+                    continue
+                self.run(cid, budget=budget, actor=actor, request_key=f'{request_key}:{cid}:{i}', batch_id=batch['batch_id'])
+        return dict(candidate_id=candidate_id, batch=batch, status='dispatched')
+
+    def fill_validation(self, candidate_id, *, budget, actor, request_key):
+        """Explicit execution path for validation measurements missing at comparison time."""
+        from .splits import batches
+        candidate = self.candidate(candidate_id)
+        iteration = self.iteration(candidate['iteration_id'])
+        for b in batches(self.repository, iteration['id'], completed=True):
+            for cid in filter(None, (candidate['parent_candidate_id'], candidate_id)):
+                existing = [a for a in self.candidate(cid)['attempts'] if a.get('batch_id') == b['batch_id']]
+                for i in range(iteration['protocol']['k_base']):
+                    if i < len(existing) and existing[i]['execution_id']:
+                        continue
+                    self.run(cid, budget=budget, actor=actor,
+                             request_key=f'{request_key}:validation:{b["batch_id"]}:{cid}:{i}', batch_id=b['batch_id'])
 
     # ------------------------------------------------------------ proposals, decisions
     def draft_proposal(self, parent_candidate_id, card, *, author):
