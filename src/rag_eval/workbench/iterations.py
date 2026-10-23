@@ -399,7 +399,8 @@ class IterationService:
                         request_revision=content['execution_intent']['request_revision'],
                         reasoning_protocol='reasoning-v1', input=content['input'],
                         bundle_ref=binding['bundle_ref'], index_ref=binding['index_ref'],
-                        scorer='recorded-per-run')
+                        scorer='recorded-per-run', k_base=2, success_threshold=.5,
+                        gate_rule=dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90'))
         project = self.trees.project_root
         common = str(Path(_text_git(project, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve())
         iteration_id, root_id, created = uid(), uid(), now()
@@ -823,9 +824,14 @@ class IterationService:
         with self.repository.connect(write=True) as conn:
             candidate = self._candidate(conn, candidate_id)
             task_id = self._iteration(conn, candidate['iteration_id'])['task_id']
-            if not self._evaluated(conn, candidate_id):
+            previous = candidate.get('decision')
+            if not self._evaluated(conn, candidate_id) and not (previous or {}).get('gate_verdict'):
                 raise Conflict('Only an evaluated candidate can be adopted or rejected')
+            if (previous or {}).get('gate_verdict') and not note.strip():
+                raise ValueError('Overriding a gate verdict requires a note')
             body = dict(decision=decision, note=_text(note, 'note', empty=True, limit=4000), actor=actor, at=now())
+            if (previous or {}).get('gate_verdict'):
+                body.update(gate_verdict=previous['gate_verdict'], previous=previous)
             conn.execute('UPDATE candidates SET decision_json=?,updated_at=? WHERE id=?',
                          (json.dumps(body, ensure_ascii=False), now(), candidate_id))
             self.repository._event(conn, task_id, 'candidate.decided', candidate_id, body)

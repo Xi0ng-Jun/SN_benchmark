@@ -56,7 +56,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   `node run` 的动作请求接受 `attempts`（1 到 4），执行为连续编号的 attempt。
   测试：两份合成执行（同候选）给出的逐题带与 η 可手算；attempt 数不足时的标记；比较记录在新增 attempt 后生成新记录而不覆盖旧记录（现有 UNIQUE 约束含 execution id，确认即可）。
 
-- [ ] 2. **编辑合同与门**（`gate.py`，改 `hypotheses.py`、`iterations_api.py`、UI）。
+- [x] 2. **编辑合同与门**（`gate.py`，改 `hypotheses.py`、`iterations_api.py`、UI）。
   `gate.judge(comparison, noise, contract, rule)`：
   - ρ = 合同中 predicted_flips 里实际翻转（父侧失败、候选成功，按阈值与噪声带）的比例；guards 里任一题下降超噪声带记 `guard_broken`。
   - 全局 Δ = 候选均值 − 父均值（validation 角色的题；W3 之前为全部题）。
@@ -110,3 +110,10 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 实现：全部准入 attempt 均值、冻结 attempt 集合身份、逐题 Jeffreys 平滑 90% 正态半宽、ICC / n_eff / η、SQLite v5 加列、node run 的 1–4 次请求。
 - 解释与偏离：Jeffreys 带使用 harness-opt bookkeeper 的正态近似而非 Beta 分位数；多次运行连续派发编号，不等待前次完成。干净 checkout 缺私有 E5 工件，原先无条件依赖它的测试改为合成保存运行；schema 断言随 v5 更新，CLI 子进程显式指向本 checkout 的 src，不修改共享 .venv。复用已有 Node 依赖并构建 bridge，仅补离线测试前提。
 - 文档同步：按用户最新指令恢复 e36d63f 边界并修正 W2/W4 与“已定决策”的残留旧文案；同步前工作副本差异保存于 /tmp/lcd-plan-preexisting.patch。W5/W8 未实现。
+
+### W2 · 2026-10-24
+
+- 提交：本条所在 `feat(workbench): apply frozen LCD contracts to candidate decisions`（W1：`9a0fab5`）。
+- 验证：完整离线 pytest **2437 passed / 7 skipped**；Node **34 passed**；`npm --prefix apps/sn-workbench run typecheck` 通过。
+- 实现：冻结 lcd-v1 / k_base / 成功阈值；合同与四种判定；verdict 保存全部计算输入；核对时原子写入比较判定、候选 decision（actor=gate）和历史。人工覆盖必须带理由且保留原判定；重复核对同一比较不会覆盖人工意见。节点 UI 展示规则、数字与依据；CURRENT_STATE 说明内部接受规则。
+- 解释与偏离：质量准入会排除基础设施失败，故另计全部终态 attempt 的 error/missing；无准入质量对也保存不可测诊断，未观测到分母时不猜测失败率。不足 k_base、缺合同测量或缺全局比较均不可测。原计划的“decide 不变”按用户新决策改为保留 gate 的带理由覆盖；旧卡仍走标注“无噪声带”的符号检验。

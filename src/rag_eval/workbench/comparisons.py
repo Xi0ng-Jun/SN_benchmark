@@ -208,7 +208,7 @@ class ComparisonService:
                 found.setdefault(m['execution_id'], dict(attempt=m.get('attempt'), execution_id=m['execution_id']))
         return list(found.values())
 
-    def _compute(self, subject, reference, kind):
+    def _compute_quality(self, subject, reference, kind):
         from .noise import estimate
         sa, ra = self.admitted(subject), self.admitted(reference)
         if not sa or not ra:
@@ -246,16 +246,59 @@ class ComparisonService:
         body['regressed'] = [r['case_id'] for r in body['rows'] if r['delta'] is not None and r['delta'] < 0]
         return body, None
 
+    @staticmethod
+    def terminal(candidate):
+        found = {}
+        for m in candidate.get('attempts', []) + candidate.get('links', []):
+            if m.get('execution_id') and m.get('execution_state') not in (None, 'running'):
+                found.setdefault(m['execution_id'], m)
+        return list(found.values())
+
+    def _infrastructure(self, candidate):
+        """Count error/missing over every terminal execution, including rejected runs."""
+        rows = []
+        for m in self.terminal(candidate):
+            runs = self.views.execution_runs(m['execution_id'])
+            total = failed = 0
+            for run in runs:
+                cases = self.views.cases(run.id)['cases'] if hasattr(self.views, 'cases') else [
+                    dict(status='error' if m['execution_state'] != 'finished' else 'success') for _ in run.case_ids]
+                total += len(cases)
+                failed += sum(c['status'] in ('error', 'missing') for c in cases)
+            # A failure before run publication has no observed per-case denominator.
+            rows.append(dict(execution_id=m['execution_id'], total=total, failed=failed,
+                             unobserved=not total, execution_state=m['execution_state']))
+        return dict(total=sum(r['total'] for r in rows), failed=sum(r['failed'] for r in rows),
+                    unobserved=sum(r['unobserved'] for r in rows), attempts=rows)
+
+    def _compute(self, subject, reference, kind):
+        body, reason = self._compute_quality(subject, reference, kind)
+        if body is None and self.terminal(subject) and self.terminal(reference):
+            def side(c):
+                return dict(candidate_id=c['id'], execution_id=None, attempt=None,
+                            runs=[r.id for m in self.terminal(c) for r in self.views.execution_runs(m['execution_id'])])
+            body = dict(format=FORMAT, kind=kind, iteration_id=subject['iteration_id'],
+                        subject=side(subject), reference=side(reference), metric=None, partitions=[], rows=[],
+                        counts=dict(better=0, worse=0, same=0, unpaired=0), regressed=[],
+                        mean=dict(reference=None, subject=None, delta=None),
+                        admission=dict(status='not_admitted', reason=reason))
+        if body is not None:
+            body['infrastructure'] = {s: self._infrastructure(c) for s, c in (
+                ('subject', subject), ('reference', reference))}
+        return body, reason
+
     def _measurement_key(self, candidate):
         attempts = self.admitted(candidate)
-        if len(attempts) == 1:
-            return attempts[0]['execution_id']
-        return _hash(attempts) if attempts else None
+        terminal = self.terminal(candidate)
+        if len(terminal) == len(attempts):
+            return attempts[0]['execution_id'] if len(attempts) == 1 else _hash(attempts) if attempts else None
+        return _hash([(m['execution_id'], m['execution_state']) for m in terminal])
 
     # ------------------------------------------------------------ records
     @staticmethod
     def _record(row):
-        return dict(json.loads(row['record']), id=row['id'], candidate_id=row['candidate_id'],
+        extra = dict(verdict=json.loads(row['verdict_json'])) if row['verdict_json'] else {}
+        return dict(json.loads(row['record']), **extra, id=row['id'], candidate_id=row['candidate_id'],
                     reference_candidate_id=row['reference_candidate_id'], content_hash=row['content_hash'],
                     created_by=row['created_by'], created_at=row['created_at'])
 

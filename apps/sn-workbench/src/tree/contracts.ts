@@ -3,7 +3,8 @@
 export type Admission = { status: 'admitted' | 'not_admitted' | 'pending'; reason: string | null };
 export type Measurement = { attempt?: number; execution_id: string; task_id: string; execution_state: string | null;
   run_dir: string | null; admission: Admission | null; created_at: string; created_by?: string; job_id?: string };
-export type Decision = { decision: 'adopted' | 'rejected' | 'undecided'; note: string; actor: string; at: string };
+export type GateVerdict = { verdict: 'accept' | 'reject' | 'audit' | 'unmeasurable'; rule_id: string; tau: number; eta: number | null; rho: number | null; delta: number | null; reasons: string[] };
+export type Decision = { gate_verdict?: GateVerdict; previous?: Decision | null; decision: 'adopted' | 'rejected' | 'undecided'; note: string; actor: string; at: string };
 export type Counts = { better: number; worse: number; same: number; unpaired: number };
 // One side of a candidate's Δ父 / Δ根 as the tree view projects it.
 export type DeltaSummary = { kind: string; status: string; reason?: string | null; comparison_id?: string | null;
@@ -29,7 +30,7 @@ export type IterationTree = Iteration & { candidates: Candidate[]; proposals: Pr
 
 export type ComparisonRow = { case_id: string; left: number | null; right: number | null; delta: number | null; flip: keyof Counts; partition: number };
 export type ComparisonSideRef = { candidate_id: string; attempt: number | null; execution_id: string; runs: string[] };
-export type ComparisonRecord = {
+export type ComparisonRecord = { verdict?: GateVerdict;
   id?: string; kind: string; status?: string; reason?: string | null; comparison_id?: string;
   metric?: string | null; subject?: ComparisonSideRef; reference?: ComparisonSideRef; reference_candidate_id?: string;
   admission?: Admission; counts?: Counts; rows?: ComparisonRow[]; regressed?: string[];

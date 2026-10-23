@@ -107,7 +107,7 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
   const c = candidate;
   const isRoot = c.id === tree.root_candidate_id;
   const label = (id: string | null) => id ? labels[id] ?? short(id) : '—';
-  const comparisons = useResource<CandidateComparisons>(!isRoot && c.reference ? `/candidates/${c.id}/comparisons` : null, refreshKey);
+  const comparisons = useResource<CandidateComparisons>(!isRoot && c.attempts.length ? `/candidates/${c.id}/comparisons` : null, refreshKey);
   const changes = useResource<CandidateChanges>(!isRoot && c.worktree?.status === 'ready' ? `/candidates/${c.id}/changes` : null, refreshKey);
   const parentRecord = comparisons.data?.parent;
   const rootRecord = comparisons.data?.root.status === 'same_as_parent' ? parentRecord : comparisons.data?.root;
@@ -117,7 +117,7 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
   // A node can have several Agents; new ones are offered whenever the state allows.
   const canAnalyse = ['evaluated', 'failed'].includes(c.state);
   const canImplement = c.state === 'implementing' && Boolean(proposal);
-  const canCheck = Boolean(proposal && parentRecord?.admission?.status === 'admitted' && ['approved', 'implementing', 'verified'].includes(proposal.status));
+  const canCheck = Boolean(proposal && parentRecord?.id && ['approved', 'implementing', 'verified'].includes(proposal.status));
   return <View testID="node-detail" style={{ gap: 4 }}>
     <View style={{ gap: 6, paddingBottom: 12 }}>
       <Eyebrow>{isRoot ? '根候选' : c.proposal_id ? '来自提议' : ({ manual: '手动派生', legacy: '遗留', 'legacy-manual': '遗留（人工关联）' } as Record<string, string>)[c.origin] ?? c.origin}</Eyebrow>
@@ -215,6 +215,12 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
     </Section>
     {mine.some(r => r.status !== 'pending') && <Section title="请求记录" defaultOpen={false}>
       {mine.filter(r => r.status !== 'pending').map(r => <RequestRow key={r.id} request={r} label={label} actions={actions} onConfirm={onConfirm} />)}
+    </Section>}
+    {c.decision?.gate_verdict && <Section title="LCD 接受规则" testID="section-gate">
+      <Copy small>{c.decision.gate_verdict.verdict} · {c.decision.gate_verdict.rule_id}</Copy>
+      <Copy small>τ {fmt(c.decision.gate_verdict.tau)} · η {fmt(c.decision.gate_verdict.eta)} · ρ {fmt(c.decision.gate_verdict.rho)} · Δ {fmt(c.decision.gate_verdict.delta)}</Copy>
+      <Copy small muted>{c.decision.gate_verdict.reasons.join(' · ')}</Copy>
+      <Section title="判定依据" defaultOpen={false}><Copy small>{JSON.stringify(c.decision.gate_verdict, null, 2)}</Copy></Section>
     </Section>}
     {c.decision && <Section title="审批与结论">
       <Copy small>{decisionLabels[c.decision.decision]} · {c.decision.actor} · {new Date(c.decision.at).toLocaleString('zh-CN', { hour12: false })}</Copy>

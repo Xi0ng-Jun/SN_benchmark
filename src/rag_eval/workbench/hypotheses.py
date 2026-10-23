@@ -20,7 +20,7 @@ CAUSES = ('supported', 'refuted', 'undecided')
 # -> verified (predictions checked) -> concluded.
 STATUSES = ('draft', 'approved', 'rejected', 'implementing', 'verified', 'concluded')
 _REQUIRED = ('title', 'component', 'mechanism', 'predictions', 'falsification', 'implementer_brief')
-_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope')
+_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract')
 
 
 def _str(value, name, limit=4000):
@@ -57,6 +57,9 @@ def validate_card(card):
                                    'metric': _str(item['metric'], 'metric', 100) if 'metric' in item else None,
                                    'note': _str(item['note'], 'note', 1000) if 'note' in item else None,
                                    'guard': item.get('guard', False)})
+    if 'contract' in card:
+        from .gate import validate_contract
+        out['contract'] = validate_contract(card['contract'])
     return out
 
 
@@ -79,7 +82,7 @@ def check_predictions(predictions, flips):
                             held=held, reason=reason))
     decided = [r for r in results if r['held'] is not None]
     return dict(metric=flips.get('metric'), admission=flips.get('admission'), results=results,
-                held=sum(r['held'] for r in decided), decided=len(decided), total=len(results))
+                noise_label='无噪声带', held=sum(r['held'] for r in decided), decided=len(decided), total=len(results))
 
 
 class HypothesisStore:
@@ -152,11 +155,39 @@ class HypothesisStore:
             record = self._get(conn, task_id, hypothesis_id)
             if record['status'] not in ('implementing', 'verified', 'approved'):
                 raise Conflict('Predictions are checked after the card is approved')
-            if flips.get('admission') != 'admitted':
+            contract = record['card'].get('contract')
+            if not contract and flips.get('admission') != 'admitted':
                 raise ValueError('The two runs are not admitted as a pair: ' + str(flips.get('note')))
             body = dict(baseline_run=baseline_run, candidate_run=candidate_run, comparison_id=comparison_id,
                         actor=actor, at=now(),
                         counts=flips.get('counts'), leak=leak, **check_predictions(record['card']['predictions'], flips))
+            if contract:
+                from .gate import judge
+                row = conn.execute('SELECT * FROM candidate_comparisons WHERE id=?', (comparison_id,)).fetchone()
+                if row is None:
+                    raise ValueError('A contract check needs a frozen candidate comparison')
+                candidate = conn.execute('SELECT * FROM candidates WHERE id=?', (row['candidate_id'],)).fetchone()
+                iteration = conn.execute('SELECT * FROM iterations WHERE id=?', (row['iteration_id'],)).fetchone()
+                if (candidate['proposal_id'] != hypothesis_id or iteration['task_id'] != task_id
+                        or row['kind'] != 'parent' or candidate['parent_candidate_id'] != row['reference_candidate_id']):
+                    raise ValueError('Comparison does not check this proposal against its parent')
+                comparison = json.loads(row['record'])
+                protocol = json.loads(iteration['protocol_json']) or {}
+                from .gate import DEFAULT_RULE
+                verdict = json.loads(row['verdict_json']) if row['verdict_json'] else judge(
+                    comparison, comparison.get('noise') or {}, contract, protocol.get('gate_rule', DEFAULT_RULE))
+                if not row['verdict_json']:
+                    conn.execute('UPDATE candidate_comparisons SET verdict_json=? WHERE id=?',
+                                 (json.dumps(verdict), comparison_id))
+                    previous = json.loads(candidate['decision_json']) if candidate['decision_json'] else None
+                    decision = dict(decision={'accept': 'adopted', 'reject': 'rejected'}.get(verdict['verdict'], 'undecided'),
+                                    actor='gate', at=now(), note='', comparison_id=comparison_id,
+                                    gate_verdict=verdict, previous=previous)
+                    conn.execute('UPDATE candidates SET decision_json=?,updated_at=? WHERE id=?',
+                                 (json.dumps(decision), now(), candidate['id']))
+                    self.repository._event(conn, task_id, 'candidate.decided', candidate['id'], decision)
+                body['verdict'] = verdict
+                body.pop('noise_label', None)
             conn.execute("UPDATE hypotheses SET status='verified', verification=?, updated_at=? WHERE id=?",
                          (json.dumps(body, ensure_ascii=False), now(), hypothesis_id))
             self.repository._event(conn, task_id, 'hypothesis.checked', hypothesis_id,
