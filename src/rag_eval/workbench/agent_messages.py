@@ -67,7 +67,7 @@ def _input(session_id, text, contexts, behavior):
         raise ValueError('Choose an explicit supported send behavior')
     if type(contexts) is not list or len(contexts) > MAX_REFERENCES:
         raise ValueError('Message exceeds the current four-reference budget')
-    fields = {'goal': {'kind'}, 'file': {'kind', 'path'}, 'result': {'kind', 'result_id'},
+    fields = {'cluster_case': {'kind', 'cluster_id', 'member'}, 'goal': {'kind'}, 'file': {'kind', 'path'}, 'result': {'kind', 'result_id'},
               'case': {'kind', 'result_id', 'case_id'}, 'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'iteration_tree': {'kind'}, 'brief': {'kind', 'session_id'}}
     for selection in contexts:
         if type(selection) is not dict or set(selection) != {'reference', 'sha256'}:
@@ -160,13 +160,18 @@ class AgentMessageStore:
                 if json.loads(prior['payload']) != payload:
                     raise Conflict('Message request key was already used with different content')
                 return self._record(prior)
-            # Role separation: an implementer never receives benchmark material
-            # (cases, run evidence, scores); a brief belongs to its own session.
+            # General benchmark contexts remain forbidden. Only the implementer's
+            # own cluster_case projection may carry observed search evidence.
             benchmark = {'case', 'run_case', 'task_runs', 'iteration_tree', 'result'}
             for selection in payload['contexts']:
                 reference = selection['reference']
                 if reference['kind'] == 'brief' and reference['session_id'] != session_id:
                     raise MessageInputRejected('A brief can only be sent to its own session')
+                if session['role'] == 'implementer' and reference['kind'] == 'cluster_case':
+                    from .clusters import candidate_cluster
+                    candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
+                    if not candidate_id or candidate_cluster(repo, task_id, candidate_id) != reference.get('cluster_id'):
+                        raise MessageInputRejected('An implementer may receive only its own cluster evidence')
                 if session['role'] == 'implementer' and reference['kind'] in benchmark:
                     raise MessageInputRejected('Benchmark material is not sent to an implementer Agent')
             # Frozen snapshots come only from the existing server context resolver.

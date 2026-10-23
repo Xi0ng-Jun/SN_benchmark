@@ -42,7 +42,7 @@ export type TimelinePage = { agentId: string; direction: 'tail' | 'before' | 'af
   startCursor: TimelineCursor | null; endCursor: TimelineCursor | null; hasOlder: boolean; hasNewer: boolean;
   mergeWindow: boolean | null; entries: TimelineEntry[] };
 export type Task = { id: string; title: string; goal: string; workspace_id: string; results: Result[]; sessions: TaskSession[]; history: History[] };
-export type ContextReference = { kind: 'goal' } | { kind: 'file'; path: string }
+export type ContextReference = { kind: 'cluster_case'; cluster_id: string; member: string } | { kind: 'goal' } | { kind: 'file'; path: string }
   | { kind: 'result'; result_id: string } | { kind: 'case'; result_id: string; case_id: string }
   | { kind: 'run_case'; run_id: string; case_id: string } | { kind: 'task_runs' } | { kind: 'iteration_tree' } | { kind: 'brief'; session_id: string };
 export type ContextSnapshot = { reference: ContextReference; title: string; text: string; sha256: string; source_refs: Record<string, string> };

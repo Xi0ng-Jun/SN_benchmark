@@ -72,7 +72,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   - 新动作 `node fresh-run CANDIDATE`：取下一个 unused 批次，对候选与其父各跑 k_base 次（父若已在该批次有 attempt 则复用），生成该批次上的比较记录（kind = `fresh`），标记批次 used，并把该批次的 case 以 role = validation 并入 iteration（后续候选的 validation 池扩大；父节点在新池上缺的 attempt 由下一次比较时补跑，记录在 `attempts_used`）。只能由分析者请求、人确认。
   测试：划分不重叠且可复现；sealed 拒绝；分析者看不到 validation 逐题；fresh-run 用后批次不可再用；并入后 validation 池变大。
 
-- [ ] 4. **失败簇与记账人**（`clusters.py`，加 verb）。
+- [x] 4. **失败簇与记账人**（`clusters.py`，加 verb）。
   签名 DSL（JSON）：`{"kind":"regex","field":"<path>","pattern":…}`、`{"kind":"range","field":"<path>","min":…,"max":…}`、`all_of / any_of / not`。字段路径限定在 case view 的白名单：`status`、`prediction`、`response.answer`、`response.grounded`、`response.evidence_level`、`intent_preview.needs_clarification`、`deterministic.evidence_hit`、`deterministic.citation_valid_count`、`deterministic.citation_invalid_count`、`stage_metrics.gold_evidence_recall.value`、`stage_metrics.context_precision.value`、`stage_metrics.citation_precision.value`、`metrics.<primary>`、`usage.total_tokens`、`retrieval_context.*.text`（只允许正则）。禁止 `question`、gold、case_id 字段进入签名（签名描述失败形态，不得点名题目）。
   `clusters.scan(iteration, cluster, executions)`：成员 = 至少一次 attempt 匹配签名的 search 题；q = 成员全部 attempt 的成功率；m = 成员失败 attempt 中匹配 missing_signature 的比例（默认 missing_signature = `gold_evidence_recall.value == 0`，即证据未进上下文）；v = 失败 attempt 中匹配 violation_signature 的比例（默认 = `deterministic.citation_invalid_count > 0` 或 `response.answer` 匹配 `(?i)unanswerable|not (stated|mentioned)` 且 `evidence_hit == true`）。上限：retrieval 类编辑 (1 − q)·m，验证/拒答类编辑 (1 − q)·v。
   verb：`cluster propose --file`（分析者；卡片内容过泄漏扫描；写入即冻结）、`cluster list`、`cluster show ID`（分析者得成员 case_id；实现者得自己簇的描述、签名、计数、q/m/v 及 search 成员脱敏证据（题目、SN 答案、上下文块、阶段指标、官方主分；用 m01 等序号，不给 case_id、gold 答案或 gold 证据文本））。`proposal draft` 的卡可引用 `cluster_id`，合同的 predicted_flips 必须是该簇成员。
@@ -126,3 +126,12 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 解释与偏离：`case_ids` 保持字符串数组，角色用同一 selection hash 覆盖的并行 `roles` 映射；只有一篇时 search-only，gate 不可测。真实 holdout 不能读取，故要求 `job_preparation.sealed_selections` 可信登记（bundle_id 与 case_ids），未知 ref 关闭式拒绝；测试登记空合成留出集，未声称接通真实 17 题。冻结协议不回写使用状态，实际状态由附加表与 validation_pool 派生。
 - 异步边界：fresh-run 先领取再派发；后续比较收拢终态、记录 fresh 比较并入池，失败也不释放批次。读取 compare 不隐式调用模型；缺扩展池测量先记录 missing_batches，经确认的 node run 显式补齐候选与父。这替代原稿“下一次比较补跑”，以保持现有只读工具与执行确认边界，执行函数仍接受非人工 actor。
 - 旧测试调整：迭代 fixture 补可信合成封存登记；gate 持久化 fixture 明确 a=search、b=validation，使其在新协议下仍测试可测判定。旧卡、旧 plan 和旧比较记录继续读取。配置与行为已同步到 iteration-tree-design。
+
+### W4 · 2026-10-24
+
+- 提交：本条所在 `feat(workbench): freeze failure clusters and share scoped member evidence`（W3：`153f4e4`）。
+- 验证：RUNBOOK 完整离线 pytest **2462 passed / 7 skipped**（可选本地工件与 Perl ROUGE 未配置；1 条既有 Starlette 弃用警告），Node **34 passed**；`npm --prefix apps/sn-workbench run typecheck` 通过。未调用模型、启动服务、读取真实运行或修改 .venv。
+- 实现：签名白名单、search 并集成员、q/m/v 与编辑上限；冻结来源、成员与观测；cluster propose/list/show；卡片 cluster_id 与合同成员校验；实现者自己的簇证据投影和 cluster_case 消息归属校验。原泄漏扫描保持不变。
+- 解释与偏离：组合语法明确采用 `{"all_of": [...]}`、`{"any_of": [...]}`、`{"not": {...}}`；观测随提议冻结，纯函数重扫不改旧记录。未知官方分与空分母为 null；整次执行没有产出时只派生 missing 状态，不向原记录补零。实现者视图按来源排除 gold 标注，保留实际交付上下文（即使与标注原文重合），并把文本中已知 case_id 脱敏为占位符。
+- 集成修正：分析者 counts/mean/η 从可见 search 行重新计算；brief 先投影完整比较再汇总，原 brief 测试断言无需修改。发现显式 validation 补跑误将失败 attempt 计入 k_base，新增失败回归后修复为只计已准入或仍运行的 attempt；新的明确请求可补足，同一请求复用凭据，失败记录永久保留，读取仍不派发执行。
+- 范围：W5–W8 未实现。后续 W5 须为簇子集建立独立 plan 与配对准入，预算计入全部派发（含父补跑、fresh 和失败）并先预留；W6 的 sealed-run 须单独可信授权及持久化一次性领取，簇 resolved/open 由后续证据派生，不改冻结成员。账本按 batch 对齐 validation/fresh，K 按不同 frozen_commit 计数。

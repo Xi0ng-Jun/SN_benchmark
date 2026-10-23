@@ -198,3 +198,13 @@ run:    沿用现有 Job/execution 状态与终态规则
 创建参数可附 `split_seed`、`fresh_batch_count`、`fresh_papers_per_batch`。fresh 各批单独冻结 plan 与 selection hash；协议中的 `unused` 是创建时事实，实际使用状态看附加表和返回的 `fresh_usage`，不回写冻结协议。分析者用 `node fresh-run <candidate> --reason '…'` 登记请求，确认后先领取批次，再派发候选与父各 k_base 次；未完成或失败也不释放该批次。新鲜 paper 不复用原根节点的 notebook seed。
 
 运行异步完成，后续候选比较读取会收拢已终态的 fresh 尝试、保存 kind=fresh 比较并扩大 `validation_pool`。普通比较只读，不隐式启动模型；缺少扩展池测量时记录 `missing_batches`，经确认的 node run 会补齐候选与父的 validation 尝试。分析者的逐题输出、嵌套噪声／判定依据与上下文只暴露 search，validation 只给 n、均值和 η（不可估时为 null）。
+
+### LCD 失败簇与实现者证据（2026-10-24）
+
+分析者用 `cluster propose --file cluster.json` 冻结签名、来源 execution 列表、search 成员及当时观测；文件指定 `candidate_id`（或 CLI 的 `--node`）、`cluster_id`、`description`、`signature`，可附 `missing_signature` / `violation_signature`。同一迭代重复 cluster_id 拒绝；重扫用纯函数 `clusters.scan`，保留原簇记录。签名组合的 JSON 写法为 `{"all_of": [...]}`、`{"any_of": [...]}`、`{"not": {...}}`；叶节点是受字段白名单限制的 regex / range。
+
+q 的分母是成员 × 来源 attempt；error/missing 是已知失败，成功状态却缺官方主分时保留 unknown，q 和依赖它的上限为 null，不补零。m/v 的分母是已知失败 attempt，空分母为 null；q=1 时编辑上限为 0。原始观测中缺失的分数或证据不会改写。
+
+`cluster list` / `cluster show ID` 对分析者给成员 case_id；实现者只可读取自己候选的提议所引用簇，成员用稳定的 m01、m02 序号，逐次提供题目、SN 答案、实际上下文块、阶段指标和官方主分。只投影运行观测，不复制 gold 标注答案、gold 证据文本、论文标注、run 路径或 case_id；上下文实际包含的原文仍是产品观测，不能据与标注文字重合就删掉。描述和签名继续走原泄漏扫描，代码 diff 扫描算法未改变。
+
+提议可用顶层 `cluster_id` 或 `contract.cluster_id` 引用簇，两者同时给出时必须一致，合同 predicted_flips 必须属于冻结成员。实现者可接收 `{"kind":"cluster_case","cluster_id":"c01","member":"m01"}` 上下文；消息准备时校验该 session 的候选归属，仍拒绝 case / run_case / task_runs / iteration_tree / result。CLI 的角色和候选参数是协作契约，不是 shell 沙箱。

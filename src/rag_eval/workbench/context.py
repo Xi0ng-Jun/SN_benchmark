@@ -31,6 +31,7 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
     local selection boundary, not a sandbox for a coding Agent.
     """
     fields = {'goal': {'kind'}, 'file': {'kind', 'path'},
+              'cluster_case': {'kind', 'cluster_id', 'member'},
               'result': {'kind', 'result_id'}, 'case': {'kind', 'result_id', 'case_id'},
               'run_case': {'kind', 'run_id', 'case_id'}, 'task_runs': {'kind'}, 'iteration_tree': {'kind'}, 'brief': {'kind', 'session_id'}}
     if (not isinstance(reference, dict) or not isinstance(reference.get('kind'), str)
@@ -44,6 +45,14 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
     reference = dict(reference)
     task = repository.task(task_id)
     kind = reference['kind']
+    if kind == 'cluster_case':
+        from .clusters import ClusterStore, member_evidence
+        record = ClusterStore(repository, initialize=False).get(task_id, reference['cluster_id'])
+        evidence = next((m for m in member_evidence(record) if m['member'] == reference['member']), None)
+        if evidence is None:
+            raise ValueError('Unknown cluster member ordinal')
+        return _snapshot(reference, '簇证据 · ' + reference['cluster_id'] + ' / ' + reference['member'],
+                         json.dumps(evidence, ensure_ascii=False), {'cluster_id': reference['cluster_id']})
     if kind == 'goal':
         return _snapshot(reference, '任务目标 · ' + task['title'], task['goal'], {'task_id': task_id})
     if kind == 'brief':
@@ -103,6 +112,10 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
     if not any(r['id'] == result_id for r in task['results']):
         raise ValueError('Result is not attached to this task')
     if kind == 'result':
+        if policy.sealed:
+            from .ingest import read_snapshot
+            for cid in read_snapshot(repository.root, result_id)['submission']['case_ids']:
+                policy.refuse_sealed(cid)
         result = read_result(repository.root, result_id, include_cases=False)
         summary = {k: result[k] for k in ('id', 'suite', 'scope', 'case_count', 'bundle_case_count',
                                          'metrics', 'pending_metrics', 'coverage')}

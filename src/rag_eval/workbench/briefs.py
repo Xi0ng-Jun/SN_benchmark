@@ -2,7 +2,7 @@
 
 The analyst brief points at the read tools and the evaluation documents; the
 implementer brief carries only the approved card's implementer-facing fields
-and the worktree, never questions, gold, case ids or scores.
+and the worktree. Referenced clusters provide observed search evidence without gold annotations or case ids.
 """
 from __future__ import annotations
 
@@ -148,6 +148,9 @@ def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty,
     s = f'{tool} --task {task["id"]} --role implementer --hypothesis {hypothesis_id}'
     if candidate_id:
         s += f' --candidate {candidate_id}'
+    from .clusters import referenced_cluster
+    cluster_id = referenced_cluster(card)
+    evidence = (f'\n- 你的簇：`{cluster_id}`。用 `{s} cluster show {cluster_id}` 读取 search 成员的题目、SN 答案、上下文块、阶段指标和官方主分（m01 等序号）；也可接收 cluster_case 上下文。没有 gold 答案、gold 证据文本或 case_id。\n' if cluster_id and candidate_id else '')
     scope = '\n'.join(f'- `{p}`' for p in card.get('change_scope') or []) or '- （卡片未限定，改动尽量集中在上述组件）'
     dirty = '\n'.join(f'- `{p}`' for p in start_dirty) or '- （无）'
     return f'''# 你的角色：实现 Agent（Silicon Notebook）
@@ -163,12 +166,13 @@ def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty,
 
 允许改动的范围：
 {scope}
+{evidence}
 
 worktree 起点已有这些未提交改动，它们属于用户，不要覆盖或回退：
 {dirty}
 
 ## 规则
-- 你看不到、也**不要去找**评测题目、gold、案例或分数：不要读取评测仓库（`var/`、`docs/failure-ledger.md`、`docs/hypotheses/`、`apps/sn-workbench/test-results/` 等）。这样做是为了防止改动贴合考题。
+- 只使用批准卡片与自己簇的脱敏 search 证据；不得寻找 gold 标注、validation／sealed 逐题或其他簇材料，不得直接读取评测原始文件（`var/`、`docs/failure-ledger.md`、`docs/hypotheses/`、`apps/sn-workbench/test-results/` 等）。改动仍须通过泄漏扫描与合同核对。
 - 不写死任何题面、论文、数据集名或 case id；用合成数据写单元测试，覆盖受益和可能受害两种情况。
 - 遵守本仓库 `AGENTS.md`；运行 SN 自己的测试；不提交 git，不启动评测运行。
 - 完成后自查：`{s} leak-check`（只报告是否与考题重叠，不显示考题内容）。
@@ -312,7 +316,7 @@ def _tree_reader(repository, run_views, task_id, candidate_id=None):
     def step(c, detail):
         label, lines = labels[c['id']], []
         both = comparisons.for_candidate(c['id'], actor='workbench:brief', iteration=tree, store=False)
-        parent, root = policy.project(summary(both['parent'])), policy.project(summary(both['root']))
+        parent, root = summary(policy.project(both['parent'])), summary(policy.project(both['root']))
         head = f'**{label}**（`{c["id"]}`）commit `{c["frozen_commit"] or "未冻结"}` · {runs(c)}'
         if c['parent_candidate_id'] is None:
             lines.append(head + ' · 起点')

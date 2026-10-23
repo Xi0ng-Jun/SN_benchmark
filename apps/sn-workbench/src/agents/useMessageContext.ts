@@ -10,6 +10,7 @@ type Preview = { taskId: string; generation: number; value: ContextPreview; full
 const initialSelection = (): Selection => ({ mode: 'reference', optionId: null, path: '' });
 const emptyPreview = (): ContextPreview => ({ status: 'idle', current: false, snapshot: null });
 const referenceKey = (ref: ContextReference) => ref.kind === 'goal' || ref.kind === 'task_runs' || ref.kind === 'iteration_tree' ? ref.kind
+  : ref.kind === 'cluster_case' ? JSON.stringify(['cluster_case', ref.cluster_id, ref.member])
   : ref.kind === 'brief' ? JSON.stringify(['brief', ref.session_id])
   : ref.kind === 'file' ? JSON.stringify(['file', ref.path])
     : ref.kind === 'result' ? JSON.stringify(['result', ref.result_id])
@@ -102,6 +103,8 @@ export function useMessageContext(task: Task | undefined, session: TaskSession |
             || (snapshot.reference as { case_id?: string }).case_id !== reference.case_id))
           || (reference.kind === 'run_case' && ((snapshot.reference as { run_id?: string }).run_id !== reference.run_id
             || (snapshot.reference as { case_id?: string }).case_id !== reference.case_id))
+          || (reference.kind === 'cluster_case' && ((snapshot.reference as { cluster_id?: string }).cluster_id !== reference.cluster_id
+            || (snapshot.reference as { member?: string }).member !== reference.member))
           || (reference.kind === 'file' && typeof (snapshot.reference as { path?: string }).path !== 'string')) {
         throw new Error('上下文预览响应无效，不能加入草稿');
       }

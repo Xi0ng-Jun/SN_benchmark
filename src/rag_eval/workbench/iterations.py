@@ -868,9 +868,11 @@ class IterationService:
         for b in batches(self.repository, iteration['id'], completed=True):
             for cid in filter(None, (candidate['parent_candidate_id'], candidate_id)):
                 existing = [a for a in self.candidate(cid)['attempts'] if a.get('batch_id') == b['batch_id']]
-                for i in range(iteration['protocol']['k_base']):
-                    if i < len(existing) and existing[i]['execution_id']:
-                        continue
+                eligible = sum((a.get('admission') or {}).get('status') == 'admitted'
+                               or a.get('execution_state') == 'running' for a in existing)
+                # Failed records remain evidence, but do not satisfy k_base.
+                # Request-scoped keys reuse receipts if this explicit call is retried.
+                for i in range(max(0, iteration['protocol']['k_base'] - eligible)):
                     self.run(cid, budget=budget, actor=actor,
                              request_key=f'{request_key}:validation:{b["batch_id"]}:{cid}:{i}', batch_id=b['batch_id'])
 

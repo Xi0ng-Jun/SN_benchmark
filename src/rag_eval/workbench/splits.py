@@ -150,6 +150,27 @@ class Policy:
                     for key in ('case_ids', 'regressed', 'attention', 'predicted_flips', 'guards', 'validation_pool'):
                         if isinstance(v.get(key), list) and all(isinstance(x, str) for x in v[key]):
                             out[key] = [x for x in v[key] if x in self.search]
+                    visible = out.get('rows') if isinstance(out.get('rows'), list) else out.get('cases')
+                    def mean(values):
+                        values = [x for x in values if isinstance(x, (int, float))]
+                        return sum(values) / len(values) if values else None
+                    if isinstance(visible, list):
+                        if 'counts' in out:
+                            out['counts'] = {k: sum(r.get('flip') == k for r in visible) for k in out['counts']}
+                        if isinstance(out.get('mean'), dict):
+                            out['mean'] = {k: mean(r.get(field) for r in visible) for k, field in
+                                           (('reference', 'left'), ('subject', 'right'), ('delta', 'delta'))}
+                        elif 'mean' in out:
+                            out['mean'] = mean(r.get('value') for r in visible)
+                        if 'total' in out:
+                            out['total'] = len(visible)
+                        if isinstance(out.get('cases'), int):
+                            out['cases'] = len(visible)
+                    elif 'counts' in out:
+                        out.pop('counts')
+                    if isinstance(out.get('cases'), dict) and 'eta' in out:
+                        from .noise import summarize_cases
+                        out.update(summarize_cases(out['cases']))
                     aggregate = v.get('validation')
                     if isinstance(aggregate, dict):
                         out['validation'] = dict(n=aggregate.get('n'), mean={k: aggregate.get(k) for k in

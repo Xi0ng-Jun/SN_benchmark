@@ -20,7 +20,7 @@ CAUSES = ('supported', 'refuted', 'undecided')
 # -> verified (predictions checked) -> concluded.
 STATUSES = ('draft', 'approved', 'rejected', 'implementing', 'verified', 'concluded')
 _REQUIRED = ('title', 'component', 'mechanism', 'predictions', 'falsification', 'implementer_brief')
-_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract')
+_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract', 'cluster_id')
 
 
 def _str(value, name, limit=4000):
@@ -57,9 +57,13 @@ def validate_card(card):
                                    'metric': _str(item['metric'], 'metric', 100) if 'metric' in item else None,
                                    'note': _str(item['note'], 'note', 1000) if 'note' in item else None,
                                    'guard': item.get('guard', False)})
+    if 'cluster_id' in card:
+        out['cluster_id'] = _str(card['cluster_id'], 'cluster_id', 64)
     if 'contract' in card:
         from .gate import validate_contract
         out['contract'] = validate_contract(card['contract'])
+    from .clusters import referenced_cluster
+    referenced_cluster(out)
     return out
 
 
@@ -130,6 +134,12 @@ class HypothesisStore:
         ids += card.get('contract', {}).get('predicted_flips', []) + card.get('contract', {}).get('guards', [])
         for cid in ids:
             policy.refuse_sealed(cid)
+        from .clusters import ClusterStore, referenced_cluster
+        cluster_id = referenced_cluster(card)
+        if cluster_id:
+            cluster = ClusterStore(self.repository, initialize=False).get(task_id, cluster_id)
+            if not set(card.get('contract', {}).get('predicted_flips', [])) <= set(cluster['scan']['members']):
+                raise ValueError('Contract predicted_flips must be cluster members')
         with self.repository.connect(write=True) as conn:
             self.repository._require(conn, 'tasks', task_id)
             record = dict(id=uid(), task_id=task_id, status='draft', card=json.dumps(card, ensure_ascii=False),

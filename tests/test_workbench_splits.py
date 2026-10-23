@@ -177,3 +177,38 @@ def test_registered_run_verbs_refuse_sealed_without_exposing_payload(env, tmp_pa
         with pytest.raises(ValueError, match='sealed'):
             read()
     assert views.list_runs()['runs'][0]['status'] == 'unreadable'
+
+
+def test_projected_comparison_counts_and_mean_describe_visible_search_rows(env):
+    tree = iteration(env, case_ids=['qasper:q', 'qasper:q3'])
+    search = tree['protocol']['splits']['search'][0]
+    hidden = tree['protocol']['splits']['validation'][0]
+    source = dict(rows=[dict(case_id=search, left=0, right=1, delta=1, flip='better'),
+                       dict(case_id=hidden, left=1, right=0, delta=-1, flip='worse')],
+                  counts=dict(better=1, worse=1, same=0, unpaired=0), mean=dict(reference=.5, subject=.5, delta=0),
+                  validation=dict(n=1, reference=1, subject=0, delta=-1, eta=.1))
+    out = splits.Policy(env['repo'], tree['task_id']).project(source)
+    assert out['counts'] == dict(better=1, worse=0, same=0, unpaired=0)
+    assert out['mean'] == dict(reference=0, subject=1, delta=1)
+    assert out['validation'] == dict(n=1, mean=dict(reference=1, subject=0, delta=-1), eta=.1)
+    assert source['mean']['delta'] == 0
+
+
+def test_explicit_validation_fill_replaces_failed_measurements_without_deleting_them(monkeypatch):
+    from types import SimpleNamespace
+    from rag_eval.workbench.iterations import IterationService
+    attempts = [dict(batch_id='f1', execution_id='failed', execution_state='failed', admission=dict(status='not_admitted')),
+                dict(batch_id='f1', execution_id='good', execution_state='finished', admission=dict(status='admitted'))]
+    dispatched = []
+    service = SimpleNamespace(repository=object(), candidate=lambda cid: dict(id=cid, iteration_id='i',
+        parent_candidate_id=None, attempts=attempts), iteration=lambda _: dict(id='i', protocol=dict(k_base=2)),
+        run=lambda cid, **kwargs: dispatched.append((cid, kwargs)))
+    monkeypatch.setattr(splits, 'batches', lambda *args, **kwargs: [dict(batch_id='f1')])
+    IterationService.fill_validation(service, 'candidate', budget=BUDGET, actor='optimizer', request_key='repair')
+    assert len(dispatched) == 1 and dispatched[0][1]['batch_id'] == 'f1'
+    assert attempts[0]['execution_id'] == 'failed' and attempts[0]['execution_state'] == 'failed'
+    IterationService.fill_validation(service, 'candidate', budget=BUDGET, actor='optimizer', request_key='repair')
+    assert dispatched[1][1]['request_key'] == dispatched[0][1]['request_key']
+    attempts.append(dict(batch_id='f1', execution_id='pending', execution_state='running', admission=None))
+    IterationService.fill_validation(service, 'candidate', budget=BUDGET, actor='optimizer', request_key='new-request')
+    assert len(dispatched) == 2

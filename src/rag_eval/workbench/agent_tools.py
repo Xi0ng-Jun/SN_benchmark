@@ -19,9 +19,9 @@ from pathlib import Path
 REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node adopt', 'node reject', 'iteration create')
 ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
-                    'request withdraw', *REQUEST_COMMANDS)
-IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'requests', 'request withdraw')
-GROUPS = ('iteration', 'node', 'proposal', 'request')
+                    'request withdraw', 'cluster propose', 'cluster list', 'cluster show', *REQUEST_COMMANDS)
+IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'requests', 'request withdraw', 'cluster list', 'cluster show')
+GROUPS = ('iteration', 'node', 'proposal', 'request', 'cluster')
 
 
 def build(state, config_path):
@@ -113,7 +113,28 @@ def main(argv=None):
     policy = Policy(repository, task_id)
     if command == 'case':
         policy.require_search(a[1])
-    if command == 'task':
+    if command.startswith('cluster '):
+        from .clusters import ClusterStore
+        service = iteration_service(repository, views)
+        clusters = ClusterStore(repository, service, views)
+        own = options.candidate if options.role == 'implementer' else None
+        if options.role == 'implementer' and not own:
+            raise SystemExit('cluster evidence needs the implementer own --candidate')
+        if command == 'cluster list':
+            out = clusters.list(task_id, implementer_candidate=own)
+        elif command == 'cluster show':
+            out = clusters.show(task_id, a[0], implementer_candidate=own)
+        else:
+            if not options.file:
+                raise SystemExit('cluster propose needs --file')
+            card = json.loads(Path(options.file).read_text(encoding='utf-8'))
+            source = card.pop('candidate_id', None) or options.node or options.parent
+            if not source or (options.node and source != options.node):
+                raise SystemExit('cluster propose needs its source candidate (--node or file candidate_id)')
+            if service.iteration(service.candidate(source)['iteration_id'])['task_id'] != task_id:
+                raise SystemExit('Cluster source belongs to another task')
+            out = clusters.propose(source, card, actor='agent:analyst')
+    elif command == 'task':
         task = repository.task(task_id)
         runs = json.loads(views.task_runs_context(task_id)[1])
         out = dict(task={k: task[k] for k in ('id', 'title', 'goal')}, worktree=runs['worktree'], runs=runs['runs'],
@@ -164,6 +185,9 @@ def main(argv=None):
             raise SystemExit('card is not approved')
         out = {k: card['card'].get(k) for k in ('title', 'component', 'mechanism', 'implementer_brief',
                                                 'possible_harm', 'change_scope')}
+        from .clusters import referenced_cluster
+        if referenced_cluster(card['card']):
+            out['cluster_id'] = referenced_cluster(card['card'])
     else:  # leak-check
         out = leak_check(views, task_id, task_run_ids(views, task_id), hypothesis_id=options.hypothesis,
                          candidate_id=options.candidate)

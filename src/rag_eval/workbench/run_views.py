@@ -516,6 +516,32 @@ class RunViews:
             rows = [r for r in rows if r.get('delta') is not None and sign(r['delta'])]
         return dict(run_id=run_id, metric=metric, against=against, total=len(view['cases']), cases=rows)
 
+    def observation(self, run_id: str, case_id: str) -> dict:
+        """Observed output projection for mechanical signatures and cluster evidence.
+
+        Annotation answers, evidence text, gold-marked papers and artifact paths
+        are deliberately absent. Delivered context remains observed product text.
+        """
+        self._assert_unsealed(run_id, case_id)
+        from ..stage_metrics import _blocks
+        view = self._load(run_id)
+        row = next((r for r in view['cases'] if r['case_id'] == case_id), None)
+        if row is None:
+            raise NotRegistered('Case is not in this run plan')
+        output = view['_outputs'].get(case_id) or {}
+        record = output.get('product_record') or {}
+        primary = view['official'].get('primary_metric')
+        return dict(case_id=case_id, question=row.get('question'), status=row['status'],
+            prediction=output.get('prediction'), response={k: (record.get('response') or {}).get(k)
+                for k in ('answer', 'grounded', 'evidence_level')},
+            intent_preview=dict(needs_clarification=(record.get('intent_preview') or {}).get('needs_clarification')),
+            deterministic={k: (record.get('deterministic') or {}).get(k) for k in
+                ('evidence_hit', 'citation_valid_count', 'citation_invalid_count')},
+            stage_metrics={k: dict(value=v) for k, v in row.get('stage', {}).items()},
+            metrics={primary: row['official']['metrics'].get(primary)} if primary else {},
+            usage=dict(total_tokens=(record.get('usage') or {}).get('total_tokens')),
+            retrieval_context=[dict(text=b['text']) for b in _blocks(record) or []])
+
     # ------------------------------------------------------------------ case
     def case(self, run_id: str, case_id: str) -> dict:
         self._assert_unsealed(run_id, case_id)

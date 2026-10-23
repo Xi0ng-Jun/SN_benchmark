@@ -71,6 +71,8 @@ class WorkbenchRepository:
             conn.execute('PRAGMA user_version=5')
         from .comparisons import initialize_comparisons
         initialize_comparisons(self)
+        from .clusters import initialize_clusters
+        initialize_clusters(self)
         self.database.chmod(0o600)
 
     @contextmanager
