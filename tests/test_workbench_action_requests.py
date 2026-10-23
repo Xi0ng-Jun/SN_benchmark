@@ -146,3 +146,19 @@ def test_multiple_attempt_request_is_bounded_numbered_and_idempotent(t, capsys):
     for invalid in (0, 5, True):
         with pytest.raises(ValueError, match='attempts'):
             t['requests'].request(t['tree']['task_id'], 'node-run', t['root'], {'attempts': invalid}, reason='r', requested_by='a')
+
+
+def test_ledger_cli_preserves_the_aggregate_schema_and_sealed_request_stays_pending(t, capsys, monkeypatch):
+    from rag_eval.workbench.ledger import LedgerService
+    safe = dict(sampling_ledger=dict(k=1, verifier='none'), overfit_ledger=dict(accepted=[dict(
+        candidate_id=t['root'], validation=dict(delta=.2, pool=[dict(batch_id='base', selection_hash='hash', n=2)]))]),
+        structure_ledger=dict(contracts=[]), sealed_score=None)
+    monkeypatch.setattr(LedgerService, 'read', lambda *a, **k: safe)
+    assert sn_eval(t, capsys, 'iteration', 'ledger') == safe
+    request = sn_eval(t, capsys, 'iteration', 'sealed-run', t['root'], '--reason', 'Final report')['request']
+    assert request['status'] == 'pending' and request['verb'] == 'iteration-sealed-run'
+    with pytest.raises(SystemExit):
+        sn_eval(t, capsys, '--role', 'implementer', '--candidate', t['root'], 'iteration', 'ledger')
+    with pytest.raises(SystemExit):
+        sn_eval(t, capsys, '--role', 'implementer', '--candidate', t['root'], 'iteration', 'sealed-run',
+                t['root'], '--reason', 'Forbidden')

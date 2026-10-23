@@ -624,6 +624,16 @@ class RunViews:
         if not ids:
             self._discover_executions()
             ids = [run_id for run_id, entry in self._runs.items() if entry.task_id == task_id]
+        # Check before partition collapsing; a summary must not bypass the
+        # same sealed boundary as an individual run. Keep unrelated runs usable.
+        visible = []
+        for run_id in ids:
+            try:
+                self._assert_unsealed(run_id)
+            except ValueError:
+                continue
+            visible.append(run_id)
+        ids = visible
         runs, collapsed = [], set()
         groups = {}
         for run_id in ids:
@@ -667,6 +677,8 @@ class RunViews:
         return next((r for r in self._execution_records() if r.get('execution_id') == execution_id), None)
 
     def _execution_summary(self, execution_id: str, partitions: int) -> dict:
+        for entry in self.execution_runs(execution_id):
+            self._assert_unsealed(entry.id)
         record = self._execution_record(execution_id) or {}
         summary = None
         path = Path(record['run_dir']) / 'official-summary.json' if record.get('run_dir') else None
@@ -780,6 +792,7 @@ class RunViews:
 
     def admission(self, run_id: str, *, bundle=None) -> dict:
         """Formal admission of one run on its own: the flip report's self comparison."""
+        self._assert_unsealed(run_id)
         from ..flip_report import compare_runs_flips
         entry = self._entry(run_id)
         report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
@@ -896,6 +909,7 @@ class RunViews:
                 paths.update(b['worktree_path'] for b in historical_bindings(conn, binding.get('task_id')))
         for run_id, entry in list(self._runs.items()):
             try:
+                self._assert_unsealed(run_id)
                 view = self._load(run_id)
                 manifest_path = entry.run_dir / 'manifest.json'
                 manifest = (_json(manifest_path) or {}) if manifest_path.is_file() else {}

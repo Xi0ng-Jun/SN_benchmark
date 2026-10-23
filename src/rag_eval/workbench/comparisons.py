@@ -7,6 +7,7 @@ set, noise estimates and source pairs. New measurements create new records.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -65,6 +66,13 @@ class Admission:
             return dict(status='pending', reason=None)
         if state != 'finished':
             return dict(status='not_admitted', reason=f'execution {state}')
+        # Admission caches describe artifact validity, never access authority.
+        # Recheck current policy before either memory or persisted cache reuse;
+        # the isolated sealed reader has no ordinary worktree policy.
+        guard = getattr(self.views, '_assert_unsealed', None)
+        if guard is not None:
+            for run in self.views.execution_runs(execution_id):
+                guard(run.id)
         if execution_id in self._cache:
             return self._cache[execution_id]
         with self._guard:
@@ -323,10 +331,31 @@ class ComparisonService:
     def _compute(self, subject, reference, kind):
         from .splits import batches, roles
         from .noise import summarize_cases
+        tree = self.iterations.iteration(subject['iteration_id'])
+        protocol = tree.get('protocol') or {}
+        commits = dict(subject=subject.get('frozen_commit'), reference=reference.get('frozen_commit'))
+        def descriptor(batch_id, ids):
+            plan = next((b for b in protocol.get('fresh_batches', []) if b['batch_id'] == batch_id), {})
+            return dict(batch_id=batch_id, selection_hash=plan.get('selection_hash') or tree.get('selection_hash'), n=len(ids))
+
+        def batch_summary(record, desc, ids):
+            rows = [r for r in (record or {}).get('rows', []) if r['case_id'] in ids]
+            measured = bool(record and record['admission']['status'] == 'admitted' and len(rows) == len(ids) and ids
+                            and all(r.get(k) is not None for r in rows for k in ('left', 'right', 'delta')))
+            ref_noise = summarize_cases({cid: c for cid, c in (record or {}).get('noise', {}).get('reference', {}).get('cases', {}).items() if cid in ids})
+            return dict(desc, reference=_mean(r['left'] for r in rows) if measured else None,
+                subject=_mean(r['right'] for r in rows) if measured else None,
+                delta=_mean(r['delta'] for r in rows) if measured else None, eta=ref_noise['eta'],
+                attempts_used=deepcopy((record or {}).get('attempts_used', {})))
+
         if '_batch_scope' in subject:
             body, reason = self._compute_scope(subject, reference, kind)
             if body is not None:
                 body['batch_id'] = subject['_batch_scope']
+                body['frozen_commits'] = commits
+                if kind == 'fresh':
+                    ids = next(b['case_ids'] for b in protocol['fresh_batches'] if b['batch_id'] == subject['_batch_scope'])
+                    body['pool'] = [descriptor(subject['_batch_scope'], ids)]
                 if kind == 'cluster':
                     from .execution_scopes import get
                     scope = get(self.repository, subject['iteration_id'], subject['_batch_scope'])
@@ -350,11 +379,18 @@ class ComparisonService:
         role_map = roles(protocol, completed)
         if role_map is None:
             return body, reason
+        body['frozen_commits'] = commits
+        base_ids = {cid for cid, role in role_map.items() if role == 'validation'} - {cid for b in protocol.get('fresh_batches', []) for cid in b['case_ids']}
+        pool = [descriptor('base', base_ids)]
+        batch_rows = [batch_summary(body, pool[0], base_ids)]
         missing = []
         for b in protocol.get('fresh_batches', []):
             if b['batch_id'] not in completed:
                 continue
             extra, _ = self._compute_scope(self.scoped(subject, b['batch_id']), self.scoped(reference, b['batch_id']), kind)
+            desc = descriptor(b['batch_id'], b['case_ids'])
+            pool.append(desc)
+            batch_rows.append(batch_summary(extra, desc, set(b['case_ids'])))
             if not extra or extra['admission']['status'] != 'admitted':
                 missing.append(b['batch_id'])
                 continue
@@ -388,7 +424,7 @@ class ComparisonService:
         body['validation'] = dict(n=len(expected), reference=_mean(r['left'] for r in validation),
             subject=_mean(r['right'] for r in validation), delta=_mean(r['delta'] for r in validation),
             eta=validation_noise['eta'], incomplete=bool(missing or len(validation) != len(expected) or not expected),
-            missing_batches=missing)
+            missing_batches=missing, pool=pool, batches=batch_rows)
         body['counts'] = {key: sum(r['flip'] == key for r in body['rows']) for key in body['counts']}
         body['mean'] = dict(reference=_mean(r['left'] for r in body['rows']), subject=_mean(r['right'] for r in body['rows']),
                             delta=_mean(r['delta'] for r in body['rows']))

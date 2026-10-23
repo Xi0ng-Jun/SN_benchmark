@@ -12,9 +12,9 @@ import os
 import sys
 from pathlib import Path
 
-REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create')
+REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create', 'iteration sealed-run')
 ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
-                    'iteration show', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
+                    'iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
                     'request withdraw', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
 IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'node cluster-run', 'requests', 'request withdraw', 'cluster list', 'cluster show', 'cluster result')
 GROUPS = ('iteration', 'node', 'proposal', 'request', 'cluster')
@@ -192,7 +192,7 @@ def main(argv=None):
         out = _draft_leak(views, task_id, card) or dict(
             saved=True, card=tools.service.draft_proposal(parent, card, author='agent:analyst'),
             next='a person approves or rejects this proposal')
-    elif command in ('iteration show', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
+    elif command in ('iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
                      *REQUEST_COMMANDS):
         out = IterationTools(repository, views, task_id, options.role).run(command, a, options)
     elif command == 'card':
@@ -210,7 +210,7 @@ def main(argv=None):
         if options.role == 'implementer':
             out['findings'] = [dict(kind=f['kind'], source=f['source']) for f in out['findings']]
             out.pop('runs', None)
-    if options.role == 'analyst':
+    if options.role == 'analyst' and command != 'iteration ledger':
         out = policy.project(out)
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
     sys.stdout.write('\n')
@@ -237,6 +237,7 @@ class IterationTools:
         from .action_requests import ActionRequestStore
         from .comparisons import ComparisonService
         self.service = iteration_service(repository, views)
+        self.views = views
         self.comparisons = ComparisonService(repository, self.service, views)
         self.requests = ActionRequestStore(repository)
         self.task_id, self.role, self.actor = task_id, role, 'agent:' + role
@@ -260,6 +261,13 @@ class IterationTools:
         return candidate
 
     def run(self, command, args, options):
+        if command == 'iteration ledger':
+            if args and args[0] != self.iteration_id:
+                raise SystemExit("only this Task's iteration is visible here")
+            from .ledger import LedgerService
+            from .sealed import SealedService
+            score = SealedService(self.service.repository, self.service, self.views).score(self.iteration_id)
+            return LedgerService(self.service.repository, self.service, self.views).read(self.iteration_id, sealed_score=score)
         if command == 'iteration show':
             if args and args[0] != self.iteration_id:
                 raise SystemExit("only this Task's iteration is visible here")
@@ -342,7 +350,7 @@ class IterationTools:
                 if len(args) != 2 or candidate_cluster(self.service.repository, self.task_id, target) != args[1]:
                     raise ValueError('cluster-run requires the candidate own cluster')
                 params['cluster_id'] = args[1]
-            if verb in ('node-run', 'node-fresh-run', 'node-cluster-run'):
+            if verb in ('node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run'):
                 if options.attempts is not None and verb == 'node-run':
                     params['attempts'] = options.attempts
                 if options.timeout is not None:

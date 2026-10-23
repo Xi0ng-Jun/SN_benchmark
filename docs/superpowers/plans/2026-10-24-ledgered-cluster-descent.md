@@ -83,7 +83,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   预算：iteration 协议新增 `budget: {limit_cny, max_runs_per_candidate}`。每次派发前按历史均价预留，派发的全部 attempt（含父补跑、fresh-run、失败与重试）都计入同一账本；额度内的请求自动 confirmed 并执行，额度外挂起等人；预留在终态结算。实现者只能请求自己候选的簇运行。
   测试：请求只接受该实现者自己的候选；执行只跑成员题并走独立 plan；额度内自动执行、额度外挂起；预留与结算累计正确；父补跑计入账本。
 
-- [ ] 6. **三笔账**（`ledger.py`，verb `iteration ledger`，UI 一个面板）。
+- [x] 6. **三笔账**（`ledger.py`，verb `iteration ledger`，UI 一个面板）。
   sampling：k = 1、verifier none、种子 search 均值、S(B) = 种子。overfit：n、n_eff、K（在 validation 池上比较过的不同 frozen_commit 数）、期望偏差 = η·sqrt(2 ln K)、每个 accept 候选的 validation Δ 与 fresh Δ 按 batch 对齐（validation 池随并入批次增长，比较时注明池的组成）、配对观测偏差。structure：各簇状态由后续证据派生（有 accept 候选且该候选在簇成员上 ρ ≥ τ → resolved，否则 open；不改冻结成员）、每笔合同的 ρ 与 verdict、audit 数、愿望清单（open 簇，附 q/m/v）。`sealed_score` 只在人显式调用 `iteration sealed-run` 时填：需要独立的可信授权（`job_preparation.sealed_selections` 登记加人工确认），领取持久化且一次性，用后任何再次调用都拒绝；UI 在调用前提示"整个研究只此一次"。
   测试：从合成的比较记录与簇算出的账本键齐全、数字可手算；sealed 未触发时为 null，触发一次后第二次被拒。
 
@@ -146,3 +146,14 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 解释与偏离：历史均价只用完整且币种明确的 CNY 费用；无历史时 ¥1／题为保守规划先验，不是报价。默认运行没有可信金额时保留预留、actual=null；取消和不确定派发亦不猜测免费。预留后的准备失败仍保留凭据和占用，执行原键可恢复；本项没有新增退款流程。迭代额度是估算账，未强制启用原 ModelBudget 的固定模型价格护栏；后者仍可显式配置。预算迭代关闭隐藏 retry_rounds，使重试必须以新 attempt 记账。
 - 实现者边界：按用户最新“成员序号＋翻转方向”要求，cluster result 仅投影这两项；Δ／ρ／逐题带保存在分析者完整比较中，题目和分数仍只从既有 cluster_case 获得。这是对原稿“结果回给实现者”的收窄解释。
 - 审查修复：在准备 Job 前持久绑定 request_key 的 actor 与参数，防止换 actor 绕过预算去重；fresh 指定批次领取与整组预留同事务，竞争失败保持 pending，不消耗下一批次或残留新预留。独立复审无未解决高／中风险项。表与字段均附加，SQLite 仍为 v5；W6、W8、W7 未开始。
+
+### W6 · 2026-10-24
+
+- 提交：本条所在 `feat(workbench): report LCD ledgers and protect once-only sealed evaluation`（基线 W5 `73dbc49`）。
+- 验证：RUNBOOK 完整离线 pytest **2512 passed / 7 skipped**（581.60 秒），Node **34 passed**，UI `npm --prefix apps/sn-workbench run typecheck` 通过；1 条既有 Starlette 弃用警告。全部为合成执行／保存分数／case view；未调用模型、启动 SN 或工作台服务、读取真实 var/ 或修改 .venv。保留旧测试期望，仅增加 fresh 池组成与批次来源断言。
+- 实现：`aggregate_ledger`、`LedgerStore.write`、`LedgerService.read`；`iteration ledger` 与 workspace 范围内的 ledger HTTP 接口、谱系下“三笔账”面板。比较附加冻结源码、每批 selection 身份／n／Δ／η／attempt 来源，旧比较不重写。结构账使用后续获准比较重算整个冻结簇的 ρ，包含合并候选证据；冻结成员、最初 q/m/v 和合同原文不改。
+- sealed：`SealedService.run/score` 与 `iteration sealed-run` 待人工确认动作；UI 先提示“整个研究只此一次”。可信登记必须与冻结协议一致；先永久领取，再准备独立 plan 并通过同一执行预算账派发；失败／取消／崩溃不释放。普通 plan/Job/候选执行拒绝 sealed；sealed 不作候选 reference，普通任务／分区汇总与内存、磁盘准入缓存均核验访问边界。只有正式准入后的主指标、n、均值及领取元数据进入账本。SQLite 仍为 v5，只加一张领取表。
+- 解释与偏离：sampling 的 k=1 取根候选首个获准 base attempt 的 search 均值。K 按确切 validation 池分别统计比较两侧不同 frozen_commit，包含基准；旧记录缺池身份时保持未知。fresh 偏差要求同批／同 selection／同冻结源码对且独立测量；同一 fresh 测量并入 validation 后标 `same_measurements`、偏差 null，不减不同组成的均值，也不伪造零偏差。簇 resolved 允许任何覆盖全部成员的后续比较，不限自己的 cluster-run；ρ 针对该记录的配对 reference，账本记录 reference 身份供审计。
+- 一次性范围的保守解释：除了每 iteration 一次，同一状态库中相同 bundle＋sealed selection 也只能领取一次，改登记别名或新建迭代不能重用。人工确认继续用现有工作台请求确认路径；CLI 只登记，不提供字符串 actor 冒充人工或自动确认。确认回执重读不重新派发；新的 sealed-run 调用仍拒绝。
+- 审查与回归：修复未派生合同的 UI 空身份、CLI 误套普通 validation 投影、仅部分合同题目兑现误判全簇、sealed 汇总与缓存绕过；恢复既有请求键冲突优先语义，并复制每批 attempt 来源避免合并池时共享引用污染。最后独立复审无未解决高／中风险项。
+- W8 的后续需求（未实现）：持久轮次状态机与恢复／等待，基准选择、b 与 π 的定义，提议／实现者创建和门判定／fresh 的显式串接，真正的源码合并与冲突处理（integrated_from 目前只是来源记录），以及三种停机条件在仍有运行／未知费用预留时的收尾语义。W7 未开始。

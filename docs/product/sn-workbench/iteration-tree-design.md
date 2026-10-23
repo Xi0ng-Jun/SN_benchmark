@@ -216,3 +216,15 @@ q 的分母是成员 × 来源 attempt；error/missing 是已知失败，成功�
 创建迭代可冻结 `budget: {limit_cny, max_runs_per_candidate}`。预算内 freeze/run/cluster-run/fresh-run 请求由 budget actor 自动确认与执行；超额保持 pending，可由工作台既有人确认入口明确覆盖本请求。整条请求的父补跑、fresh、普通与簇 attempt 在派发前原子预留，物理执行再核验同一凭据；新的重试键计为新 attempt，原键只恢复原操作。预算迭代关闭 runner 隐藏 retry_rounds，重试须走新请求。
 
 预留使用同一迭代已结算的 CNY／题历史均价；没有可靠历史时暂取 ¥1／题的保守规划先验，不把它当成模型报价。终态只接受完整且币种明确的费用观测或既有 ModelBudget 账；取消、部分费用、未知费用保留预留并标明未知，不按零费用释放。该策略是估算额度，不是供应商实际账单上界；原有单次模型价格护栏仍需显式指定。预留后的准备失败或不确定派发保留凭据与占用，可恢复原请求，不猜测未花费而删除记录。
+
+### LCD 三笔账与一次性封存测量（2026-10-24）
+
+分析者通过 `iteration ledger`，工作台通过 `GET /api/iterations/{id}/ledger` 读取同一汇总，投影写到状态目录的 `ledgers/<iteration_id>.json`；UI 谱系下方增加“三笔账”折叠面板。固定四个顶层键为 `sampling_ledger`、`overfit_ledger`、`structure_ledger`、`sealed_score`。读取不派发执行，不改候选决定、历史比较或冻结簇。
+
+sampling 的 k=1、verifier=none，种子取根候选首个获准 base attempt 的 search 均值，不把重复运行均值冒充单次采样。overfit 按比较时的 validation 池分别计算 K，包含两侧在该池获准比较的不同 frozen_commit，重复 attempt 不增 K。新增比较保存每批 `batch_id / selection_hash / n`、Δ、η 和 attempt 来源；旧比较缺池身份时报告未知，不重写历史。fresh 与 validation 的配对偏差仅在同批、同 selection、同冻结源码对且测量来源独立时相减；复用同一 fresh 测量并入 validation 时记录 `same_measurements`，偏差为 null，不制造零偏差。
+
+结构账按后续获准比较重算整个冻结簇的 ρ；当前 adopted 候选有完整成员证据且达到该比较明确记录的 τ 时标 resolved，包含合并候选的整批比较。仅合同部分题目兑现不能代表全簇解决；缺证据为 open。成员及最初 q/m/v 不回写，open 簇进入愿望清单。未实施合同保留为未知项。
+
+`iteration sealed-run CANDIDATE --reason ...` 只登记待人工确认请求，不走预算自动确认；工作台确认框明确提示“整个研究只此一次”。服务在执行前重新校验可信 `sealed_selections` 与冻结协议一致，再永久领取独立 sealed plan。一次性键同时约束 iteration 和本地状态库中的 bundle＋封存 selection，换迭代或登记别名不能重用相同留出集；失败、取消、崩溃都不恢复次数。确认回执可重读，任何新的 sealed-run 调用仍被拒。
+
+封存执行通过私有能力进入普通准备／派发与预算记账，普通 plan、Job 和候选入口不能复用它。sealed attempt 不参与普通候选 reference、比较、任务上下文或分区成绩；专用读取经正式准入后只保存主指标、n、均值与领取来源，缺失或不完整保持未知。此开发阶段仅用临时目录中的合成登记和执行，未触及真实封存题或运行。

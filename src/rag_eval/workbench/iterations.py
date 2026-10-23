@@ -195,7 +195,10 @@ class IterationService:
         execution = self._execution(row['task_id'], row['execution_id'])
         measured = dict(row, execution_state=execution['state'] if execution else None,
                         run_dir=execution['run_dir'] if execution else None)
-        measured['admission'] = self.admission(measured) if self.admission else None
+        if str(measured.get('batch_id') or '').startswith('sealed:'):
+            measured['admission'] = dict(status='protected', reason='sealed measurement is aggregate-only')
+        else:
+            measured['admission'] = self.admission(measured) if self.admission else None
         return measured
 
     def _view(self, conn, candidate):
@@ -766,7 +769,7 @@ class IterationService:
             raise Conflict('该候选改动了资料准备相关文件，复用已导入的 notebook 不会反映这些改动: '
                            + ', '.join(hits[:10]))
 
-    def run(self, candidate_id, *, budget, actor, request_key, adopt=False, batch_id=None):
+    def run(self, candidate_id, *, budget, actor, request_key, adopt=False, batch_id=None, _sealed_capability=None):
         """Prepare a Job on the iteration plan with the frozen capture, then dispatch.
 
         A new request key is a new attempt; failures and cancellations stay.
@@ -789,6 +792,9 @@ class IterationService:
             raise Conflict('Freeze the candidate before running it')
         if None in (self.jobs, self.executions, self.build_spec) or not isinstance(self.preparation_config, dict):
             raise ValueError('Candidate execution is not configured')
+        if batch_id is not None and batch_id.startswith('sealed:'):
+            from .sealed import authorize
+            authorize(self.repository, iteration['id'], candidate_id, _sealed_capability)
         task_id, key = iteration['task_id'], 'candidate:' + candidate_id + ':' + request_key
         # Job receipts include actor. Bind it before preparation so changing actor
         # cannot dispatch twice against one budget reservation.
@@ -799,7 +805,7 @@ class IterationService:
             if prior_command is None:
                 self.repository._receipt(conn, command_scope, request_key, command, dict(bound=True))
         plan_scope = iteration
-        if batch_id is not None and batch_id.startswith('cluster:'):
+        if batch_id is not None and batch_id.startswith(('cluster:', 'sealed:')):
             from .execution_scopes import get
             plan_scope = get(self.repository, iteration['id'], batch_id)
             if adopt:
@@ -813,8 +819,14 @@ class IterationService:
             if not claimed['completed_at'] and candidate_id not in (owner['id'], owner['parent_candidate_id']):
                 raise Conflict('A fresh batch belongs to its claimed candidate and parent until completion')
             plan_scope = next(b for b in iteration['protocol']['fresh_batches'] if b['batch_id'] == batch_id)
+        if not str(batch_id or '').startswith('sealed:'):
+            from .splits import Policy
+            policy = Policy(self.repository, task_id)
+            for cid in self.plans.get(task_id, plan_scope['plan_id'])['content']['selection']['case_ids']:
+                policy.refuse_sealed(cid)
+        capability_args = dict(_sealed_capability=_sealed_capability) if str(batch_id or '').startswith('sealed:') else {}
         job = self.jobs.prepare(task_id, plan_scope['plan_id'], plan_scope['plan_revision'],
-                                plan_scope['plan_content_hash'], actor=actor, request_key=key)
+                                plan_scope['plan_content_hash'], actor=actor, request_key=key, **capability_args)
         protocol = iteration['protocol']
         store = ArtifactStore(self.preparation_config['artifact_root'])
         if store.root != self.trees.store.root:
@@ -873,7 +885,7 @@ class IterationService:
                                    request_key=key, budget=budget)
             spec['budget'] = budget
             prior = self.executions.run(task_id, job['job_id'], job['state_version'], execution_spec=spec,
-                                        actor=actor, request_key=key)
+                                        actor=actor, request_key=key, **capability_args)
         if protocol.get('budget'):
             ledger.attach(iteration['id'], candidate_id, request_key, prior['execution_id'])
             ledger.settle_execution(prior)

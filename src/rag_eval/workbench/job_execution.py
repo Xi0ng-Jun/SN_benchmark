@@ -157,7 +157,7 @@ class JobExecutionStore:
             return _closed(self.repository._prior(conn, scope, request_key, payload))
 
     def run(self, task_id, job_id, expected_state_version, *, execution_spec,
-            actor, request_key):
+            actor, request_key, _sealed_capability=None):
         _text(task_id, 'task identity', identity=True)
         _text(job_id, 'Job identity', identity=True)
         _text(actor, 'actor')
@@ -180,6 +180,12 @@ class JobExecutionStore:
             if job_row is None:
                 raise ExecutionRejected('Unknown execution Job identity')
             job = json.loads(job_row['record'])
+            from .sealed import _CAPABILITY
+            if _sealed_capability is not _CAPABILITY:
+                from .splits import Policy
+                policy = Policy(repo, task_id)
+                for cid in job['plan_snapshot']['content']['selection']['case_ids']:
+                    policy.refuse_sealed(cid)
             if job.get('state') != 'not_dispatched' or job.get('state_version') != expected_state_version:
                 raise Conflict('Job changed before execution')
             prepared = conn.execute("SELECT content FROM history WHERE task_id=? AND object_id=? "

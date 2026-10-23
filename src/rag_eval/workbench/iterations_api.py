@@ -139,7 +139,7 @@ class IterationAPI:
         self.requests.claim(request_id, actor=self.actor, note=note)
         try:
             result = execute(self.service, record, workspace_id=self.workspace['id'],
-                             actor=record.get('decided_by') or self.actor, budget_override=True)
+                             actor=record.get('decided_by') or self.actor, budget_override=True, human_confirmed=True)
         except (Conflict, ValueError) as error:
             return self.requests.finish(request_id, error=str(error))
         return self.requests.finish(request_id, result=result)
@@ -201,6 +201,14 @@ class IterationAPI:
                 candidate['comparisons'] = dict(parent=summary(both['parent']), root=summary(both['root']))
                 candidate['primary'] = self.primary(candidate)
             return tree
+
+        @router.get('/api/iterations/{iteration_id}/ledger')
+        def iteration_ledger(iteration_id: str):
+            self._scope(iteration_id=iteration_id)
+            from .ledger import LedgerService
+            from .sealed import SealedService
+            score = SealedService(self.repository, service, self.views).score(iteration_id)
+            return LedgerService(self.repository, service, self.views).read(iteration_id, sealed_score=score)
 
         @router.get('/api/candidates/{candidate_id}')
         def node_show(candidate_id: str):

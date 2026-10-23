@@ -133,7 +133,7 @@ class PlanDraftStore:
                 for row in conn.execute(query, params)]
 
     def save(self, *, task_id, input_id, expected_bundle_id, case_ids, title, mode,
-             actor, request_key, plan_id=None, base_revision=None, roles=None):
+             actor, request_key, plan_id=None, base_revision=None, roles=None, _sealed_capability=None):
         """Recover an exact original request or append one CAS-guarded revision.
 
         New plans require plan_id/base_revision null. Appends require both the
@@ -150,6 +150,13 @@ class PlanDraftStore:
         repo = self.repository
         with repo.connect(write=True) as conn:
             prior = repo._prior(conn, scope, request_key, payload)
+            _ids(case_ids, 'case IDs')
+            from .sealed import _CAPABILITY
+            if _sealed_capability is not _CAPABILITY:
+                from .splits import Policy
+                policy = Policy(self.repository, task_id)
+                for cid in case_ids:
+                    policy.refuse_sealed(cid)
             if prior is not None:
                 return _saved(prior, task_id=task_id, plan_id=plan_id)
             task = repo._require(conn, 'tasks', task_id)

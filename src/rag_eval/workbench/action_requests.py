@@ -24,6 +24,7 @@ VERBS = {
     'node-adopt': (True, False),
     'node-reject': (True, False),
     'iteration-create': (False, True),
+    'iteration-sealed-run': (True, True),
 }
 IMPLEMENTER_VERBS = frozenset({'node-freeze', 'node-run', 'node-cluster-run'})
 ITERATION_FIELDS = ('title', 'start_commit', 'input_id', 'expected_bundle_id', 'case_ids', 'mode')
@@ -49,12 +50,13 @@ def normalize(verb, params):
     allowed = {'node-derive': {'proposal_id', 'integrated_from'}, 'node-freeze': set(), 'node-adopt': set(), 'node-reject': set(),
                'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'node-fresh-run': {'timeout_seconds', 'limit_cny'},
                'node-cluster-run': {'timeout_seconds', 'limit_cny', 'cluster_id'},
+               'iteration-sealed-run': {'timeout_seconds', 'limit_cny'},
                'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch', 'budget'}}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
     if verb == 'node-cluster-run' and (not isinstance(params.get('cluster_id'), str) or not params['cluster_id']):
         raise ValueError('cluster-run needs cluster_id')
-    if verb in ('node-run', 'node-fresh-run', 'node-cluster-run'):
+    if verb in ('node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run'):
         attempts = params.get('attempts', 1)
         if type(attempts) is not int or not 1 <= attempts <= 4:
             raise ValueError('attempts must be an integer between 1 and 4')
@@ -182,9 +184,16 @@ def _candidate_summary(view):
                 execution_id=attempts[-1]['execution_id'] if attempts else None)
 
 
-def execute(service, record, *, workspace_id, actor, budget_override=False):
+def execute(service, record, *, workspace_id, actor, budget_override=False, human_confirmed=False):
     """Run a confirmed request through IterationService; returns a compact receipt."""
     verb, target, params, key = record['verb'], record['target_id'], record['params'], 'action:' + record['id']
+    if verb == 'iteration-sealed-run':
+        from .sealed import SealedService
+        budget = dict(timeout_seconds=params['timeout_seconds'])
+        if params.get('limit_cny') is not None:
+            budget.update(limit_cny=params['limit_cny'], confirmed=True)
+        return SealedService(service.repository, service, None).run(
+            target, budget=budget, actor=actor, confirmed=human_confirmed)
     if verb == 'node-derive':
         view = service.derive(target, proposal_id=params.get('proposal_id'), note=record['reason'],
                               integrated_from=params.get('integrated_from', ()), actor=actor, request_key=key)

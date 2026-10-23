@@ -82,6 +82,8 @@ def test_fresh_claim_recovery_completion_and_validation_growth(env):
     assert len(completed) == 1
     record = comparisons.get(completed[0]['comparison_id'])
     assert record['kind'] == 'fresh' and record['mean']['delta'] == 1
+    assert record['pool'] == [dict(batch_id='f1', selection_hash=tree['protocol']['fresh_batches'][0]['selection_hash'], n=1)]
+    assert record['frozen_commits'] == dict(subject=service.candidate(candidate['id'])['frozen_commit'], reference=service.candidate(root)['frozen_commit'])
     assert len(record['attempts_used']['reference']) == 2
     assert service.iteration(tree['id'])['validation_pool'] == ['qasper:q3']
     assert service.iteration(tree['id'])['protocol'] == tree['protocol']
@@ -113,6 +115,14 @@ def test_fresh_claim_recovery_completion_and_validation_growth(env):
     after = comparisons.for_candidate(later['id'], actor='reader')['parent']
     assert after['id'] != before['id']
     assert after['validation']['delta'] == -.5 and not after['validation']['incomplete']
+    assert after['validation']['pool'] == [dict(batch_id='base', selection_hash=tree['selection_hash'], n=0), *record['pool']]
+    assert after['validation']['batches'][1]['delta'] == -.5
+    base_sources = after['validation']['batches'][0]['attempts_used']
+    fresh_sources = after['validation']['batches'][1]['attempts_used']
+    for side in ('subject', 'reference'):
+        assert {a['execution_id'] for a in base_sources[side]}.isdisjoint(
+            {a['execution_id'] for a in fresh_sources[side]})
+    assert before['validation']['batches'][1]['delta'] is None
     assert comparisons.get(before['id'])['validation']['missing_batches'] == ['f1']
 
 

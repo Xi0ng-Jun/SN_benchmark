@@ -295,7 +295,7 @@ class EvaluationJobStore:
                                 (task_id, job_id, 'job.inputs_source_captured'))
             return [_preparation_record(_decode(row['content']), job) for row in rows]
 
-    def prepare(self, task_id, plan_id, revision, expected_content_hash, *, actor, request_key):
+    def prepare(self, task_id, plan_id, revision, expected_content_hash, *, actor, request_key, _sealed_capability=None):
         scope = _scope(task_id, actor, 'prepare')
         _text(request_key, 'request key')
         payload = deepcopy(dict(task_id=task_id, plan_id=plan_id, revision=revision,
@@ -318,6 +318,12 @@ class EvaluationJobStore:
             except (UnknownIdentity, FixedPlanRejected, PlanSnapshotRejected, json.JSONDecodeError):
                 raise JobRejected('Invalid fixed plan revision') from None
             snapshot = _snapshot(snapshot, task_id=task_id, plan_id=plan_id)
+            from .sealed import _CAPABILITY
+            if _sealed_capability is not _CAPABILITY:
+                from .splits import Policy
+                policy = Policy(repo, task_id)
+                for cid in snapshot['content']['selection']['case_ids']:
+                    policy.refuse_sealed(cid)
             if snapshot['workspace_id'] != workspace_id:
                 raise JobRejected('Plan workspace ownership changed')
             if snapshot['content_hash'] != expected_content_hash:
