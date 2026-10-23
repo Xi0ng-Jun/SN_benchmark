@@ -1,13 +1,9 @@
-"""Write verbs an Agent may ask for; a person confirms, then the server executes (design §8).
+"""Recorded actions with explicit human or frozen iteration-budget confirmation.
 
-`sn-eval` records a pending request with the Agent's reason and the exact
-parameters and never executes it. Confirming runs those parameters unchanged
-through the same IterationService verbs as the HTTP routes, with the request
-id as the idempotency key, and stores the outcome on the request. Approving a
-proposal is not a request: a drafted proposal already waits for a person.
-
-There is no sandbox: an Agent with a shell can still reach the server. The
-ledger makes who asked and who confirmed explicit; it does not enforce it.
+Budgeted execution requests reserve their complete candidate/parent footprint
+before automatic confirmation. Other requests remain pending for a person.
+Requests and execution receipts remain auditable across retries; Agent role
+parameters are a collaboration contract, not a shell sandbox.
 """
 from __future__ import annotations
 
@@ -24,11 +20,12 @@ VERBS = {
     'node-freeze': (True, True),
     'node-run': (True, True),
     'node-fresh-run': (True, True),
+    'node-cluster-run': (True, True),
     'node-adopt': (True, False),
     'node-reject': (True, False),
     'iteration-create': (False, True),
 }
-IMPLEMENTER_VERBS = frozenset({'node-freeze', 'node-run'})
+IMPLEMENTER_VERBS = frozenset({'node-freeze', 'node-run', 'node-cluster-run'})
 ITERATION_FIELDS = ('title', 'start_commit', 'input_id', 'expected_bundle_id', 'case_ids', 'mode')
 
 
@@ -51,10 +48,13 @@ def normalize(verb, params):
     params = dict(params or {})
     allowed = {'node-derive': {'proposal_id', 'integrated_from'}, 'node-freeze': set(), 'node-adopt': set(), 'node-reject': set(),
                'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'node-fresh-run': {'timeout_seconds', 'limit_cny'},
-               'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch'}}[verb]
+               'node-cluster-run': {'timeout_seconds', 'limit_cny', 'cluster_id'},
+               'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch', 'budget'}}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
-    if verb in ('node-run', 'node-fresh-run'):
+    if verb == 'node-cluster-run' and (not isinstance(params.get('cluster_id'), str) or not params['cluster_id']):
+        raise ValueError('cluster-run needs cluster_id')
+    if verb in ('node-run', 'node-fresh-run', 'node-cluster-run'):
         attempts = params.get('attempts', 1)
         if type(attempts) is not int or not 1 <= attempts <= 4:
             raise ValueError('attempts must be an integer between 1 and 4')
@@ -182,7 +182,7 @@ def _candidate_summary(view):
                 execution_id=attempts[-1]['execution_id'] if attempts else None)
 
 
-def execute(service, record, *, workspace_id, actor):
+def execute(service, record, *, workspace_id, actor, budget_override=False):
     """Run a confirmed request through IterationService; returns a compact receipt."""
     verb, target, params, key = record['verb'], record['target_id'], record['params'], 'action:' + record['id']
     if verb == 'node-derive':
@@ -190,10 +190,23 @@ def execute(service, record, *, workspace_id, actor):
                               integrated_from=params.get('integrated_from', ()), actor=actor, request_key=key)
     elif verb == 'node-freeze':
         view = service.freeze(target, actor=actor)
-    elif verb in ('node-run', 'node-fresh-run'):
+    elif verb in ('node-run', 'node-fresh-run', 'node-cluster-run'):
         budget = dict(timeout_seconds=params['timeout_seconds'])
         if params.get('limit_cny') is not None:
             budget.update(limit_cny=params['limit_cny'], confirmed=True)
+        tree = service.iteration(service.candidate(target)['iteration_id'])
+        if tree['protocol'].get('budget'):
+            from .execution_scopes import dispatch_steps, reserve_dispatch
+            steps = dispatch_steps(service, record)
+            reserved = reserve_dispatch(service, tree, record, steps, override=budget_override)
+            if reserved['status'] != 'reserved':
+                raise Conflict('Iteration budget exceeded; explicit human confirmation required')
+            for step in steps:
+                service.run(step['candidate_id'], request_key=step['request_key'], batch_id=step['batch_id'],
+                            budget=budget, actor=actor)
+            return dict(candidate_id=target, status='dispatched', cluster_id=params.get('cluster_id'))
+        if verb == 'node-cluster-run':
+            return service.cluster_run(target, params['cluster_id'], budget=budget, actor=actor, request_key=key)
         if verb == 'node-fresh-run':
             return service.fresh_run(target, budget=budget, actor=actor, request_key=key)
         if hasattr(service, 'fill_validation'):
@@ -208,3 +221,33 @@ def execute(service, record, *, workspace_id, actor):
         tree = service.create_iteration(workspace_id, actor=actor, request_key=key, **params)
         return dict(iteration_id=tree['id'], task_id=tree['task_id'], root_candidate_id=tree['root_candidate_id'])
     return _candidate_summary(view)
+
+
+def auto_execute(service, record, *, workspace_id):
+    """Reserve a whole request atomically before policy confirmation and dispatch."""
+    if (record['status'] != 'pending' and not (record['status'] == 'confirmed' and record.get('decided_by') == 'budget')) or record['verb'] not in (
+            'node-run', 'node-cluster-run', 'node-fresh-run', 'node-freeze'):
+        return record
+    candidate = service.candidate(record['target_id'])
+    tree = service.iteration(candidate['iteration_id'])
+    if not tree['protocol'].get('budget'):
+        return record
+    if service.jobs is None or service.build_spec is None:
+        return record
+    from .execution_scopes import dispatch_steps, reserve_dispatch
+    steps = dispatch_steps(service, record)
+    try:
+        reserved = reserve_dispatch(service, tree, record, steps)
+    except Conflict:
+        # A different request may have consumed this frozen fresh batch since
+        # planning. Keep this request pending without claiming another batch.
+        return record
+    if reserved['status'] != 'reserved':
+        return record
+    requests = ActionRequestStore(service.repository)
+    requests.claim(record['id'], actor='budget', note='Within the frozen iteration budget')
+    try:
+        result = execute(service, record, workspace_id=workspace_id, actor='budget')
+    except (Conflict, ValueError) as exc:
+        return requests.finish(record['id'], error=str(exc))
+    return requests.finish(record['id'], result=result)

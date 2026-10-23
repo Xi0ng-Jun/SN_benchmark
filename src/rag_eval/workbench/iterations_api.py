@@ -39,6 +39,7 @@ class CreateIteration(_Command):
     split_seed: int = 0
     fresh_batch_count: int = Field(default=0, ge=0, le=100)
     fresh_papers_per_batch: int = Field(default=8, ge=1, le=100)
+    budget: dict | None = None
 
 
 class Integration(_Command):
@@ -61,6 +62,10 @@ class Run(_Command):
 
 class Proposal(_Command):
     card: dict
+
+
+class ClusterRun(Run):
+    cluster_id: str = Field(min_length=1, max_length=64)
 
 
 class Decide(_Command):
@@ -133,7 +138,8 @@ class IterationAPI:
             self._write()
         self.requests.claim(request_id, actor=self.actor, note=note)
         try:
-            result = execute(self.service, record, workspace_id=self.workspace['id'], actor=self.actor)
+            result = execute(self.service, record, workspace_id=self.workspace['id'],
+                             actor=record.get('decided_by') or self.actor, budget_override=True)
         except (Conflict, ValueError) as error:
             return self.requests.finish(request_id, error=str(error))
         return self.requests.finish(request_id, result=result)
@@ -271,6 +277,10 @@ class IterationAPI:
         def node_run(candidate_id: str, command: Run):
             self._write()
             self._scope(candidate_id=candidate_id)
+            if service.iteration(service.candidate(candidate_id)['iteration_id'])['protocol'].get('budget'):
+                service.dispatch_run(candidate_id, 'node-run', budget=command.budget, actor=actor,
+                                     request_key=command.request_key)
+                return service.candidate(candidate_id)
             service.fill_validation(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
             return service.run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
 
@@ -279,6 +289,18 @@ class IterationAPI:
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.fresh_run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
+
+        @router.post('/api/candidates/{candidate_id}/cluster-run')
+        def node_cluster_run(candidate_id: str, command: ClusterRun):
+            self._write()
+            self._scope(candidate_id=candidate_id)
+            return service.cluster_run(candidate_id, command.cluster_id, budget=command.budget,
+                                       actor=actor, request_key=command.request_key)
+
+        @router.get('/api/candidates/{candidate_id}/clusters/{cluster_id}/comparison')
+        def cluster_comparison(candidate_id: str, cluster_id: str):
+            self._scope(candidate_id=candidate_id)
+            return self.comparisons.for_cluster(candidate_id, cluster_id, actor=actor)
 
         @router.post('/api/candidates/{candidate_id}/adopt')
         def node_adopt(candidate_id: str, command: Run):

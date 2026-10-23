@@ -208,3 +208,11 @@ q 的分母是成员 × 来源 attempt；error/missing 是已知失败，成功�
 `cluster list` / `cluster show ID` 对分析者给成员 case_id；实现者只可读取自己候选的提议所引用簇，成员用稳定的 m01、m02 序号，逐次提供题目、SN 答案、实际上下文块、阶段指标和官方主分。只投影运行观测，不复制 gold 标注答案、gold 证据文本、论文标注、run 路径或 case_id；上下文实际包含的原文仍是产品观测，不能据与标注文字重合就删掉。描述和签名继续走原泄漏扫描，代码 diff 扫描算法未改变。
 
 提议可用顶层 `cluster_id` 或 `contract.cluster_id` 引用簇，两者同时给出时必须一致，合同 predicted_flips 必须属于冻结成员。实现者可接收 `{"kind":"cluster_case","cluster_id":"c01","member":"m01"}` 上下文；消息准备时校验该 session 的候选归属，仍拒绝 case / run_case / task_runs / iteration_tree / result。CLI 的角色和候选参数是协作契约，不是 shell 沙箱。
+
+### LCD 簇内执行与预算（2026-10-24）
+
+`node cluster-run CANDIDATE CLUSTER --reason ...` 为候选自己的簇建立独立 search selection，与父节点在同一独立 plan 上补足 k_base；复用根节点准备的 notebook，seed map 恰好覆盖成员。普通比较不会混入簇 attempt。`cluster result ID`（分析者附 `--node`，实现者附自己的 `--candidate`）读取异步完成后的结果；分析者得到 Δ、ρ、逐题带，实现者只得到 m01 等序号与翻转方向，不通过此入口新增分数暴露。
+
+创建迭代可冻结 `budget: {limit_cny, max_runs_per_candidate}`。预算内 freeze/run/cluster-run/fresh-run 请求由 budget actor 自动确认与执行；超额保持 pending，可由工作台既有人确认入口明确覆盖本请求。整条请求的父补跑、fresh、普通与簇 attempt 在派发前原子预留，物理执行再核验同一凭据；新的重试键计为新 attempt，原键只恢复原操作。预算迭代关闭 runner 隐藏 retry_rounds，重试须走新请求。
+
+预留使用同一迭代已结算的 CNY／题历史均价；没有可靠历史时暂取 ¥1／题的保守规划先验，不把它当成模型报价。终态只接受完整且币种明确的费用观测或既有 ModelBudget 账；取消、部分费用、未知费用保留预留并标明未知，不按零费用释放。该策略是估算额度，不是供应商实际账单上界；原有单次模型价格护栏仍需显式指定。预留后的准备失败或不确定派发保留凭据与占用，可恢复原请求，不猜测未花费而删除记录。

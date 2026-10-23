@@ -19,7 +19,7 @@ from ..artifacts import save_json
 from .repository import UnknownIdentity, now
 
 FORMAT = 'sn-candidate-comparison-v1'
-KINDS = ('parent', 'root', 'fresh')
+KINDS = ('parent', 'root', 'fresh', 'cluster')
 ADMISSION_FORMAT = 'sn-execution-admission-cache-v1'
 ADMISSION_CACHE = 'admission-cache.json'
 
@@ -324,7 +324,24 @@ class ComparisonService:
         from .splits import batches, roles
         from .noise import summarize_cases
         if '_batch_scope' in subject:
-            return self._compute_scope(subject, reference, kind)
+            body, reason = self._compute_scope(subject, reference, kind)
+            if body is not None:
+                body['batch_id'] = subject['_batch_scope']
+                if kind == 'cluster':
+                    from .execution_scopes import get
+                    scope = get(self.repository, subject['iteration_id'], subject['_batch_scope'])
+                    if body['admission']['status'] == 'admitted' and set(scope['case_ids']) != {r['case_id'] for r in body['rows']}:
+                        raise ValueError('Cluster measurements differ from the frozen selection')
+                    from .gate import judge, DEFAULT_RULE
+                    from .hypotheses import HypothesisStore
+                    tree = self.iterations.iteration(subject['iteration_id'])
+                    card = HypothesisStore(self.repository).get(tree['task_id'], subject['proposal_id'])['card']
+                    contract = card.get('contract')
+                    verdict = judge(body, body.get('noise', {}), contract, tree['protocol'].get('gate_rule', DEFAULT_RULE)) if contract else None
+                    body['cluster'] = dict(cluster_id=scope['cluster_id'], selection_hash=scope['selection_hash'],
+                        rho=verdict['rho'] if verdict else None, tau=verdict['tau'] if verdict else None,
+                        evidence=verdict, note='Local diagnostic only; validation gate decides adoption')
+            return body, reason
         body, reason = self._compute_scope(self.scoped(subject, None), self.scoped(reference, None), kind)
         if body is None:
             return body, reason
@@ -457,6 +474,24 @@ class ComparisonService:
         else:
             root = dict(kind='root', status='unavailable', reason='迭代没有根候选')
         return dict(candidate_id=candidate_id, parent=parent, root=root)
+
+    def for_cluster(self, candidate_id, cluster_id, *, actor, implementer=False):
+        """Read a paired cluster execution; implementers receive only ordinal flips."""
+        from .clusters import candidate_cluster, ClusterStore
+        candidate = self.iterations.candidate(candidate_id)
+        tree = self.iterations.iteration(candidate['iteration_id'])
+        if candidate_cluster(self.repository, tree['task_id'], candidate_id) != cluster_id:
+            raise ValueError('A candidate may read only its own cluster result')
+        cluster = ClusterStore(self.repository).get(tree['task_id'], cluster_id)
+        parent = self.iterations.candidate(candidate['parent_candidate_id'])
+        scope_id = 'cluster:' + cluster_id
+        record = self._stored(self.scoped(candidate, scope_id), self.scoped(parent, scope_id), 'cluster', actor)
+        if not implementer:
+            return record
+        rows = {r['case_id']: r for r in record.get('rows', [])}
+        return dict(cluster_id=cluster_id, status=record.get('admission', {}).get('status', 'unavailable'),
+                    members=[dict(member=f'm{i:02d}', flip=rows.get(cid, {}).get('flip', 'unpaired'))
+                             for i, cid in enumerate(cluster['scan']['members'], 1)])
 
     def pinned(self, candidate_id, reference_candidate_id):
         """An ad-hoc comparison; computed on request and never stored as a conclusion."""

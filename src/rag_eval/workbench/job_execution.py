@@ -339,6 +339,7 @@ class JobExecutionStore:
             _closed(current)
             repo = self.repository
             repo._event(conn, current['task_id'], 'job.execution_finished', execution_id, current)
+        self._settle_budget(current)
         try:
             self._write_record_file(current)
         except OSError:
@@ -360,6 +361,7 @@ class JobExecutionStore:
                 _closed(current)
                 self.repository._event(conn, task_id, 'job.execution_cancelled', execution_id, current)
             self.repository._receipt(conn, scope, request_key, payload, current)
+        self._settle_budget(current)
         try:
             self._write_record_file(current)
         except OSError:
@@ -373,6 +375,16 @@ class JobExecutionStore:
                 pass
             threading.Thread(target=self._stop_after_grace, args=(process,), daemon=True).start()
         return current
+
+    def _settle_budget(self, record):
+        from .budgets import BudgetLedger
+        try:
+            BudgetLedger(self.repository, initialize=False).settle_execution(record)
+        except Exception:
+            # A bookkeeping failure must not prevent cancellation or terminal
+            # file publication. Reservations stay charged; the next budget
+            # operation reconciles the already durable terminal receipt.
+            pass
 
     @staticmethod
     def _stop_after_grace(process):

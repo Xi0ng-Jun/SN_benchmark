@@ -1,12 +1,8 @@
-"""Read tools, drafts and action requests for Agents working on a Task.
+"""Task-scoped reads, drafts and recorded actions for workbench Agents.
 
-Run through `scripts/sn-eval`. Every command prints JSON. None of them starts
-SN, calls a model or changes a run. `hypothesis-draft` and `proposal draft`
-only store a draft a person must approve; `node derive|freeze|run|adopt|reject`
-and `iteration create` only record a pending request that a person confirms
-in the workbench before the server executes it. `--role implementer` limits
-the commands to the approved card, the leak check and freeze/run requests for
-its own candidate, and strips case ids from leak findings.
+Execution requests may run automatically under a frozen iteration budget and
+trusted execution configuration; otherwise a person confirms in the workbench.
+Implementers receive their own cluster projection and ordinal-only run results.
 """
 from __future__ import annotations
 
@@ -16,11 +12,11 @@ import os
 import sys
 from pathlib import Path
 
-REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node adopt', 'node reject', 'iteration create')
+REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create')
 ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
-                    'request withdraw', 'cluster propose', 'cluster list', 'cluster show', *REQUEST_COMMANDS)
-IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'requests', 'request withdraw', 'cluster list', 'cluster show')
+                    'request withdraw', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
+IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'node cluster-run', 'requests', 'request withdraw', 'cluster list', 'cluster show', 'cluster result')
 GROUPS = ('iteration', 'node', 'proposal', 'request', 'cluster')
 
 
@@ -38,6 +34,7 @@ def build(state, config_path):
                                  execution_enabled=isinstance(config.get('job_execution'), dict),
                                  execution_config=config.get('job_execution'),
                                  execution_records=lambda: JobExecutionStore(repository).records(workspace['id']))
+    views._command_config = config
     return repository, views
 
 
@@ -46,6 +43,18 @@ def iteration_service(repository, views, *, initialize=True):
     from .comparisons import Admission
     from .iterations import IterationService
     from .job_execution import JobExecutionStore
+    config = getattr(views, '_command_config', {})
+    if initialize and config.get('task_worktrees', {}).get('create_candidates') is True:
+        from .configuration import input_catalog
+        from .evaluation_plans import PlanDraftStore
+        from .plan_inputs import NotebookPlanInputs
+        from .evaluation_jobs import EvaluationJobStore
+        from .jobs_api import build_execution_spec
+        plans = PlanDraftStore(repository, NotebookPlanInputs({k: e['bundle'] for k, e in input_catalog(config).items()}))
+        return IterationService(repository, views._worktree_service, plans=plans, jobs=EvaluationJobStore(repository),
+            executions=JobExecutionStore(repository), admission=Admission(views),
+            preparation_config=config.get('job_preparation'), execution_config=config.get('job_execution'),
+            build_spec=build_execution_spec)
     return IterationService(repository, views._worktree_service, executions=JobExecutionStore(repository),
                             admission=Admission(views), initialize=initialize)
 
@@ -120,7 +129,14 @@ def main(argv=None):
         own = options.candidate if options.role == 'implementer' else None
         if options.role == 'implementer' and not own:
             raise SystemExit('cluster evidence needs the implementer own --candidate')
-        if command == 'cluster list':
+        if command == 'cluster result':
+            from .comparisons import ComparisonService
+            source = own or options.node
+            if not source or service.iteration(service.candidate(source)['iteration_id'])['task_id'] != task_id:
+                raise ValueError('Cluster result needs a candidate of this task')
+            out = ComparisonService(repository, service, views).for_cluster(source, a[0], actor='agent:' + options.role,
+                                                                          implementer=own is not None)
+        elif command == 'cluster list':
             out = clusters.list(task_id, implementer_candidate=own)
         elif command == 'cluster show':
             out = clusters.show(task_id, a[0], implementer_candidate=own)
@@ -321,7 +337,12 @@ class IterationTools:
                 if target in folded:
                     raise SystemExit('a candidate is not folded into its own child')
                 params['integrated_from'] = [dict(candidate_id=i, method=options.method) for i in folded]
-            if verb in ('node-run', 'node-fresh-run'):
+            if verb == 'node-cluster-run':
+                from .clusters import candidate_cluster
+                if len(args) != 2 or candidate_cluster(self.service.repository, self.task_id, target) != args[1]:
+                    raise ValueError('cluster-run requires the candidate own cluster')
+                params['cluster_id'] = args[1]
+            if verb in ('node-run', 'node-fresh-run', 'node-cluster-run'):
                 if options.attempts is not None and verb == 'node-run':
                     params['attempts'] = options.attempts
                 if options.timeout is not None:
@@ -330,8 +351,11 @@ class IterationTools:
                     params['limit_cny'] = options.limit_cny
         record = self.requests.request(self.task_id, verb, target, params, reason=options.reason or '',
                                        requested_by=self.actor)
-        return dict(request=record, next='nothing has run: a person confirms or rejects this request in the '
-                                         'workbench, then the server executes it')
+        from .action_requests import auto_execute
+        record = auto_execute(self.service, record, workspace_id=self.service.repository.task(self.task_id)['workspace_id'])
+        return dict(request=record, next='Request executed under budget policy' if record['status'] == 'executed'
+                    else 'nothing has run: a person reviews this request in the workbench' if record['status'] == 'pending'
+                    else 'Inspect the recorded execution outcome')
 
 
 def _iteration_summary(repository, views, task_id, run_ids):

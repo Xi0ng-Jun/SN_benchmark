@@ -71,25 +71,33 @@ def batches(repository, iteration_id, *, completed=False):
             (' AND completed_at IS NOT NULL' if completed else '') + ' ORDER BY used_at,batch_id', (iteration_id,))]
 
 
-def claim(repository, iteration, candidate_id, request_key):
+def claim(repository, iteration, candidate_id, request_key, *, conn=None, expected_batch_id=None):
     """Consume before dispatch; the same request resumes, failures never release a batch."""
-    with repository.connect(write=True) as conn:
-        rows = [dict(r) for r in conn.execute('SELECT * FROM iteration_fresh_batches WHERE iteration_id=?', (iteration['id'],))]
-        prior = next((r for r in rows if r['request_key'] == request_key), None)
-        if prior:
-            if prior['candidate_id'] != candidate_id:
-                raise Conflict('Fresh request belongs to another candidate')
-            return prior
-        used = {r['batch_id'] for r in rows}
-        batch = next((b for b in iteration['protocol'].get('fresh_batches', []) if b['batch_id'] not in used), None)
-        if batch is None:
-            raise Conflict('No unused fresh batch remains')
-        row = dict(iteration_id=iteration['id'], batch_id=batch['batch_id'], candidate_id=candidate_id,
-                   request_key=request_key, used_at=now(), completed_at=None, comparison_id=None)
-        conn.execute('INSERT INTO iteration_fresh_batches VALUES(:iteration_id,:batch_id,:candidate_id,:request_key,'
-                     ':used_at,:completed_at,:comparison_id)', row)
-        repository._event(conn, iteration['task_id'], 'iteration.fresh.used', candidate_id, row)
-        return row
+    if conn is None:
+        with repository.connect(write=True) as writer:
+            return claim(repository, iteration, candidate_id, request_key, conn=writer,
+                         expected_batch_id=expected_batch_id)
+    rows = [dict(r) for r in conn.execute('SELECT * FROM iteration_fresh_batches WHERE iteration_id=?', (iteration['id'],))]
+    prior = next((r for r in rows if r['request_key'] == request_key), None)
+    if prior:
+        if prior['candidate_id'] != candidate_id:
+            raise Conflict('Fresh request belongs to another candidate')
+        if expected_batch_id is not None and prior['batch_id'] != expected_batch_id:
+            raise Conflict('The planned fresh batch differs from the prior claim')
+        return prior
+    used = {r['batch_id'] for r in rows}
+    batch = next((b for b in iteration['protocol'].get('fresh_batches', [])
+                  if b['batch_id'] not in used and
+                  (expected_batch_id is None or b['batch_id'] == expected_batch_id)), None)
+    if batch is None:
+        raise Conflict('The planned fresh batch is unavailable' if expected_batch_id is not None
+                       else 'No unused fresh batch remains')
+    row = dict(iteration_id=iteration['id'], batch_id=batch['batch_id'], candidate_id=candidate_id,
+               request_key=request_key, used_at=now(), completed_at=None, comparison_id=None)
+    conn.execute('INSERT INTO iteration_fresh_batches VALUES(:iteration_id,:batch_id,:candidate_id,:request_key,'
+                 ':used_at,:completed_at,:comparison_id)', row)
+    repository._event(conn, iteration['task_id'], 'iteration.fresh.used', candidate_id, row)
+    return row
 
 
 def roles(protocol, completed=()):

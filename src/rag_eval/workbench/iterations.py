@@ -82,6 +82,8 @@ def initialize_iterations(repository):
 
     from .splits import initialize
     initialize(repository)
+    from .execution_scopes import initialize as initialize_scopes
+    initialize_scopes(repository)
 
 
 def _json(value):
@@ -364,7 +366,7 @@ class IterationService:
 
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
-                         split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8):
+                         split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None):
         """Create the backing Task, freeze its plan, then provision root C0.
 
         Retrying the same request key completes an interrupted creation: each
@@ -376,6 +378,8 @@ class IterationService:
         _commit(start_commit, 'start commit')
         if self.plans is None:
             raise ValueError('Iteration plans are not configured')
+        from .budgets import validate_policy
+        budget = validate_policy(budget)
         binding = ((self.preparation_config or {}).get('inputs') or {}).get(input_id)
         if not isinstance(binding, dict) or set(binding) != {'bundle_ref', 'index_ref'}:
             raise ValueError('No trusted artifact binding for this iteration input')
@@ -383,6 +387,8 @@ class IterationService:
                        expected_bundle_id=expected_bundle_id, case_ids=case_ids, mode=mode,
                        seeded_from=seeded_from, actor=actor, sealed_ref=sealed_ref, split_seed=split_seed,
                        fresh_batch_count=fresh_batch_count, fresh_papers_per_batch=fresh_papers_per_batch)
+        if budget is not None:
+            payload['budget'] = budget
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -430,6 +436,8 @@ class IterationService:
                         splits=dict(search=split['search'], validation=split['validation'],
                                     sealed_ref=ref, sealed=registered['case_ids'], seed=split_seed), fresh_batches=fresh,
                         gate_rule=dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90'))
+        if budget is not None:
+            protocol['budget'] = budget
         project = self.trees.project_root
         common = str(Path(_text_git(project, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve())
         iteration_id, root_id, created = uid(), uid(), now()
@@ -782,8 +790,21 @@ class IterationService:
         if None in (self.jobs, self.executions, self.build_spec) or not isinstance(self.preparation_config, dict):
             raise ValueError('Candidate execution is not configured')
         task_id, key = iteration['task_id'], 'candidate:' + candidate_id + ':' + request_key
+        # Job receipts include actor. Bind it before preparation so changing actor
+        # cannot dispatch twice against one budget reservation.
+        command = dict(actor=actor, budget=budget, adopt=adopt, batch_id=batch_id)
+        with self.repository.connect(write=True) as conn:
+            command_scope = 'candidate.run.command:' + candidate_id
+            prior_command = self.repository._prior(conn, command_scope, request_key, command)
+            if prior_command is None:
+                self.repository._receipt(conn, command_scope, request_key, command, dict(bound=True))
         plan_scope = iteration
-        if batch_id is not None:
+        if batch_id is not None and batch_id.startswith('cluster:'):
+            from .execution_scopes import get
+            plan_scope = get(self.repository, iteration['id'], batch_id)
+            if adopt:
+                raise ValueError('Cluster runs cannot adopt full-plan executions')
+        elif batch_id is not None:
             from .splits import batches
             claimed = next((b for b in batches(self.repository, iteration['id']) if b['batch_id'] == batch_id), None)
             if adopt or claimed is None:
@@ -825,11 +846,26 @@ class IterationService:
             if type(path) is not str or not path:
                 raise ValueError('No adoptable runs are configured on this server')
             config['adopt_runs'] = json.loads(Path(path).read_text(encoding='utf-8'))
-        elif batch_id is None and (self.execution_config or {}).get('seed_from_root') is True:
+        elif (batch_id is not None and batch_id.startswith('cluster:')) or (
+                batch_id is None and (self.execution_config or {}).get('seed_from_root') is True):
             seeds = self._seed_runs(iteration)
+            if seeds is None and batch_id is not None:
+                raise ValueError('Cluster runs require prepared root notebooks')
             if seeds is not None:
                 self._guard_seeded_change(iteration, candidate)
-                config['seed_runs'] = seeds
+                ids = plan_scope.get('case_ids')
+                config['seed_runs'] = {cid: seeds[cid] for cid in ids} if ids else seeds
+        if protocol.get('budget'):
+            # Retries must be new ledgered attempts, not hidden runner rounds.
+            config['retry_rounds'] = 0
+        from .budgets import BudgetLedger
+        ledger = BudgetLedger(self.repository)
+        if protocol.get('budget'):
+            count = len(self.plans.get(task_id, plan_scope['plan_id'])['content']['selection']['case_ids'])
+            reserved = ledger.reserve_many(iteration, [dict(candidate_id=candidate_id, request_key=request_key,
+                case_count=count, batch_id=batch_id)], group_key='attempt:' + hashlib.sha256(key.encode()).hexdigest())
+            if reserved['status'] != 'reserved':
+                raise Conflict('Iteration budget exceeded; request human confirmation')
         prior = self.executions.run_receipt(task_id, job['job_id'], job['state_version'], prepared['preparation_id'],
                                             budget, actor=actor, request_key=key)
         if prior is None:
@@ -838,13 +874,38 @@ class IterationService:
             spec['budget'] = budget
             prior = self.executions.run(task_id, job['job_id'], job['state_version'], execution_spec=spec,
                                         actor=actor, request_key=key)
+        if protocol.get('budget'):
+            ledger.attach(iteration['id'], candidate_id, request_key, prior['execution_id'])
+            ledger.settle_execution(prior)
         with self.repository.connect(write=True) as conn:
             conn.execute('UPDATE candidate_attempts SET execution_id=? WHERE candidate_id=? AND attempt=? '
                          'AND execution_id IS NULL', (prior['execution_id'], candidate_id, attempt))
         return self.candidate(candidate_id)
 
+    def cluster_run(self, candidate_id, cluster_id, *, budget, actor, request_key):
+        """Dispatch parent and child on an independent frozen cluster selection."""
+        if self.iteration(self.candidate(candidate_id)['iteration_id'])['protocol'].get('budget'):
+            return self.dispatch_run(candidate_id, 'node-cluster-run', budget=budget, actor=actor,
+                                     request_key=request_key, cluster_id=cluster_id)
+        from .execution_scopes import cluster_plan
+        scope = cluster_plan(self, candidate_id, cluster_id)
+        candidate = self.candidate(candidate_id)
+        if candidate['status'] != 'frozen':
+            raise Conflict('Freeze the candidate before running its cluster')
+        k = self.iteration(candidate['iteration_id'])['protocol']['k_base']
+        for cid in (candidate['parent_candidate_id'], candidate_id):
+            existing = [a for a in self.candidate(cid)['attempts'] if a.get('batch_id') == scope['scope_id']]
+            eligible = sum((a.get('admission') or {}).get('status') == 'admitted'
+                           or a.get('execution_state') == 'running' for a in existing)
+            for i in range(max(0, k - eligible)):
+                self.run(cid, budget=budget, actor=actor, request_key=f'{request_key}:{cid}:{i}',
+                         batch_id=scope['scope_id'])
+        return dict(candidate_id=candidate_id, cluster_id=cluster_id, status='dispatched')
+
     def fresh_run(self, candidate_id, *, budget, actor, request_key):
         """Claim one fresh batch and dispatch bounded parent/candidate repetitions."""
+        if self.iteration(self.candidate(candidate_id)['iteration_id'])['protocol'].get('budget'):
+            return self.dispatch_run(candidate_id, 'node-fresh-run', budget=budget, actor=actor, request_key=request_key)
         from .splits import claim
         candidate = self.candidate(candidate_id)
         if not candidate['parent_candidate_id'] or candidate['status'] != 'frozen':
@@ -859,6 +920,18 @@ class IterationService:
                     continue
                 self.run(cid, budget=budget, actor=actor, request_key=f'{request_key}:{cid}:{i}', batch_id=batch['batch_id'])
         return dict(candidate_id=candidate_id, batch=batch, status='dispatched')
+
+    def dispatch_run(self, candidate_id, verb, *, budget, actor, request_key, cluster_id=None):
+        """Use the same atomic footprint for direct trusted calls and Agent actions."""
+        from .action_requests import execute
+        params = {k: v for k, v in budget.items() if k in ('timeout_seconds', 'limit_cny')}
+        if cluster_id is not None:
+            params['cluster_id'] = cluster_id
+        identity = hashlib.sha256(json.dumps([candidate_id, verb, request_key]).encode()).hexdigest()
+        candidate = self.candidate(candidate_id)
+        tree = self.iteration(candidate['iteration_id'])
+        return execute(self, dict(id=identity, verb=verb, target_id=candidate_id, params=params),
+                       workspace_id=self.repository.task(tree['task_id'])['workspace_id'], actor=actor)
 
     def fill_validation(self, candidate_id, *, budget, actor, request_key):
         """Explicit execution path for validation measurements missing at comparison time."""

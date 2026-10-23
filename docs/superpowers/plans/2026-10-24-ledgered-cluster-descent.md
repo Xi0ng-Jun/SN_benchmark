@@ -78,7 +78,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   verb：`cluster propose --file`（分析者；卡片内容过泄漏扫描；写入即冻结）、`cluster list`、`cluster show ID`（分析者得成员 case_id；实现者得自己簇的描述、签名、计数、q/m/v 及 search 成员脱敏证据（题目、SN 答案、上下文块、阶段指标、官方主分；用 m01 等序号，不给 case_id、gold 答案或 gold 证据文本））。`proposal draft` 的卡可引用 `cluster_id`，合同的 predicted_flips 必须是该簇成员。
   测试：合成 case view 上的重扫结果可手算；字段白名单外的签名被拒；实现者视图不含 case_id；冻结后 propose 同 id 被拒。
 
-- [ ] 5. **簇级内环与预算内自动确认**（`node cluster-run CANDIDATE CLUSTER`，改 `action_requests.py`）。
+- [x] 5. **簇级内环与预算内自动确认**（`node cluster-run CANDIDATE CLUSTER`，改 `action_requests.py`）。
   簇运行是独立的执行范围：为该簇的 search 成员生成独立 plan selection（同 bundle、同 mode，selection_hash 独立），候选在其上跑 k_base 次（seeded），父若在这些成员上缺 attempt 则一并补足；配对准入按这个子集的 plan 做，不从整批运行里过滤行。输出簇级 Δ、ρ 与逐题带，结果回给实现者（脱敏：逐题只给成员序号 m01… 与翻转方向，不给题目与分数）。
   预算：iteration 协议新增 `budget: {limit_cny, max_runs_per_candidate}`。每次派发前按历史均价预留，派发的全部 attempt（含父补跑、fresh-run、失败与重试）都计入同一账本；额度内的请求自动 confirmed 并执行，额度外挂起等人；预留在终态结算。实现者只能请求自己候选的簇运行。
   测试：请求只接受该实现者自己的候选；执行只跑成员题并走独立 plan；额度内自动执行、额度外挂起；预留与结算累计正确；父补跑计入账本。
@@ -136,3 +136,13 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 解释与偏离：组合语法明确采用 `{"all_of": [...]}`、`{"any_of": [...]}`、`{"not": {...}}`；观测随提议冻结，纯函数重扫不改旧记录。未知官方分与空分母为 null；整次执行没有产出时只派生 missing 状态，不向原记录补零。实现者视图按来源排除 gold 标注，保留实际交付上下文（即使与标注原文重合），并把文本中已知 case_id 脱敏为占位符。
 - 集成修正：分析者 counts/mean/η 从可见 search 行重新计算；brief 先投影完整比较再汇总，原 brief 测试断言无需修改。发现显式 validation 补跑误将失败 attempt 计入 k_base，新增失败回归后修复为只计已准入或仍运行的 attempt；新的明确请求可补足，同一请求复用凭据，失败记录永久保留，读取仍不派发执行。
 - 范围：W5–W8 未实现。后续 W5 须为簇子集建立独立 plan 与配对准入，预算计入全部派发（含父补跑、fresh 和失败）并先预留；W6 的 sealed-run 须单独可信授权及持久化一次性领取，簇 resolved/open 由后续证据派生，不改冻结成员。账本按 batch 对齐 validation/fresh，K 按不同 frozen_commit 计数。
+
+
+### W5 · 2026-10-24
+
+- 提交：本条所在 `feat(workbench): run scoped clusters within a durable iteration budget`（基线 `ea0ad59`）。
+- 验证：RUNBOOK 完整离线 pytest **2486 passed / 7 skipped**，Node **34 passed**；1 条既有 Starlette 弃用警告。未改 UI，未调用模型、启动服务、读取真实运行或修改 .venv；旧测试断言未改。
+- 实现：独立簇 plan／selection 与配对准入，根 notebook 的成员 seed map，父与候选补足 k_base；`node cluster-run`、异步 `cluster result`。冻结预算协议，整个请求的测量在派发前原子预留，统一涵盖父补跑、fresh、失败和新键重试；额度内 budget actor 自动执行，超额 pending，既有人确认可明确覆盖该请求。终态／取消回调与历史重放收拢费用。
+- 解释与偏离：历史均价只用完整且币种明确的 CNY 费用；无历史时 ¥1／题为保守规划先验，不是报价。默认运行没有可信金额时保留预留、actual=null；取消和不确定派发亦不猜测免费。预留后的准备失败仍保留凭据和占用，执行原键可恢复；本项没有新增退款流程。迭代额度是估算账，未强制启用原 ModelBudget 的固定模型价格护栏；后者仍可显式配置。预算迭代关闭隐藏 retry_rounds，使重试必须以新 attempt 记账。
+- 实现者边界：按用户最新“成员序号＋翻转方向”要求，cluster result 仅投影这两项；Δ／ρ／逐题带保存在分析者完整比较中，题目和分数仍只从既有 cluster_case 获得。这是对原稿“结果回给实现者”的收窄解释。
+- 审查修复：在准备 Job 前持久绑定 request_key 的 actor 与参数，防止换 actor 绕过预算去重；fresh 指定批次领取与整组预留同事务，竞争失败保持 pending，不消耗下一批次或残留新预留。独立复审无未解决高／中风险项。表与字段均附加，SQLite 仍为 v5；W6、W8、W7 未开始。
