@@ -79,12 +79,13 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   测试：合成 case view 上的重扫结果可手算；字段白名单外的签名被拒；实现者视图不含 case_id；冻结后 propose 同 id 被拒。
 
 - [ ] 5. **簇级内环与预算内自动确认**（`node cluster-run CANDIDATE CLUSTER`，改 `action_requests.py`）。
-  只在簇的 search 成员上跑候选 k_base 次（seeded），与父在同一成员上的 attempt 比较，输出簇级 Δ、ρ 与带，结果回给实现者（脱敏：逐题只给 case 序号与翻转方向，不给题目）。实现者可请求；预算策略：iteration 协议新增 `budget: {limit_cny, max_runs_per_candidate}`，请求在额度内自动 confirmed 并执行，额度外挂起。
-  测试：请求只接受该实现者自己的候选；执行只跑成员题；额度内自动执行、额度外挂起；预算账本累计。
+  簇运行是独立的执行范围：为该簇的 search 成员生成独立 plan selection（同 bundle、同 mode，selection_hash 独立），候选在其上跑 k_base 次（seeded），父若在这些成员上缺 attempt 则一并补足；配对准入按这个子集的 plan 做，不从整批运行里过滤行。输出簇级 Δ、ρ 与逐题带，结果回给实现者（脱敏：逐题只给成员序号 m01… 与翻转方向，不给题目与分数）。
+  预算：iteration 协议新增 `budget: {limit_cny, max_runs_per_candidate}`。每次派发前按历史均价预留，派发的全部 attempt（含父补跑、fresh-run、失败与重试）都计入同一账本；额度内的请求自动 confirmed 并执行，额度外挂起等人；预留在终态结算。实现者只能请求自己候选的簇运行。
+  测试：请求只接受该实现者自己的候选；执行只跑成员题并走独立 plan；额度内自动执行、额度外挂起；预留与结算累计正确；父补跑计入账本。
 
 - [ ] 6. **三笔账**（`ledger.py`，verb `iteration ledger`，UI 一个面板）。
-  sampling：k = 1、verifier none、种子 search 均值、S(B) = 种子。overfit：n、n_eff、K（在 validation 上比较过的不同 frozen_commit 数）、期望偏差 = η·sqrt(2 ln K)、每个被采纳候选的 validation Δ 与 fresh Δ、配对观测偏差。structure：各簇状态（resolved / open）、每笔合同的 ρ 与 verdict、audit 数、愿望清单（无 accept 候选的簇，附 q/m/v）。`sealed_score` 只在人显式调用 `iteration sealed-run` 时填，且 UI 提示"仅一次"。
-  测试：从合成的比较记录与簇算出的账本键齐全、数字可手算；sealed 未触发时为 null。
+  sampling：k = 1、verifier none、种子 search 均值、S(B) = 种子。overfit：n、n_eff、K（在 validation 池上比较过的不同 frozen_commit 数）、期望偏差 = η·sqrt(2 ln K)、每个 accept 候选的 validation Δ 与 fresh Δ 按 batch 对齐（validation 池随并入批次增长，比较时注明池的组成）、配对观测偏差。structure：各簇状态由后续证据派生（有 accept 候选且该候选在簇成员上 ρ ≥ τ → resolved，否则 open；不改冻结成员）、每笔合同的 ρ 与 verdict、audit 数、愿望清单（open 簇，附 q/m/v）。`sealed_score` 只在人显式调用 `iteration sealed-run` 时填：需要独立的可信授权（`job_preparation.sealed_selections` 登记加人工确认），领取持久化且一次性，用后任何再次调用都拒绝；UI 在调用前提示"整个研究只此一次"。
+  测试：从合成的比较记录与簇算出的账本键齐全、数字可手算；sealed 未触发时为 null，触发一次后第二次被拒。
 
 - [ ] 8. **闭环编排**（`iteration round`，`loop.py`）。
   一条命令跑一轮：确保当前基准有 k_base 次 attempt → 记账人重扫全部簇、按 |C|·(1−q)·max(m, v, π) 排序取前 b 个未解决簇 → 每簇派生一个候选并创建实现者 Agent（带簇证据）→ 实现者的 freeze / cluster-run / run 在预算内自动执行 → 门判定 → 通过 Ladder 的候选做 fresh-run 确认 → accept 的候选按 `integrated_from` 合并派生一个新候选并重测（干扰检查）→ 更新账本、愿望清单，写轮次记录。停机：新鲜批次用尽、连续两轮无 accept、预算耗尽。人只在创建迭代时批预算，之后读审计与愿望清单。
