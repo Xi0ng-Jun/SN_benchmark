@@ -2,7 +2,9 @@
 
 > 给执行开发的 agent：先读 `AGENTS.md`、`CURRENT_STATE.md`、`docs/evaluation-context.md`、`docs/evaluation-status.md`，再读 `docs/product/sn-workbench/iteration-tree-design.md` 与 `docs/experiments/2026-10-19-iteration-chain-and-comparison-smoke.md`。方法原文在 `/home/wabiwabi/silicon-notebook/harness-opt/docs/paper/draft-v0.md` §4，本文只写它落到这个工作台上要改什么。本文按工作项顺序执行，每项一个提交，提交前跑完 `RUNBOOK.md` 的 pytest 命令；不调用任何模型，不启动 SN，不碰 `var/` 里的真实运行。
 
-**Goal:** 让迭代树上的每一个候选都带着三样东西被判定：重跑噪声下的逐题翻转、它的编辑合同兑现了多少、在从未参与选择的新鲜题上是否成立；并让失败归因从人手写的 `docs/failure-ledger.md` 变成可机械重扫的簇，簇附带上限。人仍然做最终 adopt，但门的判定作为预注册规则的事实记录在节点上。
+**Goal:** 让迭代树上的每一个候选都带着三样东西被判定：重跑噪声下的逐题翻转、它的编辑合同兑现了多少、在从未参与选择的新鲜题上是否成立；并让失败归因从人手写的 `docs/failure-ledger.md` 变成可机械重扫的簇，簇附带上限。**门的判定直接决定候选在树上的去留**（accept 成为后续派生的基准，reject / audit / unmeasurable 记录在案），人只在创建迭代时批预算、事后读审计清单与愿望清单；是否把采纳的改动合入 SN 主线是循环之外的另一件事。
+
+> 2026-10-24 用户决定：以把目标做好为准，不以兼容现有实现为准。原稿"门只记事实、人 adopt"的保守定位据此改为上面这段；"待用户决定"三项全部按自动化一侧定，见该节。
 
 **Architecture:** 全部改动在评测仓库（本 worktree）内，SN 源码不动。新增模块落在 `src/rag_eval/workbench/`：`noise.py`（重跑噪声与 η）、`gate.py`（合同与判定）、`splits.py`（search / validation / fresh / sealed 协议）、`clusters.py`（签名 DSL、重扫、q/m/v）、`ledger.py`（三笔账）。现有对象只加字段不改语义：假设卡加可选 `contract`，iteration 协议加 `k_base`、`splits`、`gate_rule`，比较记录加 `attempts_used` 与 `noise`。SQLite `user_version` 升到 5，迁移只加表与列。
 
@@ -12,8 +14,8 @@
 
 ## 边界与关键假设
 
-- **门不是自动发布。**`CURRENT_STATE.md` 写明不制造自动发布门槛。本文的 `verdict ∈ {accept, reject, audit, unmeasurable}` 是"按 iteration 创建时冻结的规则，对已有事实的判定"，与 Δ父记录同级存放，`decide` 仍由人调用。UI 把 verdict 和它引用的规则 id、阈值、数字一起显示。若用户不接受这一定位，W2 退化为只记录合同兑现率，不出 verdict。
-- **信息边界不放松。**实现者仍看不到题目、gold、分数、case_id。簇交给实现者时只给描述、机械签名、成员数、q/m/v 与分析者写的机制说明；不给成员轨迹。这比 LCD 原文保守，原因是这里的泄漏扫描以 case_id 与题目文本为单位。
+- **门是循环内部的接受机制，不是发布门。**`CURRENT_STATE.md` 的"不制造自动发布门槛"指对外成绩与发布；LCD 的 `verdict ∈ {accept, reject, audit, unmeasurable}` 按 iteration 创建时冻结的规则判定，并**自动写入候选的 decision**（actor = `gate`，附规则 id、阈值与全部数字）。人可以覆盖，覆盖必须带理由并保留原判定。`CURRENT_STATE.md` 相应补一句说明。
+- **实现者看得到簇证据，看不到 gold。**实现者拿到：簇描述、签名、q/m/v、分析者写的机制说明，以及该簇在 search 上的成员证据（题目、SN 答案、上下文块、阶段指标、官方分），**不含 gold 答案与 gold 证据文本**。防捷径靠三层：diff 的泄漏扫描（题目文本、gold 8-gram、case_id）、合同的预测翻转必须兑现、新鲜批次确认。看不到 gold 就写不出答案硬编码；看得到题目与输出才调得了 harness。`agent_messages.py` 的上下文种类屏障按此调整：对实现者开放 `cluster_case`（脱敏视图），仍拒绝 `case / run_case / task_runs / iteration_tree / result`。
 - **噪声来自查询改写与检索。**10-19 的噪声基线显示同源重跑逐题漂移与候选效应同量级。所以任何翻转判定都要在 k_base ≥ 2 次重跑上做，η 由重跑估计，不由单次分数。
 - **只有 QASPER 本地可用。**封存集用现有的 5 篇 17 题留出（`selection.json` 的 holdout），不引入新 benchmark。新鲜批次按 paper 划分（partition = paper，整篇导入），paper 之间不重叠。
 - **成本不是约束，墙钟是。**每题每次 ¥0.005 到 ¥0.045；导入与 embedding 的等待和 429 才是瓶颈。seeded run 复用根节点已导入的 notebook，新鲜批次需要新导入，一批 8 篇按已有记录估 10 到 30 分钟。
@@ -76,13 +78,17 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   verb：`cluster propose --file`（分析者；卡片内容过泄漏扫描；写入即冻结）、`cluster list`、`cluster show ID`（分析者得成员 case_id；实现者得描述、签名、计数、q/m/v，不得成员）。`proposal draft` 的卡可引用 `cluster_id`，合同的 predicted_flips 必须是该簇成员。
   测试：合成 case view 上的重扫结果可手算；字段白名单外的签名被拒；实现者视图不含 case_id；冻结后 propose 同 id 被拒。
 
-- [ ] 5. **簇级内环**（`node cluster-run CANDIDATE CLUSTER`）。
-  只在簇的 search 成员上跑候选 k_base 次（seeded），与父在同一成员上的 attempt 比较，输出簇级 Δ、ρ 与带。实现者可请求；是否自动确认见"待用户决定"。
-  测试：请求只接受该实现者自己的候选；执行只跑成员题；输出结构。
+- [ ] 5. **簇级内环与预算内自动确认**（`node cluster-run CANDIDATE CLUSTER`，改 `action_requests.py`）。
+  只在簇的 search 成员上跑候选 k_base 次（seeded），与父在同一成员上的 attempt 比较，输出簇级 Δ、ρ 与带，结果回给实现者（脱敏：逐题只给 case 序号与翻转方向，不给题目）。实现者可请求；预算策略：iteration 协议新增 `budget: {limit_cny, max_runs_per_candidate}`，请求在额度内自动 confirmed 并执行，额度外挂起。
+  测试：请求只接受该实现者自己的候选；执行只跑成员题；额度内自动执行、额度外挂起；预算账本累计。
 
 - [ ] 6. **三笔账**（`ledger.py`，verb `iteration ledger`，UI 一个面板）。
   sampling：k = 1、verifier none、种子 search 均值、S(B) = 种子。overfit：n、n_eff、K（在 validation 上比较过的不同 frozen_commit 数）、期望偏差 = η·sqrt(2 ln K)、每个被采纳候选的 validation Δ 与 fresh Δ、配对观测偏差。structure：各簇状态（resolved / open）、每笔合同的 ρ 与 verdict、audit 数、愿望清单（无 accept 候选的簇，附 q/m/v）。`sealed_score` 只在人显式调用 `iteration sealed-run` 时填，且 UI 提示"仅一次"。
   测试：从合成的比较记录与簇算出的账本键齐全、数字可手算；sealed 未触发时为 null。
+
+- [ ] 8. **闭环编排**（`iteration round`，`loop.py`）。
+  一条命令跑一轮：确保当前基准有 k_base 次 attempt → 记账人重扫全部簇、按 |C|·(1−q)·max(m, v, π) 排序取前 b 个未解决簇 → 每簇派生一个候选并创建实现者 Agent（带簇证据）→ 实现者的 freeze / cluster-run / run 在预算内自动执行 → 门判定 → 通过 Ladder 的候选做 fresh-run 确认 → accept 的候选按 `integrated_from` 合并派生一个新候选并重测（干扰检查）→ 更新账本、愿望清单，写轮次记录。停机：新鲜批次用尽、连续两轮无 accept、预算耗尽。人只在创建迭代时批预算，之后读审计与愿望清单。
+  测试：用假 Creator 与合成执行走完一轮的状态机；停机三条件；预算耗尽时已评测的记录完整。
 
 - [ ] 7. **第一次实验的预注册与运行**（不交给开发 agent；由研究者与用户执行）。
   QASPER chunk，qwen-flash。search 15 篇、validation 10 篇、fresh 3 批 × 8 篇、sealed = 既有 5 篇留出。C0 跑 k_base = 2；诊断一次取前 3 个簇；每簇一个实现者；门判定；两轮。预算估计 ¥40 内。预注册写 `docs/experiments/2026-10-xx-lcd-r1.md`，运行前提交。
