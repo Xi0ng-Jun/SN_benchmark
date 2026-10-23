@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import subprocess
 from pathlib import Path
@@ -77,7 +78,8 @@ def test_cli_malformed_command_has_safe_diagnostic_and_no_intent_write(tmp_path,
     command.write_text(payload)
     result = subprocess.run([sys.executable, '-m', 'rag_eval.workbench.cli', '--state', str(state),
                              'plan-save', '--config', str(config), '--task', task['id'],
-                             '--actor', 'alice', '--input', str(command)], capture_output=True, text=True)
+                             '--actor', 'alice', '--input', str(command)], capture_output=True, text=True,
+                            env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src')))
     assert result.returncode == 2
     assert 'error:' in result.stderr
     assert 'Traceback' not in result.stderr
@@ -116,7 +118,8 @@ def test_cli_known_domain_refusals_have_safe_json_without_traceback(tmp_path, mo
     command.write_text(json.dumps(payload))
     before = repo.task(task['id'])
     result = subprocess.run([sys.executable, '-m', 'rag_eval.workbench.cli', '--state', str(state), *arguments],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True,
+                            env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src')))
     assert result.returncode == 2
     diagnostic = json.loads(result.stderr)
     assert diagnostic['code'] == ('PLAN_READ_REJECTED' if failure == 'unknown_plan' else 'PLAN_SAVE_REJECTED')

@@ -81,6 +81,7 @@ def main(argv=None):
     parser.add_argument('--reason', help='why a person should confirm this request')
     parser.add_argument('--proposal', help='approved proposal a derive request starts from')
     parser.add_argument('--timeout', type=int, help='run request: timeout_seconds (default 3600)')
+    parser.add_argument('--attempts', type=int, help='run request: number of attempts (1-4)')
     parser.add_argument('--limit-cny', type=float, help='run request: optional cost guard')
     parser.add_argument('--rank', choices=('root',), help='node list: flat list ranked by Δ根')
     parser.add_argument('command')
@@ -291,6 +292,8 @@ class IterationTools:
                     raise SystemExit('a candidate is not folded into its own child')
                 params['integrated_from'] = [dict(candidate_id=i, method=options.method) for i in folded]
             if verb == 'node-run':
+                if options.attempts is not None:
+                    params['attempts'] = options.attempts
                 if options.timeout is not None:
                     params['timeout_seconds'] = options.timeout
                 if options.limit_cny is not None:

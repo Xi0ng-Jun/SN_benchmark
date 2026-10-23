@@ -9,8 +9,7 @@ from rag_eval.run_report import write_report
 from test_run_ledger import _run
 from test_experiment_dashboard import make_run
 
-REAL_RUN = (Path(__file__).resolve().parents[1] / 'apps/sn-workbench/test-results/'
-            'source-execution-20261012/e5-s3-real-run-20261013/attempt-1/cli-run')
+
 
 
 def test_failed_execution_is_saved_and_stderr_is_redacted(tmp_path):
@@ -33,7 +32,9 @@ def test_old_ledger_rows_keep_unknown_execution_fields_without_rewriting(tmp_pat
     assert ledger.read_text() == original
 
 
-def test_real_report_exposes_observed_metrics_and_never_mutates_run(tmp_path):
+def test_synthetic_report_exposes_observed_metrics_and_never_mutates_run(tmp_path):
+    from synthetic_workbench_run import saved_qasper
+    REAL_RUN, _, _ = saved_qasper(tmp_path)
     before = {n: digest(REAL_RUN / n) for n in ('manifest.json', 'outputs.jsonl', 'model-events.jsonl')}
     report = write_report([REAL_RUN], tmp_path / 'report', partition_only=True)
     metrics = report['runs'][0]['stage_metrics']

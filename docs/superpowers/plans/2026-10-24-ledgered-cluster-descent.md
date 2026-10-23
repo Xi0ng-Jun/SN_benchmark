@@ -51,7 +51,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 
 ## 工作项
 
-- [ ] 1. **重跑噪声与 η**（`noise.py`，改 `comparisons.py`）。
+- [x] 1. **重跑噪声与 η**（`noise.py`，改 `comparisons.py`）。
   候选允许多个已接纳 attempt；比较记录对每个 case 取各侧已接纳 attempt 的主指标均值作 `left/right`，`attempts_used` 记下用了哪些。新增 `noise.estimate(candidate)`：同一候选 attempt 之间逐题差的分布，输出每题噪声带（Jeffreys 平滑的 90% 半宽，按 attempt 数）与整体 η = sqrt(mean(p(1−p)) / n_eff)，p 为逐题成功率（按 `success_threshold`），n_eff 按 paper 族内相关折算（算法同 harness-opt `ledger/overfit.py` 的 `icc_from_families` / `n_eff`，复制实现，不跨仓库 import）。attempt < k_base 时 η 照算但标 `k_below_base: true`。
   `node run` 的动作请求接受 `attempts`（1 到 4），执行为连续编号的 attempt。
   测试：两份合成执行（同候选）给出的逐题带与 η 可手算；attempt 数不足时的标记；比较记录在新增 attempt 后生成新记录而不覆盖旧记录（现有 UNIQUE 约束含 execution id，确认即可）。
@@ -62,7 +62,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   - 全局 Δ = 候选均值 − 父均值（validation 角色的题；W3 之前为全部题）。
   - 判定：Δ ≥ −η 且 ρ ≥ τ 且无 guard_broken → `accept`；Δ > η 且 ρ < τ → `audit`（收益来自合同之外）；候选基础设施失败率（status ∈ {error, missing}）比父高出噪声带 → `unmeasurable`；否则 `reject`。
   - 输出含每一步的数字与规则 id。
-  `check_predictions` 保留；`record_check` 在有 `contract` 时同时写 verdict。verdict 存进比较记录 `verdict_json`，`node show` 与 UI 节点卡显示。`decide` 不变。
+  `check_predictions` 保留；`record_check` 在有 `contract` 时同时写 verdict。verdict 存进比较记录 `verdict_json`，`node show` 与 UI 节点卡显示。门自动写入候选 decision（actor 为 gate）：accept → adopted，reject → rejected，audit / unmeasurable → undecided；人可用 decide 覆盖，必须带理由并保留原 verdict。
   测试：四种判定各一例，含"均分涨但合同未兑现 → audit"与"实现者改了准备代码导致 missing 增多 → unmeasurable"；无 contract 的旧卡走旧路径且输出标注。
 
 - [ ] 3. **任务划分协议**（`splits.py`，改 `iterations.py`、`evaluation_plans.py`、`agent_tools.py`、`run_views.py`）。
@@ -75,7 +75,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - [ ] 4. **失败簇与记账人**（`clusters.py`，加 verb）。
   签名 DSL（JSON）：`{"kind":"regex","field":"<path>","pattern":…}`、`{"kind":"range","field":"<path>","min":…,"max":…}`、`all_of / any_of / not`。字段路径限定在 case view 的白名单：`status`、`prediction`、`response.answer`、`response.grounded`、`response.evidence_level`、`intent_preview.needs_clarification`、`deterministic.evidence_hit`、`deterministic.citation_valid_count`、`deterministic.citation_invalid_count`、`stage_metrics.gold_evidence_recall.value`、`stage_metrics.context_precision.value`、`stage_metrics.citation_precision.value`、`metrics.<primary>`、`usage.total_tokens`、`retrieval_context.*.text`（只允许正则）。禁止 `question`、gold、case_id 字段进入签名（签名描述失败形态，不得点名题目）。
   `clusters.scan(iteration, cluster, executions)`：成员 = 至少一次 attempt 匹配签名的 search 题；q = 成员全部 attempt 的成功率；m = 成员失败 attempt 中匹配 missing_signature 的比例（默认 missing_signature = `gold_evidence_recall.value == 0`，即证据未进上下文）；v = 失败 attempt 中匹配 violation_signature 的比例（默认 = `deterministic.citation_invalid_count > 0` 或 `response.answer` 匹配 `(?i)unanswerable|not (stated|mentioned)` 且 `evidence_hit == true`）。上限：retrieval 类编辑 (1 − q)·m，验证/拒答类编辑 (1 − q)·v。
-  verb：`cluster propose --file`（分析者；卡片内容过泄漏扫描；写入即冻结）、`cluster list`、`cluster show ID`（分析者得成员 case_id；实现者得描述、签名、计数、q/m/v，不得成员）。`proposal draft` 的卡可引用 `cluster_id`，合同的 predicted_flips 必须是该簇成员。
+  verb：`cluster propose --file`（分析者；卡片内容过泄漏扫描；写入即冻结）、`cluster list`、`cluster show ID`（分析者得成员 case_id；实现者得自己簇的描述、签名、计数、q/m/v 及 search 成员脱敏证据（题目、SN 答案、上下文块、阶段指标、官方主分；用 m01 等序号，不给 case_id、gold 答案或 gold 证据文本））。`proposal draft` 的卡可引用 `cluster_id`，合同的 predicted_flips 必须是该簇成员。
   测试：合成 case view 上的重扫结果可手算；字段白名单外的签名被拒；实现者视图不含 case_id；冻结后 propose 同 id 被拒。
 
 - [ ] 5. **簇级内环与预算内自动确认**（`node cluster-run CANDIDATE CLUSTER`，改 `action_requests.py`）。
@@ -93,12 +93,20 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - [ ] 7. **第一次实验的预注册与运行**（不交给开发 agent；由研究者与用户执行）。
   QASPER chunk，qwen-flash。search 15 篇、validation 10 篇、fresh 3 批 × 8 篇、sealed = 既有 5 篇留出。C0 跑 k_base = 2；诊断一次取前 3 个簇；每簇一个实现者；门判定；两轮。预算估计 ¥40 内。预注册写 `docs/experiments/2026-10-xx-lcd-r1.md`，运行前提交。
 
-## 待用户决定（开发可先按默认做）
+## 已定决策
 
-1. verdict 的定位：默认"规则事实 + 人 adopt"；替代是"只记 ρ 不出 verdict"。
-2. 实现者能否看簇成员的脱敏轨迹：默认不能。
-3. `cluster-run` 是否在人预批的每迭代预算内自动确认：默认仍需人确认，但支持一次确认多条请求。
+1. gate 是优化器内部接受规则，自动写入候选 decision；人工覆盖须带理由且保留原判定。
+2. 实现者可看自己簇的 search 脱敏证据；cluster_case 可发送，其他 benchmark 上下文种类仍拒绝。
+3. cluster-run 在预批预算内自动确认；预算策略与轮次编排属于 W5 / W8，不在本次 W1–W4 范围。
 
 ## 执行记录
 
 （开发 agent 按工作项追加：日期、提交、测试结果、偏离计划之处与原因。）
+
+### W1 · 2026-10-24
+
+- 提交：本条所在 `feat(workbench): compare admitted reruns with recorded uncertainty`。
+- 验证：RUNBOOK 完整离线 pytest **2430 passed / 7 skipped**（可选本地工件与 Perl ROUGE 未配置），Node **34 passed**；未调用模型、启动服务或修改虚拟环境。
+- 实现：全部准入 attempt 均值、冻结 attempt 集合身份、逐题 Jeffreys 平滑 90% 正态半宽、ICC / n_eff / η、SQLite v5 加列、node run 的 1–4 次请求。
+- 解释与偏离：Jeffreys 带使用 harness-opt bookkeeper 的正态近似而非 Beta 分位数；多次运行连续派发编号，不等待前次完成。干净 checkout 缺私有 E5 工件，原先无条件依赖它的测试改为合成保存运行；schema 断言随 v5 更新，CLI 子进程显式指向本 checkout 的 src，不修改共享 .venv。复用已有 Node 依赖并构建 bridge，仅补离线测试前提。
+- 文档同步：按用户最新指令恢复 e36d63f 边界并修正 W2/W4 与“已定决策”的残留旧文案；同步前工作副本差异保存于 /tmp/lcd-plan-preexisting.patch。W5/W8 未实现。

@@ -49,10 +49,13 @@ def normalize(verb, params):
         raise ValueError('Unknown action verb')
     params = dict(params or {})
     allowed = {'node-derive': {'proposal_id', 'integrated_from'}, 'node-freeze': set(), 'node-adopt': set(), 'node-reject': set(),
-               'node-run': {'timeout_seconds', 'limit_cny'}, 'iteration-create': set(ITERATION_FIELDS)}[verb]
+               'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'iteration-create': set(ITERATION_FIELDS)}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
     if verb == 'node-run':
+        attempts = params.get('attempts', 1)
+        if type(attempts) is not int or not 1 <= attempts <= 4:
+            raise ValueError('attempts must be an integer between 1 and 4')
         timeout = params.setdefault('timeout_seconds', 3600)
         if type(timeout) is not int or not 60 <= timeout <= 7200:
             raise ValueError('timeout_seconds must be an integer between 60 and 7200')
@@ -185,7 +188,9 @@ def execute(service, record, *, workspace_id, actor):
         budget = dict(timeout_seconds=params['timeout_seconds'])
         if params.get('limit_cny') is not None:
             budget.update(limit_cny=params['limit_cny'], confirmed=True)
-        view = service.run(target, budget=budget, actor=actor, request_key=key)
+        for index in range(params.get('attempts', 1)):
+            attempt_key = key if index == 0 else f'{key}:attempt:{index + 1}'
+            view = service.run(target, budget=budget, actor=actor, request_key=attempt_key)
     elif verb in ('node-adopt', 'node-reject'):
         view = service.decide(target, {'node-adopt': 'adopted', 'node-reject': 'rejected'}[verb],
                               actor=actor, note=record['reason'])

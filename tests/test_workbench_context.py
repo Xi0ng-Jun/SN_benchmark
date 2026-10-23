@@ -115,7 +115,8 @@ def test_http_context_preview_uses_workspace_scope_without_writes(tmp_path):
 
 def test_run_case_context_is_analysis_material_with_gold_and_retrieval(tmp_path):
     from rag_eval.workbench.run_views import RunEntry, RunViews
-    from test_run_views import CASE, RUN, SCORES
+    from synthetic_workbench_run import saved_qasper
+    RUN, SCORES, CASE = saved_qasper(tmp_path)
     repo, task, _ = setup_task(tmp_path)
     views = RunViews([RunEntry('e5', RUN, SCORES)])
     reference = {'kind': 'run_case', 'run_id': 'e5', 'case_id': CASE}
@@ -135,7 +136,8 @@ def test_run_case_context_is_analysis_material_with_gold_and_retrieval(tmp_path)
 
 def test_task_runs_context_summarizes_only_this_tasks_runs(tmp_path):
     from rag_eval.workbench.run_views import RunEntry, RunViews
-    from test_run_views import RUN, SCORES
+    from synthetic_workbench_run import saved_qasper
+    RUN, SCORES, _ = saved_qasper(tmp_path)
     repo, task, _ = setup_task(tmp_path)
     views = RunViews([RunEntry('mine', RUN, SCORES, task_id=task['id']), RunEntry('other', RUN, SCORES, task_id='other')])
     module = importlib.import_module('rag_eval.workbench.context')

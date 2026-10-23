@@ -34,7 +34,8 @@ def test_creation_and_session_use_bound_task_scope(setup):
 def test_registered_run_http_is_authenticated_and_never_accepts_paths(tmp_path):
     from fastapi.testclient import TestClient
     from rag_eval.workbench.api import create_app
-    from test_run_views import RUN, SCORES
+    from synthetic_workbench_run import saved_qasper
+    RUN, SCORES, _ = saved_qasper(tmp_path)
     config = {'workspace': {'title': 'test', 'location': str(tmp_path)},
               'run_views': {'runs': [{'id': 'e5', 'run_dir': str(RUN), 'scores': str(SCORES)}]}}
     client = TestClient(create_app(tmp_path / 'state', config, access_token='fixture'))
@@ -47,7 +48,8 @@ def test_registered_run_http_is_authenticated_and_never_accepts_paths(tmp_path):
 
 def test_run_views_uses_admitted_flips_and_rejects_forged_score(tmp_path):
     from rag_eval.workbench.run_views import RunEntry, RunViews
-    from test_run_views import RUN, SCORES
+    from synthetic_workbench_run import saved_qasper
+    RUN, SCORES, _ = saved_qasper(tmp_path)
     views = RunViews([RunEntry('e5', RUN, SCORES)])
     flips = views.flips('e5', 'e5')
     assert flips['kind'] == 'paired' and flips['admission'] == 'admitted'
@@ -114,7 +116,8 @@ def test_same_method_attempts_only_allowed_by_flip_entry(tmp_path):
 
 def test_same_head_and_capture_do_not_imply_task_run_association(tmp_path):
     from rag_eval.workbench.run_views import RunEntry, RunViews
-    from test_run_views import RUN, SCORES
+    from synthetic_workbench_run import saved_qasper
+    RUN, SCORES, _ = saved_qasper(tmp_path)
     manifest = json.loads((RUN / 'manifest.json').read_text())
     binding = {'task_id': 't', 'base_revision': manifest['identity']['code']['head_revision'],
                'start_snapshot': {'source_ref': {'id': '81a682e4e65f66b5f1a69c3b18bce6d637a6dbb6c04605676fe357b182599a5a'}}}

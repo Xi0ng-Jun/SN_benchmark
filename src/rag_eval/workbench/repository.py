@@ -45,7 +45,7 @@ class WorkbenchRepository:
         self.database = self.root / 'workbench.sqlite'
         with self.connect() as conn:
             version = conn.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, 2, 3, 4):
+            if version not in (0, 1, 2, 3, 4, 5):
                 raise ValueError('Unsupported workbench database version')
             conn.executescript('''
                 CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, title TEXT, location TEXT UNIQUE, created_at TEXT);
@@ -68,7 +68,9 @@ class WorkbenchRepository:
             for column in ('role', 'cwd', 'hypothesis_id', 'scope', 'removed_at', 'removed_by'):
                 if column not in columns:
                     conn.execute(f'ALTER TABLE task_sessions ADD COLUMN {column} TEXT')
-            conn.execute('PRAGMA user_version=4')
+            conn.execute('PRAGMA user_version=5')
+        from .comparisons import initialize_comparisons
+        initialize_comparisons(self)
         self.database.chmod(0o600)
 
     @contextmanager

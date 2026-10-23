@@ -9,8 +9,7 @@ from rag_eval.notebook_data import adapt
 from test_notebook_data_v3 import DATA_V3, freeze, qasper_raw, news_raw
 from test_qasper_evidence import fixture, capture
 
-REAL_RUN = (Path(__file__).resolve().parents[1] / 'apps/sn-workbench/test-results/'
-            'source-execution-20261012/e5-s3-real-run-20261013/attempt-1/cli-run')
+
 
 
 def qasper_case_output(tmp_path):
@@ -133,7 +132,9 @@ def test_usage_is_partial_observation_not_added_to_scheduled_events(tmp_path):
     assert costs['scheduled_call_count'] is None
 
 
-def test_today_real_run_matches_manual_16_blocks_one_relevant_and_evidence_hit():
+def test_saved_synthetic_run_matches_manual_16_blocks_one_relevant_and_evidence_hit(tmp_path):
+    from synthetic_workbench_run import saved_qasper
+    REAL_RUN, _, _ = saved_qasper(tmp_path)
     from rag_eval.stage_metrics import compute_stage_metrics
     assert REAL_RUN.is_dir(), 'Required real fixture is unavailable'
     result = compute_stage_metrics(REAL_RUN)
@@ -225,7 +226,8 @@ def test_scheduled_pending_call_does_not_fabricate_latency_and_empty_journal_is_
     (run / 'model-events.jsonl').write_text('')
     assert compute_stage_metrics(run)['cases'][0]['model_usage']['scheduled_call_count'] is None
     # Current scheduled events have no case ID; use the saved Ask window.
-    row = json.loads((REAL_RUN / 'model-events.jsonl').read_text().splitlines()[0])
+    from synthetic_workbench_run import event_pair
+    row = event_pair()[0]
     (run / 'product-artifacts').mkdir()
     (run / 'product-artifacts/attempts.jsonl').write_text('\n'.join(json.dumps(dict(
         event=event, case_id='qasper:q', recorded_at=stamp)) for event, stamp in
@@ -240,7 +242,8 @@ def test_scheduled_pending_call_does_not_fabricate_latency_and_empty_journal_is_
 def test_ambiguous_or_orphan_scheduled_events_are_rejected(tmp_path):
     from rag_eval.stage_metrics import compute_stage_metrics
     run = saved_run(tmp_path, 'one', 'success')
-    lines = (REAL_RUN / 'model-events.jsonl').read_text().splitlines()
+    from synthetic_workbench_run import event_pair
+    lines = [json.dumps(row) for row in event_pair()]
     (run / 'model-events.jsonl').write_text(lines[1] + '\n')
     with pytest.raises(ValueError):
         compute_stage_metrics(run)
@@ -284,7 +287,8 @@ def test_hotpot_missing_public_units_are_unknown_not_false_negative():
 def test_invalid_model_timestamp_does_not_become_zero_case_calls(tmp_path):
     from rag_eval.stage_metrics import compute_stage_metrics
     run = saved_run(tmp_path, 'one', 'success')
-    row = json.loads((REAL_RUN / 'model-events.jsonl').read_text().splitlines()[0])
+    from synthetic_workbench_run import event_pair
+    row = event_pair()[0]
     row['recorded_at'] = 'not-a-timestamp'
     (run / 'model-events.jsonl').write_text(json.dumps(row) + '\n')
     (run / 'product-artifacts').mkdir()

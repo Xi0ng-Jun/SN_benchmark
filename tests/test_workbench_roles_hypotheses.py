@@ -138,7 +138,8 @@ def test_agent_tool_roles_and_draft_leak_guard(tmp_path, monkeypatch, capsys):
     from rag_eval.workbench import agent_tools
     from rag_eval.workbench.repository import WorkbenchRepository
     from rag_eval.workbench.run_views import RunEntry, RunViews
-    from test_run_views import CASE, RUN, SCORES
+    from synthetic_workbench_run import saved_qasper
+    RUN, SCORES, CASE = saved_qasper(tmp_path)
     repo = WorkbenchRepository(tmp_path / 'state')
     workspace = repo.register_workspace('E', tmp_path)
     task = repo.create_task(workspace['id'], 'T', 'goal', request_key='t')['id']

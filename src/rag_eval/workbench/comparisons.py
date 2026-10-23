@@ -1,12 +1,9 @@
 """Parent/root comparison records for iteration candidates (design §4.1, §10 step 2).
 
-A measurement is one execution of a candidate: an attempt, or for a legacy node
-an evidence link. A candidate is evaluated when one measurement passes formal
-admission on its own; its reference is the first such measurement in recorded
-order, fixed before any score is compared. A record pairs the references of two
-candidates partition by partition through ``RunViews.flips`` (the existing
-pairing admission) and is immutable: the same two executions are compared once.
-Regressions against the root are recorded as facts, never as a quality verdict.
+A measurement is one execution of a candidate. Its first admitted execution
+remains the provenance reference. Comparisons average every admitted attempt,
+validate each against a shared pairing anchor, and freeze the complete attempt
+set, noise estimates and source pairs. New measurements create new records.
 """
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ from ..artifacts import save_json
 from .repository import UnknownIdentity, now
 
 FORMAT = 'sn-candidate-comparison-v1'
-KINDS = ('parent', 'root')
+KINDS = ('parent', 'root', 'fresh')
 ADMISSION_FORMAT = 'sn-execution-admission-cache-v1'
 ADMISSION_CACHE = 'admission-cache.json'
 
@@ -38,6 +35,10 @@ def initialize_comparisons(repository):
                 created_at TEXT NOT NULL,
                 UNIQUE(candidate_id, kind, reference_candidate_id, subject_execution, reference_execution));
         ''')
+        columns = {r['name'] for r in conn.execute('PRAGMA table_info(candidate_comparisons)')}
+        for name in ('attempts_used_json', 'noise_json', 'verdict_json'):
+            if name not in columns:
+                conn.execute(f'ALTER TABLE candidate_comparisons ADD COLUMN {name} TEXT')
 
 
 class Admission:
@@ -153,7 +154,7 @@ class ComparisonService:
         return dict(candidate_id=candidate['id'], attempt=reference['attempt'],
                     execution_id=reference['execution_id'], runs=[r.id for r in runs]), runs
 
-    def _compute(self, subject, reference, kind):
+    def _compute_pair(self, subject, reference, kind):
         """Pair the two references; ``None`` with a reason when one side is not evaluated."""
         sides = self._side(subject), self._side(reference)
         if sides[0] is None or sides[1] is None:
@@ -198,6 +199,59 @@ class ComparisonService:
         body['regressed'] = [r['case_id'] for r in body['rows'] if r['delta'] is not None and r['delta'] < 0]
         return body, None
 
+    @staticmethod
+    def admitted(candidate):
+        """All admitted executions in recorded order, with legacy links deduplicated."""
+        found = {}
+        for m in candidate.get('attempts', []) + candidate.get('links', []):
+            if (m.get('admission') or {}).get('status') == 'admitted':
+                found.setdefault(m['execution_id'], dict(attempt=m.get('attempt'), execution_id=m['execution_id']))
+        return list(found.values())
+
+    def _compute(self, subject, reference, kind):
+        from .noise import estimate
+        sa, ra = self.admitted(subject), self.admitted(reference)
+        if not sa or not ra:
+            return self._compute_pair(subject, reference, kind)
+        samples = {'subject': {}, 'reference': {}}
+        body = None
+        # Admission is transitive across the shared anchor: k+l-1 pair checks,
+        # rather than k*l checks or bypassing the existing identity contract.
+        for si, ri in [(i, 0) for i in range(len(sa))] + [(0, j) for j in range(1, len(ra))]:
+            pair, reason = self._compute_pair(dict(subject, reference=sa[si]), dict(reference, reference=ra[ri]), kind)
+            if pair is None:
+                return None, reason
+            if body is None:
+                body = pair
+            if pair['admission']['status'] != 'admitted':
+                return pair, None
+            for side, attempt, field in [('subject', sa[si], 'right'), ('reference', ra[ri], 'left')]:
+                samples[side][attempt['execution_id']] = dict(attempt, rows=[
+                    dict(case_id=r['case_id'], family=str(r['partition']), value=r[field]) for r in pair['rows']])
+        protocol = self.iterations.iteration(subject['iteration_id']).get('protocol') or {}
+        body['attempts_used'] = dict(subject=sa, reference=ra)
+        body['noise'] = {side: estimate(dict(attempts=list(values.values())),
+                                        success_threshold=protocol.get('success_threshold', .5),
+                                        k_base=protocol.get('k_base', 2)) for side, values in samples.items()}
+        body['noise']['eta'] = body['noise']['reference']['eta']
+        for row in body['rows']:
+            row['left'] = body['noise']['reference']['cases'][row['case_id']]['mean']
+            row['right'] = body['noise']['subject']['cases'][row['case_id']]['mean']
+            row['delta'] = row['right'] - row['left'] if row['left'] is not None and row['right'] is not None else None
+            d = row['delta']
+            row['flip'] = 'unpaired' if d is None else 'better' if d > 0 else 'worse' if d < 0 else 'same'
+        body['counts'] = {key: sum(r['flip'] == key for r in body['rows']) for key in body['counts']}
+        body['mean'] = dict(reference=_mean(r['left'] for r in body['rows']),
+                            subject=_mean(r['right'] for r in body['rows']), delta=_mean(r['delta'] for r in body['rows']))
+        body['regressed'] = [r['case_id'] for r in body['rows'] if r['delta'] is not None and r['delta'] < 0]
+        return body, None
+
+    def _measurement_key(self, candidate):
+        attempts = self.admitted(candidate)
+        if len(attempts) == 1:
+            return attempts[0]['execution_id']
+        return _hash(attempts) if attempts else None
+
     # ------------------------------------------------------------ records
     @staticmethod
     def _record(row):
@@ -218,8 +272,7 @@ class ComparisonService:
         ``store=False`` reads an existing record or computes one without saving it.
         """
         ends = (subject['id'], kind, reference['id'],
-                (subject.get('reference') or {}).get('execution_id'),
-                (reference.get('reference') or {}).get('execution_id'))
+                self._measurement_key(subject), self._measurement_key(reference))
         query = ('SELECT * FROM candidate_comparisons WHERE candidate_id=? AND kind=? AND reference_candidate_id=? '
                  'AND subject_execution=? AND reference_execution=?')
         with self.repository.connect() as conn:
@@ -234,9 +287,12 @@ class ComparisonService:
         if not store:
             return dict(body, id=None, candidate_id=subject['id'], reference_candidate_id=reference['id'], stored=False)
         with self.repository.connect(write=True) as conn:
-            conn.execute('INSERT OR IGNORE INTO candidate_comparisons VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            conn.execute('INSERT OR IGNORE INTO candidate_comparisons '
+                         '(id,iteration_id,candidate_id,kind,reference_candidate_id,subject_execution,reference_execution,'
+                         'record,content_hash,created_by,created_at,attempts_used_json,noise_json) '
+                         'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                          (uuid.uuid4().hex, subject['iteration_id'], *ends, json.dumps(body, ensure_ascii=False),
-                          _hash(body), actor, now()))
+                          _hash(body), actor, now(), json.dumps(body.get('attempts_used')), json.dumps(body.get('noise'))))
             return self._record(conn.execute(query, ends).fetchone())
 
     def for_candidate(self, candidate_id, *, actor, iteration=None, store=True):

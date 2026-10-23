@@ -209,3 +209,47 @@ def test_an_admitted_execution_is_saved_and_reread_until_a_partition_file_change
     # A refusal is not saved.
     Admission(views)(measurement)
     assert len(views.admission_calls) == 7
+
+
+def test_all_admitted_attempts_are_averaged_and_new_attempts_append_records(tree):
+    t, root = tree, tree['tree']['root_candidate_id']
+    first = ran(t, root, {'a': 0, 'b': 1}, 'base')
+    a = child(t, root, 'a', {'a': 1, 'b': 1})
+    old = t['comparisons'].for_candidate(a, actor='alice')['parent']
+    second = ran(t, root, {'a': 1, 'b': 1}, 'base2')
+    new = t['comparisons'].for_candidate(a, actor='alice')['parent']
+    assert new['id'] != old['id'] and rows(t) == 2
+    assert new['rows'][0]['left'] == .5
+    assert [x['execution_id'] for x in new['attempts_used']['reference']] == [first['execution_id'], second['execution_id']]
+    assert new['noise']['reference']['eta'] == pytest.approx(.25)
+    assert t['comparisons'].get(old['id']) == old
+
+
+def test_later_attempt_with_incompatible_identity_cannot_enter_mean(tree):
+    t, root = tree, tree['tree']['root_candidate_id']
+    base = ran(t, root, {'a': 0, 'b': 1}, 'base')
+    a = child(t, root, 'a', {'a': 1, 'b': 1})
+    extra = ran(t, a, {'a': 1, 'b': 1}, 'extra')
+    t['views'].unpaired.add((base['execution_id'] + '-1', extra['execution_id'] + '-1'))
+    record = t['comparisons'].for_candidate(a, actor='alice')['parent']
+    assert record['admission']['status'] == 'not_admitted' and record['rows'] == []
+
+
+def test_version4_comparison_migration_preserves_record_bytes(tree):
+    from rag_eval.workbench.repository import WorkbenchRepository
+    t, root = tree, tree['tree']['root_candidate_id']
+    ran(t, root, {'a': 0, 'b': 1}, 'base')
+    a = child(t, root, 'a', {'a': 1, 'b': 1})
+    record = t['comparisons'].for_candidate(a, actor='alice')['parent']
+    repo = t['env']['repo']
+    with repo.connect(write=True) as conn:
+        saved = tuple(conn.execute('SELECT record,content_hash FROM candidate_comparisons').fetchone())
+        for col in ('attempts_used_json', 'noise_json', 'verdict_json'):
+            conn.execute(f'ALTER TABLE candidate_comparisons DROP COLUMN {col}')
+        conn.execute('PRAGMA user_version=4')
+    WorkbenchRepository(repo.root)
+    with repo.connect() as conn:
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 5
+        assert tuple(conn.execute('SELECT record,content_hash FROM candidate_comparisons').fetchone()) == saved
+        assert conn.execute('SELECT verdict_json FROM candidate_comparisons').fetchone()[0] is None
+    assert t['comparisons'].get(record['id']) == record

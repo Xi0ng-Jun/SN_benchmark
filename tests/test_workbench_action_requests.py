@@ -135,3 +135,14 @@ def test_a_requester_can_withdraw_a_pending_request(t, capsys):
     assert withdrawn['status'] == 'withdrawn' and withdrawn['decided_by'] == 'agent:analyst'
     with pytest.raises(Conflict, match='withdrawn'):
         t['requests'].claim(request['id'], actor='alice')
+
+
+def test_multiple_attempt_request_is_bounded_numbered_and_idempotent(t, capsys):
+    record = sn_eval(t, capsys, 'node', 'run', t['root'], '--attempts', '2', '--reason', 'noise')['request']
+    service = t['env']['service']
+    execute(service, record, workspace_id=t['env']['workspace']['id'], actor='alice')
+    execute(service, record, workspace_id=t['env']['workspace']['id'], actor='alice')
+    assert [a['attempt'] for a in service.candidate(t['root'])['attempts']] == [1, 2]
+    for invalid in (0, 5, True):
+        with pytest.raises(ValueError, match='attempts'):
+            t['requests'].request(t['tree']['task_id'], 'node-run', t['root'], {'attempts': invalid}, reason='r', requested_by='a')
