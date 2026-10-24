@@ -182,6 +182,9 @@ def export_sn_runs(bundle_directory, run_directories, output, *, case_ids=None, 
         if manifest.get('prepared_seed') is not None:
             # Answers were asked again on a copied prepared notebook.
             provenance['prepared_seed'] = deepcopy(manifest['prepared_seed'])
+        if manifest.get('prepared_from') is not None:
+            # The prepared notebook came from the content-addressed cache.
+            provenance['prepared_from'] = deepcopy(manifest['prepared_from'])
         preparation_policies.add(preparation_policy)
         if evaluator_source is not None:
             evaluator_sources.add(evaluator_source)

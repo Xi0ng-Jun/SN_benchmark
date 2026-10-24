@@ -6,12 +6,6 @@ from test_workbench_iterations import BUDGET, finish, payload
 from rag_eval.workbench.comparisons import ComparisonService
 
 
-@pytest.fixture(autouse=True)
-def synthetic_seeds(frozen_cluster, monkeypatch, tmp_path):
-    monkeypatch.setattr(frozen_cluster['service'], '_seed_runs', lambda _: {
-        'qasper:q': str(tmp_path / 'seed'), 'qasper:q2': str(tmp_path / 'seed')})
-
-
 def test_cluster_run_has_own_plan_pairs_and_private_result(frozen_cluster):
     f = frozen_cluster
     service, candidate = f['service'], f['candidate']['id']
@@ -123,8 +117,8 @@ def test_cluster_run_pairs_only_actual_subset(frozen_cluster):
     selection = service.jobs.get(f['tree']['task_id'], a['job_id'])['plan_snapshot']['content']['selection']
     assert selection['case_ids'] == ['qasper:q2']
     assert selection['selection_hash'] != f['tree']['selection_hash']
-    maps = payload(f['env'], service.candidate(c['id']))['run_maps']
-    assert set(json.loads(Path(maps['path']).read_text())['seed_runs']) == {'qasper:q2'}
+    # Cluster runs reuse prepared notebooks through the preparation cache, not root seeds.
+    assert payload(f['env'], service.candidate(c['id']))['run_maps'] is None
 
 
 def test_direct_budgeted_cluster_call_reserves_whole_footprint(frozen_cluster):

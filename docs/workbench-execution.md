@@ -36,6 +36,8 @@
 
 `configs/sn-workbench-local.json` 使用 `mode=notebook`，绑定已存在的独立 SN worktree、artifact store、私有实验模型配置、解释器／依赖要求与官方 scorer。前端不接收任意命令、模型配置或路径。准备读取并捕获源码，运行时复制并核对 runtime 文件 hash；不修改 SN 原树、配置或数据库。
 
+已准备 notebook 通过内容寻址缓存复用（`job_execution.preparation_cache`，缺省为 `<output_root>/preparation-cache`，`false` 关闭）：键为分区语料、准备策略与文档容量、SN 准备路径源码哈希（显式列表见 `src/rag_eval/preparation_cache.py`）、准备相关 Settings、模型服务配置与评测侧准备代码。命中时逐字节核验后复制到本运行的私有数据库与 storage，manifest 记 `prepared_from`；未命中则正常导入并在提问前发布只读条目。原 `seed_from_root`／`seed_guard_patterns` 已退役（配置里保留也不再生效），显式 `seed_runs` 与 `--seed-prepared-run` 保留。
+
 ```bash
 paseo script start workbench --cwd /home/wabiwabi/silicon-notebook/benchmark-deepeval/.worktrees/benchmark-protocol-correctness
 ```

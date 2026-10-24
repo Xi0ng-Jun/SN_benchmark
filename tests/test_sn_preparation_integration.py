@@ -114,13 +114,14 @@ def _probe(backend, directory):
 
 
 
-def test_real_sn_seed_copy_is_self_contained_and_searchable(tmp_path):
+@pytest.mark.parametrize('via', ['seed', 'cache'])
+def test_real_sn_seed_copy_is_self_contained_and_searchable(tmp_path, via):
     backend = Path(os.environ.get('SN_PREPARATION_BACKEND', '/home/wabiwabi/silicon-notebook/project/backend'))
     if not (backend / 'tests/model_testkit.py').is_file():
         pytest.skip('Set SN_PREPARATION_BACKEND to a compatible SN backend checkout')
     env = {'PATH': os.environ.get('PATH', ''), 'PYTHONPATH': str(Path(__file__).resolve().parents[1] / 'src'),
            'SILICON_NOTEBOOK_ENV_FILE': '', 'EXTENSIONS_CONFIG': '', 'MPLCONFIGDIR': str(tmp_path / 'mpl')}
-    child = subprocess.run([sys.executable, str(Path(__file__).resolve()), str(backend), str(tmp_path), 'seed'],
+    child = subprocess.run([sys.executable, str(Path(__file__).resolve()), str(backend), str(tmp_path), via],
                            cwd=tmp_path, env=env, text=True, capture_output=True, timeout=120)
     assert child.returncode == 0, child.stdout + child.stderr
     result = json.loads(child.stdout.splitlines()[-1])
@@ -130,8 +131,9 @@ def test_real_sn_seed_copy_is_self_contained_and_searchable(tmp_path):
     assert result['search_hit_source_in_copy'] and result['source_detail_readable']
 
 
-def _seed_probe(backend, directory):
-    """Prepare with real SN, copy as a seed, then reopen and search the copy only."""
+def _seed_probe(backend, directory, via='seed'):
+    """Prepare with real SN, copy as a seed or through the preparation cache,
+    then reopen and search the copy only."""
     sys.path.insert(0, str(backend))
     import shutil
     from app.core.config import Settings
@@ -182,11 +184,20 @@ def _seed_probe(backend, directory):
     repo = repository(seed)
     try:
         prepare_notebook(repo, seed / 'product-artifacts', documents, 'alce')
+        if via == 'cache':
+            # Published while SN still holds its connection, as the runner does.
+            from rag_eval.identity import fingerprint
+            from rag_eval.preparation_cache import PreparationCache
+            cache, material = PreparationCache(directory / 'cache'), {'format': 'probe'}
+            assert cache.store(fingerprint(material), material, seed.resolve())['status'] == 'stored'
     finally:
         repo.close()
     (seed / 'manifest.json').write_text('{}')
     (copy / 'runtime').mkdir(parents=True)
-    receipt = install_prepared_seed(seed.resolve(), copy.resolve())
+    if via == 'cache':
+        receipt = cache.install(fingerprint(material), material, copy.resolve())
+    else:
+        receipt = install_prepared_seed(seed.resolve(), copy.resolve())
     # The copy must not depend on the seed directory at all.
     shutil.rmtree(seed)
     notebook, mapping = load_prepared_notebook(copy / 'product-artifacts', documents)
@@ -211,7 +222,7 @@ def _seed_probe(backend, directory):
 
 
 if __name__ == '__main__':
-    if sys.argv[3:] == ['seed']:
-        _seed_probe(Path(sys.argv[1]), Path(sys.argv[2]))
+    if sys.argv[3:] in (['seed'], ['cache']):
+        _seed_probe(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])
     else:
         _probe(Path(sys.argv[1]), Path(sys.argv[2]))

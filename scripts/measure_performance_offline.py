@@ -57,7 +57,50 @@ def history_lookup(executions=200, noise=20000, repeats=5):
                 records_seconds_with_indexes=round(indexed, 4))
 
 
-PROBES = {'history-lookup': history_lookup}
+def reference_scan(rows=20000, dim=1024, repeats=3):
+    """P1: the seed/cache reference check over a database dominated by embedding blobs."""
+    import sqlite3
+    from rag_eval.preparation_cache import rewrite_storage_paths
+
+    def legacy(database, forbidden):
+        # The pre-P1 check: every column of every table cast to text.
+        db = sqlite3.connect(database)
+        try:
+            for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+                for column in [row[1] for row in db.execute(f'PRAGMA table_info("{table}")')]:
+                    db.execute(f'SELECT 1 FROM "{table}" WHERE instr(CAST("{column}" AS TEXT), ?) LIMIT 1',
+                               (forbidden,)).fetchone()
+        finally:
+            db.close()
+
+    with tempfile.TemporaryDirectory() as root:
+        database = Path(root) / 'database.db'
+        db = sqlite3.connect(database)
+        with db:
+            db.execute('CREATE TABLE sources (id TEXT, file_path TEXT, title TEXT)')
+            db.execute('CREATE TABLE chunks (id TEXT, source_id TEXT, text TEXT)')
+            db.execute('CREATE TABLE chunk_embeddings (chunk_id TEXT, embedding BLOB)')
+            db.executemany('INSERT INTO sources VALUES (?,?,?)',
+                           [(f's{i}', f'/old/storage/{i}.md', f'title {i}') for i in range(50)])
+            db.executemany('INSERT INTO chunks VALUES (?,?,?)',
+                           [(f'c{i}', f's{i % 50}', 'chunk text ' * 50) for i in range(rows)])
+            blob = bytes(range(256)) * (dim * 4 // 256)
+            db.executemany('INSERT INTO chunk_embeddings VALUES (?,?)', [(f'c{i}', blob) for i in range(rows)])
+        db.close()
+        size = database.stat().st_size
+
+        def best(call):
+            times = []
+            for _ in range(repeats):
+                start = time.perf_counter(); call(); times.append(time.perf_counter() - start)
+            return min(times)
+        before = best(lambda: legacy(database, '/old/run'))
+        after = best(lambda: rewrite_storage_paths(database, '/old/storage/', '/old/storage/', '/old/run'))
+    return dict(probe='reference_scan', database_mb=round(size / 1e6, 1), embedding_rows=rows,
+                legacy_all_columns_seconds=round(before, 3), text_columns_seconds=round(after, 3))
+
+
+PROBES = {'history-lookup': history_lookup, 'reference-scan': reference_scan}
 
 
 def main(argv=None):

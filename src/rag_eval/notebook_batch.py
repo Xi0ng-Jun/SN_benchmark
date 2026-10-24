@@ -29,7 +29,7 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                sn_source_ref=None, dependency_requirements=None, runtime_expectation=None,
                root=None, budget_ledger=None, task_worktree_ref=None,
                reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
-               seed_prepared_map=None, seed_allow_source_change=False):
+               seed_prepared_map=None, seed_allow_source_change=False, preparation_cache=None):
     """Validate all selected IDs before any process; retain frozen case order.
 
     With a seed map, preparation_policy='from-seed' takes each job's policy from
@@ -118,6 +118,9 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                 # Runs from before the policy was recorded used the default.
                 policy = (seed_manifest.get('identity') or {}).get('preparation_policy') or DEFAULT_PREPARATION_POLICY
                 validate_preparation_policy(policy)
+        if seed is None and preparation_cache is not None:
+            # An explicit seed already names the prepared notebook to copy.
+            argv.extend(['--preparation-cache', str(Path(preparation_cache).resolve())])
         argv.extend(['--preparation-policy', policy])
         jobs.append(dict(partition_id=pid, case_ids=ids, run_dir=str(run), mode=mode,
                          **({'seed_prepared_run': seed} if seed is not None else {}),

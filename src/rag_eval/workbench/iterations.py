@@ -745,38 +745,15 @@ class IterationService:
                     candidate_id=candidate_id, attempt=attempt, frozen_commit=candidate['frozen_commit'],
                     preparation_id=row['preparation_id'])
 
-    def _seed_runs(self, iteration):
-        """{case_id: run dir} of the root's reference measurement, or None."""
-        root = self.candidate(iteration['root_candidate_id'])
-        reference = root.get('reference')
-        if reference is None:
-            return None
-        execution = self._execution(iteration['task_id'], reference['execution_id'])
-        if execution is None:
-            return None
-        jobs = json.loads((Path(execution['run_dir']) / 'batch-plan.json').read_text())
-        return {cid: job['run_dir'] for job in jobs for cid in job['case_ids']}
-
-    def _guard_seeded_change(self, iteration, candidate):
-        """Asking again on prepared notebooks hides changes to preparation code."""
-        patterns = (self.execution_config or {}).get('seed_guard_patterns') or []
-        if not patterns or candidate['frozen_commit'] == iteration['start_commit']:
-            return
-        root = self.trees.project_root
-        changed = _text_git(root, 'diff', '--name-only', iteration['start_commit'], candidate['frozen_commit'])
-        hits = sorted(path for path in changed.splitlines() if any(p in path for p in patterns))
-        if hits:
-            raise Conflict('该候选改动了资料准备相关文件，复用已导入的 notebook 不会反映这些改动: '
-                           + ', '.join(hits[:10]))
-
     def run(self, candidate_id, *, budget, actor, request_key, adopt=False, batch_id=None, _sealed_capability=None):
         """Prepare a Job on the iteration plan with the frozen capture, then dispatch.
 
         A new request key is a new attempt; failures and cancellations stay.
         ``adopt`` (root only) registers the server-configured finished runs as
         this attempt instead of generating; the runner checks they match the
-        plan, the frozen source and the conditions. With ``seed_from_root``
-        configured, other candidates ask again on the root's prepared notebooks.
+        plan, the frozen source and the conditions. Prepared notebooks are
+        reused through the content-addressed preparation cache, keyed by the
+        candidate's own preparation code and settings, not by tree position.
         """
         actor = _text(actor, 'actor', limit=200)
         _text(request_key, 'request key', limit=200)
@@ -858,15 +835,6 @@ class IterationService:
             if type(path) is not str or not path:
                 raise ValueError('No adoptable runs are configured on this server')
             config['adopt_runs'] = json.loads(Path(path).read_text(encoding='utf-8'))
-        elif (batch_id is not None and batch_id.startswith('cluster:')) or (
-                batch_id is None and (self.execution_config or {}).get('seed_from_root') is True):
-            seeds = self._seed_runs(iteration)
-            if seeds is None and batch_id is not None:
-                raise ValueError('Cluster runs require prepared root notebooks')
-            if seeds is not None:
-                self._guard_seeded_change(iteration, candidate)
-                ids = plan_scope.get('case_ids')
-                config['seed_runs'] = {cid: seeds[cid] for cid in ids} if ids else seeds
         if protocol.get('budget'):
             # Retries must be new ledgered attempts, not hidden runner rounds.
             config['retry_rounds'] = 0

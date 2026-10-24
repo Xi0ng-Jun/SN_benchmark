@@ -150,27 +150,9 @@ def install_prepared_seed(seed, run):
             target.close()
     finally:
         source.close()
-    old_prefix, new_prefix = str(seed / 'runtime/storage') + '/', str(runtime / 'storage') + '/'
-    rewritten = 0
-    db = sqlite3.connect(runtime / 'database.db')
-    try:
-        with db:
-            columns = {row[1] for row in db.execute("PRAGMA table_info('sources')")}
-            if 'file_path' in columns:
-                for row_id, path in db.execute('SELECT rowid, file_path FROM sources').fetchall():
-                    if isinstance(path, str) and path.startswith(old_prefix):
-                        db.execute('UPDATE sources SET file_path=? WHERE rowid=?',
-                                   (new_prefix + path[len(old_prefix):], row_id))
-                        rewritten += 1
-        # Any other reference would make the copy read from the original run.
-        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
-            for column in [row[1] for row in db.execute(f'PRAGMA table_info("{table}")')]:
-                hit = db.execute(f'SELECT 1 FROM "{table}" WHERE instr(CAST("{column}" AS TEXT), ?) LIMIT 1',
-                                 (str(seed),)).fetchone()
-                if hit:
-                    raise ValueError('Seed database references the seed run outside source file paths')
-    finally:
-        db.close()
+    from .preparation_cache import rewrite_storage_paths
+    rewritten = rewrite_storage_paths(runtime / 'database.db', str(seed / 'runtime/storage') + '/',
+                                      str(runtime / 'storage') + '/', str(seed), what='seed run')
     cell.mkdir()
     for name in ('state.json', 'document-map.json'):
         shutil.copyfile(seed / 'product-artifacts' / name, cell / name)
@@ -184,10 +166,24 @@ def install_prepared_seed(seed, run):
     return receipt
 
 
+def _publish_preparation(cache, key, material, receipt, run, lock):
+    """Publishing is best effort: a cache failure never fails the run."""
+    try:
+        state = json.loads((run / 'product-artifacts/state.json').read_text(encoding='utf-8'))
+        if not state.get('prepared'):
+            raise ValueError('Notebook is not fully prepared')
+        stored = cache.store(key, material, run)
+    except Exception as exc:
+        stored = dict(status='store_failed', cache_key=key, error_type=type(exc).__name__)
+    finally:
+        lock.release()
+    save_json(run / 'preparation-cache.json', dict(receipt, store=stored))
+
+
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
                 qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
                 diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1',
-                preparation_policy=DEFAULT_PREPARATION_POLICY, prepared_seed=None):
+                preparation_policy=DEFAULT_PREPARATION_POLICY, prepared_seed=None, after_preparation=None):
     update_state(run, 'importing')
     from .benchmark_runtime import load_prepared_notebook, prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
@@ -206,6 +202,8 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                                                      preparation_policy=preparation_policy)
         finally:
             save_json(run / 'preparation-usage.json', usage)
+        if after_preparation is not None:
+            after_preparation()
     selected = {case['case_id']: case for case in cases}
     documents = {document['id']: document for document in product['documents']}
     with EventJournal(cell / 'attempts.jsonl') as attempts:
@@ -352,13 +350,16 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
             sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
             reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
-            seed_prepared_run=None, seed_allow_source_change=False):
+            seed_prepared_run=None, seed_allow_source_change=False, preparation_cache=None):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
     request revision, and their historical scoring plans remain unchanged.
     seed_prepared_run copies a prepared SN notebook of the same partition and
-    answer conditions, so only the questions are asked again.
+    answer conditions, so only the questions are asked again. preparation_cache
+    names a content-addressed cache of prepared notebooks (see
+    preparation_cache.py): a verified hit replaces importing, a miss imports
+    and publishes the result; either way the run keeps a private copy.
     """
     validate_preparation_policy(preparation_policy)
     if mode not in {'chunk', 'reasoning'}:
@@ -402,6 +403,15 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             raise ValueError('Run must be separate from shared artifact store')
     if sn_source_ref is not None and artifact_root is None:
         raise ValueError('Captured SN source requires a shared artifact store')
+    if preparation_cache is not None:
+        preparation_cache = Path(preparation_cache).resolve()
+        if seed_prepared_run is not None:
+            raise ValueError('A run seeds from an explicit prepared run or from the cache, not both')
+        protected = [root / 'src', root / 'scripts', project, bundle_dir, run]
+        if artifact_root is not None:
+            protected.append(Path(artifact_root).resolve())
+        if any(preparation_cache.is_relative_to(p) or p.is_relative_to(preparation_cache) for p in protected):
+            raise ValueError('Preparation cache must be separate from code, product, inputs and the run')
     if run.exists():
         raise ValueError('Use a new run directory; no implicit resume')
     if artifact_root is None:
@@ -449,7 +459,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                       *sensitive_strings([{key: case.get(key) for key in ('question', 'gold', 'references')}
                                           for case in cases]))
     run.mkdir(parents=True, exist_ok=False)
-    observed_provider = None
+    observed_provider = cache_lock = None
     try:
         update_state(run, 'initializing')
         if shared_refs is None:
@@ -555,6 +565,31 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             seed_record = dict(seed_run_id=seed.name, seed_manifest_sha256=digest(seed / 'manifest.json'))
             if seed_source != _source_summary(identity):
                 seed_record.update(source_change=True, seed_source=seed_source)
+        cache = cache_key = cache_material = cache_receipt = None
+        if preparation_cache is not None and seed is None:
+            from .preparation_cache import CacheRejected, PreparationCache, preparation_key
+            cache = PreparationCache(preparation_cache)
+            cache_key, cache_material = preparation_key(
+                partition_id=partition_id, product_bundle=product['manifest'],
+                document_limit=bundle['manifest']['max_documents'], preparation_policy=preparation_policy,
+                code=code, source_root=run / 'captured-source' if sn_source_ref is not None else None,
+                settings=settings, run=run, service_config_sha256=runtime.get('service_config_sha256'),
+                requirements_sha256=(identity.get('runtime_dependencies') or {}).get('requirements_sha256'),
+                evaluator_preparation_sha256=digest(Path(__file__).with_name('benchmark_runtime.py')))
+            # Held until this run publishes its own preparation (or ends), so a
+            # concurrent run with the same key waits and then copies.
+            cache_lock = cache.lock(cache_key)
+            try:
+                cache_receipt = cache.install(cache_key, cache_material, run)
+            except CacheRejected as exc:
+                cache_receipt = dict(status='rejected', cache_key=cache_key, reason=str(exc)[:300])
+            if cache_receipt is None:
+                cache_receipt = dict(status='miss', cache_key=cache_key)
+            cache_receipt['lock_waited_seconds'] = cache_lock.waited_seconds
+            if cache_receipt['status'] == 'hit':
+                cache_lock.release()
+            save_json(run / 'preparation-cache.json', cache_receipt)
+        cache_hit = cache_receipt is not None and cache_receipt['status'] == 'hit'
         if agent_config is not None:
             identity['agent_evaluation'] = {'protocol': tracing.NATIVE_TRACE_VERSION, 'sdk_version': '4.2.2',
                                             'metrics': list(agent_metrics), 'sdk_timeout': sdk_timeout_identity(),
@@ -569,7 +604,12 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                   product_protocol=VERSION, planned_sha256=digest(run / 'planned.jsonl'),
                   planned_predictions=len(cases), planned_scores=len(planned), identity=identity,
                   human_calibration='pending', release_gate=False,
-                  **({'prepared_seed': seed_record} if seed is not None else {})))
+                  **({'prepared_seed': seed_record} if seed is not None else {}),
+                  # Disclosure only: a cache hit is not a comparison condition.
+                  **({'preparation_cache': {k: cache_receipt[k] for k in ('cache_key', 'status')}}
+                     if cache_receipt is not None else {}),
+                  **({'prepared_from': {k: cache_receipt[k] for k in ('cache_key', 'source_run', 'entry_sha256')}}
+                     if cache_hit else {})))
         if seed is not None:
             install_prepared_seed(seed, run)
         with ExitStack() as stack:
@@ -602,7 +642,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         qasper_catalogues=qasper_catalogues, hotpot_evidence=hotpot_evidence,
                         multihop_retrieval=multihop_retrieval, diagnostic_sensitive_values=generation_private_values,
                         reasoning_protocol=reasoning_protocol, preparation_policy=preparation_policy,
-                        prepared_seed=seed)
+                        prepared_seed=seed if seed is not None else (cache_receipt if cache_hit else None),
+                        after_preparation=(lambda: _publish_preparation(cache, cache_key, cache_material,
+                                                                        cache_receipt, run, cache_lock))
+                        if cache is not None and not cache_hit else None)
             score_outputs(run, cases, planned, scores)
         errors, failures = _saved_failures(run)
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)
@@ -623,6 +666,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             details['state_write_error'] = type(state_error).__name__
         raise
     finally:
+        if cache_lock is not None:
+            cache_lock.release()
         if observed_provider is not None:
             observed_provider.close()
 

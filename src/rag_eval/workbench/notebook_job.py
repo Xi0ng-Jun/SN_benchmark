@@ -9,7 +9,10 @@ after generation. Optional server settings:
 - ``retry_rounds``: re-ask a partition whose answer failed, on its own prepared
   notebook, up to this many rounds; every round stays on disk;
 - ``adopt_runs`` ({case_id: run dir}): register already finished runs of the
-  same plan, source and conditions as this execution, then score them.
+  same plan, source and conditions as this execution, then score them;
+- ``preparation_cache`` (directory, default ``<output_root>/preparation-cache``,
+  ``false`` disables): content-addressed prepared notebooks shared by every run
+  whose preparation inputs match (see ``rag_eval.preparation_cache``).
 """
 import hashlib
 import json
@@ -66,6 +69,11 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
         validate_preparation_policy(policy)
     except ValueError:
         raise ExecutionRejected('Invalid preparation policy setting') from None
+    cache = config.get('preparation_cache')
+    if cache is None:
+        cache = str(output / 'preparation-cache')
+    elif cache is not False and (type(cache) is not str or not Path(cache).is_absolute()):
+        raise ExecutionRejected('preparation_cache must be an absolute directory or false')
     extras = {}
     for key in ('seed_runs', 'adopt_runs'):
         value = config.get(key)
@@ -98,7 +106,7 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
         selection=prep['input']['selection'], mode=prep['execution_intent']['mode'],
         project_root=str(Path(config['project_root']).resolve()), python=config['python'],
         files=files, scorer_sources=config['scorer_sources'], budget=approved,
-        task_worktree=config.get('task_worktree'))
+        task_worktree=config.get('task_worktree'), preparation_cache=cache or None)
     script = Path(__file__).resolve().parents[3] / 'scripts/run_workbench_notebook.py'
     return dict(argv=[config['python'], str(script), '--payload', json.dumps(payload)],
                 run_dir=run_dir, preparation_id=preparation_id, budget=approved)
@@ -209,7 +217,8 @@ def execute(payload):
             sn_source_ref=inputs / 'sn-source-ref.json',
             dependency_requirements=frozen_files['dependency_requirements'],
             runtime_expectation=frozen_files['runtime_expectation'],
-            budget_ledger=budget_ledger, task_worktree_ref=association)
+            budget_ledger=budget_ledger, task_worktree_ref=association,
+            preparation_cache=payload.get('preparation_cache'))
         seeds = None
         if payload.get('seed_runs'):
             seeds = inputs / 'seed-runs.json'

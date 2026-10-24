@@ -516,11 +516,13 @@ def test_sn_eval_drafts_under_the_analysts_own_node(env, monkeypatch, tmp_path, 
     assert drafted['parent_candidate_id'] == root['id']
 
 
-def test_root_adopts_configured_runs_and_children_seed_from_the_roots_reference(env, tmp_path):
+def test_root_adopts_configured_runs_and_children_reuse_preparation_through_the_cache(env, tmp_path):
     service = env['service']
     adoptable = tmp_path / 'adoptable.json'
     adoptable.write_text(json.dumps({'qasper:q': '/finished/q'}))
-    service.execution_config = dict(service.execution_config, adoptable_runs=str(adoptable), seed_from_root=True)
+    # Retired settings are ignored: reuse no longer depends on tree position.
+    service.execution_config = dict(service.execution_config, adoptable_runs=str(adoptable), seed_from_root=True,
+                                    seed_guard_patterns=['chunking'])
     tree = iteration(env)
     root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='adopt', adopt=True)
     maps = payload(env, root)['run_maps']
@@ -528,36 +530,13 @@ def test_root_adopts_configured_runs_and_children_seed_from_the_roots_reference(
     assert json.loads(Path(maps['path']).read_text()) == {'adopt_runs': {'qasper:q': '/finished/q'}}
     assert 'adoptable_runs' not in json.dumps(payload(env, root))
     finish(env, root)
-    record = env['executions'].get(tree['task_id'], root['attempts'][-1]['execution_id'])
-    Path(record['run_dir']).mkdir(parents=True, exist_ok=True)
-    (Path(record['run_dir']) / 'batch-plan.json').write_text(json.dumps([
-        dict(partition_id='p', case_ids=['qasper:q'], run_dir='/finished/q', adopted=True)]))
     proposal = approved(env, tree, root['id'])
     child = service.derive(root['id'], proposal_id=proposal, actor='alice', request_key='c')
     with pytest.raises(Conflict, match='Only the root'):
         service.run(child['id'], budget=BUDGET, actor='alice', request_key='bad', adopt=True)
-    (Path(child['worktree']['path']) / 'backend/app/__init__.py').write_text('VALUE = 5\n')
-    service.freeze(child['id'], actor='alice')
-    ran = service.run(child['id'], budget=BUDGET, actor='alice', request_key='c1')
-    maps = payload(env, ran)['run_maps']
-    assert json.loads(Path(maps['path']).read_text()) == {'seed_runs': {'qasper:q': '/finished/q'}}
-
-
-def test_seeded_runs_refuse_candidates_that_change_preparation_code(env, tmp_path):
-    service = env['service']
-    adoptable = tmp_path / 'adoptable.json'
-    adoptable.write_text(json.dumps({'qasper:q': '/finished/q'}))
-    service.execution_config = dict(service.execution_config, adoptable_runs=str(adoptable), seed_from_root=True,
-                                    seed_guard_patterns=['chunking'])
-    tree = iteration(env)
-    root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='adopt', adopt=True)
-    finish(env, root)
-    record = env['executions'].get(tree['task_id'], root['attempts'][-1]['execution_id'])
-    Path(record['run_dir']).mkdir(parents=True, exist_ok=True)
-    (Path(record['run_dir']) / 'batch-plan.json').write_text(json.dumps([
-        dict(partition_id='p', case_ids=['qasper:q'], run_dir='/finished/q', adopted=True)]))
-    child = service.derive(root['id'], note='touch chunking', actor='alice', request_key='c')
+    # A candidate that changes preparation code runs; its own key misses the cache.
     (Path(child['worktree']['path']) / 'backend/app/chunking.py').write_text('X = 1\n')
     service.freeze(child['id'], actor='alice')
-    with pytest.raises(Conflict, match='chunking.py'):
-        service.run(child['id'], budget=BUDGET, actor='alice', request_key='c1')
+    ran = payload(env, service.run(child['id'], budget=BUDGET, actor='alice', request_key='c1'))
+    assert ran['run_maps'] is None
+    assert ran['preparation_cache'] == str(Path(service.execution_config['output_root']).resolve() / 'preparation-cache')

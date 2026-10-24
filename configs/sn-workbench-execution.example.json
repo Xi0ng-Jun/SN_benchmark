@@ -13,16 +13,7 @@
     "parallel": 8,
     "retry_rounds": 5,
     "preparation_policy": "deferred-notebook-metadata-v1",
-    "seed_from_root": true,
-    "adoptable_runs": "/absolute/evaluator/var/sn-workbench-server/private/adoptable-runs.json",
-    "seed_guard_patterns": [
-      "ingest",
-      "chunking",
-      "embedding",
-      "structural_markdown",
-      "parsing",
-      "notebook_metadata",
-      "batch_ingest"
-    ]
+    "preparation_cache": "/absolute/evaluator/var/sn-workbench-server/preparation-cache",
+    "adoptable_runs": "/absolute/evaluator/var/sn-workbench-server/private/adoptable-runs.json"
   }
 }
