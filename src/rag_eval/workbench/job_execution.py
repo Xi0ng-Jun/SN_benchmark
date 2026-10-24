@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import threading
 import time
@@ -134,8 +135,9 @@ class JobExecutionStore:
 
     def records(self, workspace_id):
         with self.repository.connect() as conn:
-            rows = conn.execute("SELECT h.object_id,h.task_id FROM history h JOIN tasks t ON t.id=h.task_id "
-                                "WHERE t.workspace_id=? AND h.kind='job.execution_started' ORDER BY h.seq",
+            rows = conn.execute("SELECT object_id,task_id FROM history WHERE task_id IN "
+                                "(SELECT id FROM tasks WHERE workspace_id=?) "
+                                "AND kind='job.execution_started' ORDER BY seq",
                                 (workspace_id,)).fetchall()
             return [self._read(conn, row['task_id'], row['object_id']) for row in rows]
 
@@ -284,53 +286,90 @@ class JobExecutionStore:
             code = None
         finally:
             stdout.close(); stderr.close()
+        exited_at = now()
         self._finalize_logs(record['run_dir'], stdout_path, stderr_path)
         with self._lock:
             self._processes.pop(execution_id, None)
         if timed_out:
-            self._finish(execution_id, state='timeout', exit_code=None,
-                         error_type='timeout', run_state=None)
+            self._settle(record, exited_at, lambda failures: self._finish(
+                execution_id, state='timeout', exit_code=None, error_type='timeout', run_state=None,
+                finish_failures=failures))
             return
-        try:
-            with self.repository.connect() as conn:
-                started = conn.execute("SELECT task_id FROM history WHERE object_id=? "
-                                       "AND kind='job.execution_started' ORDER BY seq LIMIT 1",
-                                       (execution_id,)).fetchone()
-                if started is None:
-                    return
-                current = self._read(conn, started['task_id'], execution_id)
-                if current.get('state') == 'cancelled':
-                    self._write_record_file(current)
-                    return
-            state = 'finished' if code == 0 else 'failed'
-            run_state = None
-            path = Path(current['run_dir']) / 'state.json'
-            try:
-                run_state = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
-            except (OSError, ValueError):
-                run_state = {'phase': 'unreadable'}
-            if run_state is not None and not isinstance(run_state, dict):
-                run_state = {'phase': 'unreadable'}
-            if code != 0 and not (run_state or {}).get('error_message'):
-                log = Path(current['run_dir']) / 'stderr.log'
-                try:
-                    # Redact before truncating: a sliced traceback loses the
-                    # header needed to identify source lines and credentials.
-                    tail = sanitize_diagnostic(log.read_text(encoding='utf-8', errors='replace'))[-2048:]
-                except OSError:
-                    tail = ''
-                run_state = dict(run_state or {}, error_type='child_exit',
-                    error_message=tail.strip() or f'Execution process exited with code {code}',
-                    failed_phase=(run_state or {}).get('stage') or (run_state or {}).get('phase') or 'launching',
-                    diagnostic_path=str(log))
-            self._finish(execution_id, state=state, exit_code=code,
-                         error_type=None if code == 0 else 'child_exit', run_state=run_state)
-        except Exception:
-            # The run directory remains the source of truth even if bookkeeping
-            # is interrupted; a later status read can still inspect it.
-            return
+        self._settle(record, exited_at, lambda failures: self._finish_exited(execution_id, code, failures))
 
-    def _finish(self, execution_id, *, state, exit_code, error_type, run_state):
+    # Terminal bookkeeping retries while SQLite is busy or briefly unavailable.
+    # Waits double up to a cap, so contention lasting well over a minute is
+    # still recorded instead of leaving the execution "running" forever.
+    _FINISH_RETRY_FIRST = 1.0
+    _FINISH_RETRY_CAP = 60.0
+    _sleep = staticmethod(time.sleep)
+
+    def _settle(self, record, exited_at, attempt):
+        failures = []
+        delay = self._FINISH_RETRY_FIRST
+        while True:
+            try:
+                attempt(failures)
+                return
+            except Exception as exc:
+                failure = dict(attempt=len(failures) + 1, at=now(), process_exited_at=exited_at,
+                               error_type=type(exc).__name__,
+                               error_message=sanitize_diagnostic(str(exc))[-512:], logged=False)
+                failures.append(failure)
+                failure['logged'] = self._log_finish_failure(record, failure)
+                if not isinstance(exc, sqlite3.OperationalError):
+                    # Not transient: retrying cannot help. The run directory stays
+                    # the source of truth and the failure is in history when possible.
+                    return
+                self._sleep(delay)
+                delay = min(delay * 2, self._FINISH_RETRY_CAP)
+
+    def _log_finish_failure(self, record, failure):
+        try:
+            with self.repository.connect(write=True) as conn:
+                self.repository._event(conn, record['task_id'], 'execution.finish_failed',
+                                       record['execution_id'], {k: v for k, v in failure.items() if k != 'logged'})
+            return True
+        except Exception:
+            return False
+
+    def _finish_exited(self, execution_id, code, failures):
+        with self.repository.connect() as conn:
+            started = conn.execute("SELECT task_id FROM history WHERE object_id=? "
+                                   "AND kind='job.execution_started' ORDER BY seq LIMIT 1",
+                                   (execution_id,)).fetchone()
+            if started is None:
+                return
+            current = self._read(conn, started['task_id'], execution_id)
+        if current.get('state') == 'cancelled':
+            self._write_record_file(current)
+            return
+        state = 'finished' if code == 0 else 'failed'
+        run_state = None
+        path = Path(current['run_dir']) / 'state.json'
+        try:
+            run_state = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
+        except (OSError, ValueError):
+            run_state = {'phase': 'unreadable'}
+        if run_state is not None and not isinstance(run_state, dict):
+            run_state = {'phase': 'unreadable'}
+        if code != 0 and not (run_state or {}).get('error_message'):
+            log = Path(current['run_dir']) / 'stderr.log'
+            try:
+                # Redact before truncating: a sliced traceback loses the
+                # header needed to identify source lines and credentials.
+                tail = sanitize_diagnostic(log.read_text(encoding='utf-8', errors='replace'))[-2048:]
+            except OSError:
+                tail = ''
+            run_state = dict(run_state or {}, error_type='child_exit',
+                error_message=tail.strip() or f'Execution process exited with code {code}',
+                failed_phase=(run_state or {}).get('stage') or (run_state or {}).get('phase') or 'launching',
+                diagnostic_path=str(log))
+        self._finish(execution_id, state=state, exit_code=code,
+                     error_type=None if code == 0 else 'child_exit', run_state=run_state,
+                     finish_failures=failures)
+
+    def _finish(self, execution_id, *, state, exit_code, error_type, run_state, finish_failures=()):
         with self.repository.connect(write=True) as conn:
             rows = conn.execute("SELECT content FROM history WHERE object_id=? AND kind IN "
                                 "('job.execution_started','job.execution_finished','job.execution_cancelled') ORDER BY seq",
@@ -344,6 +383,12 @@ class JobExecutionStore:
                            error_type=error_type, run_state=run_state)
             _closed(current)
             repo = self.repository
+            # Failed attempts that could not be logged while the database was
+            # busy land atomically with the terminal record they delayed.
+            for failure in finish_failures:
+                if not failure['logged']:
+                    repo._event(conn, current['task_id'], 'execution.finish_failed', execution_id,
+                                {k: v for k, v in failure.items() if k != 'logged'})
             repo._event(conn, current['task_id'], 'job.execution_finished', execution_id, current)
         self._settle_budget(current)
         try:

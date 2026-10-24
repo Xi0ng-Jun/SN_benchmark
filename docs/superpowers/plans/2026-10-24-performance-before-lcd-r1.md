@@ -73,3 +73,12 @@
 ## 执行记录
 
 （开发 agent 按工作项追加：日期、提交、测试与性能验收数字、偏离与原因。）
+
+### P0 · 2026-10-24 · 状态真实性与 history 索引
+
+- **改动。** `job_execution._watch` 把终态记账交给 `_settle`：`sqlite3.OperationalError`（busy／locked）按 1、2、4…秒指数退避重试，单次等待上限 60 s，不设次数上限，直到写入终态或被取消（取消已写终态时 `_finish` 直接返回）；每次失败尽力落一条 `execution.finish_failed`（attempt、at、`process_exited_at`、错误类型与脱敏消息），当时因库忙没落下的失败记录与最终 `job.execution_finished` 在同一事务写入，所以"子进程退出 → 终态"的时差可以从 history 解释。非 SQLite 的确定性异常不重试，只记 `finish_failed`。超时分支原来在 `try` 外调 `_finish`、异常会直接杀死监督线程，现在走同一重试。`repository`：`journal_mode=WAL`（持久在库文件上）、每连接 `synchronous=NORMAL`；新增 `history_object_kind(object_id, kind)` 与 `history_task_kind_object(task_id, kind, object_id)`，`user_version` 5→6（只加索引；`evaluation_jobs`／`job_lifecycle_probe` 的版本白名单加 6）。
+- **核对审计定位。** `job_execution.py:294-331` 与 `repository.py:79-92` 属实。审计的 385.7 s 差无法在本机复核（不读 `var/`）；代码上 busy timeout 是 10 s，单次 busy 不会产生 385 s，但 `_finish` 一旦抛出执行就永远停在 running，这一点属实并已修。
+- **偏离。** `JobExecutionStore.records()` 原 `JOIN tasks` 写法即使有索引，SQLite 仍选择 `SCAN h`（按 `seq` 排序免排序）。改为 `task_id IN (SELECT id FROM tasks WHERE workspace_id=?)`，计划为 `SEARCH history USING COVERING INDEX history_task_kind_object`。语义不变。
+- **验收。** 新增 `tests/test_workbench_supervisor_bookkeeping.py`（7 项）：`_finish` 前 3 次抛 busy 后终态为 finished，退避 1/2/4 s；9 次失败时累计等待 ≥ 60 s 且单次封顶 60 s；`finish_failed` 无法单独落库时随终态原子写入；超时分支重试；真实外部写锁持有 1.5 s 期间保持 running、释放后终态 finished；`EXPLAIN QUERY PLAN` 对 `records()`、`_read()`、`_finish()` 三条查询均走 `history_*` 索引、无 `SCAN history`；v5 库（删索引、DELETE 日志模式）重开后升到 v6、WAL、NORMAL，history 行不变。
+- **实测（`scripts/measure_performance_offline.py history-lookup`，合成库，本机）。** 200 个执行 + 20 000 条无关 history：`records()` 无索引 **0.175 s** → 有索引 **0.0017 s**。
+- **测试。** 全量 `-n auto`：**2519 passed, 7 skipped，墙钟 67 s**（改动前同命令 2512 passed / 7 skipped，114 s；`-n auto` 本来就能通过）。7 个 skip 均为本机缺可选工件（E5 run、官方 ROUGE、attempt-1 工件）。

@@ -170,7 +170,7 @@ def _receipt_record(value, *, task_id, workspace_id, actor, operation, payload=N
 
 
 def _workspace(repo, conn, task_id):
-    if conn.execute('PRAGMA user_version').fetchone()[0] not in (3, 4, 5):
+    if conn.execute('PRAGMA user_version').fetchone()[0] not in (3, 4, 5, 6):
         raise JobRejected('Unsupported workbench database version')
     task = _require(repo, conn, 'tasks', task_id)
     return _require(repo, conn, 'workspaces', task['workspace_id'])['id']

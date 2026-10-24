@@ -46,7 +46,7 @@ def test_additive_jobs_schema_reopens_version2_without_changing_old_rows(tmp_pat
         conn.execute('PRAGMA user_version=2')
     reopened = WorkbenchRepository(repo.root)
     with reopened.connect() as conn:
-        assert conn.execute('PRAGMA user_version').fetchone()[0] == 5
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 6
         assert [row['name'] for row in conn.execute('PRAGMA table_info(jobs)')] == ['id', 'task_id', 'workspace_id', 'record', 'probe']
         assert conn.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
         for table, old in before.items():

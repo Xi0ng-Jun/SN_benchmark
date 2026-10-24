@@ -78,7 +78,7 @@ def test_binding_persists_start_capture_and_only_adds_one_table(setup):
         assert [row['name'] for row in conn.execute('PRAGMA table_info(task_worktrees)')] == [
             'task_id', 'paseo_workspace_id', 'worktree_path', 'branch', 'base_revision',
             'start_snapshot_json', 'created_at']
-        assert conn.execute('PRAGMA user_version').fetchone()[0] == 5
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 6
 
 
 def test_original_tree_unrelated_repo_and_subdirectory_are_rejected(setup, tmp_path):

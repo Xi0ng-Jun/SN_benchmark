@@ -82,7 +82,7 @@ def _saved(value, job):
 
 def _read(repo, conn, task_id, job_id):
     job = EvaluationJobStore(repo).get_in_transaction(conn, task_id, job_id)
-    if conn.execute('PRAGMA user_version').fetchone()[0] not in (4, 5):
+    if conn.execute('PRAGMA user_version').fetchone()[0] not in (4, 5, 6):
         raise ProbeRejected('Probe requires workbench schema4')
     encoded = conn.execute('SELECT probe FROM jobs WHERE id=?', (job_id,)).fetchone()['probe']
     if encoded is None:

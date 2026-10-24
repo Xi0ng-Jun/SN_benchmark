@@ -25,7 +25,7 @@ def test_schema4_adds_nullable_probe_without_rewriting_version3_facts(environmen
                   for table in ('jobs', 'history', 'requests', 'tasks', 'workspaces')}
     reopened = WorkbenchRepository(repo.root)
     with reopened.connect() as conn:
-        assert conn.execute('PRAGMA user_version').fetchone()[0] == 5
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 6
         assert [row['name'] for row in conn.execute('PRAGMA table_info(jobs)')] == [
             'id', 'task_id', 'workspace_id', 'record', 'probe']
         assert conn.execute('SELECT probe FROM jobs').fetchone()[0] is None

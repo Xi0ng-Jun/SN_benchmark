@@ -45,8 +45,11 @@ class WorkbenchRepository:
         self.database = self.root / 'workbench.sqlite'
         with self.connect() as conn:
             version = conn.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5):
+            if version not in (0, 1, 2, 3, 4, 5, 6):
                 raise ValueError('Unsupported workbench database version')
+            # WAL lets status reads proceed while an execution supervisor or
+            # request writes; the setting is persistent on the database file.
+            conn.execute('PRAGMA journal_mode=WAL')
             conn.executescript('''
                 CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, title TEXT, location TEXT UNIQUE, created_at TEXT);
                 CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), title TEXT, goal TEXT, created_at TEXT);
@@ -68,7 +71,10 @@ class WorkbenchRepository:
             for column in ('role', 'cwd', 'hypothesis_id', 'scope', 'removed_at', 'removed_by'):
                 if column not in columns:
                     conn.execute(f'ALTER TABLE task_sessions ADD COLUMN {column} TEXT')
-            conn.execute('PRAGMA user_version=5')
+            # v6 only adds history lookup indexes; v5 readers see the same rows.
+            conn.execute('CREATE INDEX IF NOT EXISTS history_object_kind ON history(object_id, kind)')
+            conn.execute('CREATE INDEX IF NOT EXISTS history_task_kind_object ON history(task_id, kind, object_id)')
+            conn.execute('PRAGMA user_version=6')
         from .comparisons import initialize_comparisons
         initialize_comparisons(self)
         from .clusters import initialize_clusters
@@ -80,6 +86,7 @@ class WorkbenchRepository:
         conn = sqlite3.connect(self.database, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys=ON')
+        conn.execute('PRAGMA synchronous=NORMAL')
         try:
             if write:
                 conn.execute('BEGIN IMMEDIATE')

@@ -249,7 +249,7 @@ def test_version4_comparison_migration_preserves_record_bytes(tree):
         conn.execute('PRAGMA user_version=4')
     WorkbenchRepository(repo.root)
     with repo.connect() as conn:
-        assert conn.execute('PRAGMA user_version').fetchone()[0] == 5
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 6
         assert tuple(conn.execute('SELECT record,content_hash FROM candidate_comparisons').fetchone()) == saved
         assert conn.execute('SELECT verdict_json FROM candidate_comparisons').fetchone()[0] is None
     assert t['comparisons'].get(record['id']) == record
