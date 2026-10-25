@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 def test_real_sn_preparation_keeps_source_work_and_reduces_metadata_calls(tmp_path):
     backend = Path(os.environ.get('SN_PREPARATION_BACKEND', '/home/wabiwabi/silicon-notebook/project/backend'))

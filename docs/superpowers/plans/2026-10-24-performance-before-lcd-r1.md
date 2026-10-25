@@ -188,3 +188,10 @@
   2. 冻结快照（`compare_frozen_submissions`、工作台结果比较）不携带 `prepared.json`，投影代码改变后这些快照需要重建一致才能读；要放开需改快照格式，未做。
 - **验收（`tests/test_benchmark_comparison.py` 新增 4 项）。** 只改 `benchmark_official.py` 的非评分行（两次评分的 bridge 哈希不同）：仍可比，报告标出 `scorer_bridge_differs` 与两边哈希，比较身份不含 bridge；把一侧协议升为 `projection-v2`：拒绝，原因 "scorer protocol …/projection-v1 vs …/projection-v2"；旧格式 scores 与新格式 v1 可比并披露映射，篡改比较身份被拒；投影代码改变时，缺 `prepared.json` 的 scores 被拒，带哈希一致的 `prepared.json` 则通过并披露，篡改该文件再被拒。原有"bridge 不同即拒绝"的测试改为上述新契约，"Python 版本不同"仍拒绝。
 - **测试。** 全量 `-n auto`：**2557 passed, 7 skipped，墙钟 74 s**。
+
+### P6 · 2026-10-25 · 开发回路（剩余部分）
+
+- **改动。** RUNBOOK 的测试命令改为 `PYTHONPATH=src … -m pytest -q -rs -n auto`，并写明串行用法与 `PYTHONPATH=src` 的原因（`python -m rag_eval…` 子进程测试）；`pytest-xdist>=3` 加进 `dev` 可选依赖（本机 venv 已有 3.8.0，未改 venv）。注册 `integration` 标记：`test_sn_preparation_integration.py` 整个模块与 `test_reasoning_no_clarification.py` 中唯一导入真实 SN 的测试带该标记，默认照跑（缺 checkout 时 skip），可用 `-m integration` 单独跑或 `-m "not integration"` 排除。
+- **实测（本机 24 核）。** 全量串行 **6 min 49 s**（pytest 373 s；用户态 CPU 只有 1 min 50 s，主要在等子进程、超时与 sleep）；`-n auto` **76 s**（pytest 69 s）；`-m "not integration" -n auto` 67 s；`-m integration` 单独 4 项 17 s。
+- **未做与原因。** git／bundle fixture 的 module 级共享：`-n auto` 下墙钟受最长的几个测试约束（最长单测 14 s，为真实 SN 集成；其后是 7–10 s 的计数与并行验收测试），共享 fixture 省下的是 CPU 而非墙钟，估计 < 10 s，按修订意见跳过。忽略 SIGTERM 子进程测试的 grace 未改为可配置（5 s 一项、3 项并行），同理。
+- **测试。** 全量 `-n auto`：**2557 passed, 7 skipped**。

@@ -370,10 +370,19 @@ results 包用于必要答卷、官方成绩/审计、scope/coverage、来源身
 从当前 evaluator 根目录使用 Python 模块入口，避免 pytest console-script 的导入路径差异：
 
 ```bash
-DEEPEVAL_TELEMETRY_OPT_OUT=YES DEEPEVAL_DISABLE_DOTENV=1 CONFIDENT_TRACE_FLUSH=0 \
-  "$EVAL_PYTHON" -m pytest -q -rs
+DEEPEVAL_TELEMETRY_OPT_OUT=YES DEEPEVAL_DISABLE_DOTENV=1 CONFIDENT_TRACE_FLUSH=0 PYTHONPATH=src \
+  "$EVAL_PYTHON" -m pytest -q -rs -n auto
 
 node --test tests/dashboard_core.test.cjs tests/explorer_core.test.cjs tests/map_view.test.cjs
+```
+
+`-n auto` 用 `pytest-xdist`（`dev` 可选依赖）按 CPU 并行，全量结果与串行相同；2026-10-25 本机 24 核约 2560 个测试 70 s（串行约数分钟）。`PYTHONPATH=src` 让以 `python -m rag_eval…` 启动子进程的测试（如 `test_workbench_plan_cli.py`）也能导入源码。去掉 `-n auto` 即串行，排查顺序相关问题时用。
+
+需要真实 SN checkout（`SN_PREPARATION_BACKEND`，默认 `/home/wabiwabi/silicon-notebook/project/backend`）的离线集成测试带 `integration` 标记，默认照跑、缺 checkout 时 skip；只跑或排除它们：
+
+```bash
+"$EVAL_PYTHON" -m pytest -q -rs -m integration        # 只跑真实 SN 集成（离线 fixture 模型，不调用真实模型）
+"$EVAL_PYTHON" -m pytest -q -rs -n auto -m "not integration"
 ```
 
 Node 仅用于 Dashboard JS 测试，本仓库没有 npm 安装／打包流程。核实时本机版本为 Python 3.13.15、Node v24.20.0；这是已观察环境，不是额外声明的最低版本。

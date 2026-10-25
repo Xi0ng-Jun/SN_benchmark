@@ -133,6 +133,7 @@ def test_protocol_variant_changes_run_identity_and_submission_name():
         ])
 
 
+@pytest.mark.integration
 def test_sn_validator_accepts_cover_all_options_free_text(sn_backend):
     from app.services.query_intent import validate_confirmed_intent
     from app.services.query_intent import finalize_query_intent

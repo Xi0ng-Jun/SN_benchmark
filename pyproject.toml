@@ -11,7 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 deepeval = ["deepeval==4.2.2"]
-dev = ["pytest>=8", "httpx>=0.27,<1"]
+dev = ["pytest>=8", "pytest-xdist>=3", "httpx>=0.27,<1"]
 notebook = ["rouge-score==0.1.2"]
 workbench = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "packaging>=23"]
 
@@ -22,6 +22,7 @@ sn-workbench = "rag_eval.workbench.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["integration: offline tests that import a real SN checkout (run by default; deselect with -m 'not integration')"]
 
 [tool.setuptools.package-data]
 rag_eval = ["dashboard/*.html", "dashboard/*.css", "dashboard/*.js"]
