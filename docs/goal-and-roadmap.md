@@ -169,7 +169,7 @@
 
 ### 减法清单（R1 期间执行）
 
-- 合并 S3/S3b readiness 为 runner 启动回执；不再新增独立 gate。
+- 合并 S3/S3b readiness 为 runner 启动回执；不再新增独立 gate。（2026-10-25 已删除 readiness receipt，runner 启动时的实际观测即回执，见 DELETION_LOG。）
 - 删除 run 内镜像官方指标的诊断分。
 - owner helper 保留为启动器，取消后代扫描等观测性分支的扩展。
 - 不新增队列、账本之外的状态存储、Job claim/CAS。

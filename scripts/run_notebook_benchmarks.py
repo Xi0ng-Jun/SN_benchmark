@@ -10,62 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
 
-class _ReadinessError(Exception):
-    """Stable rejection category from the captured readiness gate."""
-
-    def __init__(self, category):
-        super().__init__(category)
-        self.category = category
-
-
-def _captured_scope(*, bundle, artifact_root, artifact_index_id, source_ref, case_ids,
-                    partition_id, request_revision):
-    """Derive the immutable captured identity without starting a subprocess."""
-    from rag_eval.artifact_store import ArtifactStore
-    from rag_eval.bundle_index import find_installed_bundle
-    from rag_eval.identity import fingerprint
-    bundle = Path(bundle).resolve()
-    find_installed_bundle(bundle, artifact_root, expected_index_id=artifact_index_id)
-    manifest = json.loads((bundle / 'manifest.json').read_text(encoding='utf-8'))
-    source = ArtifactStore(artifact_root).resolve(dict(source_ref))
-    identity = json.loads((source / 'object.json').read_text(encoding='utf-8'))['identity']
-    return {
-        'case_id': case_ids[0] if case_ids is not None and len(case_ids) == 1 else None,
-        'partition_id': partition_id,
-        'request_revision': request_revision,
-        'bundle_id': fingerprint(manifest),
-        'index_id': artifact_index_id,
-        'sn_source_manifest_sha256': identity['source_manifest_sha256'],
-    }
-
-
-def _consume_readiness_receipt(path, expected_scope):
-    """Validate the sealed receipt; raise only stable rejection categories."""
-    from rag_eval.s3_readiness import validate_readiness_receipt
-    path = Path(path)
-    if not path.is_file():
-        raise _ReadinessError('readiness_receipt_missing')
-    try:
-        record = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        raise _ReadinessError('readiness_receipt_invalid') from None
-    try:
-        receipt = validate_readiness_receipt(record)
-    except (TypeError, ValueError):
-        raise _ReadinessError('readiness_receipt_invalid') from None
-    if receipt['status'] != 'ready':
-        raise _ReadinessError('readiness_not_ready')
-    scope = receipt['scope']
-    if (expected_scope['case_id'] is None
-            or any(scope[name] != expected_scope[name]
-                   for name in ('case_id', 'partition_id', 'request_revision', 'bundle_id'))):
-        raise _ReadinessError('readiness_scope_mismatch')
-    if scope['sn_source_manifest_sha256'] != expected_scope['sn_source_manifest_sha256']:
-        raise _ReadinessError('readiness_source_mismatch')
-    if scope['index_id'] != expected_scope['index_id']:
-        raise _ReadinessError('readiness_index_mismatch')
-
-
 def main():
     from rag_eval.benchmark_runtime import DEFAULT_PREPARATION_POLICY, PREPARATION_POLICIES
     from rag_eval.notebook_bundle import OFFICIAL_REQUEST_REVISION, REQUEST_REVISIONS
@@ -112,8 +56,6 @@ def main():
     parser.add_argument('--case-id', dest='case_ids', action='append', help='Run this case only; repeat for several cases. Entire corpus retained.')
     parser.add_argument('--case-id-file', type=Path,
                         help='Read one frozen case ID per line; may be combined with --case-id')
-    parser.add_argument('--readiness-receipt', type=Path,
-                        help='Sealed sn-e5-s3-readiness-receipt-v1 for this exact captured single-case smoke')
     args = parser.parse_args()
 
     def input_failure(exc, phase):
@@ -158,20 +100,6 @@ def main():
             return input_failure(exc, 'case_selection')
     if not case_ids:
         case_ids = None
-    if startup_kwargs and args.readiness_receipt is not None:
-        try:
-            expected_scope = _captured_scope(
-                bundle=args.bundle, artifact_root=args.artifact_root,
-                artifact_index_id=args.artifact_index_id, source_ref=source_ref,
-                case_ids=case_ids, partition_id=args.partition_id,
-                request_revision=args.request_revision)
-        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            return input_failure(exc, 'readiness_identity')
-        try:
-            _consume_readiness_receipt(args.readiness_receipt, expected_scope)
-        except _ReadinessError as exc:
-            print('Readiness failed: ' + exc.category, file=sys.stderr)
-            return 2
     if (args.model_gate is None) != (args.model_gate_slots is None):
         parser.error('--model-gate and --model-gate-slots must be supplied together')
     from rag_eval.run_report import write_report

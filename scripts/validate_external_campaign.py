@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
 
 def _load(path: Path):
     try:
@@ -16,18 +18,12 @@ def _load(path: Path):
 
 
 def _ids(path: Path) -> list[str]:
+    # The runner's parser, so preflight and execution read the same IDs.
+    from rag_eval.notebook_runner import load_case_ids_file
     try:
-        rows = [line.strip() for line in path.read_text().splitlines()
-                if line.strip() and not line.lstrip().startswith('#')]
-    except OSError as exc:
-        raise ValueError(f'Cannot read case-id file {path}: {exc}') from exc
-    if any(any(ch.isspace() for ch in value) for value in rows):
-        raise ValueError(f'Case IDs contain whitespace: {path}')
-    if len(rows) != len(set(rows)):
-        raise ValueError(f'Case IDs contain duplicates: {path}')
-    if not rows:
-        raise ValueError(f'Case-id file is empty: {path}')
-    return rows
+        return load_case_ids_file(path)
+    except ValueError as exc:
+        raise ValueError(f'{exc}: {path}') from None
 
 
 def _bundle_ids(path: Path) -> set[str]:

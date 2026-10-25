@@ -82,8 +82,9 @@ def test_shared_execution_report_dashboard_and_rescore_without_input_copies(tmp_
     from rag_eval.artifact_store import read_run_refs, store_for_run
     refs = read_run_refs(calls[0])
     source_manifest = json.loads((calls[0]/'manifest.json').read_text())
-    part = source_manifest['identity']['notebook_context']['partition_id']
-    product = load_partition(store_for_run(calls[0]).root, refs, part, 'notebook-request-v1')['product']
+    context = source_manifest['identity']['notebook_context']
+    revision = context.get('request_revision', 'notebook-request-v1')
+    product = load_partition(store_for_run(calls[0]).root, refs, context['partition_id'], revision)['product']
     (calls[0]/'product-bundle.json').write_text(json.dumps(product))
     derived = rescore_run(calls[0], tmp_path/'derived', all_scores=True)
     assert not (derived/'input').exists()

@@ -53,7 +53,7 @@ ALCE 子任务、官方 QA 权重、五套外部方法与 QMSum BM25 不属于�
 **旧假设：** 省略版本参数意味着保持老调用效果。当前正式工作要求 notebook-data-v3／notebook-request-v3，CLI 已选择 v3，但下列 API 仍默认旧版：
 
 - [notebook_data.adapt](src/rag_eval/notebook_data.py)、[notebook_bundle.prepare](src/rag_eval/notebook_bundle.py)：默认 adaptation 为 v2。
-- [notebook_bundle.request_question／partition_bundle](src/rag_eval/notebook_bundle.py)、[notebook_runner.execute](src/rag_eval/notebook_runner.py)：默认 request 为 v1。execute 注释明确写着保留 old callers。
+- [notebook_bundle.request_question／partition_bundle](src/rag_eval/notebook_bundle.py)：默认 request 为 v1。（[notebook_runner.execute](src/rag_eval/notebook_runner.py) 已于 2026-10-25 与 CLI 统一默认 v3；旧运行按保存的 revision 读回，仓内生产调用均显式传参。）
 - v1／v2 的中间 request 还包含 references、gold_document_ids、expected_answer；v3 去掉这些字段，并隐藏来源于标注的题型。**这证明中间请求契约不同，不等于已经证明 gold 被送入模型提示。**
 
 固化旧默认的具体测试：
@@ -124,10 +124,10 @@ lecture_01–03、`lectures/torch.py`／`sympy` 以及 `build_dashboard_demo.py`
 | G04 · 保留 | native_sdk／native_agent／native_component_scoring | 固定 SDK、真实观测、逐指标落盘、超时终态；不由通用 trace 自动推出 Agent 分 |
 | G05 · 保留 | release_gate=False | 尚无校准后的发布阈值；不能为过测试改成 true |
 | G06 · 保留，结构预检 | validate_external_campaign | 验注册、题单和可选 bundle IDs；不验证服务／GPU／模型／完整 scorer 或 full 放行 |
-| G07 · 待修 | preflight `_ids` 与 runtime `load_case_ids_file` | 同一文件的空行／注释处理不同，本轮未改 |
+| G07 · 已修（2026-10-25） | preflight `_ids` 与 runtime `load_case_ids_file` | 预检、批次规划、runner 与 KG2RAG 入口共用 `load_case_ids_file`；采用 runtime 的严格契约（拒绝空行、空白、注释、重复） |
 | G08 · 旧入口已删 | RUNBOOK 的分层验证 | 保留当前五套、Agent、Node、显式 integration 和服务器验收职责 |
 
-G07 的已复现反例：preflight 接受空行并忽略 `# note`，runtime 拒绝空白或带空格的 ID；仓内五份 smoke 文件在两者结果相同。应在输入边界采用同一个明确契约，不能追加只在预检开启的容错模式。本轮没有把旧 benchmark 删除扩大为该输入契约修复。
+G07 原反例：preflight 接受空行并忽略 `# note`，runtime 拒绝空白或带空格的 ID。2026-10-25 起两者共用 runtime 的解析器（不加只在预检开启的容错），所以预检通过的文件就是 runner 实际执行的题单；仓内五份 smoke 文件在新契约下不变。
 
 默认 pytest 仅收集 `tests/`。`integrations/silicon-notebook/test_native_agent_contract.py` 需配对产品 checkout；QMSum 真实 Perl 测试需显式环境。Mock／合成 fixture 不验证真实权重、SN 生命周期或超长资料。仓内没有统一 CI／环境锁；远程分支保护、仓外 CI、服务器依赖和运行状态未查询。
 

@@ -31,7 +31,8 @@ def main():
         p.error('--method and --reranker are required to execute')
     if args.top_k < 1:
         p.error('--top-k must be positive')
-    case_ids = args.case_id_file.read_text().splitlines() if args.case_id_file else None
+    from rag_eval.notebook_runner import load_case_ids_file
+    case_ids = load_case_ids_file(args.case_id_file) if args.case_id_file else None
     bundle, samples, manifest = prepare_run(args.bundle, args.upstream, args.demonstrations,
                                              args.output, case_ids=case_ids)
     if args.prepare_only:

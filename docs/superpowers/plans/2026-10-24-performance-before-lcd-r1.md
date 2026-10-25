@@ -195,3 +195,11 @@
 - **实测（本机 24 核）。** 全量串行 **6 min 49 s**（pytest 373 s；用户态 CPU 只有 1 min 50 s，主要在等子进程、超时与 sleep）；`-n auto` **76 s**（pytest 69 s）；`-m "not integration" -n auto` 67 s；`-m integration` 单独 4 项 17 s。
 - **未做与原因。** git／bundle fixture 的 module 级共享：`-n auto` 下墙钟受最长的几个测试约束（最长单测 14 s，为真实 SN 集成；其后是 7–10 s 的计数与并行验收测试），共享 fixture 省下的是 CPU 而非墙钟，估计 < 10 s，按修订意见跳过。忽略 SIGTERM 子进程测试的 grace 未改为可配置（5 s 一项、3 项并行），同理。
 - **测试。** 全量 `-n auto`：**2557 passed, 7 skipped**。
+
+### P7 · 2026-10-25 · 清理
+
+- **readiness receipt 退役。** 删除 `src/rag_eval/s3_readiness.py`、单分区 CLI 的 `--readiness-receipt` 及其辅助函数、两份专属测试，记入 `DELETION_LOG.md`；`tests/test_notebook_cli_launch.py` 保留捕获启动参数透传的覆盖，并断言该选项已不被接受。工作台、批次、iteration 从未用它。`goal-and-roadmap` 减法清单该项标为已完成。
+- **`execute()` 默认 request revision = v3。** 与两个 CLI 一致；仓内生产调用本来都显式传参，读回旧运行仍按保存的 revision（`validate_saved_run` 中缺省为 v1 的读取逻辑未动）。测试里依赖旧默认的只有 `test_bundle_index` 一处硬编码 v1，改为读运行自己记录的 revision；新增断言默认产出 v3 身份。`notebook_bundle.partition_bundle`／`prepare` 的旧默认不在本项范围（TRIAGE T01 已更新为只剩这两处）。
+- **题单解析收敛到一处。** `notebook_runner.load_case_ids_file` 是唯一解析器：外部 campaign 预检（`validate_external_campaign._ids`）与 `run_kg2rag` 改用它（后者原先 `splitlines()` 不做任何检查）。契约取 runtime 原有的严格规则（拒绝空行、ID 内外空白、重复、空文件；`#` 行因含空白或不在 bundle 内而被拒），而不是放宽 runtime 去迁就预检——预检通过的文件就是 runner 实际执行的题单。TRIAGE G07 标为已修；仓内五份 smoke 题单在新契约下结果不变。`RunReadContext.selected_cases` 早已委托 `notebook_runner.selected_cases`，未再改。
+- **偏离。** 无功能偏离；题单契约选了"严格"一侧，原先依赖预检容忍注释／空行的文件现在在预检就失败（以前会在执行时失败）。
+- **测试。** 全量 `-n auto`：**2507 passed, 7 skipped，墙钟 67 s**（较 P6 少 50 项：删掉的 readiness 测试 55 项，新增 5 项）。

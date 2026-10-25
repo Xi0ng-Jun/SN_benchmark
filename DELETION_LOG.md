@@ -1,5 +1,17 @@
 # 删除记录
 
+## 2026-10-25：S3 readiness receipt（分支 `feat/demo-asqa-iteration`）
+
+依据：[目标与规划](docs/goal-and-roadmap.md) 的减法清单把 readiness receipt 判为冗余层（runner 启动时的实际观测已覆盖它，生成 `ready` 的唯一方式是把 runner 跑到 ingestion 之前）；性能计划 P7 执行删除。工作台、批次与 iteration 从未使用它；只有单分区 CLI 的可选 `--readiness-receipt` 消费它。
+
+| 删了什么 | 为什么 |
+| --- | --- |
+| `src/rag_eval/s3_readiness.py` | `sn-e5-s3-readiness-receipt-v1` 的判定与校验；唯一消费者是下一行的 CLI 选项 |
+| `scripts/run_notebook_benchmarks.py` 中的 `--readiness-receipt`、`_captured_scope`、`_consume_readiness_receipt`、`_ReadinessError` | 启动前可选闸门；捕获源码、依赖声明与解释器期望仍由 runner 在启动时实际观测并记录 |
+| `tests/test_s3_readiness.py`、`tests/test_readiness_receipt_consumer.py` | 上述模块与选项的测试；保留的捕获启动参数透传由 `tests/test_notebook_cli_launch.py` 覆盖，并断言该选项已不再接受 |
+
+保留：历史文档中对 S3／S3b 的记录（[评测状态](docs/evaluation-status.md)、[归档](docs/archive/2026-10-source-execution-history.md)）作为当时的证据，不改写；已生成的 receipt 文件不再有读取方。
+
 ## 2026-10-20：工作台五页签界面（分支 `feat/workbench-iteration-tree`）
 
 依据：迭代树设计第 10 节第 4 步“取消五页签与更改页”；用户 2026-10-20 选择**直接删除**（不保留历史入口）。只删前端；后端路由（结果接入、计划草稿、人评、笔记、Task 假设卡等）未动，仍可经 HTTP 使用。没有迁移成迭代的旧 Task 不再出现在界面上，需要时用 `cli iterations-migrate` 映射为遗留迭代。

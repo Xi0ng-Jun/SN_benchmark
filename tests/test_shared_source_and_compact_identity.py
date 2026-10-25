@@ -131,7 +131,8 @@ def test_pre_change_run_directory_still_loads_and_merges_with_new_runs(fake_sn, 
     from rag_eval.notebook_runner import plan_rows, selected_cases
     bundle = load_bundle(tmp_path / 'bundle')
     context = identity['notebook_context']
-    product = partition_bundle(bundle, context['partition_id'], request_revision='notebook-request-v1')
+    product = partition_bundle(bundle, context['partition_id'],
+                               request_revision=context.get('request_revision', 'notebook-request-v1'))
     cases = selected_cases(bundle, product, context.get('case_ids'))
     planned = plan_rows(cases, manifest['run_id'], protocol, manifest['mode'])
     save_jsonl(old / 'planned.jsonl', planned)

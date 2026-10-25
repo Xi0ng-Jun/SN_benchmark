@@ -10,7 +10,7 @@ import time
 
 from .artifacts import digest, save_json, save_jsonl
 from .benchmark_runtime import DEFAULT_PREPARATION_POLICY, validate_preparation_policy
-from .notebook_bundle import LEGACY_REQUEST_REVISION, load_bundle, partition_bundle
+from .notebook_bundle import LEGACY_REQUEST_REVISION, OFFICIAL_REQUEST_REVISION, load_bundle, partition_bundle
 from .notebook_data import VERSION
 from .identity import fingerprint
 from .execution_diagnostics import config_sensitive_values, exception_details, sensitive_strings
@@ -19,11 +19,16 @@ from .run_support import CITATIONS, citation_score, iter_rows, read_rows, update
 
 
 def load_case_ids_file(path):
-    """Read one frozen case ID per line for reproducible subset runs."""
+    """Read one frozen case ID per line: the single parser for every case-ID file.
+
+    Preflight, batch planning and the runner all use it, so a file that passes
+    preflight yields exactly the IDs that run. Blank lines, whitespace inside
+    or around an ID, duplicates and an empty file are rejected (no comments).
+    """
     path = Path(path)
     try:
         lines = path.read_text(encoding='utf-8').splitlines()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ValueError(f'Unable to read case ID file: {path}') from exc
     if not lines:
         raise ValueError('Case ID file must contain at least one case ID')
@@ -453,17 +458,18 @@ def _saved_failures(run):
     return errors, failures
 
 
-def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=LEGACY_REQUEST_REVISION,
+def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revision=OFFICIAL_REQUEST_REVISION,
             agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
             sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
             reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
             seed_prepared_run=None, seed_allow_source_change=False, preparation_cache=None,
             question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None,
             shared_source=None):
-    """Execute an explicit request revision; the API default preserves old callers.
+    """Execute one partition; new runs default to the gold-free v3 request, like the CLIs.
 
-    Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
-    request revision, and their historical scoring plans remain unchanged.
+    Frozen v1/v2 runs are read back with their saved request revision, and their
+    historical scoring plans remain unchanged; asking with an old revision must
+    be explicit.
     seed_prepared_run copies a prepared SN notebook of the same partition and
     answer conditions, so only the questions are asked again. preparation_cache
     names a content-addressed cache of prepared notebooks (see
