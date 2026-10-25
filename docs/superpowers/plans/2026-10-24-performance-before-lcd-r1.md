@@ -66,6 +66,14 @@
 
 - [ ] **P7. 清理**（可选，若时间允许）：删除 readiness receipt 路径（`s3_readiness.py` 与 `--readiness-receipt`，roadmap 减法清单项），记入 `DELETION_LOG.md`；`notebook_runner.execute` 默认 request revision 与 CLI 统一为 v3；case 选择逻辑收敛到一处。
 
+## P0–P3 完成后的修订（2026-10-25）
+
+- **P4**：`code.actual_manifest` 不能直接删——P1 的缓存键从它读准备文件列表。顺序改为：先让 `preparation_cache` 从捕获源码对象（内容地址存储里的文件清单）读准备路径，再把 manifest 与 submission 里的 `actual_manifest` 换成其 sha；模块来源检查改用 sha 比对。评分阶段目前 bundle 加载一次 + `RunReadContext` 自己再加载一次，目标仍是每执行 ≤ 1，用同一个进程级缓存达成。`plan_batch` 现在每轮重试每分区都调一次，只加载选中 capsule 的收益更大。
+- **P5** 不变。P0–P3 没碰 scorer identity 里的四个评估器模块，既有分数仍可比；P5 做完后再改这些模块才安全。
+- **P6** 大部分已成：`-n auto` 全量 2547 个测试约 70 s，真实 SN 集成测试离线约 6 s。剩余只做：RUNBOOK 写明 `-n auto`，`integration` 标记为可选不强制，git/bundle fixture 的 module 级共享若收益 < 10 s 可跳过。
+- **P7** 照做：readiness receipt 退役并记 DELETION_LOG；`execute()` 默认 request revision 与 CLI 统一为 v3；case 选择逻辑收敛。
+- **R1 设置约束**：真实 SN 多线程提问未验证，R1 用 `question_workers = 1`、分区 `parallel = 8`、`model_concurrency` 按网关能力设；带预算的 iteration 强制 `retry_rounds = 0`，所以 P2(e) 的重试合并在 R1 不触发。
+
 ## 不做
 
 不动模型客户端的超时与退避策略（60 s、2^n）——这是 SN 项目的配置，记录观察即可；不引入新的存储后端；不改 LCD 的门、簇、划分语义；不为了性能放松任何不变量。
