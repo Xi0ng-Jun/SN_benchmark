@@ -271,7 +271,7 @@ def rejection_change(name):
 @pytest.mark.parametrize('mutation,detail', [
     ('missing', 'incomplete'), ('error', 'incomplete'), ('category', 'comparison_category'),
     ('published-reference', 'published-reference'), ('duplicate_method', 'Duplicate'),
-    ('scope', 'scope'), ('case_ids', 'case_ids'), ('scorer', 'scorer_id'),
+    ('scope', 'scope'), ('case_ids', 'case_ids'), ('scorer', 'scorer identity'),
     ('no_common_metrics', 'No common'), ('denominators', 'denominators'), ('eligible_ids', 'IDs')])
 def test_core_rejections_remain_not_comparable_not_unavailable(tmp_path, mutation, detail):
     repo, task_id, ids, _ = fixture(tmp_path, change=rejection_change(mutation))

@@ -124,7 +124,8 @@ def _read_side(value, scores_path, submission_path):
                 raise ValueError('Submission output ledger hash differs from input run')
         if output_hash != (digest(outputs_path) if outputs_path.exists() else None):
             raise ValueError('Run output ledger changed during comparison; retry a stable observation')
-        entry = dict(submission=submission, scores=scores,
+        from .benchmark_comparison import saved_prepared_inputs
+        entry = dict(submission=submission, scores=scores, prepared=saved_prepared_inputs(score_path),
                      source={'submission': submission_file, 'scores': score_file})
         side['scores_id'] = scores.get('scores_id')
         side['submission_id'] = scores.get('submission_id')

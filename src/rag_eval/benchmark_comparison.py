@@ -16,7 +16,8 @@ import random
 import re
 
 from .artifacts import save_json
-from .benchmark_official import prepare_inputs, scorer_identity, validate_metrics
+from .benchmark_official import (LEGACY_SCORER_PROTOCOLS, comparison_scorer_identity, prepare_inputs,
+                                 scorer_identity, validate_metrics)
 from .benchmark_submission import validate_submission
 from .notebook_bundle import load_bundle
 from .identity import fingerprint
@@ -180,7 +181,39 @@ def _read(path):
     return value, {'path': str(path), 'sha256': hashlib.sha256(payload).hexdigest()}
 
 
-def validate_scored_submission(bundle, submission, scores, *, require_complete_generation=False):
+def scorer_comparison(scores):
+    """(identity, disclosure) used to decide whether two score artifacts are comparable.
+
+    New artifacts carry ``scorer_protocol_id`` and their comparison identity;
+    artifacts from before it are mapped to the protocol in force when they were
+    written, and say so. Evaluator module hashes are disclosed, not compared.
+    """
+    dependencies = scores['dependencies']
+    bridge = deepcopy(dependencies.get('bridge', {}))
+    if 'scorer_protocol_id' in scores:
+        identity = comparison_scorer_identity(scores['profile'], dependencies, scores['scorer_protocol_id'])
+        if (scores.get('scorer_comparison_identity') != identity
+                or scores.get('scorer_comparison_id') != fingerprint(identity)):
+            raise ValueError('Saved scorer comparison identity differs from its protocol and dependencies')
+        return identity, {'format': 'scorer-protocol-v1', 'bridge_sha256': bridge}
+    protocol = LEGACY_SCORER_PROTOCOLS.get(scores['profile'])
+    if protocol is None:
+        raise ValueError('Unknown scoring profile; no protocol can be assumed for it')
+    return (comparison_scorer_identity(scores['profile'], dependencies, protocol),
+            {'format': 'legacy-bridge-hash', 'mapped_protocol': protocol, 'bridge_sha256': bridge,
+             'note': 'written before scorer_protocol_id; mapped to the protocol in force at the time'})
+
+
+def _scorer_difference(left, right):
+    if left['scorer_protocol_id'] != right['scorer_protocol_id']:
+        return f"scorer protocol {left['scorer_protocol_id']} vs {right['scorer_protocol_id']}"
+    keys = sorted(key for key in set(left['dependencies']) | set(right['dependencies'])
+                  if left['dependencies'].get(key) != right['dependencies'].get(key))
+    return 'official scorer sources or dependencies differ: ' + ', '.join(keys)
+
+
+def validate_scored_submission(bundle, submission, scores, *, require_complete_generation=False,
+                               saved_prepared=None, notes=None):
     """Validate one score artifact against its frozen bundle and submission.
 
     Returns per-case metric names, denominators, eligible case IDs and batch-only
@@ -204,7 +237,16 @@ def validate_scored_submission(bundle, submission, scores, *, require_complete_g
         raise ValueError('Score submission_id differs from reconstructed submission')
     prepared = prepare_inputs(bundle, submission)
     if scores.get('prepared_id') != fingerprint(prepared):
-        raise ValueError('Score prepared_id differs from reconstructed scoring inputs')
+        # Current projection code may differ from the one that scored this file.
+        # The inputs it saved beside the scores are accepted when their hash is
+        # the recorded prepared_id; comparability is then decided by the protocol.
+        if (not isinstance(saved_prepared, dict) or fingerprint(saved_prepared) != scores.get('prepared_id')
+                or saved_prepared.get('profile') != scores.get('profile')
+                or saved_prepared.get('suite') != submission['suite']):
+            raise ValueError('Score prepared_id differs from reconstructed scoring inputs')
+        prepared = saved_prepared
+        if notes is not None:
+            notes['prepared_inputs'] = 'saved inputs verified by hash; current projection differs'
     if scores.get('profile') != prepared['profile']:
         raise ValueError('Score profile differs from reconstructed scoring inputs')
     dependencies = scores.get('dependencies')
@@ -234,6 +276,7 @@ def validate_scored_submission(bundle, submission, scores, *, require_complete_g
     identity = scorer_identity(scores['profile'], dependencies)
     if scores.get('scorer_identity') != identity or scores.get('scorer_id') != fingerprint(identity):
         raise ValueError('Saved scorer identity differs from recorded source/dependency identity')
+    scorer_comparison(scores)
     metrics = validate_metrics(scores.get('metrics'))
     denominators = scores.get('metric_denominators')
     if denominators is not None:
@@ -336,6 +379,18 @@ def _disclosed(method, field):
     return value
 
 
+def saved_prepared_inputs(scores_path):
+    """The scorer inputs saved beside a scores file (score_prepared writes them), or None."""
+    path = Path(scores_path).resolve().parent / 'prepared.json'
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        value, _ = _read(path)
+    except (OSError, ValueError):
+        return None
+    return value
+
+
 def compare_submissions(bundle_directory, entries):
     """Validate local artifacts and compare two or more distinct selected methods.
 
@@ -351,7 +406,7 @@ def compare_submissions(bundle_directory, entries):
             raise ValueError('Each comparison entry requires submission and scores file paths')
         saved, submission_file = _read(entry['submission'])
         scores, score_file = _read(entry['scores'])
-        objects.append({'submission': saved, 'scores': scores,
+        objects.append({'submission': saved, 'scores': scores, 'prepared': saved_prepared_inputs(entry['scores']),
                         'source': {'submission': submission_file, 'scores': score_file}})
     return _compare_objects(load_bundle(Path(bundle_directory).resolve()), objects)
 
@@ -393,16 +448,24 @@ def _compare_objects(bundle, entries, *, allow_method_attempts=False):
         submission_id = fingerprint(submission)
         if submission_id in seen_submissions or (submission['method_id'] in seen_methods and not allow_method_attempts):
             raise ValueError('Duplicate submission/method attempt; explicitly select one attempt per method')
+        notes = {}
         per_metrics, denominators, metric_cases, batch_only = validate_scored_submission(
-            bundle, submission, scores, require_complete_generation=True)
+            bundle, submission, scores, require_complete_generation=True, saved_prepared=entry.get('prepared'),
+            notes=notes)
+        compared, disclosure = scorer_comparison(scores)
+        disclosure.update(notes, scorer_id=scores['scorer_id'])
         if loaded:
             reference = loaded[0]['scores']
-            for key in ('bundle_id', 'suite', 'scope', 'case_ids', 'profile', 'scorer_id', 'scorer_identity'):
+            for key in ('bundle_id', 'suite', 'scope', 'case_ids', 'profile'):
                 if scores[key] != reference[key]:
                     raise ValueError(f'Cannot compare different {key}; freeze the same data, scope and scorer')
+            if compared != loaded[0]['scorer_comparison']:
+                raise ValueError('Cannot compare different scorer identity: '
+                                 + _scorer_difference(loaded[0]['scorer_comparison'], compared))
         seen_submissions.add(submission_id)
         seen_methods.add(submission['method_id'])
         loaded.append({'submission': submission, 'scores': scores, 'category': category, 'per_metrics': per_metrics,
+                       'scorer_comparison': compared, 'scorer_disclosure': disclosure,
                        'denominators': denominators,
                        'metric_case_ids': metric_cases,
                        'batch_only_metrics': batch_only,
@@ -485,7 +548,16 @@ def _compare_objects(bundle, entries, *, allow_method_attempts=False):
               'adaptation_revision': bundle['manifest']['adaptation_revision'],
               'scope': first['scope'], 'case_ids': first['case_ids'], 'case_count': len(first['case_ids']),
               'profile': first['profile'], 'scorer_id': first['scorer_id'],
-              'scorer_identity': first['scorer_identity'], 'common_metrics': sorted(common),
+              'scorer_identity': first['scorer_identity'],
+              # Compared: official sources, dependencies and protocol version.
+              'scorer_comparison_identity': loaded[0]['scorer_comparison'],
+              'scorer_comparison_id': fingerprint(loaded[0]['scorer_comparison']),
+              # Disclosed per method: evaluator module hashes, legacy mapping, saved inputs.
+              'scorer_disclosures': [dict(item['scorer_disclosure'], method_id=item['submission']['method_id'])
+                                     for item in loaded],
+              'scorer_bridge_differs': any(item['scorer_disclosure']['bridge_sha256']
+                                           != loaded[0]['scorer_disclosure']['bridge_sha256'] for item in loaded),
+              'common_metrics': sorted(common),
               'metric_denominators': {key: loaded[0]['denominators'][key] for key in sorted(common)},
               'metric_case_ids': {key: list(loaded[0]['metric_case_ids'][key]) for key in sorted(common)},
               'conditional_metric_scopes': {
@@ -529,7 +601,7 @@ def _compare_objects(bundle, entries, *, allow_method_attempts=False):
         if method['kind'] == 'sn' and isinstance(config.get('identity'), dict):
             identities.append(build_comparison_identity(
                 {'identity': config['identity'], 'mode': config.get('mode')},
-                case_ids=item['scores']['case_ids'], scorer_identity=item['scores']['scorer_identity']))
+                case_ids=item['scores']['case_ids'], scorer_identity=item['scorer_comparison']))
         else:
             identities.append(None)
     report['identity_disclosures'] = [compare_identity_tiers(a, b) for a, b in combinations(identities, 2)

@@ -69,6 +69,35 @@ def scorer_identity(profile, dependencies):
     return {'profile': profile, 'dependencies': identity}
 
 
+# The versioned contract between a submission and the official scorer: how
+# answers are projected into scorer inputs and how the upstream functions are
+# used. Bump the suffix when that meaning changes; editing evaluator code that
+# leaves it unchanged keeps scores comparable.
+SCORER_PROTOCOLS = {
+    'qasper-v03-full-text-answer-v1': 'qasper-v03-full-text-answer-v1/projection-v1',
+    'multihop-c1c1287-upstream-weak-match-v1': 'multihop-c1c1287-upstream-weak-match-v1/projection-v1',
+    'alce-246c476-cli-v1': 'alce-246c476-cli-v1/projection-v1',
+    'qmsum-author-rouge155-hmnet-seg-v1': 'qmsum-author-rouge155-hmnet-seg-v1/projection-v1',
+    'hotpotqa-distractor-v1-official-v1': 'hotpotqa-distractor-v1-official-v1/projection-v1',
+}
+# Score files written before scorer_protocol_id existed used these protocols.
+# Frozen: never bumped together with SCORER_PROTOCOLS.
+LEGACY_SCORER_PROTOCOLS = dict(SCORER_PROTOCOLS)
+COMPARISON_FORMAT = 'sn-scorer-comparison-v2'
+
+
+def comparison_scorer_identity(profile, dependencies, protocol_id):
+    """What must be equal to compare scores: official sources and dependencies plus the protocol.
+
+    The evaluator's own module hashes (``dependencies.bridge``) are disclosure,
+    not part of this identity; the protocol version stands for their meaning.
+    """
+    compared = scorer_identity(profile, dependencies)['dependencies']
+    compared.pop('bridge', None)
+    return {'format': COMPARISON_FORMAT, 'profile': profile, 'scorer_protocol_id': protocol_id,
+            'dependencies': compared}
+
+
 def _bridge_dependencies(suite):
     files = ['benchmark_official.py', 'notebook_scoring.py']
     packages = []
@@ -456,6 +485,11 @@ def score_prepared(bundle, submission, prepared, *, source_directory, output_dir
                   prepared_id=fingerprint(prepared),
                   scorer_identity=scorer_identity(prepared['profile'], dependencies),
                   scorer_id=fingerprint(scorer_identity(prepared['profile'], dependencies)),
+                  scorer_protocol_id=SCORER_PROTOCOLS[prepared['profile']],
+                  scorer_comparison_identity=comparison_scorer_identity(
+                      prepared['profile'], dependencies, SCORER_PROTOCOLS[prepared['profile']]),
+                  scorer_comparison_id=fingerprint(comparison_scorer_identity(
+                      prepared['profile'], dependencies, SCORER_PROTOCOLS[prepared['profile']])),
                   metrics=metrics, per_case=per_case, pending_metrics=pending,
                   metric_case_ids=metric_case_ids,
                   metric_denominators={name: len(metric_case_ids[name]) for name in metrics},

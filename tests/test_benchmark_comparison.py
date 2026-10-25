@@ -147,7 +147,7 @@ def test_frozen_objects_keep_formal_admission_checks(tmp_path, mutation):
                'source': {'snapshot_id': str(i) * 64,
                           'source_hashes': {'submission': 'a' * 64, 'scores': 'b' * 64}}}
               for i, (sub, score) in enumerate(zip(submissions, scores))]
-    expected_reason = {'incomplete': 'complete generation', 'different_scorer': 'different scorer_id',
+    expected_reason = {'incomplete': 'complete generation', 'different_scorer': 'different scorer identity',
                        'published': 'published-reference cannot', 'missing_category': 'comparison_category is required'}
     with pytest.raises(ValueError, match=expected_reason[mutation]):
         compare.compare_frozen_submissions(tmp_path / 'bundle', frozen)
@@ -218,14 +218,81 @@ def test_nonfinite_or_invalid_metric_is_rejected(tmp_path, value):
         compare.compare_submissions(tmp_path / 'bundle', entries)
 
 
-def test_different_saved_scorer_is_rejected_without_using_current_bridge(tmp_path):
+def new_format(score, protocol=None):
+    """Give a fixture score the v2 fields score_prepared writes now."""
+    protocol = protocol or official.SCORER_PROTOCOLS[score['profile']]
+    identity = official.comparison_scorer_identity(score['profile'], score['dependencies'], protocol)
+    score.update(scorer_protocol_id=protocol, scorer_comparison_identity=identity,
+                 scorer_comparison_id=fingerprint(identity))
+    rehash(score)
+
+
+def edited_bridge(score, value='b'):
+    """As if a non-scoring line of benchmark_official.py had changed between the two scorings."""
+    score['dependencies']['bridge']['benchmark_official.py'] = value * 64
+    score['scorer_identity'] = official.scorer_identity(score['profile'], score['dependencies'])
+    score['scorer_id'] = fingerprint(score['scorer_identity'])
+
+
+def test_evaluator_module_edits_are_disclosed_not_compared(tmp_path):
     compare = module()
     _, entries, _, scores = examples(tmp_path)
-    scores[1]['dependencies']['bridge']['benchmark_official.py'] = 'b' * 64
-    scores[1]['scorer_identity'] = official.scorer_identity(scores[1]['profile'], scores[1]['dependencies'])
-    scores[1]['scorer_id'] = fingerprint(scores[1]['scorer_identity'])
+    edited_bridge(scores[1])
+    for score, entry in zip(scores, entries):
+        new_format(score); save(entry['scores'], score)
+    report = compare.compare_submissions(tmp_path / 'bundle', entries)
+    assert report['scorer_bridge_differs'] is True
+    assert [d['bridge_sha256']['benchmark_official.py'] for d in report['scorer_disclosures']] == ['a' * 64, 'b' * 64]
+    assert report['scorer_comparison_identity']['scorer_protocol_id'].endswith('/projection-v1')
+    assert 'bridge' not in report['scorer_comparison_identity']['dependencies']
+
+
+def test_a_bumped_scoring_protocol_is_not_comparable_and_says_why(tmp_path):
+    compare = module()
+    _, entries, _, scores = examples(tmp_path)
+    profile = scores[0]['profile']
+    new_format(scores[0]); save(entries[0]['scores'], scores[0])
+    new_format(scores[1], protocol=profile + '/projection-v2'); save(entries[1]['scores'], scores[1])
+    with pytest.raises(ValueError, match='scorer protocol .*projection-v1 vs .*projection-v2'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+
+
+def test_old_score_files_map_to_the_original_protocol_with_disclosure(tmp_path):
+    compare = module()
+    _, entries, _, scores = examples(tmp_path)
+    edited_bridge(scores[0], 'c'); rehash(scores[0]); save(entries[0]['scores'], scores[0])  # old format
+    new_format(scores[1]); save(entries[1]['scores'], scores[1])
+    report = compare.compare_submissions(tmp_path / 'bundle', entries)
+    legacy, current = report['scorer_disclosures']
+    assert legacy['format'] == 'legacy-bridge-hash' and legacy['mapped_protocol'].endswith('/projection-v1')
+    assert current['format'] == 'scorer-protocol-v1'
+    # A tampered comparison identity is still rejected.
+    scores[1]['scorer_comparison_identity']['scorer_protocol_id'] = 'forged'
     rehash(scores[1]); save(entries[1]['scores'], scores[1])
-    with pytest.raises(ValueError, match='scorer'):
+    with pytest.raises(ValueError, match='comparison identity'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+
+
+def test_saved_prepared_inputs_keep_scores_valid_when_the_projection_code_changes(tmp_path, monkeypatch):
+    compare = module()
+    bundle, entries, submissions, scores = examples(tmp_path)
+    for i, (submission, entry) in enumerate(zip(submissions, entries)):
+        save(entry['scores'].parent / f'prepared-{i}.json', official.prepare_inputs(bundle, submission))
+    original = official.prepare_inputs
+    monkeypatch.setattr(compare, 'prepare_inputs', lambda b, sub: dict(original(b, sub), projection='changed'))
+    with pytest.raises(ValueError, match='prepared_id'):
+        compare.compare_submissions(tmp_path / 'bundle', entries)
+    for i, entry in enumerate(entries):
+        directory = tmp_path / f'scored-{i}'
+        directory.mkdir()
+        for name, source in (('scores.json', entry['scores']), ('submission.json', entry['submission'])):
+            (directory / name).write_bytes(Path(source).read_bytes())
+        (directory / 'prepared.json').write_bytes((entry['scores'].parent / f'prepared-{i}.json').read_bytes())
+        entry.update(scores=directory / 'scores.json', submission=directory / 'submission.json')
+    report = compare.compare_submissions(tmp_path / 'bundle', entries)
+    assert all(d['prepared_inputs'].startswith('saved inputs verified by hash') for d in report['scorer_disclosures'])
+    (tmp_path / 'scored-1' / 'prepared.json').write_text('{}')
+    with pytest.raises(ValueError, match='prepared_id'):
         compare.compare_submissions(tmp_path / 'bundle', entries)
 
 

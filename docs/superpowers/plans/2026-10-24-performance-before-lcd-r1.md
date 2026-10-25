@@ -177,3 +177,14 @@
   4. 共享源码树需要与分区运行同一文件系统才能硬链接，否则逐文件复制（与改前同等开销，但仍省去 tar 哈希与重编译）。
 - **验收测试。** `tests/test_shared_source_and_compact_identity.py`（6 项）：共享树逐成员核验、预编译、只读，分区内是硬链接（inode 相同），导入来自运行自身路径并复用 `.pyc`，标记不符或文件集合不符拒绝；带共享源码的快照只保存指纹，`product_archive_sha256` 等于 tar 真实哈希，`validate_sources` 通过，`source_manifest()` 从对象取回 manifest；旧 identity（整份 manifest + 常量 audits）与新 identity 投影相同，manifest 与指纹不一致则拒绝，非常量 audits 保留；已存在对象重发布只核验记录；**改动前形状的合成运行目录（整份 manifest、常量 `audits_sha256`、按旧 identity 重算的 protocol/plan/scores）`load_run` 正常，且与新运行投影一致**；runner 保存的阶段指标在输入不变时复用、变了即重算。另改：`test_sn_source_loading` 不带 manifest 的 code 现在是合法新格式（manifest 与指纹不一致仍拒绝）；`test_workbench_job_preparation` 中 manifest 自洽但与成员不符的源码对象改为在执行物化时被拒绝。
 - **测试。** 全量 `-n auto`：**2554 passed, 7 skipped，墙钟 77 s**（含真实 SN 离线集成测试）。
+
+### P5 · 2026-10-25 · 评分器身份与评估器源码解耦
+
+- **改动。** `benchmark_official.SCORER_PROTOCOLS` 给五个评分 profile 各一个版本化 `scorer_protocol_id`（初版均为 `<profile>/projection-v1`）；`comparison_scorer_identity` = profile + 协议版本 + 去掉 `bridge` 后的全部依赖（上游官方源码 URL 与 sha、Python 版本、包版本、ROUGE／ALCE 批次／检索依赖等）。`score_prepared` 新写 `scorer_protocol_id`、`scorer_comparison_identity`、`scorer_comparison_id`，旧字段 `scorer_identity`／`scorer_id`（含评估器模块哈希）照写、照验，作披露。`benchmark_comparison` 的必须相等集合改为 `bundle_id`、`suite`、`scope`、`case_ids`、`profile` + 比较身份；不相等时给出原因（协议版本不同，或哪些官方依赖不同）。报告新增 `scorer_comparison_identity`、`scorer_disclosures`（每个方法的 bridge 哈希、格式、旧格式映射、是否用了保存的输入）、`scorer_bridge_differs`。身份分层披露（`build_comparison_identity`）的 scorer 层也改用比较身份。
+  - 旧 scores 文件（无 `scorer_protocol_id`）按 `LEGACY_SCORER_PROTOCOLS`（冻结副本，之后升版本不会改它）映射到当时的协议，披露 `legacy-bridge-hash`，不要求重评。
+  - prepared inputs：仍先用当前代码重建；若与记录的 `prepared_id` 不同，接受评分时保存在 scores 旁边的 `prepared.json`，条件是其哈希正是 `prepared_id`、profile 与 suite 一致，并披露"保存的输入按哈希核验、当前投影不同"。路径入口（`compare_submissions`）、flip 准入、run 视图与 ingest 都会带上这份文件；冻结快照入口没有该文件，仍要求重建一致。
+- **偏离与原因。**
+  1. 必须相等集合里只拿掉了 `bridge`（评估器自身模块哈希），没有拿掉 Python 与包版本：这两项此前就比较，删掉会让集合静默缩小。
+  2. 冻结快照（`compare_frozen_submissions`、工作台结果比较）不携带 `prepared.json`，投影代码改变后这些快照需要重建一致才能读；要放开需改快照格式，未做。
+- **验收（`tests/test_benchmark_comparison.py` 新增 4 项）。** 只改 `benchmark_official.py` 的非评分行（两次评分的 bridge 哈希不同）：仍可比，报告标出 `scorer_bridge_differs` 与两边哈希，比较身份不含 bridge；把一侧协议升为 `projection-v2`：拒绝，原因 "scorer protocol …/projection-v1 vs …/projection-v2"；旧格式 scores 与新格式 v1 可比并披露映射，篡改比较身份被拒；投影代码改变时，缺 `prepared.json` 的 scores 被拒，带哈希一致的 `prepared.json` 则通过并披露，篡改该文件再被拒。原有"bridge 不同即拒绝"的测试改为上述新契约，"Python 版本不同"仍拒绝。
+- **测试。** 全量 `-n auto`：**2557 passed, 7 skipped，墙钟 74 s**。

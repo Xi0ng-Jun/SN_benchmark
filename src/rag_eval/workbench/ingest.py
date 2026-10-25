@@ -57,7 +57,9 @@ def import_result(bundle_directory, submission, scores, state_root):
     score, scores_hash = _read_object(paths[1])
     bundle = RunReadContext().bundle(bundle_directory)
     sub = saved
-    per_metrics, denominators, eligible, batch_only = validate_scored_submission(bundle, sub, score)
+    from ..benchmark_comparison import saved_prepared_inputs
+    per_metrics, denominators, eligible, batch_only = validate_scored_submission(
+        bundle, sub, score, saved_prepared=saved_prepared_inputs(paths[1]))
     for path, expected in zip(paths, [submission_hash, scores_hash]):
         if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
             raise ValueError('Source changed during result import')

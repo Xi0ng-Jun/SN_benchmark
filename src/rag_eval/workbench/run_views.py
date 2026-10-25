@@ -454,7 +454,8 @@ class RunViews:
             if artifacts is None or side.get('reason'):
                 raise ValueError('Official answer sheet is not bound to this run')
             bundle = self._read_context.bundle_for_run(entry.run_dir)
-            validate_scored_submission(bundle, artifacts['submission'], artifacts['scores'])
+            validate_scored_submission(bundle, artifacts['submission'], artifacts['scores'],
+                                       saved_prepared=artifacts.get('prepared'))
         except (OSError, ValueError, KeyError, TypeError):
             return dict(status='mismatch', reason='official artifacts failed run binding or scorer validation')
         if manifest is not None and scores.get('suite') != manifest.get('suite'):
