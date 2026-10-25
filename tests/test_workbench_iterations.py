@@ -554,3 +554,11 @@ def test_iteration_execution_policy_schedules_runs_without_entering_identity(env
     sent = payload(env, root)
     assert (sent['parallel'], sent['question_workers'], sent['case_deadline_seconds']) == (8, 4, 300)
     assert sent['partition_deadline_seconds'] is None and sent['model_gate'] is None
+
+
+def test_iteration_execution_policy_carries_preparation_workers(env):
+    tree = iteration(env, execution=dict(preparation_workers=8), request_key='prep-workers')
+    root = env['service'].run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='prep')
+    assert payload(env, root)['preparation_workers'] == 8
+    with pytest.raises(ValueError, match='execution.preparation_workers'):
+        iteration(env, execution=dict(preparation_workers=0), request_key='prep-bad')

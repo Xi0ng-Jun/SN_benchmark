@@ -190,7 +190,7 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                 qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
                 diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1',
                 preparation_policy=DEFAULT_PREPARATION_POLICY, prepared_seed=None, after_preparation=None,
-                question_workers=1, case_deadline_seconds=None, partition_deadline=None):
+                question_workers=1, case_deadline_seconds=None, partition_deadline=None, preparation_workers=1):
     update_state(run, 'importing')
     from .benchmark_runtime import load_prepared_notebook, prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
@@ -206,7 +206,9 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
         try:
             with capture_usage(LLMInteractionLogger) as usage:
                 notebook, mapping = prepare_notebook(repo, cell, product['documents'], product['manifest']['suite'],
-                                                     preparation_policy=preparation_policy)
+                                                     preparation_policy=preparation_policy,
+                                                     **({'workers': preparation_workers}
+                                                        if preparation_workers != 1 else {}))
         finally:
             save_json(run / 'preparation-usage.json', usage)
         if after_preparation is not None:
@@ -464,7 +466,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
             seed_prepared_run=None, seed_allow_source_change=False, preparation_cache=None,
             question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None,
-            shared_source=None):
+            shared_source=None, preparation_workers=1):
     """Execute one partition; new runs default to the gold-free v3 request, like the CLIs.
 
     Frozen v1/v2 runs are read back with their saved request revision, and their
@@ -475,13 +477,16 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     names a content-addressed cache of prepared notebooks (see
     preparation_cache.py): a verified hit replaces importing, a miss imports
     and publishes the result; either way the run keeps a private copy.
-    question_workers asks that many questions of the partition at once;
+    preparation_workers processes that many imported documents at once
+    (uploads stay sequential); question_workers asks that many questions at once;
     case_deadline_seconds / partition_deadline_seconds save a question that
     overruns (or never starts) as an error and let the partition finish.
     """
     started_at = time.monotonic()
     if type(question_workers) is not int or not 1 <= question_workers <= 32:
         raise ValueError('question_workers must be an integer between 1 and 32')
+    if type(preparation_workers) is not int or not 1 <= preparation_workers <= 64:
+        raise ValueError('preparation_workers must be an integer between 1 and 64')
     for value in (case_deadline_seconds, partition_deadline_seconds):
         if value is not None and (type(value) not in (int, float) or not value > 0):
             raise ValueError('Deadlines must be positive seconds')
@@ -751,8 +756,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                   # Scheduling only; disclosed, never a comparison condition.
                   **({'execution_controls': dict(question_workers=question_workers,
                                                  case_deadline_seconds=case_deadline_seconds,
-                                                 partition_deadline_seconds=partition_deadline_seconds)}
-                     if (question_workers, case_deadline_seconds, partition_deadline_seconds) != (1, None, None)
+                                                 partition_deadline_seconds=partition_deadline_seconds,
+                                                 preparation_workers=preparation_workers)}
+                     if (question_workers, case_deadline_seconds, partition_deadline_seconds,
+                         preparation_workers) != (1, None, None, 1)
                      else {})))
         if seed is not None:
             install_prepared_seed(seed, run)
@@ -791,6 +798,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                                                                         cache_receipt, run, cache_lock))
                         if cache is not None and not cache_hit else None,
                         question_workers=question_workers, case_deadline_seconds=case_deadline_seconds,
+                        preparation_workers=preparation_workers,
                         partition_deadline=started_at + partition_deadline_seconds
                         if partition_deadline_seconds is not None else None)
             score_outputs(run, cases, planned, scores)

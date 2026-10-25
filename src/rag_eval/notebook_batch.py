@@ -33,7 +33,7 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
                seed_prepared_map=None, seed_allow_source_change=False, preparation_cache=None,
                question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None,
-               model_gate=None, shared_sn_source=None):
+               model_gate=None, shared_sn_source=None, preparation_workers=1):
     """Validate all selected IDs before any process; retain frozen case order.
 
     With a seed map, preparation_policy='from-seed' takes each job's policy from
@@ -117,6 +117,8 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
             argv.extend(['--case-id', cid])
         if question_workers != 1:
             argv.extend(['--question-workers', str(question_workers)])
+        if preparation_workers != 1:
+            argv.extend(['--preparation-workers', str(preparation_workers)])
         if case_deadline_seconds is not None:
             argv.extend(['--case-deadline-seconds', str(case_deadline_seconds)])
         if model_gate is not None:

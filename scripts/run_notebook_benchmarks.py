@@ -35,6 +35,8 @@ def main():
                         help='Content-addressed cache of prepared notebooks; a verified hit replaces importing')
     parser.add_argument('--shared-sn-source', type=Path,
                         help='Read-only tree of the captured SN source materialized once for this execution')
+    parser.add_argument('--preparation-workers', type=int, default=1,
+                        help='Imported documents processed at once (uploads stay sequential)')
     parser.add_argument('--question-workers', type=int, default=1,
                         help='Questions of this partition asked at once (independent requests)')
     parser.add_argument('--case-deadline-seconds', type=float,
@@ -119,6 +121,7 @@ def main():
                     preparation_policy=args.preparation_policy, seed_prepared_run=args.seed_prepared_run,
                     seed_allow_source_change=args.seed_allow_source_change,
                     preparation_cache=args.preparation_cache, question_workers=args.question_workers,
+                    preparation_workers=args.preparation_workers,
                     case_deadline_seconds=args.case_deadline_seconds,
                     partition_deadline_seconds=args.partition_deadline_seconds,
                     shared_source=args.shared_sn_source, **startup_kwargs)

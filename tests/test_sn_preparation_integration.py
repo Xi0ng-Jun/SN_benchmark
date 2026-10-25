@@ -10,7 +10,8 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
-def test_real_sn_preparation_keeps_source_work_and_reduces_metadata_calls(tmp_path):
+@pytest.mark.parametrize('workers', [1, 4])
+def test_real_sn_preparation_keeps_source_work_and_reduces_metadata_calls(tmp_path, workers):
     backend = Path(os.environ.get('SN_PREPARATION_BACKEND', '/home/wabiwabi/silicon-notebook/project/backend'))
     if not (backend / 'tests/model_testkit.py').is_file():
         pytest.skip('Set SN_PREPARATION_BACKEND to a compatible SN backend checkout')
@@ -18,21 +19,27 @@ def test_real_sn_preparation_keeps_source_work_and_reduces_metadata_calls(tmp_pa
     # real SN in a child so app.* cannot contaminate captured-source tests.
     env = {'PATH': os.environ.get('PATH', ''), 'PYTHONPATH': str(Path(__file__).resolve().parents[1] / 'src'),
            'SILICON_NOTEBOOK_ENV_FILE': '', 'EXTENSIONS_CONFIG': '', 'MPLCONFIGDIR': str(tmp_path / 'mpl')}
-    child = subprocess.run([sys.executable, str(Path(__file__).resolve()), str(backend), str(tmp_path)],
+    child = subprocess.run([sys.executable, str(Path(__file__).resolve()), str(backend), str(tmp_path),
+                            'prepare', str(workers)],
                            cwd=tmp_path, env=env, text=True, capture_output=True, timeout=120)
     assert child.returncode == 0, child.stdout + child.stderr
     result = json.loads(child.stdout.splitlines()[-1])
-    assert result['per-source-metadata-v1'] == {'source_summary': 100, 'paper_metadata': 100,
-                                               'notebook_metadata': 448,
-                                               'source_element_embedding': 100, 'chunk_embedding': 100}
+    per_source = dict(result['per-source-metadata-v1'])
+    refreshes = per_source.pop('notebook_metadata')
+    assert per_source == {'source_summary': 100, 'paper_metadata': 100,
+                          'source_element_embedding': 100, 'chunk_embedding': 100}
+    # Per-source refreshes batch whatever sources exist at that moment, so
+    # their number depends on completion order; serial order gives 448.
+    assert refreshes == 448 if workers == 1 else refreshes >= 1
     assert result['deferred-notebook-metadata-v1'] == {'source_summary': 100, 'paper_metadata': 100,
                                                      'notebook_metadata': 8,
                                                      'source_element_embedding': 100, 'chunk_embedding': 100}
 
 
-def _probe(backend, directory):
+def _probe(backend, directory, workers=1):
     sys.path.insert(0, str(backend))
     from collections import Counter
+    import threading
     from app.core.config import Settings
     from app.services.embedding import FakeEmbedder
     from app.services.notebook_metadata import notebook_metadata_refresh_suppressed
@@ -47,6 +54,7 @@ def _probe(backend, directory):
         root = directory / policy
         root.mkdir()
         counts = Counter()
+        count_lock = threading.Lock()
         metadata_prompts = []
 
         class Chat:
@@ -57,7 +65,8 @@ def _probe(backend, directory):
                 self.workload = workload
 
             def chat_json(self, messages, schema, **kwargs):
-                counts[self.workload] += 1
+                with count_lock:
+                    counts[self.workload] += 1
                 if self.workload == 'source_summary':
                     return json.dumps({'summary': 'Fixture summary.'})
                 if self.workload == 'paper_metadata':
@@ -73,7 +82,8 @@ def _probe(backend, directory):
                 self.workload = workload
 
             def embed_texts(self, texts):
-                counts[self.workload] += 1
+                with count_lock:
+                    counts[self.workload] += 1
                 return super().embed_texts(texts)
 
         provider = RecordingModelProvider(
@@ -93,7 +103,10 @@ def _probe(backend, directory):
                             reasoning_consult_memory_enabled=False)
         repo = SQLiteRepository(settings, model_provider=provider)
         try:
-            notebook, mapping = prepare_notebook(repo, root, documents, 'alce', preparation_policy=policy)
+            notebook, mapping = prepare_notebook(repo, root, documents, 'alce', preparation_policy=policy,
+                                                 workers=workers)
+            assert list(mapping) == [document['id'] for document in documents]  # upload order kept
+            assert sorted(item['completion_index'] for item in mapping.values()) == list(range(1, 101))
             assert notebook_metadata_refresh_suppressed() is False
             assert len(mapping) == 100
             assert all(item['chunk_ids'] for item in mapping.values())
@@ -227,4 +240,4 @@ if __name__ == '__main__':
     if sys.argv[3:] in (['seed'], ['cache']):
         _seed_probe(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])
     else:
-        _probe(Path(sys.argv[1]), Path(sys.argv[2]))
+        _probe(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[4]) if len(sys.argv) > 4 else 1)

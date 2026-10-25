@@ -38,7 +38,7 @@
 
 已准备 notebook 通过内容寻址缓存复用（`job_execution.preparation_cache`，缺省为 `<output_root>/preparation-cache`，`false` 关闭）：键为分区语料、准备策略与文档容量、SN 准备路径源码哈希（显式列表见 `src/rag_eval/preparation_cache.py`）、准备相关 Settings、模型服务配置与评测侧准备代码。命中时逐字节核验后复制到本运行的私有数据库与 storage，manifest 记 `prepared_from`；未命中则正常导入并在提问前发布只读条目。原 `seed_from_root`／`seed_guard_patterns` 已退役（配置里保留也不再生效），显式 `seed_runs` 与 `--seed-prepared-run` 保留。
 
-调度相关的可选键（`job_execution` 或 iteration 创建时的 `execution`，后者覆盖前者，只影响调度、不进比较身份）：`parallel`（分区并行数）、`question_workers`（分区内同时提问数，默认 1 即原顺序路径；Agent 评测与 MultiHop 排名捕获仍顺序执行）、`case_deadline_seconds`／`partition_deadline_seconds`（超时题记 `error` 并带 `failed_phase`，分区照常结束、评分；进程超出分区期限 120 s 后被杀）、`model_concurrency`（本服务器所有分区进程共享的模型请求槽位数，槽位文件在 `<output_root>/model-gate`）。每个分区结束即官方评分；子进程在监督超时前预留余量停止启动新分区，已完成分区照常评分。`retry_rounds` 只重问失败（`error`／缺失）的题，原运行与各轮重试都保留，`retry-rounds.json` 与 `batch-plan.json` 的 `retries` 写明每题用哪一份；比较时只对这些题取重试运行的官方分。题目带 `error` 的分区不再使整个执行失败；只有分区没有走到自身终态（崩溃、被杀、未启动）或评分失败才算执行失败。
+调度相关的可选键（`job_execution` 或 iteration 创建时的 `execution`，后者覆盖前者，只影响调度、不进比较身份）：`parallel`（分区并行数）、`preparation_workers`（分区内同时处理的导入文档数，上传仍逐篇顺序；默认 1，内容不随它变化，不进准备缓存键）、`question_workers`（分区内同时提问数，默认 1 即原顺序路径；Agent 评测与 MultiHop 排名捕获仍顺序执行）、`case_deadline_seconds`／`partition_deadline_seconds`（超时题记 `error` 并带 `failed_phase`，分区照常结束、评分；进程超出分区期限 120 s 后被杀）、`model_concurrency`（本服务器所有分区进程共享的模型请求槽位数，槽位文件在 `<output_root>/model-gate`）。每个分区结束即官方评分；子进程在监督超时前预留余量停止启动新分区，已完成分区照常评分。`retry_rounds` 只重问失败（`error`／缺失）的题，原运行与各轮重试都保留，`retry-rounds.json` 与 `batch-plan.json` 的 `retries` 写明每题用哪一份；比较时只对这些题取重试运行的官方分。题目带 `error` 的分区不再使整个执行失败；只有分区没有走到自身终态（崩溃、被杀、未启动）或评分失败才算执行失败。
 
 ```bash
 paseo script start workbench --cwd /home/wabiwabi/silicon-notebook/benchmark-deepeval/.worktrees/benchmark-protocol-correctness

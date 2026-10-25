@@ -145,7 +145,8 @@ class _CandidateWorktreeView(TaskWorktreeService):
         raise Conflict('Candidate worktree bindings are immutable')
 
 
-EXECUTION_POLICY_KEYS = ('parallel', 'question_workers', 'case_deadline_seconds', 'partition_deadline_seconds')
+EXECUTION_POLICY_KEYS = ('parallel', 'question_workers', 'preparation_workers', 'case_deadline_seconds',
+                         'partition_deadline_seconds')
 
 
 def validate_execution_policy(policy):
@@ -155,9 +156,9 @@ def validate_execution_policy(policy):
     if type(policy) is not dict or not set(policy) <= set(EXECUTION_POLICY_KEYS):
         raise ValueError('execution accepts only ' + ', '.join(EXECUTION_POLICY_KEYS))
     for key, value in policy.items():
-        limit = 64 if key == 'parallel' else 32 if key == 'question_workers' else 86400
+        limit = {'parallel': 64, 'question_workers': 32, 'preparation_workers': 64}.get(key, 86400)
         if type(value) not in (int, float) or type(value) is bool or not 0 < value <= limit \
-                or (key in ('parallel', 'question_workers') and type(value) is not int):
+                or (key in ('parallel', 'question_workers', 'preparation_workers') and type(value) is not int):
             raise ValueError('Invalid execution.' + key)
     return dict(policy)
 

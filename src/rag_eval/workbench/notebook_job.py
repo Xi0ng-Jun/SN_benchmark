@@ -11,6 +11,8 @@ finished work is scored instead of killed. Optional server settings:
 - ``retry_rounds``: re-ask only the failed cases (``error`` or missing) of a
   partition, on its own prepared notebook, up to this many rounds; every round
   stays on disk and ``retry-rounds.json`` names the run used for each case;
+- ``preparation_workers``: imported documents processed at once per partition
+  (uploads stay sequential; content does not depend on it);
 - ``question_workers``, ``case_deadline_seconds``, ``partition_deadline_seconds``:
   questions asked at once inside a partition, and deadlines after which a
   question is saved as ``error`` and the partition finishes;
@@ -78,6 +80,9 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
     workers = config.get('question_workers', 1)
     if type(workers) is not int or not 1 <= workers <= 32:
         raise ExecutionRejected('Invalid question_workers setting')
+    preparation_workers = config.get('preparation_workers', 1)
+    if type(preparation_workers) is not int or not 1 <= preparation_workers <= 64:
+        raise ExecutionRejected('Invalid preparation_workers setting')
     deadlines = {}
     for key in ('case_deadline_seconds', 'partition_deadline_seconds'):
         value = config.get(key)
@@ -130,7 +135,7 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
         project_root=str(Path(config['project_root']).resolve()), python=config['python'],
         files=files, scorer_sources=config['scorer_sources'], budget=approved,
         task_worktree=config.get('task_worktree'), preparation_cache=cache or None,
-        question_workers=workers, **deadlines,
+        question_workers=workers, preparation_workers=preparation_workers, **deadlines,
         model_gate=[str(output / 'model-gate'), gate] if gate is not None else None)
     script = Path(__file__).resolve().parents[3] / 'scripts/run_workbench_notebook.py'
     return dict(argv=[config['python'], str(script), '--payload', json.dumps(payload)],
@@ -280,6 +285,7 @@ def execute(payload):
             budget_ledger=budget_ledger, task_worktree_ref=association,
             preparation_cache=payload.get('preparation_cache'),
             question_workers=payload.get('question_workers', 1),
+            preparation_workers=payload.get('preparation_workers', 1),
             case_deadline_seconds=payload.get('case_deadline_seconds'),
             partition_deadline_seconds=payload.get('partition_deadline_seconds'),
             model_gate=tuple(payload['model_gate']) if payload.get('model_gate') else None,

@@ -21,8 +21,22 @@ def validate_preparation_policy(policy):
 def read_json(path, default=None):
     return json.loads(Path(path).read_text()) if Path(path).exists() else default
 
-def prepare_notebook(repo, cell, documents, dataset, *, preparation_policy=DEFAULT_PREPARATION_POLICY):
+def prepare_notebook(repo, cell, documents, dataset, *, preparation_policy=DEFAULT_PREPARATION_POLICY,
+                     workers=1):
+    """Import every document, then verify chunks, embeddings and the scale index.
+
+    ``workers=1`` processes each upload synchronously on this thread. With more
+    workers, uploads stay sequential on this thread and each source's SN
+    pipeline (parse, summarize, metadata, embeddings) runs in a bounded thread
+    pool, each task under a copy of this thread's context so SN's ContextVar
+    scopes travel with it. Content does not depend on the worker count; the
+    document map keeps upload order, per-document processing seconds and the
+    order in which documents completed. A failed document fails preparation
+    after in-flight work ends; finished documents stay recorded.
+    """
     validate_preparation_policy(preparation_policy)
+    if type(workers) is not int or not 1 <= workers <= 64:
+        raise ValueError('Preparation workers must be an integer between 1 and 64')
     deferred = preparation_policy == DEFERRED_METADATA_POLICY
     metadata_scope = nullcontext
     if deferred:
@@ -51,6 +65,9 @@ def prepare_notebook(repo, cell, documents, dataset, *, preparation_policy=DEFAU
     # scheduler=None keeps ingestion on this thread, inside the SN ContextVar
     # scope. Other ingestion hooks and all per-source model work remain active.
     with metadata_scope():
+        if workers > 1:
+            _ingest_concurrently(repo, cell, notebook, documents, mapping, dataset, capacity, workers,
+                                 UploadedSourceFile)
         for index, document in enumerate(documents):
             public_id = document['id']
             if public_id in mapping:
@@ -63,7 +80,8 @@ def prepare_notebook(repo, cell, documents, dataset, *, preparation_policy=DEFAU
                 file_name=filename, content_type='text/markdown', content=content,
                 title=document.get('title') or public_id)], scheduler=None, capacity_limit=capacity)
             mapping[public_id] = {'source_id': uploaded[0].id, 'text_sha256': hashlib.sha256(content).hexdigest(),
-                                  'filename': filename, 'ingest_seconds': time.monotonic() - started}
+                                  'filename': filename, 'ingest_seconds': time.monotonic() - started,
+                                  'completion_index': len(mapping) + 1}
             save_json(cell / 'document-map.json', mapping)
             print(dataset, 'import', index + 1, '/', len(documents), flush=True)
     if not state.get('prepared'):
@@ -98,6 +116,86 @@ def prepare_notebook(repo, cell, documents, dataset, *, preparation_policy=DEFAU
                      kg_present=False, effective_document_limit=capacity)
         save_json(cell / 'state.json', state)
     return notebook, mapping
+
+def _ingest_concurrently(repo, cell, notebook, documents, mapping, dataset, capacity, workers, UploadedSourceFile):
+    """Sequential uploads, bounded concurrent per-source processing (see prepare_notebook)."""
+    from concurrent.futures import ThreadPoolExecutor
+    import contextvars
+    import threading
+    lock = threading.Lock()
+    order = list(mapping)          # resumed entries first, then upload order
+    entries, done, failures = {}, dict(mapping), []
+
+    def publish():
+        save_json(cell / 'document-map.json', {key: done[key] for key in order if key in done})
+
+    def process(public_id, source_id):
+        started = time.monotonic()
+        error = None
+        try:
+            summary = repo.process_source(source_id)
+            if 'failed' in (getattr(summary, 'status', ''), getattr(summary, 'parse_status', '')):
+                error = 'source processing failed'
+        except Exception as exc:
+            error = type(exc).__name__
+        with lock:
+            entry = dict(entries[public_id], ingest_seconds=time.monotonic() - started)
+            if error is not None:
+                failures.append(dict(document_id=public_id, source_id=source_id, error=error))
+                return
+            done[public_id] = dict(entry, completion_index=len(done) + 1)
+            publish()
+            print(dataset, 'import', len(done), '/', len(documents), flush=True)
+
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='sn-prepare')
+    futures, completed = [], False
+    try:
+        for document in documents:
+            public_id = document['id']
+            if public_id in mapping:
+                continue
+            with lock:
+                if failures:
+                    break  # stop uploading; in-flight documents still finish
+            content = document['text'].encode('utf-8')
+            filename = hashlib.sha256(public_id.encode()).hexdigest()[:24] + '.md'
+            entry = {'text_sha256': hashlib.sha256(content).hexdigest(), 'filename': filename}
+
+            def schedule(source_id, public_id=public_id, entry=entry):
+                with lock:
+                    entries[public_id] = dict(source_id=source_id, **entry)
+                    order.append(public_id)
+                # A fresh context copy per task: one Context cannot be entered by two threads.
+                futures.append(pool.submit(contextvars.copy_context().run, process, public_id, source_id))
+
+            started = time.monotonic()
+            uploaded = repo.upload_sources(notebook, [UploadedSourceFile(
+                file_name=filename, content_type='text/markdown', content=content,
+                title=document.get('title') or public_id)], scheduler=schedule, capacity_limit=capacity)
+            with lock:
+                if public_id not in entries:
+                    # SN reused an existing same-content source without scheduling it.
+                    entries[public_id] = dict(source_id=uploaded[0].id, **entry)
+                    order.append(public_id)
+                    done[public_id] = dict(entries[public_id], ingest_seconds=time.monotonic() - started,
+                                           completion_index=len(done) + 1)
+                    publish()
+        for future in futures:
+            future.result()  # every scheduled document is processed before verification
+        completed = True
+    finally:
+        # Queued work is dropped only when this thread is leaving with an exception.
+        pool.shutdown(wait=True, cancel_futures=not completed)
+    mapping.clear()
+    mapping.update({key: done[key] for key in order if key in done})
+    publish()
+    if failures:
+        state = read_json(cell / 'state.json', {})
+        state['preparation_failures'] = failures
+        save_json(cell / 'state.json', state)
+        raise ValueError(f'{len(failures)} document(s) failed preparation: '
+                         + ', '.join(item['document_id'] for item in failures[:10]))
+
 
 def load_prepared_notebook(cell, documents, *, preparation_policy=DEFAULT_PREPARATION_POLICY):
     """Accept a copied, fully prepared notebook without importing documents again."""
