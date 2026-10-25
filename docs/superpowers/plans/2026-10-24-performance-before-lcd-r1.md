@@ -145,3 +145,35 @@
 
   改前随候选数近似平方增长（20/10 比 3.7、3.3），改后线性（每候选约 20 条，含首次落库），未变化的刷新为常数 18 条；第二、三次相同 GET 不调用 `load_bundle`／`RunReadContext.bundle`、不增加 flips／admission 调用。另测：任务内新事件使版本变化并重建；HTTP 带 ETag，未变化时 304 且无正文；请求作用域内 3 次 `execution_runs` + 3 次 Admission 只读一次执行记录、只做一次 sealed 检查，请求外行为不变，作用域按线程隔离；账本只在文件变化时重解析。
 - **测试。** 全量 `-n auto`：**2547 passed, 7 skipped，墙钟 70 s**。
+
+### P4 · 2026-10-25 · 去掉重复校验与重复物化
+
+- **改动。**
+  - **缓存键先改读源码对象。** runner 在快照后把 `actual_manifest` 从 code 里取出：内存里保留给模块来源检查（`_loaded_source_identity`）与准备缓存键（`preparation_key(manifest=…)`，来自内容地址存储里捕获源码对象的 `object.json`），保存的 `identity.code` 与 `source-identity.json` 只留 `source_manifest_sha256`（即 manifest 的指纹）。`source_identity.compact_code_identity` 在丢弃旧运行里的整份 manifest 前核对它与指纹一致；`sn_submission_identity`、`experiment_aggregation`、`build_comparison_identity` 与 `benchmark_comparison` 的方法差异披露都按同一投影比较，所以旧、新运行同条件时导出族与比较身份一致（旧运行可与新运行合并导出）。读侧：`validate_sources` 只比对象记录与指纹；`validate_runtime_model_services` 对新运行从源码对象取 manifest，旧运行仍用自带的。
+  - **SN 源码每执行物化一次。** `notebook_job` 用 `materialize_shared_sn_source` 把捕获对象逐成员核验后解到 `invocation/sn-source`，`compileall` 一次，置只读（文件 0444、目录 0555）；分区与重试经 `plan_batch(shared_sn_source=…)` → `--shared-sn-source` 拿到它，`link_shared_sn_source` 核对标记（同一 ref 与指纹）与文件集合后，在各自 `captured-source` 下建硬链接树（跨文件系统时退回复制）。模块路径、`sys.path[0]` 仍在各运行目录内，启动依赖观测的 `<RUN>/captured-source/backend` 约定不变，每个已加载模块仍逐个对 manifest 重算哈希。单独运行 CLI 时仍按原方式私有物化，但 `materialize_captured_sn_source` 不再先哈希整个 tar（逐成员核验更严）。`_shared_snapshot_captured_sources` 的 `product_archive_sha256` 改取经 ref 认证的 `object.json` 文件哈希，不再三次 `resolve`／`digest` 整个 tar；评测器源码哈希只算一次（`install_files(hashes=…)`）。
+  - `job_preparation` 删除 `/tmp` 解压校验：tar 哈希仍在准备时核验，成员与 manifest 的一致性在执行物化时核验。
+  - **bundle 每执行 ≤ 1 次重建。** `run_reader.verified_bundle` 是进程级缓存，键 = 目录 + `manifest.json` 哈希，命中前重算 manifest 列出的每个文件哈希（字节核验保留，只省去原始数据的解析与重建）；`RunReadContext.bundle` 走它；`notebook_job` 评分改用同一个 `RunReadContext` 的 `bundle()`，导出与评分共用一次加载。`RunReadContext` 另按 (bundle/index ref, 分区, 修订) 缓存已核验的 capsule。
+  - `plan_batch` 用 bundle 对象里的 `partitions.jsonl`（单文件核验）定位选中题所在分区，只加载这些 capsule；成员、跨分区与越界检查不变。
+  - 读路径（`input_directory`、`validate_sources`）对源码对象只核验 `object.json`，不再哈希 tar：读已完成的运行不消费归档字节。`_publish` 遇到已存在对象只核验其记录。
+  - 依赖观测 `_owners`：仍只认 RECORD 列出的路径（不用 `packages_distributions` 启发式，原注释的约束保留），但不再对每个发行包的每个 RECORD 条目做 `resolve()`，而是把模块路径换成相对发行包根的文本去查，命中后再 `resolve()` 确认；经链接或 `..` 才能到达的条目匹配不上，会以"缺少 owner"失败（失败关闭）。
+  - 阶段指标：runner 的报告把已算的结果写成 `stage-metrics.json`；批次端 `saved_stage_metrics` 在各输入文件哈希与 `state.json` 都一致时直接复用，否则重算。
+  - 不再写常量 `audits_sha256`（notebook runner 与 baseline runner）和无人读的 `settings_sha256`；读侧兼容（`run_ledger` 仍以它为最后回退，聚合不再要求它存在）。
+- **实测（`PYTHONPATH=src:tests python tests/perf_p4_probe.py`，合成捕获源码 1000 个文件、tar 21 MB，12 分区 QASPER bundle）。**
+
+  | 量 | 改前 | 改后 |
+  | --- | --- | --- |
+  | 每分区源码绑定哈希字节 | 112.8 / 110.9 / 110.9 MB | 6.5 / 2.6 / 2.6 MB（另每执行一次物化 20.4 MB） |
+  | 读回一个分区的输入对象 | 23.3 MB（子进程报告与批次阶段指标各一次） | 0.4 MB |
+  | 单分区重试的 `plan_batch` | 加载 12 个 capsule，0.71 MB | 1 个，0.12 MB |
+  | 重发布已存在的评测器对象 | 3.65 MB | 1.87 MB（调用方算一次；绑定路径里传入后为 0） |
+  | 评分阶段 `load_bundle` | 每执行 2 次（`load_bundle` + `context.bundle`） | 1 次（`test_scoring_loads_the_bundle_once_per_execution`，3 分区） |
+  | 每分区 `load_partition` | 子进程 3 + 批次 1 | 子进程 2（runner 自身 + 读回共用 1），批次 0 |
+  | 依赖 owner 查找（评测 venv，144 个发行包） | 0.71 s | 0.31 s |
+
+- **偏离与原因。**
+  1. 依赖观测没有按"解释器前缀 + 文件 stat"做缓存：每个分区是新进程，进程内缓存无效，跨进程缓存要求一个共享可写位置且不能写 venv；文本查找已把主要开销（逐条 `resolve`）去掉。也没有改用 `packages_distributions()`：原实现明确要求只认 RECORD，启发式会漏掉"同一文件被两个发行包声明"的歧义检查。
+  2. 新运行的 `protocol_id`／`pairing_id` 因 identity 去掉两个字段而与旧运行不同；这与评测器源码哈希本来就进 identity 的情况相同（评测器一改就不同），导出族、提交身份与比较身份按投影比较，不受影响。
+  3. `verified_bundle` 只经 `RunReadContext` 使用，没有改 `load_bundle` 本身：直接调用 `load_bundle` 的二十多处调用方可能修改返回值，共享对象有风险；`RunReadContext` 一向返回共享对象。
+  4. 共享源码树需要与分区运行同一文件系统才能硬链接，否则逐文件复制（与改前同等开销，但仍省去 tar 哈希与重编译）。
+- **验收测试。** `tests/test_shared_source_and_compact_identity.py`（6 项）：共享树逐成员核验、预编译、只读，分区内是硬链接（inode 相同），导入来自运行自身路径并复用 `.pyc`，标记不符或文件集合不符拒绝；带共享源码的快照只保存指纹，`product_archive_sha256` 等于 tar 真实哈希，`validate_sources` 通过，`source_manifest()` 从对象取回 manifest；旧 identity（整份 manifest + 常量 audits）与新 identity 投影相同，manifest 与指纹不一致则拒绝，非常量 audits 保留；已存在对象重发布只核验记录；**改动前形状的合成运行目录（整份 manifest、常量 `audits_sha256`、按旧 identity 重算的 protocol/plan/scores）`load_run` 正常，且与新运行投影一致**；runner 保存的阶段指标在输入不变时复用、变了即重算。另改：`test_sn_source_loading` 不带 manifest 的 code 现在是合法新格式（manifest 与指纹不一致仍拒绝）；`test_workbench_job_preparation` 中 manifest 自洽但与成员不符的源码对象改为在执行物化时被拒绝。
+- **测试。** 全量 `-n auto`：**2554 passed, 7 skipped，墙钟 77 s**（含真实 SN 离线集成测试）。

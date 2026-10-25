@@ -159,7 +159,7 @@ def test_malformed_reader_json_is_a_sanitized_preparation_rejection(environment,
 @pytest.mark.parametrize('seam,error_type', [
     ('load_bundle', AttributeError), ('load_partition', AttributeError),
     ('load_bundle', sqlite3.OperationalError), ('load_partition', sqlite3.OperationalError),
-    ('_canonical', AttributeError), ('materialize_captured_sn_source', AttributeError),
+    ('_canonical', AttributeError),
 ])
 def test_reader_normalization_preserves_unrelated_exceptions(environment, monkeypatch, seam, error_type):
     from rag_eval.workbench import job_preparation
@@ -200,6 +200,14 @@ def test_valid_object_hashes_do_not_replace_semantic_binding(environment, change
             entry['sha256'] = '0' * 64
             identity['source_manifest_sha256'] = fingerprint(identity['actual_manifest'])
         args = dict(sn_ref=republish(store, ref, identity=identity))
+    if change == 'source_manifest':
+        # Archive members are checked against the manifest when an execution
+        # materializes the source, not by a throwaway extraction at preparation.
+        from rag_eval.runtime_environment import materialize_shared_sn_source
+        build(env, **args)
+        with pytest.raises(ValueError, match='do not match captured manifest'):
+            materialize_shared_sn_source(store, args['sn_ref'], env['store'].root.parent / 'execution' / 'sn-source')
+        return
     with pytest.raises(ValueError):
         build(env, **args)
 

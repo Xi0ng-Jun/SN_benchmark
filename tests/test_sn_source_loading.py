@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize('fault', ['missing_both', 'missing_record', 'empty', 'bad_digest', 'different_record'])
+@pytest.mark.parametrize('fault', ['missing_both', 'empty', 'bad_digest', 'different_record', 'inconsistent_record',
+                                   None])
 def test_reader_rejects_malformed_capture_identity(tmp_path, fault):
     from rag_eval.artifact_store import ArtifactStore
     from rag_eval.identity import fingerprint
@@ -22,8 +23,11 @@ def test_reader_rejects_malformed_capture_identity(tmp_path, fault):
     if fault == 'missing_both':
         identity.pop('actual_manifest')
         code.pop('actual_manifest')
-    elif fault == 'missing_record':
+    elif fault is None:
+        # Runs now record only the manifest digest; the object keeps the manifest.
         code.pop('actual_manifest')
+    elif fault == 'inconsistent_record':
+        code['actual_manifest'] = {'backend/app/other.py': manifest['backend/app/m.py']}
     elif fault == 'empty':
         identity.update(actual_manifest={}, source_manifest_sha256=fingerprint({}))
         code = dict(identity)
@@ -36,6 +40,9 @@ def test_reader_rejects_malformed_capture_identity(tmp_path, fault):
     evaluator = store.install_bytes('evaluator', {'eval.py': b'x'}, identity={})
     code.update(product_archive_sha256=hashlib.sha256(b'archive').hexdigest(),
                 benchmark_source_hashes={'eval.py': hashlib.sha256(b'x').hexdigest()})
+    if fault is None:
+        RunReadContext().validate_sources(store, {'sources': {'sn': sn, 'evaluator': evaluator}}, code)
+        return
     with pytest.raises(ValueError, match='[Mm]anifest|identity|source'):
         RunReadContext().validate_sources(store, {'sources': {'sn': sn, 'evaluator': evaluator}}, code)
 

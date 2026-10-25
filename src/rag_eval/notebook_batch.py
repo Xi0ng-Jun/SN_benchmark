@@ -33,7 +33,7 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
                seed_prepared_map=None, seed_allow_source_change=False, preparation_cache=None,
                question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None,
-               model_gate=None):
+               model_gate=None, shared_sn_source=None):
     """Validate all selected IDs before any process; retain frozen case order.
 
     With a seed map, preparation_policy='from-seed' takes each job's policy from
@@ -75,8 +75,15 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
     from .artifact_store import ArtifactStore
     store = ArtifactStore(artifact_root)
     index = json.loads((store.resolve(refs['index'], files=['index.json']) / 'index.json').read_text())
+    # The bundle's own partition table (one verified file) says which partitions
+    # hold the selected cases; only those capsules are loaded and re-checked.
+    table = store.resolve(refs['bundle'], files=['partitions.jsonl']) / 'partitions.jsonl'
+    wanted = {row['partition_id'] for row in map(json.loads, table.read_text(encoding='utf-8').splitlines())
+              if selected.intersection(row['case_ids'])}
     groups, seen = [], set()
     for pid in index['partitions']:
+        if pid not in wanted:
+            continue
         capsule = load_partition(artifact_root, refs, pid, OFFICIAL_REQUEST_REVISION)
         ids = [cid for cid in capsule['partition']['case_ids'] if cid in selected]
         if seen.intersection(ids):
@@ -114,6 +121,10 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
             argv.extend(['--case-deadline-seconds', str(case_deadline_seconds)])
         if model_gate is not None:
             argv.extend(['--model-gate', str(Path(model_gate[0]).resolve()), '--model-gate-slots', str(model_gate[1])])
+        if shared_sn_source is not None:
+            if sn_source_ref is None:
+                raise ValueError('A shared materialized source needs its captured source reference')
+            argv.extend(['--shared-sn-source', str(Path(shared_sn_source).resolve())])
         seed, policy = None, preparation_policy
         if seeds is not None:
             # One partition is one prepared notebook; its cases must share the seed.
@@ -226,8 +237,8 @@ def _run_job(job, diagnostic_directory, deadline=None):
     row.update(details)
     if (run / 'outputs.jsonl').is_file() and (run / 'manifest.json').is_file():
         try:
-            from .stage_metrics import write_stage_metrics
-            metrics = write_stage_metrics([run])['runs'][0]
+            from .stage_metrics import saved_stage_metrics, write_stage_metrics
+            metrics = saved_stage_metrics(run) or write_stage_metrics([run])['runs'][0]
             row['stage_metrics'] = metrics['summary']
             row['stage_metrics_path'] = str(run / 'stage-metrics.json')
         except Exception as exc:

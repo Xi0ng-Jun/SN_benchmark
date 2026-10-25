@@ -5,6 +5,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import threading
 
 from .artifacts import digest
 from .identity import fingerprint
@@ -22,6 +23,35 @@ def input_directory(run):
     return store_for_run(run, refs).resolve(refs['bundle'])
 
 
+_VERIFIED_BUNDLES = {}
+_VERIFIED_LOCK = threading.Lock()
+
+
+def verified_bundle(directory):
+    """``load_bundle`` once per process per bundle; later reads re-verify the bytes.
+
+    The full rebuild (parsing raw data and re-adapting every case) is what made
+    repeated loads expensive. A cached bundle is returned only after every file
+    listed in its manifest still has the recorded hash.
+    """
+    from .notebook_bundle import load_bundle
+    directory = Path(directory).resolve()
+    manifest_bytes = (directory / 'manifest.json').read_bytes()
+    key = (str(directory), hashlib.sha256(manifest_bytes).hexdigest())
+    with _VERIFIED_LOCK:
+        cached = _VERIFIED_BUNDLES.get(key)
+        if cached is not None:
+            files = json.loads(manifest_bytes).get('files', {})
+            if all(digest(directory / name) == checksum for name, checksum in files.items()):
+                return cached
+            _VERIFIED_BUNDLES.pop(key)
+        bundle = load_bundle(directory)
+        if len(_VERIFIED_BUNDLES) >= 8:
+            _VERIFIED_BUNDLES.pop(next(iter(_VERIFIED_BUNDLES)))
+        _VERIFIED_BUNDLES[key] = bundle
+        return bundle
+
+
 class RunReadContext:
     """One-operation caches, keyed by physical path AND exact expected identity.
 
@@ -35,6 +65,7 @@ class RunReadContext:
         self._objects = {}
         self._lookups = {}
         self._products = {}
+        self._capsules = {}
         self.stats = {'canonical_rebuilds': 0, 'object_verifications': 0}
 
     @property
@@ -54,7 +85,9 @@ class RunReadContext:
             return
         if set(sources) != {'evaluator', 'sn'}:
             raise ValueError('Shared code requires both source artifact roles')
-        objects = {role: json.loads((self.object(store, ref) / 'object.json').read_text())
+        # Only the authenticated object records are compared; archive bytes are
+        # not consumed when reading a finished run.
+        objects = {role: json.loads((self.object(store, ref, files=[]) / 'object.json').read_text())
                    for role, ref in sources.items()}
         sn_identity = objects['sn']['identity']
         source_files_match = objects['sn']['files'] == {
@@ -62,12 +95,13 @@ class RunReadContext:
         }
         if sn_identity.get('source_format') == 'sn-source-capture-v1':
             from .source_identity import captured_source_manifest
-            actual_manifest = captured_source_manifest(sn_identity)
-            recorded_manifest = captured_source_manifest(code)
+            captured_source_manifest(sn_identity)
+            # Older runs also saved the whole manifest; it must match its digest.
+            from .source_identity import compact_code_identity
+            compact_code_identity(code)
             source_binding_match = (
                 code.get('source_format') == sn_identity.get('source_format')
                 and code.get('source_manifest_sha256') == sn_identity.get('source_manifest_sha256')
-                and recorded_manifest == actual_manifest
             )
         else:
             source_binding_match = sn_identity.get('product_revision') == code.get('product_revision')
@@ -76,12 +110,12 @@ class RunReadContext:
             raise ValueError('Shared source artifacts differ from recorded code identity')
 
     def bundle(self, directory):
-        from .notebook_bundle import load_bundle
         directory = Path(directory).resolve()
         if directory not in self._bundles:
-            self._bundles[directory] = load_bundle(directory)
+            self._bundles[directory] = verified_bundle(directory)
             self.stats['canonical_rebuilds'] += 1
-            self._canonical_by_manifest[fingerprint(self._bundles[directory]['manifest'])] = self._bundles[directory]
+            if 'manifest' in self._bundles[directory]:
+                self._canonical_by_manifest[fingerprint(self._bundles[directory]['manifest'])] = self._bundles[directory]
         return self._bundles[directory]
 
     def input_directory(self, run):
@@ -96,8 +130,21 @@ class RunReadContext:
         if index.get('format') != 'sn-bundle-index-v1' or index.get('bundle') != refs['bundle']:
             raise ValueError('Run partition index refers to a different bundle')
         for ref in refs.get('sources', {}).values():
-            self.object(store, ref)
+            self.object(store, ref, files=[])
         return directory
+
+    def source_manifest(self, run):
+        """The captured SN file manifest from the run's source object, or None."""
+        refs = read_run_refs(Path(run).resolve())
+        ref = ((refs or {}).get('sources') or {}).get('sn')
+        if ref is None:
+            return None
+        store = store_for_run(Path(run).resolve(), refs)
+        identity = json.loads((self.object(store, ref, files=[]) / 'object.json').read_text())['identity']
+        if identity.get('source_format') != 'sn-source-capture-v1':
+            return None
+        from .source_identity import captured_source_manifest
+        return captured_source_manifest(identity)
 
     def bundle_for_run(self, run):
         run = Path(run).resolve()
@@ -108,7 +155,12 @@ class RunReadContext:
             manifest = json.loads((run / 'manifest.json').read_text())
             context = manifest['identity']['notebook_context']
             revision = context.get('request_revision', 'notebook-request-v1')
-            capsule = load_partition(store_for_run(run, refs).root, refs, context['partition_id'], revision)
+            # Content-addressed refs: one verified capsule serves every read of this operation.
+            key = (fingerprint({k: refs[k] for k in ('bundle', 'index')}), context['partition_id'], revision)
+            capsule = self._capsules.get(key)
+            if capsule is None:
+                capsule = self._capsules[key] = load_partition(
+                    store_for_run(run, refs).root, refs, context['partition_id'], revision)
             bundle = dict(capsule, partitions=[capsule['partition']])
             if not capsule['qasper_evidence_catalogues']:
                 bundle.pop('qasper_evidence_catalogues')
@@ -231,8 +283,12 @@ def validate_runtime_dependencies(run, identity):
     return {'format': environment['format'], 'sha256': binding['environment_sha256']}
 
 
-def validate_runtime_model_services(run, identity):
-    """Validate saved model startup facts without product/host configuration."""
+def validate_runtime_model_services(run, identity, *, source_manifest=None):
+    """Validate saved model startup facts without product/host configuration.
+
+    ``source_manifest`` comes from the run's captured source object; runs saved
+    before the manifest left the identity still carry it there.
+    """
     binding = identity.get('runtime_model_services')
     if binding is None:
         return  # Runs preceding this observation retain their existing meaning.
@@ -250,7 +306,7 @@ def validate_runtime_model_services(run, identity):
             or observation['declared_config_sha256'] != identity.get('product_services')
             or fingerprint(saved['source_modules']) != binding['source_modules_sha256']):
         raise ValueError('Saved loaded model services identity changed')
-    manifest = identity.get('code', {}).get('actual_manifest', {})
+    manifest = identity.get('code', {}).get('actual_manifest') or source_manifest or {}
     modules = saved['source_modules']
     if type(modules) is not list:
         raise ValueError('Invalid model consumer source observations')
@@ -306,7 +362,10 @@ def load_run(run, *, context=None, include_model_events=True):
     if manifest["track"] == "R" and fingerprint(manifest["identity"]) != manifest["pairing_id"]:
         raise ValueError("Product pairing identity does not match its configuration")
     startup_comparison = validate_runtime_dependencies(run, manifest['identity'])
-    validate_runtime_model_services(run, manifest['identity'])
+    services = manifest['identity'].get('runtime_model_services')
+    validate_runtime_model_services(run, manifest['identity'], source_manifest=context.source_manifest(run)
+                                    if services is not None and 'actual_manifest' not in
+                                    manifest['identity'].get('code', {}) else None)
     if 'feature_set' in manifest['identity']:
         from .feature_identity import build_feature_identity, validate_feature_identity
         saved = validate_feature_identity(manifest['identity']['feature_set'])

@@ -25,7 +25,9 @@ def sn(fake_sn, monkeypatch, tmp_path):
     from rag_eval import runtime_environment
     fake_sn.code = dict(revision='test', head_revision='a' * 40, actual_manifest=deepcopy(MANIFEST))
     fake_sn.settings = dict(chunk_target_chars=600, chunk_mmr_k=8)
-    monkeypatch.setattr(runtime_environment, 'snapshot_sources', lambda *a, **k: deepcopy(fake_sn.code))
+    from rag_eval.identity import fingerprint
+    monkeypatch.setattr(runtime_environment, 'snapshot_sources', lambda *a, **k: dict(
+        deepcopy(fake_sn.code), source_manifest_sha256=fingerprint(fake_sn.code['actual_manifest'])))
     base = runtime_environment.configure_environment
 
     def configure(project, run, **kwargs):

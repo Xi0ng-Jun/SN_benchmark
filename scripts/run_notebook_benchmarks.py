@@ -89,6 +89,8 @@ def main():
                         help='Accept a seed prepared by different SN source (answer-path changes only); recorded')
     parser.add_argument('--preparation-cache', type=Path,
                         help='Content-addressed cache of prepared notebooks; a verified hit replaces importing')
+    parser.add_argument('--shared-sn-source', type=Path,
+                        help='Read-only tree of the captured SN source materialized once for this execution')
     parser.add_argument('--question-workers', type=int, default=1,
                         help='Questions of this partition asked at once (independent requests)')
     parser.add_argument('--case-deadline-seconds', type=float,
@@ -190,7 +192,8 @@ def main():
                     seed_allow_source_change=args.seed_allow_source_change,
                     preparation_cache=args.preparation_cache, question_workers=args.question_workers,
                     case_deadline_seconds=args.case_deadline_seconds,
-                    partition_deadline_seconds=args.partition_deadline_seconds, **startup_kwargs)
+                    partition_deadline_seconds=args.partition_deadline_seconds,
+                    shared_source=args.shared_sn_source, **startup_kwargs)
     except BaseException as exc:
         details = getattr(exc, '_rag_eval_diagnostic_details', None) or exception_details(
             exc, phase='validation', sensitive_values=config_sensitive_values(args.model_config))
@@ -200,7 +203,8 @@ def main():
         code = 130 if interrupted else 2
     if not run_existed and (run / 'state.json').exists():
         try:
-            report = write_report([run], run / 'report', partition_only=args.artifact_root is not None)
+            report = write_report([run], run / 'report', partition_only=args.artifact_root is not None,
+                                  save_stage_metrics=True)
             if any(r['state']['phase'] != 'finished' or r['warnings'] for r in report['runs']):
                 code = code or 2
             print(run / 'report/report.md')

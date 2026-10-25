@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import hashlib
 from importlib import machinery, metadata
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import struct
@@ -324,11 +324,23 @@ def _owners(modules, installed):
             continue
         found = {}
         # Ownership comes from RECORD-listed paths, never containment or a
-        # packages_distributions heuristic. Compare resolved file paths.
+        # packages_distributions heuristic. Resolving every RECORD entry of
+        # every distribution dominated startup; instead each origin is
+        # expressed relative to the distribution's resolved base and looked up
+        # among its listed paths as text. An entry reaching a module through a
+        # link or '..' is not matched, which fails closed as a missing owner.
+        base = Path(distribution.locate_file('')).resolve()
+        relative = {}
+        for origin in origins:
+            path = Path(origin)
+            if path.is_relative_to(base):
+                relative[path.relative_to(base).as_posix()] = origin
+        if not relative:
+            continue
         for file in files:
-            located = str(Path(distribution.locate_file(file)).resolve())
-            if located in origins:
-                found.setdefault(located, []).append(str(file))
+            origin = relative.get(PurePosixPath(str(file)).as_posix())
+            if origin is not None and str(Path(distribution.locate_file(file)).resolve()) == origin:
+                found.setdefault(origin, []).append(str(file))
         if not found:
             continue
         name, version = _named(distribution)

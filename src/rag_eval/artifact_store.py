@@ -106,11 +106,15 @@ class ArtifactStore:
                 raise ValueError('Artifact file set changed')
         return path
 
-    def install_files(self, kind, sources, *, identity):
+    def install_files(self, kind, sources, *, identity, hashes=None):
+        """``hashes`` may carry digests the caller just computed; copies are still checked against them."""
         sources = {_name(name): Path(path) for name, path in sources.items()}
         if any(path.is_symlink() or not path.is_file() for path in sources.values()):
             raise ValueError('Artifact source must be a regular file, not a symlink')
-        hashes = {name: digest(path) for name, path in sources.items()}
+        if hashes is None or set(hashes) != set(sources):
+            hashes = {name: digest(path) for name, path in sources.items()}
+        else:
+            hashes = {_name(name): value for name, value in hashes.items()}
         def write(stage):
             for name, source in sources.items():
                 target = stage / name
@@ -144,7 +148,9 @@ class ArtifactStore:
         ref = dict(kind=kind, id=object_id, manifest_sha256=hashlib.sha256(encoded).hexdigest())
         target = self._path(ref)
         if target.exists():
-            self.resolve(ref)
+            # Same id means the same recorded file hashes; stored bytes are
+            # verified by whoever consumes them, so only the record is checked.
+            self.resolve(ref, files=[])
             return ref
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

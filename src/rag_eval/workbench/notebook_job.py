@@ -222,7 +222,6 @@ def execute(payload):
     from ..benchmark_official import prepare_inputs, score_prepared
     from ..benchmark_submission import export_sn_runs
     from ..notebook_batch import plan_batch, execute_batch
-    from ..notebook_bundle import load_bundle
     from ..run_reader import RunReadContext
     run = Path(payload['run_dir']).resolve()
     # Check before publishing runtime artifacts or starting any child.
@@ -255,6 +254,11 @@ def execute(payload):
             target.chmod(0o600)
             frozen_files[key] = str(target)
         save_json(inputs / 'sn-source-ref.json', payload['sn_ref'])
+        # Verified, byte-compiled and made read-only once; every partition and
+        # retry links it into its own run instead of extracting the archive.
+        from ..runtime_environment import materialize_shared_sn_source
+        shared_source = materialize_shared_sn_source(ArtifactStore(payload['artifact_root']), payload['sn_ref'],
+                                                     inputs / 'sn-source')
         ids_file = inputs / 'case-ids.txt'
         ids_file.write_text('\n'.join(payload['selection']['case_ids']) + '\n')
         budget_ledger = None
@@ -278,7 +282,8 @@ def execute(payload):
             question_workers=payload.get('question_workers', 1),
             case_deadline_seconds=payload.get('case_deadline_seconds'),
             partition_deadline_seconds=payload.get('partition_deadline_seconds'),
-            model_gate=tuple(payload['model_gate']) if payload.get('model_gate') else None)
+            model_gate=tuple(payload['model_gate']) if payload.get('model_gate') else None,
+            shared_sn_source=shared_source)
         seeds = None
         if payload.get('seed_runs'):
             seeds = inputs / 'seed-runs.json'
@@ -304,7 +309,8 @@ def execute(payload):
             """Official scoring of one saved run; serialized, overlapping other partitions' generation."""
             with scoring_lock:
                 if 'bundle' not in loaded:
-                    loaded['bundle'] = load_bundle(payload['bundle'])
+                    # The same context serves export below: one verified load per execution.
+                    loaded['bundle'] = context.bundle(payload['bundle'])
                 bundle = loaded['bundle']
                 submission = None
                 try:

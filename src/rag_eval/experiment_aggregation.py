@@ -121,7 +121,11 @@ def aggregate_runs(run_dirs: list[str | Path]) -> dict:
             config.pop("product_bundle", None)
         # Other runs keep the full corpus identity; different
         # distractors must never disappear into an apparently comparable mean.
-        complete_identity = {"source", "models", "code", "runtime_settings", "product_services", "audits_sha256", "track"} <= config.keys()
+        # audits_sha256 was a constant (fingerprint of no audits) and the code
+        # manifest is carried by its digest; neither distinguishes families.
+        from .benchmark_submission import drop_constant_identity_fields
+        config = drop_constant_identity_fields(config)
+        complete_identity = {"source", "models", "code", "runtime_settings", "product_services", "track"} <= config.keys()
         if manifest["track"] == "R" and not identity.get("product_bundle"):
             complete_identity = False
         family = fingerprint(config) if complete_identity else None

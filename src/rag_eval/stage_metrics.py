@@ -370,6 +370,27 @@ def compute_stage_metrics(run, *, context=None):
                     costs='provider logs and scheduled journal are separate partial observations'))
 
 
+def saved_stage_metrics(run):
+    """A run's saved stage-metrics.json if it still describes the run's current files, else None.
+
+    The child report computes metrics once; the batch reuses them instead of
+    reloading the partition, provided every input digest and the saved state match.
+    """
+    run = Path(run).resolve()
+    try:
+        saved = json.loads((run / 'stage-metrics.json').read_text(encoding='utf-8'))
+        state = json.loads((run / 'state.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(saved, dict) or saved.get('format') != FORMAT or saved.get('run_path') != str(run) \
+            or saved.get('state') != state or not isinstance(saved.get('inputs_sha256'), dict):
+        return None
+    current = {name: digest(run / name) for name in
+               ('outputs.jsonl', 'model-events.jsonl', 'product-artifacts/attempts.jsonl', 'manifest.json', 'planned.jsonl')
+               if (run / name).is_file()}
+    return saved if current == saved['inputs_sha256'] else None
+
+
 def write_stage_metrics(run_dirs, *, summary_output=None, write_runs=True):
     """Write each stage-metrics.json and optionally aggregate by suite and mode."""
     paths = [Path(p).resolve() for p in run_dirs]

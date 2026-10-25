@@ -136,14 +136,16 @@ def _symbol_source(path, names):
     return {name: found.get(name) for name in sorted(names)}
 
 
-def preparation_source_identity(code, source_root=None):
+def preparation_source_identity(code, source_root=None, manifest=None):
     """Hashes of the declared preparation sources in an actual loaded manifest.
 
     Without a captured file manifest the whole source identity is used, so any
     change misses.  A shared module whose bytes are not available is hashed as
     a whole file, which is again only stricter.
     """
-    manifest = (code or {}).get('actual_manifest')
+    if manifest is None:
+        # Older callers kept the manifest inside the code identity.
+        manifest = (code or {}).get('actual_manifest')
     if not isinstance(manifest, dict):
         return dict(whole_source=fingerprint({k: (code or {}).get(k) for k in sorted(code or {})
                                               if k not in ('versions', 'benchmark_source_hashes')}))
@@ -183,14 +185,14 @@ def preparation_settings(settings, run):
 
 def preparation_key(*, partition_id, product_bundle, document_limit, preparation_policy, code,
                     source_root, settings, run, service_config_sha256, requirements_sha256,
-                    evaluator_preparation_sha256):
+                    evaluator_preparation_sha256, manifest=None):
     """Return (key, material); material holds only hashes and public coordinates."""
     material = dict(
         format=KEY_VERSION,
         partition=dict(partition_id=partition_id, product_bundle_sha256=fingerprint(product_bundle),
                        document_limit=document_limit),
         preparation_policy=preparation_policy,
-        sn_preparation_source_sha256=fingerprint(preparation_source_identity(code, source_root)),
+        sn_preparation_source_sha256=fingerprint(preparation_source_identity(code, source_root, manifest)),
         preparation_settings_sha256=fingerprint(preparation_settings(settings, run)),
         model_services_sha256=service_config_sha256,
         dependency_requirements_sha256=requirements_sha256,

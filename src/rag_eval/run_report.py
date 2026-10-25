@@ -70,7 +70,7 @@ def _number(value):
     return "—" if value is None else f"{value:.3f}"
 
 
-def write_report(run_dirs, output, *, partition_only=False):
+def write_report(run_dirs, output, *, partition_only=False, save_stage_metrics=False):
     """Create a new report directory; saved experimental artifacts remain unchanged."""
     paths = [Path(p).resolve() for p in run_dirs]
     if len(paths) != len(set(paths)) or not paths:
@@ -95,6 +95,9 @@ def write_report(run_dirs, output, *, partition_only=False):
             stage_unavailable.append(dict(run_path=run['path'], **metrics))
         else:
             stage_groups[(metrics['suite'], metrics['mode'])].extend(metrics['cases'])
+            if save_stage_metrics:
+                # The runner owns this fresh run; the batch reuses the file.
+                save_json(Path(run['path']) / 'stage-metrics.json', metrics)
         run['stage_metrics'] = metrics
     pairs, pairing_warnings = paired_modes(runs)
     output = Path(output).resolve()

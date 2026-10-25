@@ -12,13 +12,11 @@ from copy import deepcopy
 import json
 from pathlib import Path, PurePosixPath
 import re
-import tempfile
 
 from ..artifact_store import ArtifactStore
 from ..bundle_index import BundleLookup, FORMAT as INDEX_FORMAT, load_partition
 from ..identity import fingerprint
 from ..notebook_bundle import load_bundle
-from ..runtime_environment import materialize_captured_sn_source
 from ..source_identity import captured_source_manifest
 from .evaluation_jobs import _saved as validate_job_snapshot
 from .plan_inputs import ADAPTER, ADAPTATION, _ids
@@ -170,8 +168,8 @@ def build_job_preparation(job, store, *, bundle_ref, index_ref, sn_ref) -> dict:
     """Verify installed canonical inputs and captured SN bytes, without loading SN.
 
     References must already exist. No pointer lookup, new artifact, Job write,
-    runtime/model configuration or live plan-head read is performed. Source
-    materialization is temporary and proves bytes only, never actual loading.
+    runtime/model configuration or live plan-head read is performed. The source
+    archive hash and manifest are checked; members are verified at execution.
     """
     job = deepcopy(_job(job))
     _require(isinstance(store, ArtifactStore))
@@ -211,15 +209,8 @@ def build_job_preparation(job, store, *, bundle_ref, index_ref, sn_ref) -> dict:
         _source_shape(source)
         _require(all(any(name == root or name.startswith(root + '/')
                          for root in source['selected_roots']) for name in manifest))
-        # Explicit /tmp keeps materialization outside the store regardless of
-        # TMPDIR. Check ancestry before materializing, including unusual stores.
-        _require(not Path('/tmp').resolve().is_relative_to(store.root))
-        with tempfile.TemporaryDirectory(prefix='sn-job-preparation-', dir='/tmp') as temp:
-            destination = Path(temp) / 'source'
-            _require(not destination.resolve().is_relative_to(store.root))
-            materialized = materialize_captured_sn_source(store, sn_ref, destination)
-            _require(materialized.actual_manifest == manifest
-                     and materialized.source_manifest_sha256 == source['source_manifest_sha256'])
+        # The archive hash was verified above; its members are checked against
+        # this manifest when an execution materializes it, so no extraction here.
     except (ValueError, OSError, KeyError, TypeError, IndexError):
         raise JobPreparationRejected('Invalid or unavailable preparation artifact') from None
     record = dict(format=FORMAT, **{key: job[key] for key in _BINDING},

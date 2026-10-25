@@ -110,9 +110,26 @@ def write_submission(bundle_directory, output, *, method, predictions, case_ids=
     return output / 'submission.json'
 
 
+def drop_constant_identity_fields(identity):
+    """Identity without fields that never distinguished runs.
+
+    ``audits_sha256`` was always the fingerprint of an empty audit list and is
+    no longer written; ``code.actual_manifest`` is represented by
+    ``code.source_manifest_sha256`` (checked to agree before it is dropped).
+    Old and new runs of the same conditions therefore project identically.
+    """
+    from .source_identity import compact_code_identity
+    config = dict(identity)
+    if config.get('audits_sha256') == fingerprint([]):
+        config.pop('audits_sha256')
+    if isinstance(config.get('code'), dict):
+        config['code'] = compact_code_identity(config['code'])
+    return config
+
+
 def sn_submission_identity(identity):
     """Keep answer conditions together; retain execution details on each run."""
-    config = deepcopy(identity)
+    config = deepcopy(drop_constant_identity_fields(identity))
     config.pop('product_bundle', None)
     config.pop('preparation_policy', None)
     if isinstance(config.get('code'), dict):

@@ -326,6 +326,16 @@ def validate_scored_submission(bundle, submission, scores, *, require_complete_g
     return per_case_metrics or set(), denominators, metric_cases, set(declared_batch_only)
 
 
+def _disclosed(method, field):
+    """A method field as disclosed; SN identities drop fields that never differed in meaning."""
+    value = method[field]
+    if field == 'configuration' and method.get('kind') == 'sn' and isinstance(value, dict) \
+            and isinstance(value.get('identity'), dict):
+        from .benchmark_submission import drop_constant_identity_fields
+        value = dict(value, identity=drop_constant_identity_fields(value['identity']))
+    return value
+
+
 def compare_submissions(bundle_directory, entries):
     """Validate local artifacts and compare two or more distinct selected methods.
 
@@ -429,7 +439,7 @@ def _compare_objects(bundle, entries, *, allow_method_attempts=False):
                         'files': item['files']})
     differences = {}
     for field in ('kind', 'citation_style', 'model_identity', 'input_policy', 'configuration'):
-        values = [m['method'][field] for m in methods]
+        values = [_disclosed(m['method'], field) for m in methods]
         if any(value != values[0] for value in values[1:]):
             differences[field] = [{'method_id': m['method_id'], 'value': deepcopy(value)}
                                   for m, value in zip(methods, values)]

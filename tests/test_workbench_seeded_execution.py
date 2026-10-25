@@ -242,3 +242,41 @@ def test_a_partition_is_scored_while_later_partitions_still_generate(tmp_path, m
     monkeypatch.setattr('rag_eval.notebook_batch.execute_batch', batch)
     assert execute(payload) == 0
     assert events.index(('scored', case_ids[0])) < events.index(('generated', case_ids[1]))
+
+
+def test_scoring_loads_the_bundle_once_per_execution(tmp_path, monkeypatch):
+    from rag_eval import notebook_bundle
+    _, payload, prep = spec_for(tmp_path, parallel=2)
+    case_ids = ['alce:a', 'alce:b', 'alce:c']
+    payload = dict(payload, selection=dict(payload['selection'], case_ids=case_ids, partition_ids=['pa', 'pb', 'pc']))
+    monkeypatch.setattr('rag_eval.notebook_batch.plan_batch', lambda **kw: [
+        dict(partition_id=pid, case_ids=[cid], run_dir=str(kw['output_root'] / cid), suite='alce', mode='chunk')
+        for cid, pid in zip(case_ids, payload['selection']['partition_ids'])])
+
+    def batch(jobs, *, output_root, parallel, after_run=None, **kwargs):
+        rows = []
+        for job in jobs:
+            finish(Path(job['run_dir']))
+            rows.append(dict(run_dir=job['run_dir'], exit_code=0))
+            after_run(job, rows[-1])
+        return dict(exit_code=0, runs=rows)
+    monkeypatch.setattr('rag_eval.notebook_batch.execute_batch', batch)
+    loads = []
+    monkeypatch.setattr(notebook_bundle, 'load_bundle', lambda path: loads.append(path) or {'cases': []})
+
+    def export(bundle, runs, output, *, case_ids, context=None):
+        context.bundle(bundle)  # what the real export does with the shared context
+        output.mkdir(parents=True)
+        (output / 'submission.json').write_text(json.dumps({'case_ids': case_ids, 'run': str(runs[0])}))
+        return output / 'submission.json'
+
+    def score(bundle, submission, prepared, *, source_directory, output_dir):
+        output_dir.mkdir(parents=True)
+        result = dict(suite='alce', per_case=[dict(case_id=c, metrics={'str_em': 1.0}) for c in submission['case_ids']])
+        (output_dir / 'scores.json').write_text(json.dumps(result))
+        return result
+    monkeypatch.setattr('rag_eval.benchmark_submission.export_sn_runs', export)
+    monkeypatch.setattr('rag_eval.benchmark_official.score_prepared', score)
+    monkeypatch.setattr('rag_eval.benchmark_official.prepare_inputs', lambda bundle, submission: {})
+    assert execute(payload) == 0
+    assert len(loads) == 1

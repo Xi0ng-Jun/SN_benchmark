@@ -67,7 +67,7 @@ def execute(*, root, project, bundle_dir, run, partition_id, model_config,
                                                    document_limit=bundle['manifest']['max_documents'])
         identity = dict(source=bundle['manifest'], models=public_models, code=code,
                         runtime_settings=runtime['comparable_settings_sha256'],
-                        product_services=runtime['service_config_sha256'], audits_sha256=fingerprint([]),
+                        product_services=runtime['service_config_sha256'],
                         track='R', product_bundle=dict(protocol_version=BASELINE_VERSION,
                                                        material_manifest=product['manifest']),
                         notebook_context=dict(partition_id=partition_id, selected_cases=bundle['manifest']['selected_cases'],

@@ -458,7 +458,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
             reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
             seed_prepared_run=None, seed_allow_source_change=False, preparation_cache=None,
-            question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None):
+            question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None,
+            shared_source=None):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
@@ -520,6 +521,12 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             raise ValueError('Run must be separate from shared artifact store')
     if sn_source_ref is not None and artifact_root is None:
         raise ValueError('Captured SN source requires a shared artifact store')
+    if shared_source is not None:
+        shared_source = Path(shared_source).resolve()
+        if sn_source_ref is None or not shared_source.is_dir():
+            raise ValueError('A shared materialized source needs its captured source reference')
+        if shared_source.is_relative_to(run) or run.is_relative_to(shared_source):
+            raise ValueError('Shared materialized source must be separate from the run')
     if preparation_cache is not None:
         preparation_cache = Path(preparation_cache).resolve()
         if seed_prepared_run is not None:
@@ -590,7 +597,14 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         source_kwargs = {'artifact_root': artifact_root} if artifact_root is not None else {}
         if sn_source_ref is not None:
             source_kwargs['captured_source_ref'] = sn_source_ref
-        code = snapshot_sources(root, project, run, **source_kwargs)
+            if shared_source is not None:
+                source_kwargs['shared_source'] = shared_source
+        loaded_code = snapshot_sources(root, project, run, **source_kwargs)
+        # The per-file manifest stays in memory for loader checks and the
+        # preparation key; saved identities keep only its digest.
+        from .source_identity import compact_code_identity
+        source_manifest = loaded_code.get('actual_manifest')
+        code = compact_code_identity(loaded_code)
         if task_worktree is not None and 'candidate_id' in task_worktree and (
                 code.get('head_revision') != task_worktree['frozen_commit']
                 or code.get('modified_paths') or code.get('added_paths') or code.get('deleted_paths')):
@@ -601,7 +615,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         if model_config is not None:
             environment_kwargs['model_config'] = model_config
         if sn_source_ref is not None:
-            environment_kwargs.update(source_root=run / 'captured-source', source_identity=code)
+            environment_kwargs.update(source_root=run / 'captured-source', source_identity=loaded_code)
         if dependency_requirements is not None:
             environment_kwargs.update(dependency_requirements=dependency_requirements,
                                       expected_interpreter=expected_interpreter)
@@ -609,7 +623,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         if 'startup_dependencies' in runtime:
             from .runtime_environment import initialize_captured_model_services
             observed_provider, loaded_services = initialize_captured_model_services(
-                settings, run, source_identity=code)
+                settings, run, source_identity=loaded_code)
             runtime['loaded_model_services'] = loaded_services
             save_json(run / 'runtime-identity.json', runtime)
         from .feature_identity import FEATURE_SETTING_FIELDS, build_feature_identity
@@ -626,7 +640,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         identity = dict(source=bundle['manifest'], models={}, code=code,
                         runtime_settings=runtime['comparable_settings_sha256'],
                         product_services=runtime['service_config_sha256'], product_bundle=product['manifest'],
-                        audits_sha256=fingerprint([]), track='R', preparation_policy=preparation_policy,
+                        track='R', preparation_policy=preparation_policy,
                         notebook_context=dict(partition_id=partition_id, selected_cases=bundle['manifest']['selected_cases'],
                                               partition_count=bundle['manifest']['partition_count']))
         if reasoning_protocol != 'reasoning-v1':
@@ -689,7 +703,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             cache_key, cache_material = preparation_key(
                 partition_id=partition_id, product_bundle=product['manifest'],
                 document_limit=bundle['manifest']['max_documents'], preparation_policy=preparation_policy,
-                code=code, source_root=run / 'captured-source' if sn_source_ref is not None else None,
+                code=code, manifest=source_manifest,
+                source_root=run / 'captured-source' if sn_source_ref is not None else None,
                 settings=settings, run=run, service_config_sha256=runtime.get('service_config_sha256'),
                 requirements_sha256=(identity.get('runtime_dependencies') or {}).get('requirements_sha256'),
                 evaluator_preparation_sha256=digest(Path(__file__).with_name('benchmark_runtime.py')))

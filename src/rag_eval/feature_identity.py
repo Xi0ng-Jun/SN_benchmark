@@ -42,6 +42,11 @@ def _object(value, label):
     return value
 
 
+def _compact(code):
+    from .source_identity import compact_code_identity
+    return compact_code_identity(code)
+
+
 def _digest(value):
     try:
         return fingerprint(value)
@@ -234,7 +239,7 @@ def build_comparison_identity(manifest: dict, *, case_ids: list[str], scorer_ide
         'revision': _label(code.get('head_revision', code.get('product_revision'))),
         'source_manifest_sha256': _optional_hash(code.get('source_manifest_sha256')),
         'product_archive_sha256': _optional_hash(code.get('product_archive_sha256')),
-        'identity_sha256': _digest({k: v for k, v in code.items() if k != 'versions'}),
+        'identity_sha256': _digest({k: v for k, v in _compact(code).items() if k != 'versions'}),
     }
     dotenv = _object(runtime.get('dotenv_snapshot', {}), 'dotenv snapshot')
     configuration = {

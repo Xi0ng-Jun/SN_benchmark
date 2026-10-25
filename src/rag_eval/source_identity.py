@@ -11,3 +11,17 @@ def captured_source_manifest(identity):
             or identity.get('source_manifest_sha256') != fingerprint(manifest)):
         raise ValueError('Captured source manifest is incomplete or inconsistent')
     return manifest
+
+
+def compact_code_identity(code):
+    """Code identity without the per-file manifest; ``source_manifest_sha256`` keeps its digest.
+
+    Runs written before this change carry the whole manifest; it must still
+    agree with the digest, so dropping it loses nothing that was verifiable.
+    """
+    if not isinstance(code, dict) or 'actual_manifest' not in code:
+        return code
+    manifest = code['actual_manifest']
+    if not isinstance(manifest, dict) or code.get('source_manifest_sha256') != fingerprint(manifest):
+        raise ValueError('Captured source manifest is incomplete or inconsistent')
+    return {key: value for key, value in code.items() if key != 'actual_manifest'}

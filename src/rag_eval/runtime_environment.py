@@ -59,7 +59,9 @@ def materialize_captured_sn_source(store, ref, destination) -> MaterializedSNSou
     if parent.is_symlink():
         raise ValueError("Materialized source parent cannot be a symlink")
 
-    object_path = store.resolve(ref, files=["product-source.tar"])
+    # Every member is hashed against the captured manifest below, which binds
+    # the extracted bytes more tightly than hashing the archive first.
+    object_path = store.resolve(ref, files=[])
     object_json = json.loads((object_path / "object.json").read_text(encoding="utf-8"))
     identity = object_json["identity"]
     from .source_identity import captured_source_manifest
@@ -70,6 +72,8 @@ def materialize_captured_sn_source(store, ref, destination) -> MaterializedSNSou
     observed: dict[str, dict[str, int | str]] = {}
     try:
         archive_path = object_path / "product-source.tar"
+        if archive_path.is_symlink() or not archive_path.is_file():
+            raise ValueError("Captured source archive is missing or linked")
         with tarfile.open(archive_path, mode="r:") as archive:
             for member in archive.getmembers():
                 raw_name = member.name
@@ -180,13 +184,16 @@ def resolve_models(path, required_roles):
     return resolved, public
 
 
-def snapshot_sources(root, project, run, *, artifact_root=None, captured_source_ref=None):
+def snapshot_sources(root, project, run, *, artifact_root=None, captured_source_ref=None, shared_source=None):
     if captured_source_ref is not None:
         if artifact_root is None:
             raise ValueError("Captured source references require a shared ArtifactStore")
         return _shared_snapshot_captured_sources(
             Path(root), Path(project), Path(run), artifact_root, captured_source_ref,
+            shared_source=shared_source,
         )
+    if shared_source is not None:
+        raise ValueError("A shared materialized source needs its captured source reference")
     if artifact_root is not None:
         return _shared_snapshot_sources(Path(root), Path(project), Path(run), artifact_root)
     revision = subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip()
@@ -335,7 +342,7 @@ def configure_environment(project, run, *, product_track, document_limit=40, mod
         source_identity = _loaded_source_identity(module, Path(source_root), source_identity)
     # Normalize only this run's absolute path for comparing chunk/reasoning cells.
     normalized = json.loads(json.dumps(values, sort_keys=True).replace(str(run), "<RUN>"))
-    identity = {"settings_sha256": fingerprint(values), "comparable_settings_sha256": fingerprint(normalized),
+    identity = {"comparable_settings_sha256": fingerprint(normalized),
                 "service_config_sha256": service_hash, "overrides": overrides}
     if source_root is not None:
         identity["source_module"] = source_identity
@@ -464,7 +471,78 @@ def _shared_snapshot_sources(root, project, run, artifact_root):
     return identity
 
 
-def _shared_snapshot_captured_sources(root, project, run, artifact_root, captured_source_ref):
+SHARED_SOURCE_MARKER = '.sn-shared-source.json'
+SHARED_SOURCE_FORMAT = 'sn-shared-materialized-source-v1'
+
+
+def materialize_shared_sn_source(store, ref, destination):
+    """Materialize a captured SN object once for every partition of an execution.
+
+    The archive is verified member by member exactly as for a private copy, the
+    sources are byte-compiled once, and the tree is made read-only. Partitions
+    then link it into their own ``captured-source`` (see ``link_shared_sn_source``),
+    so module paths and the startup search path stay inside each run and every
+    loaded module is still re-hashed against the captured manifest.
+    """
+    import compileall
+    materialized = materialize_captured_sn_source(store, ref, destination)
+    compileall.compile_dir(str(materialized.backend_root), quiet=2, workers=1)
+    save_json(materialized.root / SHARED_SOURCE_MARKER, dict(
+        format=SHARED_SOURCE_FORMAT, artifact_ref=dict(ref),
+        source_manifest_sha256=materialized.source_manifest_sha256))
+    for path in sorted(materialized.root.rglob('*'), key=lambda item: len(item.parts), reverse=True):
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    materialized.root.chmod(0o555)
+    return materialized.root
+
+
+def link_shared_sn_source(shared, ref, destination, identity):
+    """Give one run a private directory of hard links to the shared source tree.
+
+    Checks the marker binds the same object and the file set equals the
+    captured manifest; byte checks happen when modules load. Falls back to
+    copying when the trees are on different filesystems.
+    """
+    from .source_identity import captured_source_manifest
+    shared = Path(shared).resolve()
+    destination = Path(destination).absolute()
+    marker = json.loads((shared / SHARED_SOURCE_MARKER).read_text(encoding='utf-8'))
+    manifest = captured_source_manifest(identity)
+    if (marker.get('format') != SHARED_SOURCE_FORMAT or marker.get('artifact_ref') != dict(ref)
+            or marker.get('source_manifest_sha256') != identity['source_manifest_sha256']):
+        raise ValueError('Shared materialized source is bound to a different capture')
+    if destination.exists() or destination.is_symlink() or any(p.is_symlink() for p in destination.parents):
+        raise ValueError('Materialized source destination already exists or has a symlink ancestor')
+    sources = set()
+    temporary = Path(tempfile.mkdtemp(prefix='.sn-source-', dir=destination.parent))
+    try:
+        for path in sorted(shared.rglob('*')):
+            relative = path.relative_to(shared)
+            if path.is_symlink():
+                raise ValueError('Shared materialized source contains a symlink')
+            target = temporary / relative
+            if path.is_dir():
+                target.mkdir(mode=0o700)
+                continue
+            if relative.as_posix() == SHARED_SOURCE_MARKER:
+                continue
+            if '__pycache__' not in relative.parts:
+                sources.add(relative.as_posix())
+            try:
+                os.link(path, target)
+            except OSError:
+                shutil.copy2(path, target)
+        if sources != set(manifest):
+            raise ValueError('Shared materialized source file set differs from captured manifest')
+        temporary.rename(destination)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return destination
+
+
+def _shared_snapshot_captured_sources(root, project, run, artifact_root, captured_source_ref, *,
+                                      shared_source=None):
     """Install evaluator bytes and bind one reviewed captured SN object.
 
     The caller owns the run reference file; this helper only replaces its
@@ -474,24 +552,30 @@ def _shared_snapshot_captured_sources(root, project, run, artifact_root, capture
     from .artifact_store import ArtifactStore, read_run_refs, write_run_refs
 
     store = ArtifactStore(artifact_root)
-    materialized = materialize_captured_sn_source(store, captured_source_ref, run / "captured-source")
+    if captured_source_ref.get('kind') != 'sn':
+        raise ValueError('Captured source reference must be an sn artifact')
+    # object.json is authenticated by the reference; its file hashes stand for
+    # the archive. The archive bytes are checked member by member when they are
+    # materialized (here, or once per execution for a shared tree).
+    source_object = json.loads((store.resolve(captured_source_ref, files=[]) / 'object.json')
+                               .read_text(encoding='utf-8'))
+    source_identity = source_object['identity']
+    if shared_source is not None:
+        link_shared_sn_source(shared_source, captured_source_ref, run / "captured-source", source_identity)
+    else:
+        materialize_captured_sn_source(store, captured_source_ref, run / "captured-source")
     paths = {str(p.relative_to(root)): p for folder in ('src/rag_eval', 'scripts')
              for p in sorted((root / folder).rglob('*.py'))}
     paths['pyproject.toml'] = root / 'pyproject.toml'
     hashes = {name: digest(path) for name, path in paths.items()}
-    evaluator = store.install_files('evaluator', paths, identity={'benchmark_source_hashes': hashes})
+    evaluator = store.install_files('evaluator', paths, identity={'benchmark_source_hashes': hashes}, hashes=hashes)
     refs = read_run_refs(run)
     if refs is None:
         raise ValueError('Shared source snapshots require installed bundle references')
-    if captured_source_ref.get('kind') != 'sn':
-        raise ValueError('Captured source reference must be an sn artifact')
     refs['sources'] = {'evaluator': evaluator, 'sn': dict(captured_source_ref)}
     write_run_refs(run, store.root, refs)
-    source_object = json.loads((store.resolve(captured_source_ref) / 'object.json').read_text(encoding='utf-8'))
-    source_identity = source_object['identity']
-    archive = store.resolve(captured_source_ref, files=['product-source.tar']) / 'product-source.tar'
     identity = {
-        'product_archive_sha256': digest(archive),
+        'product_archive_sha256': source_object['files']['product-source.tar'],
         'benchmark_source_hashes': hashes,
         'versions': {d.metadata['Name']: d.version for d in distributions()},
         'source_format': source_identity['source_format'],
@@ -504,5 +588,7 @@ def _shared_snapshot_captured_sources(root, project, run, artifact_root, capture
         'added_paths': source_identity.get('added_paths', []),
         'deleted_paths': source_identity.get('deleted_paths', []),
     }
-    save_json(run / 'source-identity.json', identity)
+    from .source_identity import compact_code_identity
+    # The saved file matches the run identity, which keeps only the manifest digest.
+    save_json(run / 'source-identity.json', compact_code_identity(identity))
     return identity
