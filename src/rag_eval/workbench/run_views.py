@@ -115,6 +115,9 @@ class RunEntry:
     suite: str | None = None
     mode: str | None = None
     failure: dict | None = None
+    # ((retry run id, case ids it answers for this partition), ...): a retry
+    # asked only failed cases; those cases take their values from the retry.
+    retries: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -239,11 +242,29 @@ class RunViews:
                     if type(name) is not str or not _ID.match(name):
                         continue
                     scores = root / 'official' / name / 'scores' / 'scores.json'
+                    state = record.get('state') if record.get('terminal') else None
+                    retries = []
+                    for retry in job.get('retries') or ():
+                        retry_path = Path(retry['run_dir'])
+                        selected = tuple(retry.get('selected_case_ids') or ())
+                        if (not selected or not retry.get('complete') or retry_path.is_symlink()
+                                or not retry_path.resolve().is_relative_to(root.resolve())
+                                or not set(selected) <= set(job['case_ids'])
+                                or type(retry.get('official_name')) is not str
+                                or not _ID.match(retry['official_name'])):
+                            continue
+                        retry_id = _registered_id(f"{identity}-r{retry['round']}", 'run')
+                        self._runs[retry_id] = RunEntry(
+                            retry_id, retry_path.resolve(),
+                            root / 'official' / retry['official_name'] / 'scores' / 'scores.json',
+                            task_id=record['task_id'], case_ids=tuple(retry['case_ids']), execution_state=state,
+                            suite=job.get('suite'), mode=job.get('mode'))
+                        retries.append((retry_id, selected))
                     self._runs[identity] = RunEntry(identity, path.resolve(), scores,
                         task_id=record['task_id'], case_ids=tuple(job['case_ids']),
-                        execution_state=record.get('state') if record.get('terminal') else None,
-                        suite=job.get('suite'), mode=job.get('mode'),
-                        failure=next((row for row in failures if row.get('run_dir') == str(path)), None))
+                        execution_state=state, suite=job.get('suite'), mode=job.get('mode'),
+                        failure=next((row for row in failures if row.get('run_dir') == str(path)), None),
+                        retries=tuple(retries))
             except (OSError, ValueError, KeyError, TypeError):
                 continue
 
@@ -759,17 +780,46 @@ class RunViews:
             self._load(left_id)['official'].get('primary_metric')
         report = compare_runs_flips(left.run_dir, right.run_dir, before_scores=left.scores,
                                    after_scores=right.scores, bundle=bundle)
+        admission, note = report['admission']['status'], report['admission']['reason']
+        overrides = {}
+        for side, entry in (('left', left), ('right', right)):
+            for retry_id, case_ids in entry.retries:
+                values, reason = self._retry_values(retry_id, metric, bundle)
+                if reason is not None:
+                    admission, note = 'not_admitted', f'{retry_id}: {reason}'
+                    continue
+                for case_id in case_ids:
+                    overrides[(side, case_id)] = values.get(case_id)
         rows, counts = [], dict(better=0, worse=0, same=0, unpaired=0)
         for row in report['cases']:
             value = row['metrics'].get(metric, {})
+            before, after = value.get('before'), value.get('after')
             direction = {'unchanged': 'same', 'unavailable': 'unpaired'}.get(value.get('direction'), value.get('direction', 'unpaired'))
+            delta = value.get('difference')
+            if ('left', row['case_id']) in overrides or ('right', row['case_id']) in overrides:
+                # The declared retry answer replaces only a failed first answer.
+                before = overrides.get(('left', row['case_id']), before)
+                after = overrides.get(('right', row['case_id']), after)
+                delta = after - before if before is not None and after is not None else None
+                direction = 'unpaired' if delta is None else 'better' if delta > 0 else 'worse' if delta < 0 else 'same'
             counts[direction] += 1
-            rows.append(dict(case_id=row['case_id'], left=value.get('before'), right=value.get('after'),
-                             delta=value.get('difference'), flip=direction))
-        return dict(format=FORMAT, kind='paired' if report['admission']['status'] == 'admitted' else 'not_admitted',
-                    admission=report['admission']['status'], same_run=left_id == right_id,
+            rows.append(dict(case_id=row['case_id'], left=before, right=after, delta=delta, flip=direction))
+        return dict(format=FORMAT, kind='paired' if admission == 'admitted' else 'not_admitted',
+                    admission=admission, same_run=left_id == right_id,
                     left_run=left_id, right_run=right_id, metric=metric, counts=counts, rows=rows,
-                    note=report['admission']['reason'], admission_detail=report['admission'])
+                    note=note, admission_detail=dict(report['admission'], status=admission, reason=note))
+
+    def _retry_values(self, retry_id, metric, bundle=None):
+        """Admitted per-case metric values of one retry run, or a refusal reason."""
+        from ..flip_report import compare_runs_flips
+        entry = self._runs.get(retry_id)
+        if entry is None:
+            return None, 'retry run is not registered'
+        report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
+                                    after_scores=entry.scores, bundle=bundle)
+        if report['admission']['status'] != 'admitted':
+            return None, report['before'].get('reason') or report['admission']['reason']
+        return {row['case_id']: row['metrics'].get(metric, {}).get('before') for row in report['cases']}, None
 
     def execution_runs(self, execution_id: str) -> list[RunEntry]:
         """Partition runs of one workbench execution, in batch-plan order."""
@@ -798,8 +848,13 @@ class RunViews:
         report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
                                     after_scores=entry.scores, bundle=bundle)
         status = report['admission']['status']
-        return dict(status=status, reason=None if status == 'admitted' else
-                    report['before'].get('reason') or report['admission']['reason'])
+        reason = None if status == 'admitted' else report['before'].get('reason') or report['admission']['reason']
+        for retry_id, _ in entry.retries if status == 'admitted' else ():
+            _, refused = self._retry_values(retry_id, None, bundle)
+            if refused is not None:
+                status, reason = 'not_admitted', f'{retry_id}: {refused}'
+                break
+        return dict(status=status, reason=reason)
 
     # -------------------------------------------------------------- worktree
     # The Changes page consumes TaskWorktreeService.read()'s shape. When the

@@ -145,6 +145,23 @@ class _CandidateWorktreeView(TaskWorktreeService):
         raise Conflict('Candidate worktree bindings are immutable')
 
 
+EXECUTION_POLICY_KEYS = ('parallel', 'question_workers', 'case_deadline_seconds', 'partition_deadline_seconds')
+
+
+def validate_execution_policy(policy):
+    """Per-iteration scheduling overrides of the server's job_execution settings."""
+    if policy is None:
+        return None
+    if type(policy) is not dict or not set(policy) <= set(EXECUTION_POLICY_KEYS):
+        raise ValueError('execution accepts only ' + ', '.join(EXECUTION_POLICY_KEYS))
+    for key, value in policy.items():
+        limit = 64 if key == 'parallel' else 32 if key == 'question_workers' else 86400
+        if type(value) not in (int, float) or type(value) is bool or not 0 < value <= limit \
+                or (key in ('parallel', 'question_workers') and type(value) is not int):
+            raise ValueError('Invalid execution.' + key)
+    return dict(policy)
+
+
 class IterationService:
     def __init__(self, repository, task_worktree_service, *, plans=None, jobs=None, executions=None,
                  creator=None, preparation_config=None, execution_config=None, build_spec=None, admission=None,
@@ -369,7 +386,8 @@ class IterationService:
 
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
-                         split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None):
+                         split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None,
+                         execution=None):
         """Create the backing Task, freeze its plan, then provision root C0.
 
         Retrying the same request key completes an interrupted creation: each
@@ -383,6 +401,7 @@ class IterationService:
             raise ValueError('Iteration plans are not configured')
         from .budgets import validate_policy
         budget = validate_policy(budget)
+        execution = validate_execution_policy(execution)
         binding = ((self.preparation_config or {}).get('inputs') or {}).get(input_id)
         if not isinstance(binding, dict) or set(binding) != {'bundle_ref', 'index_ref'}:
             raise ValueError('No trusted artifact binding for this iteration input')
@@ -392,6 +411,8 @@ class IterationService:
                        fresh_batch_count=fresh_batch_count, fresh_papers_per_batch=fresh_papers_per_batch)
         if budget is not None:
             payload['budget'] = budget
+        if execution is not None:
+            payload['execution'] = execution
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -441,6 +462,9 @@ class IterationService:
                         gate_rule=dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90'))
         if budget is not None:
             protocol['budget'] = budget
+        if execution is not None:
+            # Scheduling only (parallelism, deadlines); never a comparison condition.
+            protocol['execution'] = execution
         project = self.trees.project_root
         common = str(Path(_text_git(project, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve())
         iteration_id, root_id, created = uid(), uid(), now()
@@ -828,7 +852,8 @@ class IterationService:
                                             preparation_id=prepared['preparation_id'], actor=actor))
             else:
                 attempt = row['attempt']
-        config = dict(self.execution_config or {}, task_worktree=self.association(candidate_id, attempt))
+        config = dict(self.execution_config or {}, **(protocol.get('execution') or {}),
+                      task_worktree=self.association(candidate_id, attempt))
         config.pop('adoptable_runs', None)
         if adopt:
             path = (self.execution_config or {}).get('adoptable_runs')

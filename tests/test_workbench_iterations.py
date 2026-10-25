@@ -540,3 +540,17 @@ def test_root_adopts_configured_runs_and_children_reuse_preparation_through_the_
     ran = payload(env, service.run(child['id'], budget=BUDGET, actor='alice', request_key='c1'))
     assert ran['run_maps'] is None
     assert ran['preparation_cache'] == str(Path(service.execution_config['output_root']).resolve() / 'preparation-cache')
+
+
+def test_iteration_execution_policy_schedules_runs_without_entering_identity(env):
+    service = env['service']
+    with pytest.raises(ValueError, match='execution accepts only'):
+        iteration(env, execution=dict(retry_rounds=3), request_key='bad-policy')
+    with pytest.raises(ValueError, match='execution.question_workers'):
+        iteration(env, execution=dict(question_workers=1.5), request_key='bad-workers')
+    tree = iteration(env, execution=dict(parallel=8, question_workers=4, case_deadline_seconds=300))
+    assert tree['protocol']['execution'] == dict(parallel=8, question_workers=4, case_deadline_seconds=300)
+    root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='scheduled')
+    sent = payload(env, root)
+    assert (sent['parallel'], sent['question_workers'], sent['case_deadline_seconds']) == (8, 4, 300)
+    assert sent['partition_deadline_seconds'] is None and sent['model_gate'] is None

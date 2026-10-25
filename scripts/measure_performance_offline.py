@@ -100,7 +100,39 @@ def reference_scan(rows=20000, dim=1024, repeats=3):
                 legacy_all_columns_seconds=round(before, 3), text_columns_seconds=round(after, 3))
 
 
-PROBES = {'history-lookup': history_lookup, 'reference-scan': reference_scan}
+def parallel_batch(partitions=10, questions=3, latency=0.2):
+    """P2: synthetic partition processes (fake model latency per question), serial vs parallel 8."""
+    from rag_eval.notebook_batch import execute_batch
+
+    def jobs(root):
+        made = []
+        for index in range(1, partitions + 1):
+            run = root / f'{index:04d}-p{index}-chunk'
+            code = ('import json, time\nfrom pathlib import Path\n'
+                    f'run = Path({str(run)!r}); run.mkdir()\n'
+                    f'for q in range({questions}): time.sleep({latency})\n'
+                    '(run / "state.json").write_text(json.dumps({"phase": "finished"}))\n')
+            made.append(dict(partition_id=f'p{index}', case_ids=[], run_dir=str(run), mode='chunk',
+                             argv=[sys.executable, '-c', code]))
+        return made
+
+    timings = {}
+    with tempfile.TemporaryDirectory() as root:
+        for parallel in (1, 8):
+            out = Path(root) / f'parallel-{parallel}'
+            first = []
+            start = time.perf_counter()
+            execute_batch(jobs(out), output_root=out, parallel=parallel, append_run=lambda row: None,
+                          after_run=lambda job, row: first.append(time.perf_counter() - start))
+            timings[parallel] = (time.perf_counter() - start, first[0])
+    return dict(probe='parallel_batch', partitions=partitions, questions=questions, latency_seconds=latency,
+                serial_seconds=round(timings[1][0], 2), parallel8_seconds=round(timings[8][0], 2),
+                ratio=round(timings[8][0] / timings[1][0], 3),
+                first_partition_ready_serial=round(timings[1][1], 2),
+                first_partition_ready_parallel8=round(timings[8][1], 2))
+
+
+PROBES = {'history-lookup': history_lookup, 'reference-scan': reference_scan, 'parallel-batch': parallel_batch}
 
 
 def main(argv=None):

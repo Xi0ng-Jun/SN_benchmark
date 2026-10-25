@@ -1,23 +1,34 @@
 """Trusted workbench adapter for the existing captured Notebook runner.
 
 One execution supervises partition subprocesses (``parallel`` at a time). Each
-partition retains its own runtime and original state; official scoring happens
-after generation. Optional server settings:
+partition retains its own runtime and original state, and is officially scored
+as soon as it (and its retries) end, while other partitions still generate.
+The child stops starting partitions shortly before the supervisor's timeout so
+finished work is scored instead of killed. Optional server settings:
 
 - ``seed_runs`` ({case_id: run dir}): ask again on those runs' prepared
   notebooks instead of importing documents (answer-path candidates);
-- ``retry_rounds``: re-ask a partition whose answer failed, on its own prepared
-  notebook, up to this many rounds; every round stays on disk;
+- ``retry_rounds``: re-ask only the failed cases (``error`` or missing) of a
+  partition, on its own prepared notebook, up to this many rounds; every round
+  stays on disk and ``retry-rounds.json`` names the run used for each case;
+- ``question_workers``, ``case_deadline_seconds``, ``partition_deadline_seconds``:
+  questions asked at once inside a partition, and deadlines after which a
+  question is saved as ``error`` and the partition finishes;
+- ``model_concurrency``: model requests allowed at once across all partition
+  processes of this server (slot files under ``<output_root>/model-gate``);
 - ``adopt_runs`` ({case_id: run dir}): register already finished runs of the
   same plan, source and conditions as this execution, then score them;
 - ``preparation_cache`` (directory, default ``<output_root>/preparation-cache``,
   ``false`` disables): content-addressed prepared notebooks shared by every run
   whose preparation inputs match (see ``rag_eval.preparation_cache``).
 """
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 
 from ..artifact_store import ArtifactStore
 from ..artifacts import digest, save_json
@@ -64,6 +75,18 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
     rounds = config.get('retry_rounds', 0)
     if type(parallel) is not int or not 1 <= parallel <= 64 or type(rounds) is not int or not 0 <= rounds <= 10:
         raise ExecutionRejected('Invalid parallel or retry_rounds setting')
+    workers = config.get('question_workers', 1)
+    if type(workers) is not int or not 1 <= workers <= 32:
+        raise ExecutionRejected('Invalid question_workers setting')
+    deadlines = {}
+    for key in ('case_deadline_seconds', 'partition_deadline_seconds'):
+        value = config.get(key)
+        if value is not None and (type(value) not in (int, float) or not 0 < value <= 86400):
+            raise ExecutionRejected('Invalid ' + key + ' setting')
+        deadlines[key] = value
+    gate = config.get('model_concurrency')
+    if gate is not None and (type(gate) is not int or not 1 <= gate <= 256):
+        raise ExecutionRejected('Invalid model_concurrency setting')
     policy = config.get('preparation_policy', DEFAULT_PREPARATION_POLICY)
     try:
         validate_preparation_policy(policy)
@@ -106,26 +129,58 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
         selection=prep['input']['selection'], mode=prep['execution_intent']['mode'],
         project_root=str(Path(config['project_root']).resolve()), python=config['python'],
         files=files, scorer_sources=config['scorer_sources'], budget=approved,
-        task_worktree=config.get('task_worktree'), preparation_cache=cache or None)
+        task_worktree=config.get('task_worktree'), preparation_cache=cache or None,
+        question_workers=workers, **deadlines,
+        model_gate=[str(output / 'model-gate'), gate] if gate is not None else None)
     script = Path(__file__).resolve().parents[3] / 'scripts/run_workbench_notebook.py'
     return dict(argv=[config['python'], str(script), '--payload', json.dumps(payload)],
                 run_dir=run_dir, preparation_id=preparation_id, budget=approved)
 
 
-def _needs_retry(run):
-    """An answer failed on a prepared notebook: re-asking can succeed."""
+_COMPLETE = ('finished', 'finished_with_errors')
+
+
+def _outputs(run):
+    try:
+        return {row['case_id']: row for row in
+                (json.loads(line) for line in (run / 'outputs.jsonl').read_text().splitlines() if line.strip())}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def _failed_cases(run, case_ids):
+    """Cases whose answer failed on a prepared notebook; None when not prepared.
+
+    Only ``error`` and missing answers are asked again: ``no_answer`` and
+    ``clarification`` are real outcomes, and nothing is chosen by score.
+    """
     try:
         state = json.loads((run / 'product-artifacts/state.json').read_text())
     except (OSError, ValueError):
-        return False
+        return None
     if not state.get('prepared'):
-        return False
+        return None
+    outputs = _outputs(run)
+    return [cid for cid in case_ids if (outputs.get(cid) or {}).get('status') in (None, 'error')]
+
+
+def _partition_complete(run):
+    """The runner reached its own terminal phase; case errors are statuses, not failures."""
     try:
-        rows = [json.loads(line) for line in (run / 'outputs.jsonl').read_text().splitlines() if line.strip()]
-    except (OSError, ValueError):
-        return True
-    saved = json.loads((run / 'state.json').read_text()) if (run / 'state.json').is_file() else {}
-    return not rows or saved.get('phase') != 'finished' or any(row.get('status') == 'error' for row in rows)
+        phase = json.loads((run / 'state.json').read_text()).get('phase')
+    except (OSError, ValueError, AttributeError):
+        return False
+    return phase in _COMPLETE and (run / 'manifest.json').is_file()
+
+
+def _deadline(payload, started):
+    """Stop starting work early enough to score before the supervisor's timeout."""
+    from ..notebook_batch import PARTITION_KILL_GRACE
+    timeout = (payload.get('budget') or {}).get('timeout_seconds')
+    if type(timeout) is not int or timeout <= 0:
+        return None
+    margin = max(PARTITION_KILL_GRACE + 180, 0.1 * timeout)
+    return started + max(timeout / 2, timeout - margin)
 
 
 def _adopt(payload, jobs):
@@ -180,6 +235,7 @@ def execute(payload):
             raise ValueError('Run map changed after execution was prepared')
         payload = dict(payload, **json.loads(data))
     run.mkdir(parents=True, exist_ok=False, mode=0o700)
+    started = time.monotonic()
     planned = len(payload['selection']['case_ids'])
     def state(phase, **details):
         save_json(run / 'state.json', dict(phase=phase, terminal=phase != 'running', **details))
@@ -218,7 +274,11 @@ def execute(payload):
             dependency_requirements=frozen_files['dependency_requirements'],
             runtime_expectation=frozen_files['runtime_expectation'],
             budget_ledger=budget_ledger, task_worktree_ref=association,
-            preparation_cache=payload.get('preparation_cache'))
+            preparation_cache=payload.get('preparation_cache'),
+            question_workers=payload.get('question_workers', 1),
+            case_deadline_seconds=payload.get('case_deadline_seconds'),
+            partition_deadline_seconds=payload.get('partition_deadline_seconds'),
+            model_gate=tuple(payload['model_gate']) if payload.get('model_gate') else None)
         seeds = None
         if payload.get('seed_runs'):
             seeds = inputs / 'seed-runs.json'
@@ -228,106 +288,189 @@ def execute(payload):
             preparation_policy='from-seed' if seeds else payload.get('preparation_policy', DEFAULT_PREPARATION_POLICY))
         if [j['partition_id'] for j in jobs] != payload['selection']['partition_ids']:
             raise ValueError('Partition expansion differs from the fixed plan')
-        rounds, rows = [], {}
+        for ordinal, job in enumerate(jobs, 1):
+            job['official_name'] = '%04d' % ordinal
+        parallel = payload.get('parallel', 1)
+        from ..run_ledger import LedgerAppender
+        ledger, ledger_lock = LedgerAppender(run / 'runs.jsonl'), threading.Lock()
+
+        def append_ledger(*args, **kwargs):
+            with ledger_lock:
+                return ledger.append(*args, **kwargs)
+
+        context, scoring_lock, loaded = RunReadContext(), threading.Lock(), {}
+
+        def score(partition, case_ids, name):
+            """Official scoring of one saved run; serialized, overlapping other partitions' generation."""
+            with scoring_lock:
+                if 'bundle' not in loaded:
+                    loaded['bundle'] = load_bundle(payload['bundle'])
+                bundle = loaded['bundle']
+                submission = None
+                try:
+                    official = run / 'official' / name
+                    submission_path = export_sn_runs(payload['bundle'], [partition], official / 'submission',
+                                                     case_ids=case_ids, context=context)
+                    submission = json.loads(submission_path.read_text())
+                    scored = score_prepared(bundle, submission, prepare_inputs(bundle, submission),
+                                            source_directory=payload['scorer_sources'], output_dir=official / 'scores')
+                except Exception as exc:
+                    return None, None, dict(run_dir=str(partition), **exception_details(
+                        exc, phase='scoring', directory=run,
+                        sensitive_values=(*sensitive_strings(bundle.get('cases', [])),
+                                          *sensitive_strings(submission))))
+            from .run_views import PRIMARY_METRIC
+            metric = PRIMARY_METRIC.get(scored.get('suite'))
+            return {row['case_id']: (row.get('metrics') or {}).get(metric)
+                    for row in scored.get('per_case', [])}, metric, None
+
+        outcomes, retry_count = {}, payload.get('retry_rounds', 0)
+
+        def retry(job, outcome, failed, number):
+            """Ask only ``failed`` again, seeded from the partition's own prepared notebook."""
+            tag = f"{job['official_name']}-r{number}"
+            retry_ids, retry_seeds = inputs / f'retry-{tag}-case-ids.txt', inputs / f'retry-{tag}-seeds.json'
+            retry_ids.write_text('\n'.join(failed) + '\n')
+            save_json(retry_seeds, {cid: job['run_dir'] for cid in failed})
+            retry_root = run / f'retry-{number}' / job['official_name']
+            retried = plan_batch(case_id_file=retry_ids, output_root=retry_root, **common,
+                                 seed_prepared_map=retry_seeds, seed_allow_source_change=True,
+                                 preparation_policy='from-seed')
+            report = execute_batch(retried, output_root=retry_root, parallel=1, ledger_path=run / 'runs.jsonl',
+                                   deadline=deadline, ledger_appender=append_ledger)
+            save_json(retry_root / 'batch-report.json', report)
+            retry_run = Path(retried[0]['run_dir'])
+            complete = _partition_complete(retry_run)
+            answered = _outputs(retry_run) if complete else {}
+            for cid in failed:
+                if cid in answered:
+                    outcome['selection'][cid] = str(retry_run)
+            outcome['retries'].append(dict(round=number, run_dir=str(retry_run), official_name=tag,
+                                           case_ids=list(failed), complete=complete,
+                                           exit_code=(report['runs'][0] if report['runs'] else {}).get('exit_code')))
+            return [cid for cid in failed if (answered.get(cid) or {}).get('status') in (None, 'error')]
+
+        def finish_partition(job, row):
+            """Retry failed cases on the partition's own notebook, then score every run it used."""
+            partition = Path(job['run_dir'])
+            outcome = outcomes[job['partition_id']] = dict(job=job, row=row, retries=[], selection={},
+                                                           failures=[], per_case={}, metric=None)
+            failed = _failed_cases(partition, job['case_ids']) if row is not None else None
+            for number in range(1, retry_count + 1):
+                if not failed or (deadline is not None and time.monotonic() >= deadline):
+                    break
+                try:
+                    failed = retry(job, outcome, failed, number)
+                except Exception as exc:
+                    # The original answers are still scored; the retry failure is kept.
+                    outcome['retry_error'] = exception_details(exc, phase=f'retry-{number}', directory=run)
+                    break
+            outcome['still_failed'] = len(failed or [])
+            if row is None:
+                saved = json.loads((partition / 'state.json').read_text()) if (partition / 'state.json').is_file() else {}
+                generated = saved.get('phase') == 'finished'
+                row = outcome['row'] = dict(state=saved, exit_code=None)
+            else:
+                # Exit 0 already means a finished run; a non-zero exit after the
+                # runner's own terminal phase only reflects case-level errors.
+                generated = ((row.get('exit_code') == 0 or _partition_complete(partition))
+                             and not row.get('stage_metrics_error') and not row.get('ledger_append_error'))
+            if not generated:
+                saved = row.get('state') or {}
+                details = dict(error_type=saved.get('error_type') or row.get('error_type') or
+                    row.get('stage_metrics_error') or row.get('ledger_append_error') or 'child_exit',
+                    error_message=saved.get('error_message') or row.get('error_message') or
+                        row.get('stderr_tail') or f"Partition process exited with code {row.get('exit_code')}",
+                    failed_phase=saved.get('failed_phase') or row.get('failed_phase') or saved.get('phase') or 'generating',
+                    diagnostic_path=saved.get('diagnostic_path') or row.get('diagnostic_path') or row.get('stderr_path'))
+                outcome['generation_failure'] = dict(run_dir=str(partition), **{
+                    key: sanitize_diagnostic(value)[:2048] if isinstance(value, str) else value
+                    for key, value in details.items()})
+            used = {}
+            targets = [(partition, job['case_ids'], job['official_name'])] + [
+                (Path(r['run_dir']), r['case_ids'], r['official_name']) for r in outcome['retries'] if r['complete']]
+            for path, case_ids, name in targets:
+                if not (path / 'manifest.json').is_file():
+                    outcome['failures'].append(dict(run_dir=str(path), error_type='missing_manifest',
+                        error_message='Partition did not save a manifest; official scoring is unavailable',
+                        failed_phase='scoring', diagnostic_path=None))
+                    continue
+                values, metric, failure = score(path, case_ids, name)
+                if failure is not None:
+                    outcome['failures'].append(failure)
+                    continue
+                used[str(path)] = values
+                outcome['metric'] = outcome['metric'] or metric
+            for cid in job['case_ids']:
+                source = outcome['selection'].get(cid, job['run_dir'])
+                if cid in used.get(source, {}):
+                    outcome['per_case'][cid] = used[source][cid]
+
+        deadline = _deadline(payload, started)
         if payload.get('adopt_runs'):
             stage = 'adopting'
             state('running', stage=stage, planned=planned)
             jobs = _adopt(payload, jobs)
+            for ordinal, job in enumerate(jobs, 1):
+                job['official_name'] = '%04d' % ordinal
             save_json(run / 'adopted-runs.json', [job['run_dir'] for job in jobs])
-            exit_code = 0
+            stage = 'scoring'
+            state('running', stage=stage, planned=planned)
+            for job in jobs:
+                finish_partition(job, None)
         else:
             save_json(run / 'batch-plan.json', jobs)
             stage = 'generating'
             state('running', stage=stage, planned=planned)
-            report = execute_batch(jobs, output_root=run / 'partitions', parallel=payload.get('parallel', 1),
-                                   ledger_path=run / 'runs.jsonl')
-            save_json(run / 'batch-report.json', report)
-            rows.update({row['run_dir']: row for row in report['runs']})
-            for number in range(1, payload.get('retry_rounds', 0) + 1):
-                failed = [job for job in jobs if _needs_retry(Path(job['run_dir']))]
-                if not failed:
-                    break
-                stage = f'retry-{number}'
-                state('running', stage=stage, planned=planned, retrying=len(failed))
-                retry_ids = inputs / f'retry-{number}-case-ids.txt'
-                retry_ids.write_text('\n'.join(cid for job in failed for cid in job['case_ids']) + '\n')
-                retry_seeds = inputs / f'retry-{number}-seeds.json'
-                save_json(retry_seeds, {cid: job['run_dir'] for job in failed for cid in job['case_ids']})
-                retried = plan_batch(case_id_file=retry_ids, output_root=run / f'retry-{number}', **common,
-                                     seed_prepared_map=retry_seeds, seed_allow_source_change=True,
-                                     preparation_policy='from-seed')
-                retry_report = execute_batch(retried, output_root=run / f'retry-{number}',
-                                             parallel=payload.get('parallel', 1), ledger_path=run / 'runs.jsonl')
-                save_json(run / f'retry-{number}-report.json', retry_report)
-                rows.update({row['run_dir']: row for row in retry_report['runs']})
-                replaced = {job['partition_id']: job for job in retried}
-                rounds.append(dict(round=number, partitions=len(retried),
-                                   still_failed=sum(_needs_retry(Path(j['run_dir'])) for j in retried)))
-                jobs = [replaced.get(job['partition_id'], job) for job in jobs]
-            save_json(run / 'retry-rounds.json', rounds)
-            exit_code = 0
-        for ordinal, job in enumerate(jobs, 1):
-            job['official_name'] = '%04d' % ordinal
+            by_run = {job['run_dir']: job for job in jobs}
+            futures = {}
+            with ThreadPoolExecutor(max_workers=parallel) as followups:
+                def after_run(job, row):
+                    futures[job['run_dir']] = followups.submit(finish_partition, job, row)
+                report = execute_batch(jobs, output_root=run / 'partitions', parallel=parallel,
+                                       ledger_path=run / 'runs.jsonl', after_run=after_run, deadline=deadline,
+                                       ledger_appender=append_ledger)
+                save_json(run / 'batch-report.json', report)
+                for row in report['runs']:
+                    if row['run_dir'] not in futures:
+                        futures[row['run_dir']] = followups.submit(finish_partition, by_run[row['run_dir']], row)
+                stage = 'scoring'
+                state('running', stage=stage, planned=planned)
+                for future in futures.values():
+                    future.result()
+        ordered = [outcomes[job['partition_id']] for job in jobs if job['partition_id'] in outcomes]
+        for outcome in ordered:
+            outcome['job']['retries'] = [dict(r, selected_case_ids=sorted(
+                cid for cid, source in outcome['selection'].items() if source == r['run_dir']))
+                for r in outcome['retries']]
         save_json(run / 'batch-plan.json', jobs)
-        generation_failures = []
-        for job in jobs:
-            partition = Path(job['run_dir'])
-            row = rows.get(job['run_dir'])
-            if row is None:
-                # Adopted runs have no child process in this execution; read their saved terminal state.
-                saved = json.loads((partition / 'state.json').read_text()) if (partition / 'state.json').is_file() else {}
-                if saved.get('phase') == 'finished':
-                    continue
-                row = dict(state=saved, exit_code=None)
-            elif row.get('exit_code') == 0 and not row.get('stage_metrics_error') and not row.get('ledger_append_error'):
-                continue
-            exit_code = 1
-            saved = row.get('state') or {}
-            details = dict(error_type=saved.get('error_type') or row.get('error_type') or
-                row.get('stage_metrics_error') or row.get('ledger_append_error') or 'child_exit',
-                error_message=saved.get('error_message') or row.get('error_message') or
-                    row.get('stderr_tail') or f"Partition process exited with code {row.get('exit_code')}",
-                failed_phase=saved.get('failed_phase') or row.get('failed_phase') or saved.get('phase') or stage,
-                diagnostic_path=saved.get('diagnostic_path') or row.get('diagnostic_path') or row.get('stderr_path'))
-            details = {key: sanitize_diagnostic(value)[:2048] if isinstance(value, str) else value
-                       for key, value in details.items()}
-            generation_failures.append(dict(run_dir=str(partition), **details))
-        stage = 'scoring'
-        state('running', stage=stage, planned=planned, generation_failures=generation_failures)
-        bundle = load_bundle(payload['bundle'])
-        context = RunReadContext()
-        failures, per_case, metric = [], {}, None
-        for job in jobs:
-            partition = Path(job['run_dir'])
-            if not (partition / 'manifest.json').is_file():
-                failures.append(dict(run_dir=str(partition), error_type='missing_manifest',
-                    error_message='Partition did not save a manifest; official scoring is unavailable',
-                    failed_phase=stage, diagnostic_path=None))
-                continue
-            submission = None
-            try:
-                official = run / 'official' / job['official_name']
-                submission_path = export_sn_runs(payload['bundle'], [partition], official / 'submission',
-                                                case_ids=job['case_ids'], context=context)
-                submission = json.loads(submission_path.read_text())
-                scored = score_prepared(bundle, submission, prepare_inputs(bundle, submission),
-                                        source_directory=payload['scorer_sources'], output_dir=official / 'scores')
-                from .run_views import PRIMARY_METRIC
-                metric = metric or PRIMARY_METRIC.get(scored.get('suite'))
-                for row in scored.get('per_case', []):
-                    per_case[row['case_id']] = (row.get('metrics') or {}).get(metric)
-            except Exception as exc:
-                failures.append(dict(run_dir=str(partition), **exception_details(exc, phase=stage, directory=run,
-                    sensitive_values=(*sensitive_strings(bundle.get('cases', [])),
-                                      *sensitive_strings(submission)))))
+        rounds = [dict(round=n, partitions=sum(1 for o in ordered if len(o['retries']) >= n),
+                       still_failed=sum(o['still_failed'] for o in ordered if len(o['retries']) == n))
+                  for n in range(1, max((len(o['retries']) for o in ordered), default=0) + 1)]
+        save_json(run / 'retry-rounds.json', dict(format='sn-workbench-retry-rounds-v2', rounds=rounds,
+            note='Only failed (error/missing) cases are asked again; a case uses the latest run that answered it.',
+            partitions={o['job']['official_name']: dict(run_dir=o['job']['run_dir'], retries=o['job']['retries'],
+                                                        selection=o['selection'])
+                        for o in ordered if o['retries']}))
+        generation_failures = [o['generation_failure'] for o in ordered if 'generation_failure' in o]
+        generation_failures += [dict(run_dir=job['run_dir'], error_type='not_started',
+                                     error_message='Partition produced no batch row', failed_phase='generating',
+                                     diagnostic_path=None)
+                                for job in jobs if job['partition_id'] not in outcomes]
+        failures = [failure for o in ordered for failure in o['failures']]
+        per_case = {cid: value for o in ordered for cid, value in o['per_case'].items()}
+        metric = next((o['metric'] for o in ordered if o['metric']), None)
         values = [v for v in per_case.values() if v is not None]
         save_json(run / SUMMARY, dict(metric=metric, planned=planned, scored=len(values),
                                       mean=sum(values) / len(values) if values else None,
                                       partitions=len(jobs), adopted=bool(payload.get('adopt_runs')),
-                                      seeded=bool(seeds), retry_rounds=rounds))
+                                      seeded=bool(seeds), retry_rounds=rounds,
+                                      partitions_with_case_errors=sum(
+                                          1 for o in ordered if any(row.get('status') == 'error' for row in
+                                                                    _outputs(Path(o['job']['run_dir'])).values()))))
         save_json(run / 'scoring-status.json', dict(failures=failures))
         first_failure = next(iter(generation_failures + failures), {})
-        failed = exit_code or failures
+        failed = bool(generation_failures or failures)
         state('finished_with_errors' if failed else 'finished',
               stage='complete', planned=planned, scoring_failures=failures,
               generation_failures=generation_failures,

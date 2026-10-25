@@ -22,6 +22,8 @@ from .identity import fingerprint
 from .execution_diagnostics import exception_details, persist_stderr, sanitize_diagnostic
 
 SEED_POLICY = 'from-seed'
+# Seconds between the runner's own partition deadline and killing the process.
+PARTITION_KILL_GRACE = 120
 
 
 def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
@@ -29,11 +31,17 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                sn_source_ref=None, dependency_requirements=None, runtime_expectation=None,
                root=None, budget_ledger=None, task_worktree_ref=None,
                reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
-               seed_prepared_map=None, seed_allow_source_change=False, preparation_cache=None):
+               seed_prepared_map=None, seed_allow_source_change=False, preparation_cache=None,
+               question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None,
+               model_gate=None):
     """Validate all selected IDs before any process; retain frozen case order.
 
     With a seed map, preparation_policy='from-seed' takes each job's policy from
     its seed run, since one batch may join seeds prepared under both policies.
+    A partition deadline is applied at launch (see ``_run_job``): gracefully
+    inside the runner, and by killing the process ``PARTITION_KILL_GRACE``
+    seconds later.
+    model_gate = (directory, slots) caps model requests across partitions.
     """
     from .bundle_index import find_installed_bundle, load_partition
     from .notebook_bundle import OFFICIAL_REQUEST_REVISION
@@ -100,6 +108,12 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                 argv.extend([flag, str(Path(value).resolve())])
         for cid in ids:
             argv.extend(['--case-id', cid])
+        if question_workers != 1:
+            argv.extend(['--question-workers', str(question_workers)])
+        if case_deadline_seconds is not None:
+            argv.extend(['--case-deadline-seconds', str(case_deadline_seconds)])
+        if model_gate is not None:
+            argv.extend(['--model-gate', str(Path(model_gate[0]).resolve()), '--model-gate-slots', str(model_gate[1])])
         seed, policy = None, preparation_policy
         if seeds is not None:
             # One partition is one prepared notebook; its cases must share the seed.
@@ -129,6 +143,8 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
                          bundle=str(bundle), artifact_root=str(artifact_root),
                          artifact_index_id=artifact_index_id, case_id_file=str(Path(case_id_file).resolve()),
                          case_id_file_sha256=digest(case_id_file),
+                         **({'partition_deadline_seconds': partition_deadline_seconds}
+                            if partition_deadline_seconds is not None else {}),
                          argv=argv))
     return jobs
 
@@ -138,15 +154,49 @@ def _safe_tail(value):
     return sanitize_diagnostic(value)[-4096:]
 
 
-def _run_job(job, diagnostic_directory):
+def _run_job(job, diagnostic_directory, deadline=None):
+    """Run one partition process.
+
+    The runner's own deadline is the partition deadline, shortened to what is
+    left of the batch ``deadline`` at launch, so a late partition still stops
+    asking, saves its unanswered questions as errors and finishes. The process
+    is killed only if it overruns that by ``PARTITION_KILL_GRACE`` seconds
+    (e.g. while importing, which cannot be interrupted).
+    """
     started = datetime.now(timezone.utc).isoformat()
     clock = time.monotonic()
     details = {}
+    runner_deadline = job.get('partition_deadline_seconds')
+    remaining = None if deadline is None else deadline - clock
+    if remaining is not None:
+        runner_deadline = remaining if runner_deadline is None else min(runner_deadline, remaining)
+    argv = list(job['argv'])
+    limit = None
+    if runner_deadline is not None and runner_deadline > 0:
+        argv.extend(['--partition-deadline-seconds', '%.3f' % runner_deadline])
+        limit = runner_deadline + PARTITION_KILL_GRACE
+    killed = False
+    if remaining is not None and remaining <= 0:
+        # The execution deadline passed before this partition could start.
+        row = {k: v for k, v in job.items() if k != 'argv'}
+        row.update(format='sn-notebook-batch-run-v1', started_at=started, finished_at=started, exit_code=None,
+                   execution_status='not_started', error_type='execution_deadline', stderr_path=None,
+                   stderr_tail='', state=None, latency_seconds=0.0,
+                   error_message='Execution deadline reached before the partition started',
+                   failed_phase='not_started')
+        return row
     try:
-        child = subprocess.run(job['argv'], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                               text=True, encoding='utf-8', errors='replace', check=False)
+        child = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               text=True, encoding='utf-8', errors='replace', check=False, timeout=limit)
         code, stderr = child.returncode, sanitize_diagnostic(child.stderr)
         error_type = None
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run killed the child; whatever it saved stays on disk.
+        killed = True
+        code, error_type = None, 'partition_deadline_kill'
+        stderr = sanitize_diagnostic(exc.stderr.decode('utf-8', 'replace') if isinstance(exc.stderr, bytes)
+                                     else exc.stderr or '')
+        details = dict(error_message=f'Partition process killed after {limit:.0f}s', failed_phase='deadline')
     except OSError as exc:
         code, error_type = None, type(exc).__name__
         details = exception_details(exc, phase='spawn', directory=diagnostic_directory)
@@ -168,9 +218,11 @@ def _run_job(job, diagnostic_directory):
     row = {k: v for k, v in job.items() if k != 'argv'}
     row.update(format='sn-notebook-batch-run-v1', started_at=started,
                finished_at=datetime.now(timezone.utc).isoformat(), exit_code=code,
-               execution_status='exited' if code is not None else 'spawn_failed',
+               execution_status='exited' if code is not None else 'killed' if killed else 'spawn_failed',
                error_type=error_type, stderr_path=stderr_path, stderr_tail=tail, state=state,
-               latency_seconds=time.monotonic() - clock)
+               latency_seconds=time.monotonic() - clock,
+               **({'partition_deadline_applied_seconds': round(runner_deadline, 3)}
+                  if limit is not None else {}))
     row.update(details)
     if (run / 'outputs.jsonl').is_file() and (run / 'manifest.json').is_file():
         try:
@@ -184,14 +236,20 @@ def _run_job(job, diagnostic_directory):
     return row
 
 
-def execute_batch(jobs, *, output_root, parallel=1, append_run=None, ledger_path=None):
+def execute_batch(jobs, *, output_root, parallel=1, append_run=None, ledger_path=None, after_run=None,
+                  deadline=None, ledger_appender=None):
     """Launch each partition once, append its row as soon as it terminates.
 
     The default calls M0-B append_run(ledger_path, run_dir). An override
     append_run(row) executes on the coordinator thread. Append failures are
     preserved locally and make the batch fail; subsequent partitions still run.
     Exit 0 means all child exits were zero and bookkeeping succeeded, not that
-    answers or official scores are successful.
+    answers or official scores are successful. ``after_run(job, row)`` runs on
+    the coordinator thread as each partition ends (it should hand long work to
+    another pool). ``deadline`` (monotonic) bounds every partition launched
+    before it (see ``_run_job``) and leaves later ones ``not_started``.
+    ``ledger_appender`` (thread-safe callable) shares one appender across
+    batches of the same ledger.
     """
     if type(parallel) is not int or parallel < 1 or not jobs:
         raise ValueError('Provide jobs and a positive parallel limit')
@@ -204,6 +262,11 @@ def execute_batch(jobs, *, output_root, parallel=1, append_run=None, ledger_path
     if any(not p.is_relative_to(output_root) for p in paths):
         raise ValueError('Run directories must belong to the output root')
     backend = 'external-append' if append_run else None
+    if append_run is None and ledger_appender is not None:
+        def append_run(row):
+            ledger_appender(row['run_dir'], stage_metrics_path=row.get('stage_metrics_path'),
+                            exit_code=row['exit_code'], stderr_summary=row['stderr_tail'])
+        backend = 'M0-B append_run'
     if append_run is None:
         try:
             from .run_ledger import LedgerAppender
@@ -227,10 +290,13 @@ def execute_batch(jobs, *, output_root, parallel=1, append_run=None, ledger_path
     rows, bookkeeping_failed = [], False
     try:
         with ThreadPoolExecutor(max_workers=parallel) as pool:
-            futures = [pool.submit(_run_job, j, diagnostic_directory) for j in jobs]
+            futures = {pool.submit(_run_job, j, diagnostic_directory, deadline): j for j in jobs}
             for future in as_completed(futures):
                 row = future.result()
-                if append_run is not None:
+                if row['execution_status'] == 'not_started':
+                    # No run directory exists; the journal row is the record.
+                    row['ledger_backend'] = 'not-started; nothing to append'
+                elif append_run is not None:
                     try:
                         row['ledger_backend'] = backend
                         append_run(row)
@@ -247,6 +313,8 @@ def execute_batch(jobs, *, output_root, parallel=1, append_run=None, ledger_path
                     local(row)
                 executions(row)
                 rows.append(row)
+                if after_run is not None:
+                    after_run(futures[future], row)
     finally:
         executions.close()
         if local is not None:

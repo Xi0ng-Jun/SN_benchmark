@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import time
 
 from .artifacts import digest, save_json, save_jsonl
 from .benchmark_runtime import DEFAULT_PREPARATION_POLICY, validate_preparation_policy
@@ -183,7 +184,8 @@ def _publish_preparation(cache, key, material, receipt, run, lock):
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
                 qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
                 diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1',
-                preparation_policy=DEFAULT_PREPARATION_POLICY, prepared_seed=None, after_preparation=None):
+                preparation_policy=DEFAULT_PREPARATION_POLICY, prepared_seed=None, after_preparation=None,
+                question_workers=1, case_deadline_seconds=None, partition_deadline=None):
     update_state(run, 'importing')
     from .benchmark_runtime import load_prepared_notebook, prepare_notebook
     from .system_runtime import complete_evidence_checks, is_cancellation, run_system_question
@@ -206,75 +208,180 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
             after_preparation()
     selected = {case['case_id']: case for case in cases}
     documents = {document['id']: document for document in product['documents']}
+    questions = [question for question in product['questions'] if question['case_id'] in selected]
+
+    def ask(question):
+        with ExitStack() as observation_stack:
+            if multihop_retrieval:
+                from .sn_retrieval import capture_chunk_ranking
+                ranking = observation_stack.enter_context(capture_chunk_ranking(
+                    repo, notebook, question,
+                    [documents[did] for did in question['material_document_ids']], mapping))
+            try:
+                record = run_system_question(repo, notebook, question, mode, mapping,
+                    diagnostic_directory=run, diagnostic_sensitive_values=diagnostic_sensitive_values,
+                    protocol=reasoning_protocol)
+            except Exception as exc:
+                if is_cancellation(exc):
+                    raise
+                details = exception_details(exc, phase='asking', directory=run,
+                                            sensitive_values=diagnostic_sensitive_values)
+                record = dict(question, status='error', answer='', response={},
+                              reason='native invocation/capture failed', **details)
+        if multihop_retrieval:
+            record['retrieval'] = ranking
+        return record
+
+    def complete(question, record):
+        """Evidence projections and scoring strata after the model has finished."""
+        case = selected[question['case_id']]
+        if qasper_catalogues is not None:
+            from .qasper_evidence import capture_evidence
+            did, = question['material_document_ids']
+            captured = capture_evidence(repo, record, documents[did], qasper_catalogues[did], mapping)
+            record['qasper_evidence'] = captured
+            if captured['status'] == 'complete':
+                record['predicted_evidence'] = captured['projection']['predicted_evidence']
+        if hotpot_evidence:
+            from .hotpot_evidence import capture_evidence
+            public_documents = [documents[did] for did in question['material_document_ids']]
+            captured = capture_evidence(repo, record, public_documents, mapping)
+            record['hotpot_evidence'] = captured
+            if captured['status'] == 'complete':
+                record['predicted_supporting_facts'] = captured['projection']['predicted_supporting_facts']
+        # The model has finished. Recover scoring strata from the frozen
+        # case; v3's public task intentionally hides answer-type labels.
+        record['task'] = case['task']
+        if 'adaptation_revision' in case:
+            record['adaptation_revision'] = case['adaptation_revision']
+        if 'gold_document_ids' not in question:
+            complete_evidence_checks(repo, record, mapping, gold_document_ids=case['gold_document_ids'])
+        record['source_to_document'] = {v['source_id']: key for key, v in mapping.items()}
+        try:
+            record['anchor_documents'], record['anchor_mapping_errors'] = _anchor_documents(repo, record, mapping)
+        except Exception as exc:
+            record.update(anchor_documents={}, anchor_mapping_errors=[{'reason': 'mapping_failed', 'error_type': type(exc).__name__}])
+        return record
+
     with EventJournal(cell / 'attempts.jsonl') as attempts:
-        for question in product['questions']:
-            if question['case_id'] not in selected:
-                continue
+        def persist(question, record):
             case = selected[question['case_id']]
-            update_state(run, 'asking', case_id=question['case_id'])
-            attempts(dict(event='started', case_id=question['case_id'], mode=mode))
+            outputs(dict(case_id=question['case_id'], sample_id=question['sample_id'], suite=question['suite'],
+                         task=case['task'], product_protocol=VERSION, material_role='source_documents',
+                         status=record['status'], output_available=bool(record.get('answer', '').strip()),
+                         prediction=record.get('answer', ''), product_record=record,
+                         reason=record.get('reason'), behavior=record.get('behavior'), trace=record.get('trace')))
+            attempts(dict(event='finished', case_id=question['case_id'], mode=mode, status=record['status']))
+            return record
 
-            def invoke_and_persist():
-                with ExitStack() as observation_stack:
-                    if multihop_retrieval:
-                        from .sn_retrieval import capture_chunk_ranking
-                        ranking = observation_stack.enter_context(capture_chunk_ranking(
-                            repo, notebook, question,
-                            [documents[did] for did in question['material_document_ids']], mapping))
+        # Observation captures that patch shared objects and native Agent
+        # sessions are not safe to interleave, and an abandoned call cannot be
+        # given a complete ranking/trace; those runs keep the sequential path.
+        bounded = case_deadline_seconds is not None or partition_deadline is not None
+        if (question_workers == 1 and not bounded) or agent_evaluation is not None or multihop_retrieval:
+            for question in questions:
+                case = selected[question['case_id']]
+                update_state(run, 'asking', case_id=question['case_id'])
+                attempts(dict(event='started', case_id=question['case_id'], mode=mode))
+                invoke_and_persist = lambda question=question: persist(question, complete(question, ask(question)))
+                if agent_evaluation is None:
+                    invoke_and_persist()
+                else:
+                    agent_evaluation.run_case(
+                        case_id=question['case_id'], mode=mode, question=question['question'],
+                        invoke_and_persist=invoke_and_persist, session_factory=session_factory,
+                        metadata={key: case[key] for key in ('suite', 'task', 'sample_id')})
+        else:
+            _ask_bounded(run, questions, mode, attempts, workers=question_workers,
+                         case_deadline=case_deadline_seconds, deadline=partition_deadline,
+                         answer=lambda question: complete(question, ask(question)),
+                         unanswered=lambda question, record: complete(question, record),
+                         persist=persist, is_cancellation=is_cancellation)
+
+
+def _ask_bounded(run, questions, mode, attempts, *, workers, case_deadline, deadline, answer, unanswered,
+                 persist, is_cancellation):
+    """Ask up to ``workers`` questions at once, each with its own deadline.
+
+    Each question is an independent request (no shared conversation). Outputs
+    are journaled in completion order. A question still running at its
+    deadline, or not started at the partition deadline, is saved as ``error``
+    with its phase; the abandoned call keeps running in a daemon thread and its
+    late result is discarded, never overwriting the saved terminal record.
+    """
+    import queue
+    import threading
+    lock = threading.Lock()
+    completions = queue.Queue()
+    pending, inflight = list(questions), {}
+
+    def timeout(question, error_type, phase, message):
+        record = dict(question, status='error', answer='', response={}, reason=message,
+                      error_type=error_type, error_message=message, failed_phase=phase)
+        persist(question, unanswered(question, record))
+
+    def start(question):
+        slot = dict(question=question, started=time.monotonic(), abandoned=False, persisted=False)
+
+        def body():
+            try:
+                row, error = answer(question), None
+            except BaseException as exc:
+                row, error = None, exc
+            with lock:
+                if slot['abandoned']:
                     try:
-                        record = run_system_question(repo, notebook, question, mode, mapping,
-                            diagnostic_directory=run, diagnostic_sensitive_values=diagnostic_sensitive_values,
-                            protocol=reasoning_protocol)
-                    except Exception as exc:
-                        if is_cancellation(exc):
-                            raise
-                        details = exception_details(exc, phase='asking', directory=run,
-                                                    sensitive_values=diagnostic_sensitive_values)
-                        record = dict(question, status='error', answer='', response={},
-                                      reason='native invocation/capture failed', **details)
-                if multihop_retrieval:
-                    record['retrieval'] = ranking
-                if qasper_catalogues is not None:
-                    from .qasper_evidence import capture_evidence
-                    did, = question['material_document_ids']
-                    captured = capture_evidence(repo, record, documents[did], qasper_catalogues[did], mapping)
-                    record['qasper_evidence'] = captured
-                    if captured['status'] == 'complete':
-                        record['predicted_evidence'] = captured['projection']['predicted_evidence']
-                if hotpot_evidence:
-                    from .hotpot_evidence import capture_evidence
-                    public_documents = [documents[did] for did in question['material_document_ids']]
-                    captured = capture_evidence(repo, record, public_documents, mapping)
-                    record['hotpot_evidence'] = captured
-                    if captured['status'] == 'complete':
-                        record['predicted_supporting_facts'] = captured['projection']['predicted_supporting_facts']
-                # The model has finished. Recover scoring strata from the frozen
-                # case; v3's public task intentionally hides answer-type labels.
-                record['task'] = case['task']
-                if 'adaptation_revision' in case:
-                    record['adaptation_revision'] = case['adaptation_revision']
-                if 'gold_document_ids' not in question:
-                    complete_evidence_checks(repo, record, mapping, gold_document_ids=case['gold_document_ids'])
-                record['source_to_document'] = {v['source_id']: key for key, v in mapping.items()}
-                try:
-                    record['anchor_documents'], record['anchor_mapping_errors'] = _anchor_documents(repo, record, mapping)
-                except Exception as exc:
-                    record.update(anchor_documents={}, anchor_mapping_errors=[{'reason': 'mapping_failed', 'error_type': type(exc).__name__}])
-                outputs(dict(case_id=question['case_id'], sample_id=question['sample_id'], suite=question['suite'],
-                             task=case['task'], product_protocol=VERSION, material_role='source_documents',
-                             status=record['status'], output_available=bool(record.get('answer', '').strip()),
-                             prediction=record.get('answer', ''), product_record=record,
-                             reason=record.get('reason'), behavior=record.get('behavior'), trace=record.get('trace')))
-                attempts(dict(event='finished', case_id=question['case_id'], mode=mode, status=record['status']))
-                return record
+                        attempts(dict(event='late_result_discarded', case_id=question['case_id'], mode=mode,
+                                      status=(row or {}).get('status')))
+                    except (ValueError, OSError):
+                        pass
+                    return
+                if row is not None:
+                    persist(question, row)
+                    slot['persisted'] = True
+            completions.put((slot, error))
+        attempts(dict(event='started', case_id=question['case_id'], mode=mode))
+        inflight[question['case_id']] = slot
+        threading.Thread(target=body, daemon=True, name='ask-' + question['case_id']).start()
 
-            if agent_evaluation is None:
-                invoke_and_persist()
-            else:
-                agent_evaluation.run_case(
-                    case_id=question['case_id'], mode=mode, question=question['question'],
-                    invoke_and_persist=invoke_and_persist, session_factory=session_factory,
-                    metadata={key: case[key] for key in ('suite', 'task', 'sample_id')})
+    def abandon(slot, error_type, phase, message):
+        with lock:
+            if slot['persisted']:
+                return False
+            slot['abandoned'] = True
+        del inflight[slot['question']['case_id']]
+        timeout(slot['question'], error_type, phase, message)
+        return True
+
+    while pending or inflight:
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            for slot in list(inflight.values()):
+                abandon(slot, 'partition_deadline', 'asking', 'partition deadline reached while asking')
+            for question in pending:
+                timeout(question, 'partition_deadline', 'not_started', 'partition deadline reached before asking')
+            pending = []
+            if not inflight:
+                break
+        while pending and len(inflight) < workers:
+            start(pending.pop(0))
+        update_state(run, 'asking', case_id=next(reversed(inflight), None), in_flight=sorted(inflight))
+        limits = [slot['started'] + case_deadline for slot in inflight.values()] if case_deadline else []
+        if deadline is not None:
+            limits.append(deadline)
+        wait = max(0.0, min(limits) - time.monotonic()) if limits else None
+        try:
+            slot, error = completions.get(timeout=wait)
+        except queue.Empty:
+            now = time.monotonic()
+            for slot in list(inflight.values()):
+                if case_deadline and now >= slot['started'] + case_deadline:
+                    abandon(slot, 'case_timeout', 'asking', f'case deadline of {case_deadline}s exceeded')
+            continue
+        inflight.pop(slot['question']['case_id'], None)
+        if error is not None:
+            # Same as the sequential path: cancellation and capture failures stop the run.
+            raise error
 
 
 def selected_cases(bundle, product, case_ids=None):
@@ -350,7 +457,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             agent_config=None, case_ids=None, model_config=None, artifact_root=None, artifact_index_id=None,
             sn_source_ref=None, dependency_requirements=None, expected_interpreter=None, task_worktree=None,
             reasoning_protocol='reasoning-v1', preparation_policy=DEFAULT_PREPARATION_POLICY,
-            seed_prepared_run=None, seed_allow_source_change=False, preparation_cache=None):
+            seed_prepared_run=None, seed_allow_source_change=False, preparation_cache=None,
+            question_workers=1, case_deadline_seconds=None, partition_deadline_seconds=None):
     """Execute an explicit request revision; the API default preserves old callers.
 
     Online CLIs explicitly select v3. Frozen v1/v2 runs rebuild using their saved
@@ -360,7 +468,16 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
     names a content-addressed cache of prepared notebooks (see
     preparation_cache.py): a verified hit replaces importing, a miss imports
     and publishes the result; either way the run keeps a private copy.
+    question_workers asks that many questions of the partition at once;
+    case_deadline_seconds / partition_deadline_seconds save a question that
+    overruns (or never starts) as an error and let the partition finish.
     """
+    started_at = time.monotonic()
+    if type(question_workers) is not int or not 1 <= question_workers <= 32:
+        raise ValueError('question_workers must be an integer between 1 and 32')
+    for value in (case_deadline_seconds, partition_deadline_seconds):
+        if value is not None and (type(value) not in (int, float) or not value > 0):
+            raise ValueError('Deadlines must be positive seconds')
     validate_preparation_policy(preparation_policy)
     if mode not in {'chunk', 'reasoning'}:
         raise ValueError('Explicit chunk/reasoning mode required')
@@ -609,7 +726,13 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                   **({'preparation_cache': {k: cache_receipt[k] for k in ('cache_key', 'status')}}
                      if cache_receipt is not None else {}),
                   **({'prepared_from': {k: cache_receipt[k] for k in ('cache_key', 'source_run', 'entry_sha256')}}
-                     if cache_hit else {})))
+                     if cache_hit else {}),
+                  # Scheduling only; disclosed, never a comparison condition.
+                  **({'execution_controls': dict(question_workers=question_workers,
+                                                 case_deadline_seconds=case_deadline_seconds,
+                                                 partition_deadline_seconds=partition_deadline_seconds)}
+                     if (question_workers, case_deadline_seconds, partition_deadline_seconds) != (1, None, None)
+                     else {})))
         if seed is not None:
             install_prepared_seed(seed, run)
         with ExitStack() as stack:
@@ -645,7 +768,10 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         prepared_seed=seed if seed is not None else (cache_receipt if cache_hit else None),
                         after_preparation=(lambda: _publish_preparation(cache, cache_key, cache_material,
                                                                         cache_receipt, run, cache_lock))
-                        if cache is not None and not cache_hit else None)
+                        if cache is not None and not cache_hit else None,
+                        question_workers=question_workers, case_deadline_seconds=case_deadline_seconds,
+                        partition_deadline=started_at + partition_deadline_seconds
+                        if partition_deadline_seconds is not None else None)
             score_outputs(run, cases, planned, scores)
         errors, failures = _saved_failures(run)
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)

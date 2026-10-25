@@ -40,6 +40,7 @@ class CreateIteration(_Command):
     fresh_batch_count: int = Field(default=0, ge=0, le=100)
     fresh_papers_per_batch: int = Field(default=8, ge=1, le=100)
     budget: dict | None = None
+    execution: dict | None = None
 
 
 class Integration(_Command):

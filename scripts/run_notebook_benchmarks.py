@@ -89,6 +89,15 @@ def main():
                         help='Accept a seed prepared by different SN source (answer-path changes only); recorded')
     parser.add_argument('--preparation-cache', type=Path,
                         help='Content-addressed cache of prepared notebooks; a verified hit replaces importing')
+    parser.add_argument('--question-workers', type=int, default=1,
+                        help='Questions of this partition asked at once (independent requests)')
+    parser.add_argument('--case-deadline-seconds', type=float,
+                        help='Save a question still running after this long as an error and continue')
+    parser.add_argument('--partition-deadline-seconds', type=float,
+                        help='Stop asking at this age of the run; unanswered questions are saved as errors')
+    parser.add_argument('--model-gate', type=Path,
+                        help='Directory of cross-process model request slots shared by concurrent partitions')
+    parser.add_argument('--model-gate-slots', type=int, help='Number of slots under --model-gate')
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
                         help='Generation request contract (default: v3 without gold fields); explicit v1/v2 preserve historical requests.')
@@ -161,6 +170,8 @@ def main():
         except _ReadinessError as exc:
             print('Readiness failed: ' + exc.category, file=sys.stderr)
             return 2
+    if (args.model_gate is None) != (args.model_gate_slots is None):
+        parser.error('--model-gate and --model-gate-slots must be supplied together')
     from rag_eval.run_report import write_report
     from rag_eval.system_runtime import is_cancellation
     run = args.run_dir.resolve()
@@ -168,14 +179,18 @@ def main():
     code = 0
     try:
         from rag_eval.model_budget import install_budget_guard
-        with install_budget_guard(args.budget_ledger) if args.budget_ledger else nullcontext():
+        from rag_eval.model_gate import install_model_gate
+        with install_budget_guard(args.budget_ledger) if args.budget_ledger else nullcontext(), \
+                install_model_gate(args.model_gate, args.model_gate_slots) if args.model_gate else nullcontext():
             execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
                     mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
                     case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root,
                     artifact_index_id=args.artifact_index_id, reasoning_protocol=args.reasoning_protocol,
                     preparation_policy=args.preparation_policy, seed_prepared_run=args.seed_prepared_run,
                     seed_allow_source_change=args.seed_allow_source_change,
-                    preparation_cache=args.preparation_cache, **startup_kwargs)
+                    preparation_cache=args.preparation_cache, question_workers=args.question_workers,
+                    case_deadline_seconds=args.case_deadline_seconds,
+                    partition_deadline_seconds=args.partition_deadline_seconds, **startup_kwargs)
     except BaseException as exc:
         details = getattr(exc, '_rag_eval_diagnostic_details', None) or exception_details(
             exc, phase='validation', sensitive_values=config_sensitive_values(args.model_config))
