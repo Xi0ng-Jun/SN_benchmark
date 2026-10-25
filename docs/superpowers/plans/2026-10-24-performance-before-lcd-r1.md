@@ -74,6 +74,14 @@
 - **P7** 照做：readiness receipt 退役并记 DELETION_LOG；`execute()` 默认 request revision 与 CLI 统一为 v3；case 选择逻辑收敛。
 - **R1 设置约束**：真实 SN 多线程提问未验证，R1 用 `question_workers = 1`、分区 `parallel = 8`、`model_concurrency` 按网关能力设；带预算的 iteration 强制 `retry_rounds = 0`，所以 P2(e) 的重试合并在 R1 不触发。
 
+## P8. 并行导入文档（2026-10-25 补，R1 改用 ALCE-ASQA 后的首要项）
+
+**证据。**ASQA 每题一个 notebook、100 篇片段，服务器上每个 notebook 准备 51 分钟，延迟元数据后估计 13 分钟。原因不是字符数：`benchmark_runtime.py` 的导入循环对每篇文档调用 `repo.upload_sources(..., scheduler=None)`，注释写明保持同步；SN 自己的 API（`api/source_routes.py:385`）传 `scheduler=lambda source_id: kg_scheduler.submit_job(repo.process_source, source_id)`，即产品本身并发处理。SN 每篇文档的流水线 parse → chunk → summarize（LLM）→ paper_meta（LLM）→ 元素 embedding → chunk embedding，源码注释自承"最坏可达分钟级"。真实 QASPER 运行一篇论文导入 64.9 s（summary 8.1 s、paper_meta 0.6 s、embed 阶段 55 s 含一次 41 s 慢调用）。100 篇 × 每篇 5–8 s 串行 = 8–13 分钟。
+
+**改动。**`prepare_notebook` 的逐文档循环改为有界并发：上传（`upload_sources`）仍逐篇、顺序、同步，拿到 source_id 后把 `process_source_compat(source_id)`（或等价地给 `upload_sources` 传一个提交到我们自己线程池的 `scheduler`）交给 `ThreadPoolExecutor(max_workers=preparation_workers)`，每个工作线程在 `contextvars.copy_context()` 下运行以保留 SN 的作用域；全部完成后再做 `backfill_chunk_embeddings`、chunk 校验、`build_scale_index`、延迟元数据刷新。`document-map.json` 仍记录每篇的 `ingest_seconds`（改为该篇处理的墙钟）与完成顺序；失败的文档记录错误并让准备失败（不静默跳过）。`preparation_workers` 来自执行配置与 iteration `execution` 块（默认 1 保持现状；R1 用 8），写进 manifest 的 `execution_controls` 披露，不进比较身份、不进准备缓存键（并发不改变内容）。SN 的 `_source_chunk_lock` 与 `db_write_lock` 已经是为并发设计的，但本机只能用假 SN 与真实 SN 的离线 fixture 模型验证；真实模型下的首次 ASQA smoke（2 题）要对比 `preparation_workers=1` 与 8 的导入产物（chunk 数、embedding 覆盖、summary 非空）一致。
+
+**验收。**假 SN 100 篇、每篇 0.1 s 模拟延迟：串行约 10 s，8 并发 < 2 s；产物（chunk 数、embedding 覆盖、document-map 内容除时间字段）与串行逐字节一致；一篇失败时准备失败且已完成篇的记录保留；准备缓存键在 workers=1 与 8 之间相同。真实 SN 集成测试（离线 fixture 模型）在 workers=4 下通过。
+
 ## 不做
 
 不动模型客户端的超时与退避策略（60 s、2^n）——这是 SN 项目的配置，记录观察即可；不引入新的存储后端；不改 LCD 的门、簇、划分语义；不为了性能放松任何不变量。
