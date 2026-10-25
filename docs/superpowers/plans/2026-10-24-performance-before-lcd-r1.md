@@ -118,3 +118,22 @@
   7. **未验证风险**：`question_workers>1` 只在假 SN 上验证；真实 SN `SQLiteRepository`、ContextVar 与模型调度在同一进程多线程提问下是否安全没有在本机验证（需要真实模型或更完整的离线 SN 问答 fixture）。建议 R1 在真实 SN 并发 smoke 通过前保持 `question_workers=1`，只用分区并行 8。
 - **验收（离线，`tests/test_parallel_execution.py` 10 项 + 工作台 4 项）。** 10 分区 × 3 题合成分区进程（每题 0.2 s 假模型延迟）：串行 **6.18 s**，并行 8 **1.27 s**（比值 0.205 < 0.25，`scripts/measure_performance_offline.py parallel-batch`）；第一个分区可评分时刻 0.63 s（原流程须等全部分区结束：并行 8 下 1.27 s、串行 6.18 s），工作台测试断言第一个分区在第二个分区生成完成前已评分。分区内 2 题 × 0.3 s：顺序 0.72 s → `question_workers=4` 0.40 s，峰值并发 2，输出状态与 `identity` 一致。题级期限 1 s：挂起题记 `error`/`case_timeout`/`asking`，另一题成功，分区 `finished_with_errors`，整次 < 15 s；分区期限：在途题 `asking`、未开始题 `not_started`。挂起分区进程在 1.5 s + grace 后被杀（`killed`/`partition_deadline_kill`），另两个分区退出码 0；执行截止后分区记 `not_started` 且不建目录。闸门：6 线程、2 槽位，峰值在途 2；跨进程：子进程等待父进程释放槽位 ≥ 0.4 s。重试：只重问失败题（种子为原分区运行），原运行保留为分区运行，`selected_case_ids` 只在最后答出的那轮，汇总按选择取值；`flips` 只对声明题取重试值、重试运行被拒则不准入；旧 `batch-plan.json`（无 `retries`）与旧列表格式 `retry-rounds.json` 仍可发现与读取。iteration `execution` 策略校验并下发到 payload。
 - **测试。** 全量 `-n auto`：**2541 passed, 7 skipped，墙钟 70 s**。
+
+### P3 · 2026-10-25 · 读路径与比较的计算时机
+
+- **改动。** `GET /api/iterations/{id}` 改由 `IterationAPI.show()` 提供：先算版本号（迭代相关表的行 + 任务 history 最大 seq + 全部 iteration 的行数／最大 rowid，因为 sealed 题来自所有 iteration 的协议；约 18 条固定语句），与上次返回的版本相同就直接返回内存中的树；否则在 `RunViews.request_scope()` 内只发现一次执行（线程本地，嵌套并入外层）、只建一次树并传给 `reconcile_fresh(tree=…)`（有批次完成才重建一次）和每个候选的 `for_candidate(reconcile=False)`；`primary` 直接用树上的 task id。`Admission` 的 sealed 检查改为每次请求每个执行一次（检查本身保留，请求外行为不变）。比较记录计算改用 `iteration_record()`（只读 iteration 行）取协议与任务，不再每条记录重建整棵树——这是首次 GET 平方增长的主因。响应带 `ETag` 与 `Cache-Control: no-cache`，`If-None-Match` 相同返回 304。`RunViews._ledger_rows` 按 (inode, size, mtime) 缓存解析结果，返回副本。
+- **核对审计定位。** 前端 4 s 轮询已经只在有 running／provisioning 候选或执行中的请求时开启（`App.tsx` 的 `moving`），审计这条不成立，前端未改；`api()` 用 fetch 默认缓存模式，浏览器会凭 ETag 自动条件请求，无需改前端，所以没有跑 `typecheck`。`comparisons.py` 的 `Admission` 早已在执行终态后按执行缓存并落盘（尺寸＋mtime 签名），所以没有另加 `scores_id + outputs_sha256` 键的 memo。
+- **偏离与原因。**
+  1. 比较记录仍是"执行终态后第一次读取时计算并落库，之后只读"，没有挂到监督线程的终态回调里：那样要让 `job_execution` 反向依赖 iteration／比较层；度量键里含执行终态，所以等价于"终态后算一次"，之后刷新命中版本缓存或只读已存记录（测试断言 flips／admission 调用次数不再增加）。
+  2. flips 没有单独的持久 memo：记录落库后不会再算 flips，重启后也只读记录。
+  3. 版本号不覆盖"执行终态之后运行目录文件被改写"的情况（例如手工重评分）；这与 Admission 既有的内存缓存同一前提。
+- **验收（`tests/test_workbench_iteration_read_path.py` 6 项，真实 iteration 树 + 桩化 RunViews，统计 `sqlite3` trace 语句数）。** 每个候选 2 次 attempt：
+
+  | 候选数 | 首次 GET（改前 → 改后） | 刷新（改前 → 改后，未变化） | 刷新（树有变化，改后） |
+  | --- | --- | --- | --- |
+  | 4 | 445 → 94 | 178 → 18 | 88 |
+  | 10 | 2353 → 214 | 742 → 18 | 160 |
+  | 20 | 8733 → 414 | 2482 → 18 | 280 |
+
+  改前随候选数近似平方增长（20/10 比 3.7、3.3），改后线性（每候选约 20 条，含首次落库），未变化的刷新为常数 18 条；第二、三次相同 GET 不调用 `load_bundle`／`RunReadContext.bundle`、不增加 flips／admission 调用。另测：任务内新事件使版本变化并重建；HTTP 带 ETag，未变化时 304 且无正文；请求作用域内 3 次 `execution_runs` + 3 次 Admission 只读一次执行记录、只做一次 sealed 检查，请求外行为不变，作用域按线程隔离；账本只在文件变化时重解析。
+- **测试。** 全量 `-n auto`：**2547 passed, 7 skipped，墙钟 70 s**。

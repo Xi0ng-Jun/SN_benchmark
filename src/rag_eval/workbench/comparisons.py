@@ -70,7 +70,8 @@ class Admission:
         # Recheck current policy before either memory or persisted cache reuse;
         # the isolated sealed reader has no ordinary worktree policy.
         guard = getattr(self.views, '_assert_unsealed', None)
-        if guard is not None:
+        once = getattr(self.views, 'once_per_request', None)
+        if guard is not None and (once is None or once(('sealed', execution_id))):
             for run in self.views.execution_runs(execution_id):
                 guard(run.id)
         if execution_id in self._cache:
@@ -154,6 +155,11 @@ class ComparisonService:
             initialize_comparisons(repository)
 
     # ------------------------------------------------------------ computing
+    def _iteration_record(self, iteration_id):
+        """Task, protocol and selection only; building the whole tree per record was quadratic."""
+        read = getattr(self.iterations, 'iteration_record', None) or self.iterations.iteration
+        return read(iteration_id)
+
     def _side(self, candidate):
         reference = candidate.get('reference')
         if reference is None:
@@ -236,7 +242,7 @@ class ComparisonService:
             for side, attempt, field in [('subject', sa[si], 'right'), ('reference', ra[ri], 'left')]:
                 samples[side][attempt['execution_id']] = dict(attempt, rows=[
                     dict(case_id=r['case_id'], family=str(r['partition']), value=r[field]) for r in pair['rows']])
-        protocol = self.iterations.iteration(subject['iteration_id']).get('protocol') or {}
+        protocol = self._iteration_record(subject['iteration_id']).get('protocol') or {}
         body['attempts_used'] = dict(subject=sa, reference=ra)
         body['noise'] = {side: estimate(dict(attempts=list(values.values())),
                                         success_threshold=protocol.get('success_threshold', .5),
@@ -304,11 +310,15 @@ class ComparisonService:
         out['reference'] = admitted[0] if admitted else None
         return out
 
-    def reconcile_fresh(self, iteration_id, *, actor):
-        """Record terminal fresh measurements and enlarge the validation pool; never dispatch."""
+    def reconcile_fresh(self, iteration_id, *, actor, tree=None):
+        """Record terminal fresh measurements and enlarge the validation pool; never dispatch.
+
+        ``tree`` reuses an already built iteration; returns how many batches completed.
+        """
         from .splits import batches
-        tree = self.iterations.iteration(iteration_id)
+        tree = tree or self.iterations.iteration(iteration_id)
         by_id = {c['id']: c for c in tree['candidates']}
+        completed = 0
         for b in batches(self.repository, iteration_id):
             if b['completed_at']:
                 continue
@@ -325,13 +335,15 @@ class ComparisonService:
                     'WHERE iteration_id=? AND batch_id=? AND completed_at IS NULL',
                     (now(), record['id'], iteration_id, b['batch_id'])).rowcount
                 if changed:
+                    completed += 1
                     self.repository._event(conn, tree['task_id'], 'iteration.fresh.completed', b['candidate_id'],
                                            dict(batch_id=b['batch_id'], comparison_id=record['id']))
+        return completed
 
     def _compute(self, subject, reference, kind):
         from .splits import batches, roles
         from .noise import summarize_cases
-        tree = self.iterations.iteration(subject['iteration_id'])
+        tree = self._iteration_record(subject['iteration_id'])
         protocol = tree.get('protocol') or {}
         commits = dict(subject=subject.get('frozen_commit'), reference=reference.get('frozen_commit'))
         def descriptor(batch_id, ids):
@@ -363,7 +375,7 @@ class ComparisonService:
                         raise ValueError('Cluster measurements differ from the frozen selection')
                     from .gate import judge, DEFAULT_RULE
                     from .hypotheses import HypothesisStore
-                    tree = self.iterations.iteration(subject['iteration_id'])
+                    tree = self._iteration_record(subject['iteration_id'])
                     card = HypothesisStore(self.repository).get(tree['task_id'], subject['proposal_id'])['card']
                     contract = card.get('contract')
                     verdict = judge(body, body.get('noise', {}), contract, tree['protocol'].get('gate_rule', DEFAULT_RULE)) if contract else None
@@ -374,7 +386,7 @@ class ComparisonService:
         body, reason = self._compute_scope(self.scoped(subject, None), self.scoped(reference, None), kind)
         if body is None:
             return body, reason
-        protocol = self.iterations.iteration(subject['iteration_id']).get('protocol') or {}
+        protocol = self._iteration_record(subject['iteration_id']).get('protocol') or {}
         completed = {b['batch_id'] for b in batches(self.repository, subject['iteration_id'], completed=True)}
         role_map = roles(protocol, completed)
         if role_map is None:
@@ -486,15 +498,15 @@ class ComparisonService:
                           _hash(body), actor, now(), json.dumps(body.get('attempts_used')), json.dumps(body.get('noise'))))
             return self._record(conn.execute(query, ends).fetchone())
 
-    def for_candidate(self, candidate_id, *, actor, iteration=None, store=True):
+    def for_candidate(self, candidate_id, *, actor, iteration=None, store=True, reconcile=True):
         """Δ父 and Δ根 of one candidate; a root has neither, a child of the root shares one record.
 
         Records are derived on first request (reading never changes an existing one).
         """
         if iteration is None:
             iteration = self.iterations.iteration(self.iterations.candidate(candidate_id)['iteration_id'])
-        if store:
-            self.reconcile_fresh(iteration['id'], actor=actor)
+        if store and reconcile:
+            self.reconcile_fresh(iteration['id'], actor=actor, tree=iteration)
         by_id = {c['id']: c for c in iteration['candidates']}
         subject = by_id[candidate_id]
         root_id, parent_id = iteration['root_candidate_id'], subject['parent_candidate_id']

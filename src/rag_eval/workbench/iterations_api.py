@@ -7,10 +7,14 @@ name a candidate; nothing here depends on what the browser has selected.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
+import hashlib
 import json
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .action_requests import VERBS, ActionRequestStore, execute
@@ -98,8 +102,9 @@ class IterationAPI:
         self.views = run_views
         self.requests = ActionRequestStore(repository)
         self.repository = repository
+        self._shown = {}  # iteration id -> (version, tree) last served
 
-    def primary(self, candidate):
+    def primary(self, candidate, task_id=None):
         """The reference's official primary metric.
 
         Several partitions use the execution's own case-weighted summary, written
@@ -108,7 +113,8 @@ class IterationAPI:
         reference = candidate.get('reference')
         if reference is None:
             return None
-        execution = self.service._execution(self.service.view(candidate['id']).task_id, reference['execution_id'])
+        task_id = task_id or self.service.view(candidate['id']).task_id
+        execution = self.service._execution(task_id, reference['execution_id'])
         summary_path = Path(execution['run_dir']) / SUMMARY if execution else None
         if summary_path is not None and summary_path.is_file() and not summary_path.is_symlink():
             saved = json.loads(summary_path.read_text(encoding='utf-8'))
@@ -121,6 +127,68 @@ class IterationAPI:
         official = self.views.run(runs[0].id)['official']
         metric = official.get('primary_metric')
         return dict(metric=metric, value=(official.get('metrics') or {}).get(metric), run_id=runs[0].id)
+
+    # Everything the tree view is built from that can change: rows of the
+    # iteration's tables and the task's history (execution starts and terminal
+    # states). Run files of a terminal execution are not re-read: admission and
+    # summaries are fixed once it ends.
+    _VERSION_QUERIES = (
+        ('iterations', 'SELECT * FROM iterations WHERE id=?', 'id'),
+        ('candidates', 'SELECT * FROM candidates WHERE iteration_id=? ORDER BY id', 'id'),
+        ('candidate_attempts', 'SELECT a.* FROM candidate_attempts a JOIN candidates c ON c.id=a.candidate_id '
+                               'WHERE c.iteration_id=? ORDER BY a.candidate_id,a.attempt', 'id'),
+        ('candidate_links', 'SELECT l.candidate_id,l.execution_id FROM candidate_links l JOIN candidates c '
+                            'ON c.id=l.candidate_id WHERE c.iteration_id=? ORDER BY 1,2', 'id'),
+        ('candidate_worktrees', 'SELECT w.candidate_id,w.status,w.binding_json FROM candidate_worktrees w '
+                                'JOIN candidates c ON c.id=w.candidate_id WHERE c.iteration_id=? ORDER BY 1', 'id'),
+        ('candidate_comparisons', 'SELECT COUNT(*),MAX(rowid) FROM candidate_comparisons WHERE iteration_id=?', 'id'),
+        ('iteration_fresh_batches', 'SELECT * FROM iteration_fresh_batches WHERE iteration_id=? ORDER BY batch_id', 'id'),
+        ('hypotheses', 'SELECT id,status,parent_candidate_id FROM hypotheses WHERE task_id=? ORDER BY id', 'task'),
+        ('history', 'SELECT MAX(seq) FROM history WHERE task_id=?', 'task'),
+        # Sealed cases come from every iteration's protocol (splits.Policy).
+        ('all_iterations', 'SELECT COUNT(*),MAX(rowid) FROM iterations', None),
+    )
+
+    def _version(self, iteration_id):
+        from .iterations import _has_table
+        digest = hashlib.sha256()
+        with self.repository.connect() as conn:
+            row = conn.execute('SELECT task_id FROM iterations WHERE id=?', (iteration_id,)).fetchone()
+            if row is None:
+                raise UnknownIdentity('Unknown iteration identity')
+            for table, sql, key in self._VERSION_QUERIES:
+                if table not in ('iterations', 'history', 'all_iterations') and not _has_table(conn, table):
+                    continue
+                params = () if key is None else (iteration_id if key == 'id' else row['task_id'],)
+                rows = conn.execute(sql, params).fetchall()
+                digest.update(json.dumps([table, [tuple(r) for r in rows]], default=str).encode())
+        return digest.hexdigest()
+
+    def show(self, iteration_id):
+        """The iteration tree with comparisons; returns (tree, version).
+
+        A GET whose version matches the last one served is answered from memory
+        without rebuilding anything. Otherwise executions are discovered once,
+        the tree is built once and shared by fresh-batch reconciliation and
+        every candidate's comparison lookup.
+        """
+        cached = self._shown.get(iteration_id)
+        if cached is not None and cached[0] == self._version(iteration_id):
+            return cached[1], cached[0]
+        scope = getattr(self.views, 'request_scope', None)
+        with scope() if scope is not None else nullcontext():
+            tree = self.service.iteration(iteration_id)
+            if self.comparisons.reconcile_fresh(iteration_id, actor=self.actor, tree=tree):
+                tree = self.service.iteration(iteration_id)
+            for candidate in tree['candidates']:
+                both = self.comparisons.for_candidate(candidate['id'], actor=self.actor, iteration=tree,
+                                                      reconcile=False)
+                candidate['comparisons'] = dict(parent=summary(both['parent']), root=summary(both['root']))
+                candidate['primary'] = self.primary(candidate, task_id=tree['task_id'])
+        # Taken after any comparison records this request stored.
+        version = self._version(iteration_id)
+        self._shown[iteration_id] = (version, tree)
+        return tree, version
 
     def _request(self, request_id):
         record = self.requests.get(request_id)
@@ -194,14 +262,14 @@ class IterationAPI:
             return service.create_iteration(self.workspace['id'], actor=actor, **command.model_dump())
 
         @router.get('/api/iterations/{iteration_id}')
-        def iteration_show(iteration_id: str):
+        def iteration_show(iteration_id: str, request: Request):
             self._scope(iteration_id=iteration_id)
-            tree = service.iteration(iteration_id)
-            for candidate in tree['candidates']:
-                both = self.comparisons.for_candidate(candidate['id'], actor=actor, iteration=tree)
-                candidate['comparisons'] = dict(parent=summary(both['parent']), root=summary(both['root']))
-                candidate['primary'] = self.primary(candidate)
-            return tree
+            tree, version = self.show(iteration_id)
+            etag = '"' + version + '"'
+            headers = {'ETag': etag, 'Cache-Control': 'no-cache'}
+            if request.headers.get('if-none-match') == etag:
+                return Response(status_code=304, headers=headers)
+            return JSONResponse(jsonable_encoder(tree), headers=headers)
 
         @router.get('/api/iterations/{iteration_id}/ledger')
         def iteration_ledger(iteration_id: str):

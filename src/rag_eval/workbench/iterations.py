@@ -262,6 +262,11 @@ class IterationService:
                                 ' ORDER BY i.created_at,i.id', (workspace_id,) if workspace_id else ()).fetchall()
             return [_iteration_record(r) for r in rows]
 
+    def iteration_record(self, iteration_id):
+        """Only the iteration row (task, protocol, selection), without building the tree."""
+        with self.repository.connect() as conn:
+            return self._iteration(conn, iteration_id)
+
     def iteration(self, iteration_id):
         """The iteration, its candidates in tree order, and its proposals."""
         with self.repository.connect() as conn:

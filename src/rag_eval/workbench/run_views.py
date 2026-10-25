@@ -13,6 +13,8 @@ these responses. Missing facts stay null/unknown with an explicit reason.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -23,6 +25,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 from typing import Any
 from ..execution_diagnostics import sanitize_diagnostic
 
@@ -194,9 +197,38 @@ class RunViews:
         from ..run_reader import RunReadContext
         self._read_context = RunReadContext()
         self._partition_context = RunReadContext(partition_only=True)
+        self._request_local = threading.local()
+        self._ledger_cache = None
+
+    @contextmanager
+    def request_scope(self):
+        """One web request: discover executions once and run per-execution checks once.
+
+        Thread-local, so concurrent requests keep their own scope; nested scopes
+        join the outer one.
+        """
+        local = self._request_local
+        if getattr(local, 'seen', None) is not None:
+            yield
+            return
+        local.seen = set()
+        try:
+            yield
+        finally:
+            local.seen = None
+
+    def once_per_request(self, key) -> bool:
+        """True the first time ``key`` is seen in the current request (always outside one)."""
+        seen = getattr(self._request_local, 'seen', None)
+        if seen is None:
+            return True
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
 
     def _discover_executions(self):
-        if self._execution_records is None:
+        if self._execution_records is None or not self.once_per_request('discover'):
             return
         records = self._execution_records()
         # Hundreds of partitions are looked up one by one; rescan only when a record or plan changed.
@@ -298,7 +330,12 @@ class RunViews:
         if self._ledger is None or not self._ledger.is_file():
             return []
         from ..run_ledger import query_runs
-        return query_runs(self._ledger)
+        # The ledger is append-only; reparse only when its size or mtime moves.
+        stat = self._ledger.stat()
+        stamp = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        if self._ledger_cache is None or self._ledger_cache[0] != stamp:
+            self._ledger_cache = (stamp, query_runs(self._ledger))
+        return deepcopy(self._ledger_cache[1])
 
     def _load(self, run_id: str) -> dict:
         entry = self._entry(run_id)
