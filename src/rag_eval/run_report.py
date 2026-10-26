@@ -140,6 +140,15 @@ def write_report(run_dirs, output, *, partition_only=False, save_stage_metrics=F
             preparation_policy = manifest.get('identity', {}).get('preparation_policy')
             if preparation_policy:
                 lines.append('资料准备策略：' + _cell(preparation_policy) + '。')
+            preparation = (run.get('stage_metrics') or {}).get('preparation')
+            if preparation:
+                errors = preparation.get('model_call_errors') or {}
+                infrastructure = preparation.get('infrastructure_errors') or {}
+                lines.append('资料准备诊断：回退摘要 ' + _cell(preparation.get('fallback_summaries'))
+                             + ' / ' + _cell(preparation.get('sources')) + ' 篇；准备期模型调用错误 '
+                             + (_cell(', '.join(f'{k} {v}' for k, v in errors.items())) if errors else '无')
+                             + ('；**基础设施失败，准备作废**：' + _cell(', '.join(f'{k} {v}' for k, v in infrastructure.items()))
+                                if infrastructure else '') + '。')
             audit = run.get('scheduled_generation_audit')
             if audit is not None:
                 completeness = audit['completeness']

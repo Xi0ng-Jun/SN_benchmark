@@ -242,6 +242,9 @@ def _run_job(job, diagnostic_directory, deadline=None):
             from .stage_metrics import saved_stage_metrics, write_stage_metrics
             metrics = saved_stage_metrics(run) or write_stage_metrics([run])['runs'][0]
             row['stage_metrics'] = metrics['summary']
+            if metrics.get('preparation'):
+                row['preparation_diagnostics'] = {key: metrics['preparation'].get(key) for key in (
+                    'sources', 'fallback_summaries', 'model_call_errors', 'infrastructure_errors')}
             row['stage_metrics_path'] = str(run / 'stage-metrics.json')
         except Exception as exc:
             # An offline diagnostic failure cannot erase a saved answer/exit.

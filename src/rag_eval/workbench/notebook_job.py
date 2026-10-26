@@ -183,6 +183,27 @@ def _partition_complete(run):
     return phase in _COMPLETE and (run / 'manifest.json').is_file()
 
 
+def _preparation_totals(outcomes):
+    """Execution-wide preparation diagnostics from each partition's preparation-diagnostics.json."""
+    from collections import Counter
+    sources = fallback = 0
+    errors, infrastructure, partitions = Counter(), Counter(), 0
+    for outcome in outcomes:
+        path = Path(outcome['job']['run_dir']) / 'preparation-diagnostics.json'
+        try:
+            item = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue  # prepared from the cache or a seed, or not reached
+        partitions += 1
+        sources += item.get('sources') or 0
+        fallback += item.get('fallback_summaries') or 0
+        errors.update(item.get('model_call_errors') or {})
+        infrastructure.update(item.get('infrastructure_errors') or {})
+    return dict(prepared_partitions=partitions, sources=sources, fallback_summaries=fallback,
+                model_call_errors=dict(sorted(errors.items())),
+                infrastructure_errors=dict(sorted(infrastructure.items())))
+
+
 def _deadline(payload, started):
     """Stop starting work early enough to score before the supervisor's timeout."""
     from ..notebook_batch import PARTITION_KILL_GRACE
@@ -484,7 +505,8 @@ def execute(payload):
                                       seeded=bool(seeds), retry_rounds=rounds,
                                       partitions_with_case_errors=sum(
                                           1 for o in ordered if any(row.get('status') == 'error' for row in
-                                                                    _outputs(Path(o['job']['run_dir'])).values()))))
+                                                                    _outputs(Path(o['job']['run_dir'])).values())),
+                                      preparation=_preparation_totals(ordered)))
         save_json(run / 'scoring-status.json', dict(failures=failures))
         first_failure = next(iter(generation_failures + failures), {})
         failed = bool(generation_failures or failures)

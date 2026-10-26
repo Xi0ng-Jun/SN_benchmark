@@ -110,3 +110,22 @@ def test_diagnostics_count_fallback_summaries_and_errors_by_workload(tmp_path):
         'ModelQueueFull:source_summary': 1}
     assert diagnostics['infrastructure_errors'] == {'ModelQueueFull': 2}
     assert model_call_errors(tmp_path / 'missing') == ({}, {})
+
+
+def test_stage_metrics_report_and_batch_summary_carry_the_diagnostics(journaled):
+    from rag_eval.run_report import write_report
+    from rag_eval.stage_metrics import compute_stage_metrics
+    from rag_eval.workbench.notebook_job import _preparation_totals
+    journaled.events = [event('source_summary', 'error', 'MalformedModelResponse'),
+                        event('paper_metadata', 'error', 'ModelQueueFull')]
+    run = journaled.cached('reported')
+    metrics = compute_stage_metrics(run)
+    assert metrics['preparation']['infrastructure_errors'] == {'ModelQueueFull': 1}
+    assert 'preparation-diagnostics.json' in metrics['inputs_sha256']
+    report = write_report([run], run.parent / 'reported-report')
+    text = (run.parent / 'reported-report' / 'report.md').read_text()
+    assert '资料准备诊断' in text and 'ModelQueueFull 1' in text and '准备作废' in text
+    totals = _preparation_totals([dict(job=dict(run_dir=str(run))), dict(job=dict(run_dir=str(run.parent / 'none')))])
+    assert totals['prepared_partitions'] == 1
+    assert totals['model_call_errors'] == {'MalformedModelResponse': 1, 'ModelQueueFull': 1}
+    assert totals['infrastructure_errors'] == {'ModelQueueFull': 1}

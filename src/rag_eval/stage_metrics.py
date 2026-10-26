@@ -318,6 +318,10 @@ def summarize_cases(cases):
     return result
 
 
+STAGE_INPUTS = ('outputs.jsonl', 'model-events.jsonl', 'product-artifacts/attempts.jsonl', 'manifest.json',
+                'planned.jsonl', 'preparation-diagnostics.json')
+
+
 def compute_stage_metrics(run, *, context=None):
     """Read immutable input plus saved observations. Does not mutate the run."""
     from .run_reader import RunReadContext
@@ -360,9 +364,10 @@ def compute_stage_metrics(run, *, context=None):
                         {c['case_id']: c for c in rows})
     return dict(format=FORMAT, metric_role='diagnostic', run_path=str(run), suite=manifest['suite'],
                 mode=manifest.get('mode'), state=state, cases=rows, summary=summarize_cases(rows), model_events=events,
-                inputs_sha256={name: digest(run / name) for name in
-                    ('outputs.jsonl', 'model-events.jsonl', 'product-artifacts/attempts.jsonl', 'manifest.json', 'planned.jsonl')
-                    if (run / name).is_file()},
+                # Preparation diagnostics written by the runner (preparation_diagnostics.py), or None.
+                preparation=json.loads((run / 'preparation-diagnostics.json').read_text(encoding='utf-8'))
+                    if (run / 'preparation-diagnostics.json').is_file() else None,
+                inputs_sha256={name: digest(run / name) for name in STAGE_INPUTS if (run / name).is_file()},
                 definitions=dict(gold='distinct evidence union across annotations',
                     context='full evidence text containment after whitespace folding; no fuzzy or partial match',
                     citations='fraction of observed anchors with at least one gold unit/fact; not entailment',
@@ -385,9 +390,7 @@ def saved_stage_metrics(run):
     if not isinstance(saved, dict) or saved.get('format') != FORMAT or saved.get('run_path') != str(run) \
             or saved.get('state') != state or not isinstance(saved.get('inputs_sha256'), dict):
         return None
-    current = {name: digest(run / name) for name in
-               ('outputs.jsonl', 'model-events.jsonl', 'product-artifacts/attempts.jsonl', 'manifest.json', 'planned.jsonl')
-               if (run / name).is_file()}
+    current = {name: digest(run / name) for name in STAGE_INPUTS if (run / name).is_file()}
     return saved if current == saved['inputs_sha256'] else None
 
 
