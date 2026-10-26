@@ -51,7 +51,7 @@ def normalize(verb, params):
                'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'node-fresh-run': {'timeout_seconds', 'limit_cny'},
                'node-cluster-run': {'timeout_seconds', 'limit_cny', 'cluster_id'},
                'iteration-sealed-run': {'timeout_seconds', 'limit_cny'},
-               'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch', 'budget'}}[verb]
+               'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch', 'budget', 'execution', 'round_settings'}}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
     if verb == 'node-cluster-run' and (not isinstance(params.get('cluster_id'), str) or not params['cluster_id']):
@@ -187,6 +187,10 @@ def _candidate_summary(view):
 def execute(service, record, *, workspace_id, actor, budget_override=False, human_confirmed=False):
     """Run a confirmed request through IterationService; returns a compact receipt."""
     verb, target, params, key = record['verb'], record['target_id'], record['params'], 'action:' + record['id']
+    from .loop_measurements import execute_round_action
+    round_result = execute_round_action(service, record, actor=actor, override=budget_override)
+    if round_result is not None:
+        return round_result
     if verb == 'iteration-sealed-run':
         from .sealed import SealedService
         budget = dict(timeout_seconds=params['timeout_seconds'])

@@ -50,7 +50,7 @@ $S compare <候选> <参考候选>   # 对父／根返回已存比较记录，�
 $S requests [--status pending]
 $S request withdraw <请求> --reason '…'   # 撤回误提且仍待确认的请求
 ```
-派生、冻结、运行、采纳／放弃、新建迭代**只能申请**：`$S node derive <父> --proposal <已批准提议> --reason '…'`、`$S node run <候选> --reason '…'`、`$S node adopt|reject <候选> --reason '…'`。请求只登记，不执行；人在工作台确认后由服务器按登记的参数执行。不要用 `scripts/sn-workbench`，那是人确认请求用的。
+派生、冻结、运行、采纳／放弃、新建迭代**只能申请**：`$S node derive <父> --proposal <已批准提议> --reason '…'`、`$S node run <候选> --reason '…'`、`$S node adopt|reject <候选> --reason '…'`。命令先登记请求；冻结预算内符合自动执行条件的请求由服务器自动确认执行，其他情况需人在工作台确认。不要用 `scripts/sn-workbench`，那是人确认请求用的。
 
 '''
 
@@ -67,6 +67,26 @@ ITERATION_SCOPE_REQUESTS = (
     '作为迭代分析 Agent，你**只申请派生**：从某个已评测候选派生（`--proposal` 指定已批准提议），'
     '或合并派生 `$S node derive <主父候选> --integrate <被并入候选> --method merge|cherry-pick|rewrite --reason \'…\'`'
     '（合并后的候选必须自己重跑，不用分差相加估计）。冻结、运行、采纳／放弃属于具体候选，不要申请。\n\n')
+
+
+def _lcd_analyst_instructions():
+    from .clusters import FIELDS
+    from .run_views import PRIMARY_METRIC
+    primary_fields = ', '.join(f'{suite}: metrics.{metric}' for suite, metric in sorted(PRIMARY_METRIC.items()))
+    fields = ', '.join(sorted(FIELDS | {'metrics.<official_primary_metric>', 'retrieval_context.*.text'}))
+    return """## LCD 机械簇与合同
+先读 search 证据。本轮基准候选、max_clusters 与 b 由服务器消息指定；最多提 max_clusters 个簇，为排名前 b 的簇各起草一张带 contract 的卡。
+`$S cluster propose --file cluster.json` 写入簇。节点会话自动绑定来源；迭代会话须在 JSON 加 candidate_id，或命令加 --parent <已评测候选>。
+```json
+{"cluster_id":"retrieval_gap","description":"检索证据缺失机制","signature":{"kind":"range","field":"deterministic.evidence_hit","min":0,"max":0},"missing_signature":{"kind":"range","field":"stage_metrics.gold_evidence_recall.value","min":0,"max":0},"violation_signature":{"kind":"range","field":"deterministic.citation_invalid_count","min":1}}
+```
+JSON 算子：`{"kind":"regex","field":"response.answer","pattern":"表达式"}`；`{"kind":"range","field":"usage.total_tokens","min":0,"max":100}`（至少一个有限数值边界，包含边界）；`{"all_of":[签名,...]}`、`{"any_of":[签名,...]}`、`{"not":签名}`。组合含 1–32 子签名，嵌套最多 8 层；regex 长度 1–512。retrieval_context.*.text 仅支持 regex，任一块匹配即可。
+精确字段白名单：""" + fields + """。metrics.<official_primary_metric> 替换成当前套件实际官方主指标字段，不能用其他 metrics 字段。当前套件对应：""" + primary_fields + """。
+missing_signature 描述缺失，violation_signature 描述违规；省略时采用服务默认值，建议显式给出。签名、归因签名及成员写入即冻结，不得改写；新机制另提新簇。用 `$S cluster list` / `$S cluster show <cluster_id>` 查看。
+卡片增加 `"contract":{"cluster_id":"retrieval_gap","predicted_flips":["<search 成员标识>"],"guards":[],"tau":0.5}`。predicted_flips 非空且为冻结成员子集，与 guards 不重叠；两列表各自不重复且最多 200 项，tau 可省略或取 [0,1]。顶层 cluster_id 若存在必须与合同一致。标识仅留分析侧，不得复制进 implementer_brief。
+排序公式 |C|·(1−q)·max(m, v, π)，π 缺省 0.3；m 或 v 不可测时保留 null，不当作 0；对可测维度与 π 取最大值，两者都不可测时注明退化为 |C|·(1−q)·π 及原因。只为未解决簇起草合法卡；card_approval=auto 仍做泄漏扫描与合同校验，manual 等待批准。
+
+"""
 
 
 def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node=None, tree=None):
@@ -124,7 +144,7 @@ $S docs                       # 下方文档索引
 ```
 输出是 JSON。run 目录里还有 outputs.jsonl、planned.jsonl、model-events.jsonl，可直接读。
 
-## 提交假设卡草稿（需要人批准后才会实施）
+{_lcd_analyst_instructions() if candidates or node or tree else ""}## 提交假设卡草稿（按批准策略实施）
 把卡片写成 JSON 文件，然后 {draft}。格式示例：
 ```json
 {json.dumps(CARD_EXAMPLE, ensure_ascii=False, indent=1)}
@@ -144,18 +164,31 @@ $S docs                       # 下方文档索引
 '''
 
 
-def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty, candidate_id=None):
+def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty, candidate_id=None, k_base=2):
     s = f'{tool} --task {task["id"]} --role implementer --hypothesis {hypothesis_id}'
     if candidate_id:
         s += f' --candidate {candidate_id}'
     from .clusters import referenced_cluster
     cluster_id = referenced_cluster(card)
     evidence = (f'\n- 你的簇：`{cluster_id}`。用 `{s} cluster show {cluster_id}` 读取 search 成员的题目、SN 答案、上下文块、阶段指标和官方主分（m01 等序号）；也可接收 cluster_case 上下文。没有 gold 答案、gold 证据文本或 case_id。\n' if cluster_id and candidate_id else '')
+    integration = card.get('component') == 'integration'
+    sequence = ''
+    if candidate_id:
+        cluster_steps = (f" → `{s} node cluster-run {candidate_id} --reason '…'` → 读取 `{s} cluster result {cluster_id}`"
+                         if cluster_id and not integration else '')
+        sequence = (f"\n## LCD 执行顺序\n实现 → 只跑与改动相关的 SN 测试（禁止全量套件） → `{s} leak-check`"
+                    f" → `{s} node freeze {candidate_id} --reason '…'`{cluster_steps}"
+                    f" → `{s} node run {candidate_id} --attempts {k_base} --reason '…'`。\n"
+                    "每步用 requests 确认前一步成功，冻结成功后才能评测。attempts 取冻结协议 k_base。"
+                    "命令登记请求；冻结预算内符合自动执行条件时服务器自动确认执行，其他情况查看 requests 等待确认，禁止绕过预算。\n")
+    if integration:
+        sequence = ("\n这是 integration 合并候选：只合并服务器指定来源、解决同一文件／提示片段冲突，不加新改动；"
+                    "无单簇归属，跳过 cluster-run 和 cluster result。\n" + sequence)
     scope = '\n'.join(f'- `{p}`' for p in card.get('change_scope') or []) or '- （卡片未限定，改动尽量集中在上述组件）'
     dirty = '\n'.join(f'- `{p}`' for p in start_dirty) or '- （无）'
     return f'''# 你的角色：实现 Agent（Silicon Notebook）
 
-你的工作目录是 SN worktree `{worktree}`。你要实现一张已经由人批准的假设卡。
+你的工作目录是 SN worktree `{worktree}`。你要实现一张已经批准的假设卡。
 
 ## 要实现的改动
 - 标题：{card["title"]}
@@ -174,9 +207,9 @@ worktree 起点已有这些未提交改动，它们属于用户，不要覆盖�
 ## 规则
 - 只使用批准卡片与自己簇的脱敏 search 证据；不得寻找 gold 标注、validation／sealed 逐题或其他簇材料，不得直接读取评测原始文件（`var/`、`docs/failure-ledger.md`、`docs/hypotheses/`、`apps/sn-workbench/test-results/` 等）。改动仍须通过泄漏扫描与合同核对。
 - 不写死任何题面、论文、数据集名或 case id；用合成数据写单元测试，覆盖受益和可能受害两种情况。
-- 遵守本仓库 `AGENTS.md`；运行 SN 自己的测试；不提交 git，不启动评测运行。
+- 遵守本仓库 `AGENTS.md`；只跑与改动相关的 SN 测试，禁止全量套件；不提交 git，不直接启动评测运行。
 - 完成后自查：`{s} leak-check`（只报告是否与考题重叠，不显示考题内容）。
-{f"- 实现与测试都完成后，可以申请冻结和运行（只登记请求，人确认后服务器才执行）：`{s} node freeze {candidate_id} --reason '…'`，冻结确认后再 `{s} node run {candidate_id} --reason '…'`；`{s} requests` 看请求状态。" + chr(10) if candidate_id else ""}- 回复时说明：改了哪些文件、为什么、测试命令与结果、残余风险。
+{sequence}- 回复时说明：改了哪些文件、为什么、测试命令与结果、残余风险。
 '''
 
 
@@ -199,7 +232,13 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
                 'SELECT c.id, c.frozen_commit, w.binding_json FROM iterations i JOIN candidates c '
                 'ON c.iteration_id=i.id LEFT JOIN candidate_worktrees w ON w.candidate_id=c.id '
                 'WHERE i.task_id=? ORDER BY c.created_at', (task_id,))]
+        k_base = 2
         candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
+        if candidate_id:
+            row = conn.execute('SELECT i.protocol_json FROM candidates c JOIN iterations i ON i.id=c.iteration_id '
+                               'WHERE c.id=?', (candidate_id,)).fetchone()
+            if row and row['protocol_json']:
+                k_base = (json.loads(row['protocol_json']) or {}).get('k_base', 2)
         if session['role'] == 'implementer':
             from .hypothesis_worktrees import hypothesis_binding
             from .iterations import candidate_binding
@@ -216,7 +255,7 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
     if session['role'] == 'implementer':
         start = json.loads(bound['start_snapshot_json']) if bound else {}
         text = implementer_brief(task, card, worktree=worktree, tool=tool, hypothesis_id=session['hypothesis_id'],
-                                 start_dirty=[d['path'] for d in start.get('dirty', [])], candidate_id=candidate_id)
+                                 start_dirty=[d['path'] for d in start.get('dirty', [])], candidate_id=candidate_id, k_base=k_base)
         title = '实现 Agent 工作说明 · ' + card['title']
     else:
         node = node_context(repository, run_views, task_id, candidate_id) if candidate_id else None

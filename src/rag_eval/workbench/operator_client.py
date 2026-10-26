@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import uuid
 import urllib.error
 import urllib.request
 
@@ -50,6 +51,14 @@ def main(argv=None):
                         'var/sn-workbench' if local else 'var/sn-workbench-server/state'))
     parser.add_argument('--url', default=os.environ.get('SN_WORKBENCH_URL', 'http://127.0.0.1:8091'))
     commands = parser.add_subparsers(dest='command', required=True)
+    iteration = commands.add_parser('iteration').add_subparsers(dest='iteration_command', required=True)
+    run_round = iteration.add_parser('round', help='start/resume a server-owned LCD round; confirms baseline dispatch')
+    run_round.add_argument('iteration')
+    run_round.add_argument('--rounds', type=int, default=1)
+    run_round.add_argument('--request-key', default=None, help='stable key for retrying this invocation')
+    iteration.add_parser('round-show').add_argument('round')
+    iteration.add_parser('round-stop').add_argument('round')
+    iteration.add_parser('rounds').add_argument('iteration')
     listing = commands.add_parser('requests', help='list action requests')
     listing.add_argument('--status', default='pending')
     commands.add_parser('show').add_argument('request')
@@ -67,6 +76,19 @@ def main(argv=None):
         command.add_argument('--note', default='', required=name == 'proposal-reject')
     args = parser.parse_args(argv)
     client = Client(args.url, (Path(args.state) / 'access-token').read_text().strip())
+    if args.command == 'iteration':
+        if args.iteration_command == 'round':
+            out = client.call('POST', f'/api/iterations/{args.iteration}/rounds',
+                              dict(rounds=args.rounds, request_key=args.request_key or uuid.uuid4().hex))
+        elif args.iteration_command == 'round-show':
+            out = client.call('GET', f'/api/rounds/{args.round}')
+        elif args.iteration_command == 'round-stop':
+            out = client.call('POST', f'/api/rounds/{args.round}/stop', {})
+        else:
+            out = client.call('GET', f'/api/iterations/{args.iteration}/rounds')
+        json.dump(out, sys.stdout, ensure_ascii=False, indent=1)
+        sys.stdout.write('\n')
+        return
     if args.command == 'requests':
         rows = client.call('GET', '/api/action-requests' + ('' if args.status == 'all' else f'?status={args.status}'))
         print('\n\n'.join(describe(r) for r in rows) if rows else '没有请求')

@@ -397,7 +397,7 @@ class IterationService:
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
                          split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None,
-                         execution=None):
+                         execution=None, round_settings=None):
         """Create the backing Task, freeze its plan, then provision root C0.
 
         Retrying the same request key completes an interrupted creation: each
@@ -412,6 +412,10 @@ class IterationService:
         from .budgets import validate_policy
         budget = validate_policy(budget)
         execution = validate_execution_policy(execution)
+        from .loop import validate_settings
+        settings = validate_settings(round_settings or {})
+        if round_settings is not None and not isinstance(round_settings, dict):
+            raise ValueError('Round settings must be an object')
         binding = ((self.preparation_config or {}).get('inputs') or {}).get(input_id)
         if not isinstance(binding, dict) or set(binding) != {'bundle_ref', 'index_ref'}:
             raise ValueError('No trusted artifact binding for this iteration input')
@@ -423,6 +427,8 @@ class IterationService:
             payload['budget'] = budget
         if execution is not None:
             payload['execution'] = execution
+        if round_settings is not None:
+            payload['round_settings'] = settings
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -472,6 +478,7 @@ class IterationService:
                         gate_rule=dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90'))
         if budget is not None:
             protocol['budget'] = budget
+        protocol['round_settings'] = settings
         from ..benchmark_runtime import DEFAULT_PREPARATION_POLICY
         frozen_execution = dict(execution or {})
         frozen_execution.setdefault('preparation_policy', (self.execution_config or {}).get(
@@ -538,7 +545,7 @@ class IterationService:
             _identity(proposal_id, 'proposal identity')
         integrated = [dict(item) for item in integrated_from]
         payload = dict(parent=parent_candidate_id, proposal_id=proposal_id, note=note,
-                       integrated_from=integrated, actor=actor)
+                       integrated_from=[dict(item) for item in integrated], actor=actor)
         scope = 'candidate.derive:' + parent_candidate_id
         candidate_id = uid()
         with self.repository.connect(write=True) as conn:

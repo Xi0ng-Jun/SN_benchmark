@@ -317,13 +317,19 @@ class ComparisonService:
         """
         from .splits import batches
         tree = tree or self.iterations.iteration(iteration_id)
-        by_id = {c['id']: c for c in tree['candidates']}
         completed = 0
         for b in batches(self.repository, iteration_id):
+            from .loop_measurements import fresh_ready
+            if not fresh_ready(self.repository, b['request_key']):
+                continue
             if b['completed_at']:
                 continue
-            subject = self.scoped(by_id[b['candidate_id']], b['batch_id'])
-            reference = self.scoped(by_id[subject['parent_candidate_id']], b['batch_id'])
+            # Read after the readiness fence, even if the caller supplied a
+            # snapshot taken before a round's terminal retry publication.
+            fresh_subject = self.iterations.candidate(b['candidate_id'])
+            fresh_reference = self.iterations.candidate(fresh_subject['parent_candidate_id'])
+            subject = self.scoped(fresh_subject, b['batch_id'])
+            reference = self.scoped(fresh_reference, b['batch_id'])
             k = tree['protocol']['k_base']
             if any(len(c['attempts']) < k or len(self.terminal(c)) != len(c['attempts']) for c in (subject, reference)):
                 continue

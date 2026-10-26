@@ -87,7 +87,7 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   sampling：k = 1、verifier none、种子 search 均值、S(B) = 种子。overfit：n、n_eff、K（在 validation 池上比较过的不同 frozen_commit 数）、期望偏差 = η·sqrt(2 ln K)、每个 accept 候选的 validation Δ 与 fresh Δ 按 batch 对齐（validation 池随并入批次增长，比较时注明池的组成）、配对观测偏差。structure：各簇状态由后续证据派生（有 accept 候选且该候选在簇成员上 ρ ≥ τ → resolved，否则 open；不改冻结成员）、每笔合同的 ρ 与 verdict、audit 数、愿望清单（open 簇，附 q/m/v）。`sealed_score` 只在人显式调用 `iteration sealed-run` 时填：需要独立的可信授权（`job_preparation.sealed_selections` 登记加人工确认），领取持久化且一次性，用后任何再次调用都拒绝；UI 在调用前提示"整个研究只此一次"。
   测试：从合成的比较记录与簇算出的账本键齐全、数字可手算；sealed 未触发时为 null，触发一次后第二次被拒。
 
-- [ ] 8. **闭环编排**（`iteration round`，`loop.py`）。2026-10-26 按本机 R1-mini 的经验重写（见 `docs/experiments/2026-10-26-lcd-r1-mini.md` 的运行记录）。实验改在评测服务器上跑，模型服务由公司提供，**花费不是约束，墙钟是**：凡能并行的都并行，凡能自动的都自动，人只在创建迭代（批预算、批本轮设置）和事后读审计时出现。
+- [x] 8. **闭环编排**（`iteration round`，`loop.py`）。2026-10-26 按本机 R1-mini 的经验重写（见 `docs/experiments/2026-10-26-lcd-r1-mini.md` 的运行记录）。实验改在评测服务器上跑，模型服务由公司提供，**花费不是约束，墙钟是**：凡能并行的都并行，凡能自动的都自动，人只在创建迭代（批预算、批本轮设置）和事后读审计时出现。
 
   **8a 前置：准备策略冻结进协议。**`preparation_policy` 现在是服务器级 `job_execution` 设置，迭代中途改了不会被发现。把它加进 `EXECUTION_POLICY_KEYS`，创建 iteration 时冻结（缺省取服务器值并写入协议），执行时以协议为准；与服务器值不同时以协议为准并在执行记录里注明。准备缓存键已含该策略，不变。测试：冻结、覆盖、旧 iteration 无该键时的兼容。
 
@@ -193,3 +193,14 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 验证：RUNBOOK 离线 pytest，现有解释器与 DEEPEVAL 环境、`-n 6`，**2663 passed / 7 skipped**（含未提交 W8c 合成测试）；Node **34 passed**。无 UI 改动，未操作模型、服务、真实 var/ 或 .venv。
 - 实现：存在 job_execution 时，普通 check 即启动所选 Python 的纯 sys/json 身份探针，按运行器同样口径比较 executable 与 prefix；不一致列出预期／实际路径，保留虚拟环境调用 symlink。完整 `--execution` 的输出隔离等检查优先级保留。
 - 解释与偏离：复审发现缺 output_root 的部分配置未按配置目录解析相对路径，因此在 load_config 的统一路径边界修复，而不在 check 重复兜底。新增相对路径／缺省／一致／两种不一致回归；现有测试无需改断言。第一次全套揭示检查顺序回归，修复后重新全套通过。
+
+
+### W8c · 2026-10-26
+
+- 提交：本条所在 `feat(workbench): orchestrate resumable LCD rounds`（W8a `018cf5f`、W8b `138eaac`）。
+- 验证：最终 RUNBOOK 全套离线 pytest **2669 passed / 7 skipped**（190.20 秒；既有 Starlette 弃用警告），Node **34 passed**。依用户约束用现有 .venv、完整 DEEPEVAL 环境与 `-n 6`；未改 UI，不需要 UI typecheck。真实服务接缝使用临时 Git、合成执行／case views、假 Creator／Agent，覆盖一轮／两轮和每步重建服务；状态机另覆盖每次 SQLite 保存后的崩溃、人工／自动批卡、并行候选、合并／撤回、超时、停机与预算保留。未调用模型、创建真实 Agent、启动服务、访问真实 var/、修改私有配置或 .venv，未运行 SN 全套。
+- 实现：RoundService 持久 invocation／阶段／期限／候选结果；服务 lifespan 启动后台 manager 恢复活动轮次，客户端断开不影响，按 iteration 文件锁防重。RoundOperations 复用既有 Agent 创建／消息凭据、批准／派生／gate／账本；RoundMeasurements 冻结整个派发范围、先一起预留再并行派发，普通／簇／fresh／父补跑及重试同账，重试按原 attempt 持久限次，每代独立 action request，人工确认不改变原 actor／范围。SQLite 继续 v6，只附加表，不重写旧比较或冻结簇成员。
+- 接口与协议：人工 CLI 为 `scripts/sn-workbench iteration round ITERATION --rounds N`，另有 rounds／round-show／round-stop；HTTP 为 iteration rounds 的 POST／GET、round 的 GET／POST stop。创建协议新增 round_settings：三个 profile 均 pi-flash、max_clusters=6、b=2、pi=0.3、card_approval=auto、agent_timeout_seconds=3600、execution_timeout_seconds=7200、infra_retry=1；旧迭代缺设置时在 invocation 起点冻结缺省。操作说明见 [lcd-round-operator.md](../../product/sn-workbench/lcd-round-operator.md)。
+- 解释与偏离：人工启动放在现有操作者 CLI，sn-eval 保持 Agent 角色边界；启动本身确认基准冷预算覆盖。m/v 部分不可测时仅对可测维度和 π 取最大值，两者未知才完全退化，null 不变零。合并使用 component=integration、无逐题预测／合同／簇的元数据卡，避免伪造 benchmark 预测；正常选择仍必须有合法簇合同。实现者已读原簇结果、自动重试后才产生新诊断时，由服务器刷新并单列原读凭据与刷新比较 ID，不伪造 Agent 已读新结果。重试重跑整份冻结 selection；发布 execution 前的源码捕获／配置异常只记失败，不猜测可安全重试。新鲜批次领取竞争失败保留原选择并报错，不自动换下一批。
+- 可靠性修复：合并派生复制请求参数后再补来源 metadata，避免重放冲突；持久 actor 避免服务器身份改变后重复建 Agent；iteration 分析作用域不再同时绑定 candidate。并发 fresh 扩大验证池时，gate 使用新确定键补测新增 scope，再核对同一不可变比较。fresh 入池须等有界重试全部终态，读取旧树快照也会在就绪屏障后重读两侧 attempt。原簇请求尚在准备剩余 attempt 时不冻结重试观察清单；超预算／人工确认／崩溃不覆盖前代 action 与结果。未知远端创建／发送保守 stalled，不重放；stop 停后续派发，已启动工作与预留保留。
+- 复审：三项中风险发现及修复引入的竞态已补回归、逐项复审关闭；最终无未解决高／中风险项。服务器真实模型吞吐与 Agent 行为尚未验收，不能由离线测试推断实验成功。W7 未开始。

@@ -45,7 +45,10 @@ def validate_card(card):
             raise ValueError('Evidence items are {run_id, case_id, note?}')
         out['evidence'].append({k: _str(item[k], 'evidence.' + k, 1000) for k in item})
     predictions = card['predictions']
-    if not isinstance(predictions, list) or not predictions or len(predictions) > 200:
+    # Orchestrated merge cards authorize only integration work, with no invented
+    # benchmark prediction. They never enter LCD cluster selection or gate checks.
+    integration_only = (card['component'] == 'integration' and 'contract' not in card and 'cluster_id' not in card)
+    if not isinstance(predictions, list) or (not predictions and not integration_only) or len(predictions) > 200:
         raise ValueError('A card needs 1-200 per-case predictions')
     out['predictions'] = []
     for item in predictions:

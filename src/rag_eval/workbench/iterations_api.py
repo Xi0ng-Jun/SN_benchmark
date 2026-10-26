@@ -45,6 +45,7 @@ class CreateIteration(_Command):
     fresh_papers_per_batch: int = Field(default=8, ge=1, le=100)
     budget: dict | None = None
     execution: dict | None = None
+    round_settings: dict | None = None
 
 
 class Integration(_Command):
@@ -213,13 +214,13 @@ class IterationAPI:
             return self.requests.finish(request_id, error=str(error))
         return self.requests.finish(request_id, result=result)
 
-    def check(self, candidate_id):
+    def check(self, candidate_id, *, comparison=None):
         """Check the proposal's predictions against the candidate's Δ父 record."""
         from .agent_tools import task_run_ids
         candidate = self.service.candidate(candidate_id)
         if candidate['proposal_id'] is None:
             raise ValueError('Only a candidate derived from a proposal has predictions to check')
-        record = self.comparisons.for_candidate(candidate_id, actor=self.actor)['parent']
+        record = comparison if comparison is not None else self.comparisons.for_candidate(candidate_id, actor=self.actor)['parent']
         if 'id' not in record:
             raise ValueError('Δ父 comparison unavailable: ' + str(record.get('reason')))
         task_id = self.service.view(candidate_id).task_id

@@ -79,6 +79,21 @@ def matches(signature, observation, primary='answer_f1'):
     return _matches(validate_signature(signature, primary), observation)
 
 
+def _observable(signature, observation):
+    """Attribution is unknown when any required input was not measured."""
+    for operator in ('all_of', 'any_of', 'not'):
+        if operator in signature:
+            children = [signature[operator]] if operator == 'not' else signature[operator]
+            return all(_observable(child, observation) for child in children)
+    field = signature['field']
+    if field == 'retrieval_context.*.text':
+        return isinstance(observation.get('retrieval_context'), list)
+    value = observation
+    for part in field.split('.'):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value is not None
+
+
 def scan(iteration, cluster, executions):
     """Union membership across attempts; score unknowns remain unknown, never zero."""
     protocol = iteration.get('protocol') or {}
@@ -96,6 +111,7 @@ def scan(iteration, cluster, executions):
     members = sorted({cid for rows in observations for cid, row in rows.items() if _matches(signature, row)})
     saved = {cid: [deepcopy(rows.get(cid, dict(case_id=cid, status='missing', metrics={}))) for rows in observations] for cid in members}
     success = failed = unknown = missing_count = violation_count = 0
+    missing_unknown = violation_unknown = False
     for rows in saved.values():
         for row in rows:
             value = row.get('metrics', {}).get(primary)
@@ -110,13 +126,16 @@ def scan(iteration, cluster, executions):
                 is_failed = value < threshold
             if is_failed:
                 failed += 1
+                missing_unknown |= not _observable(missing, row)
+                violation_unknown |= not _observable(violation, row)
                 missing_count += _matches(missing, row)
                 violation_count += _matches(violation, row)
             else:
                 success += 1
     total = len(members) * len(executions)
     q = success / total if total and not unknown else None
-    m, v = (missing_count / failed, violation_count / failed) if failed else (None, None)
+    m = missing_count / failed if failed and not missing_unknown else None
+    v = violation_count / failed if failed and not violation_unknown else None
     return dict(members=members, n_cases=len(members), n_attempts=total, n_failed=failed, n_unknown=unknown,
                 n_success=success, n_missing=missing_count, n_violation=violation_count, q=q, m=m, v=v,
                 retrieval_ceiling=(1-q)*m if q is not None and m is not None else 0 if q == 1 else None,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hmac
+from contextlib import asynccontextmanager
 from pathlib import Path
 import secrets
 from typing import Annotated, Literal
@@ -207,6 +208,31 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
     creation_api.store.candidate_state = lambda candidate_id: iteration_api.service.candidate(candidate_id)['state']
     app.include_router(views.router())
     message_api.store.run_views = views
+
+    from .loop import RoundService
+    from .loop_services import RoundOperations
+    from .loop_api import RoundAPI, RoundManager
+    round_operations = RoundOperations(iteration_api, creation_api, message_api, session_reader)
+    round_service = RoundService(repository, round_operations)
+
+    def round_allowed(iteration_id):
+        return iteration_api.writable and iteration_id in {
+            row['id'] for row in iteration_api.service.iterations(workspace['id'])}
+
+    round_manager = RoundManager(round_service, allowed=round_allowed)
+    app.include_router(RoundAPI(iteration_api, round_service, round_manager).router())
+    app.state.round_service = round_service
+    app.state.round_manager = round_manager
+
+    @asynccontextmanager
+    async def lifespan(app):
+        round_manager.start()
+        try:
+            yield
+        finally:
+            round_manager.close()
+
+    app.router.lifespan_context = lifespan
 
     @app.post('/api/tasks/{task_id}/worktree')
     def bind_worktree(task_id: str, command: BindWorktree):

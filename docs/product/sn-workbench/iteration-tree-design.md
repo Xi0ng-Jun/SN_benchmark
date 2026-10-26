@@ -228,3 +228,9 @@ sampling 的 k=1、verifier=none，种子取根候选首个获准 base attempt �
 `iteration sealed-run CANDIDATE --reason ...` 只登记待人工确认请求，不走预算自动确认；工作台确认框明确提示“整个研究只此一次”。服务在执行前重新校验可信 `sealed_selections` 与冻结协议一致，再永久领取独立 sealed plan。一次性键同时约束 iteration 和本地状态库中的 bundle＋封存 selection，换迭代或登记别名不能重用相同留出集；失败、取消、崩溃都不恢复次数。确认回执可重读，任何新的 sealed-run 调用仍被拒。
 
 封存执行通过私有能力进入普通准备／派发与预算记账，普通 plan、Job 和候选入口不能复用它。sealed attempt 不参与普通候选 reference、比较、任务上下文或分区成绩；专用读取经正式准入后只保存主指标、n、均值与领取来源，缺失或不完整保持未知。此开发阶段仅用临时目录中的合成登记和执行，未触及真实封存题或运行。
+
+## 11. LCD 轮次编排（2026-10-26）
+
+W8 的人工边界改为创建 iteration 时冻结设置、启动 round 时确认基准补跑，`card_approval=auto` 为缺省；manual 仍走现有卡片批准入口。轮次服务在后台独立于 HTTP 生命周期推进；基准 → 分析／提簇 → 选择／批准 → 并行实现／gate／fresh → 可选合并 → 三笔账。SQLite 保存阶段、确定动作键、期限与停滞原因，重启恢复已派发凭据；未知 Agent 创建／发送不重放。金额与每候选运行上限仍按冻结预算；停止不删除在途记录。
+
+`round_settings`、HTTP／CLI、profile、期限、准备策略冻结和服务器要求见[操作说明](lcd-round-operator.md)。普通合同与泄漏扫描不变，合并使用不含逐题预测的 integration 元数据卡，仅按完整 validation 池比较保留／撤回。实现者只运行相关 SN 测试；编排没有本机专用并发上限。该实现的合成测试证明生命周期与边界，不代替真实 Agent／模型服务的实验验收。
