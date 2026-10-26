@@ -50,8 +50,8 @@ def validate_model_budget(budget, execution_config):
 
 def exceeded_caps(policy, summary, steps, per_case):
     """Check all present limits against only the unreserved attempt footprint."""
-    counts = Counter(summary['runs_by_candidate'])
-    counts.update(step['candidate_id'] for step in steps)
+    counts = Counter(summary.get('subject_runs_by_candidate', summary['runs_by_candidate']))
+    counts.update(step['candidate_id'] for step in steps if step.get('counts_toward_candidate_cap', True))
     added = sum(step['case_count'] for step in steps)
     reasons = []
     if 'limit_cny' in policy and summary['charged_cny'] + added * per_case > policy['limit_cny'] + 1e-12:
@@ -61,6 +61,29 @@ def exceeded_caps(policy, summary, steps, per_case):
     if any(count > policy['max_runs_per_candidate'] for count in counts.values()):
         reasons.append('max_runs_per_candidate')
     return reasons
+
+
+def subject_roles(conn, iteration_id):
+    """Infer legacy footprints only from durable orchestration ownership."""
+    roles = {}
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if {'action_dispatches', 'action_requests'} <= tables:
+        rows = conn.execute('SELECT d.steps_json,a.target_id FROM action_dispatches d '
+                            'JOIN action_requests a ON a.id=d.request_id WHERE d.iteration_id=?', (iteration_id,))
+        for row in rows:
+            for step in json.loads(row[0]):
+                roles[(step['candidate_id'], step['request_key'])] = step['candidate_id'] == row[1]
+    if 'round_measurements' in tables:
+        for row in conn.execute("SELECT payload_json FROM round_measurements WHERE json_extract(payload_json,'$.iteration_id')=?", (iteration_id,)):
+            state = json.loads(row[0])
+            for generation in state.get('generations', []):
+                for step in generation:
+                    roles.setdefault((step['candidate_id'], step['request_key']), step['candidate_id'] == state['candidate_id'])
+    return roles
+
+
+def is_subject(step, roles):
+    return step.get('counts_toward_candidate_cap', roles.get((step['candidate_id'], step['request_key']), True))
 
 
 def exhausted(summary):
@@ -148,9 +171,10 @@ class BudgetLedger:
                 if row and row[0]:
                     frozen = json.loads(row[0]).get('budget')
             return dict(iteration_id=iteration_id, policy=frozen, charged_cny=0, reserved_cny=0,
-                        actual_cny=None, observed_cny=0, unknown_count=0, runs_by_candidate={}, case_runs_used=0)
+                        actual_cny=None, observed_cny=0, unknown_count=0, runs_by_candidate={}, subject_runs_by_candidate={}, case_runs_used=0)
         rows = conn.execute('SELECT * FROM iteration_budget_reservations WHERE iteration_id=?',
                             (iteration_id,)).fetchall()
+        roles = subject_roles(conn, iteration_id)
         complete = bool(rows) and all(r['state'] == 'settled' for r in rows)
         return dict(iteration_id=iteration_id, policy=json.loads(policy['policy_json']),
                     case_runs_used=sum(r['case_count'] for r in rows),
@@ -159,7 +183,9 @@ class BudgetLedger:
                     actual_cny=sum(r['actual_cny'] for r in rows) if complete else None,
                     observed_cny=sum(r['observed_cny'] or 0 for r in rows),
                     unknown_count=sum(r['state'] == 'unknown' for r in rows),
-                    runs_by_candidate=dict(Counter(r['candidate_id'] for r in rows)))
+                    runs_by_candidate=dict(Counter(r['candidate_id'] for r in rows)),
+                    subject_runs_by_candidate=dict(Counter(r['candidate_id'] for r in rows
+                        if is_subject(json.loads(r['step_json']), roles))))
 
     def summary(self, iteration_id, *, reconcile=True):
         if reconcile:
@@ -281,6 +307,19 @@ class BudgetLedger:
                           summary=self._summary(conn, iteration['id']))
             repo._receipt(conn, scope, group_key, payload, result)
             return result
+
+    def reserved_step(self, iteration_id, candidate_id, request_key, fallback):
+        """Reuse trusted orchestration metadata; callers cannot grant exemptions."""
+        with self.repository.connect() as conn:
+            row = conn.execute('SELECT step_json FROM iteration_budget_reservations WHERE iteration_id=? '
+                               'AND candidate_id=? AND request_key=?',
+                               (iteration_id, candidate_id, request_key)).fetchone()
+        if row is None:
+            return fallback
+        step = json.loads(row[0])
+        if any(step.get(k) != v for k, v in fallback.items()):
+            raise Conflict('Budget attempt footprint changed')
+        return step
 
     def attach(self, iteration_id, candidate_id, request_key, execution_id):
         """Bind once, then recover terminal-before-attach races from durable history."""

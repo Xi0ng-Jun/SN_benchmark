@@ -138,7 +138,8 @@ class RoundOperations:
     def fresh(self, candidate_id, **kwargs):
         return self.measurements.fresh(candidate_id, **kwargs)
 
-    def agent(self, role, candidate_id, *, iteration_id, key, profile, text, scope=None, hypothesis_id=None):
+    def agent(self, role, candidate_id, *, iteration_id, key, profile, text, scope=None, hypothesis_id=None,
+              message_stage='initial', start_grace_seconds=300):
         actor = self._agent_actor(key)
         tree = self._tree(iteration_id)
         task_id = tree['task_id']
@@ -163,7 +164,19 @@ class RoundOperations:
             return dict(status='unknown' if intent['status'] == 'unknown' else 'failed',
                         reason='agent_creation_' + intent['status'])
         session_id = intent['session_id']
-        message_key = self._key('agent-message', key)
+        message_identity = key if message_stage == 'initial' else key + '/followup/' + message_stage
+        message_key = self._key('agent-message', message_identity)
+        if message_stage != 'initial':
+            stage = message_stage.rsplit('/', 1)[0]
+            instruction = {
+                'cards_missing': 'Finish legal contract card drafts for the existing frozen clusters.',
+                'cluster_result_not_read': 'Cluster-run finished. Read cluster result, then request the full base runs.',
+                'full_base_runs_not_requested': 'Cluster verification is complete. Request node run with the frozen k_base attempts.',
+                'candidate_not_frozen': 'Complete the implementation and request node freeze before cluster-run.',
+                'cluster_runs_not_completed': 'Request the approved cluster-run and continue when its result is ready.',
+            }.get(stage, 'Complete the next missing artifact in the required LCD sequence.')
+            text = ('Follow-up: ' + instruction +
+                    ' Long executions continue after a turn ends. Continue the task below.\n' + text)
         message = next((i for i in self.messages.store.list(task_id, actor=actor)
                         if i['request_key'] == message_key), None)
         if message is None:
@@ -183,9 +196,9 @@ class RoundOperations:
                         session_id=session_id, reason='agent_message_' + message['status'])
         observed = self.sessions.read_agent(task_id, session_id)['result']
         if observed.get('status') != 'ok':
-            return dict(status='unknown', session_id=session_id, reason='agent_observation_unavailable')
+            return dict(status='running', session_id=session_id, reason='agent_observation_unavailable')
         status = observed['agent']['status']
-        observation_key = self._key('agent-observation', key)
+        observation_key = self._key('agent-observation', message_identity)
         tracking = self._get(observation_key) or dict(seen_active=False)
         if status in ('running', 'working', 'busy'):
             tracking['seen_active'] = True
@@ -202,7 +215,7 @@ class RoundOperations:
             if stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=timezone.utc)
             elapsed = (datetime.now(timezone.utc) - stamp).total_seconds()
-        return dict(status='idle' if status == 'idle' and (tracking['seen_active'] or elapsed >= 30)
+        return dict(status='idle' if status == 'idle' and (tracking['seen_active'] or elapsed >= start_grace_seconds)
                     else 'running', session_id=session_id)
 
     def _search_executions(self, tree, baseline_id):
@@ -331,15 +344,16 @@ class RoundOperations:
                 owned.add(state['action_id'])
         return owned
 
-    def implementation(self, candidate_id, *, key=None, actor=None, infra_retry=1, timeout_seconds=7200):
+    def implementation(self, candidate_id, *, key=None, actor=None, infra_retry=1, timeout_seconds=7200, observe_only=False):
         self.api._scope(candidate_id=candidate_id)
         actor = actor or (self._agent_actor(key) if key else self.actor)
         candidate = self.service.candidate(candidate_id)
-        if not candidate.get('frozen_commit'):
-            return dict(status='running', reason='candidate_not_frozen')
         tree = self._tree(candidate['iteration_id'])
         k_base = tree['protocol'].get('k_base', 2)
         requests = [r for r in self.api.requests.list(task_id=tree['task_id']) if r['target_id'] == candidate_id]
+        if not candidate.get('frozen_commit'):
+            awaiting = any(r['verb'] == 'node-freeze' and r['status'] in ('pending', 'confirmed') for r in requests)
+            return dict(status='running', reason='candidate_not_frozen', awaiting_confirmation=awaiting)
         attempts = [a for a in candidate['attempts'] if a.get('batch_id') in (None, 'base')]
         in_flight = any(a.get('execution_state') == 'running' for a in candidate['attempts'])
         card = self.api.hypotheses.get(tree['task_id'], candidate['proposal_id'])['card'] if candidate['proposal_id'] else {}
@@ -367,7 +381,8 @@ class RoundOperations:
                 if clustered:
                     retry = self.measurements.cluster(candidate_id, cluster_id,
                         key=key or 'implementation-cluster:' + candidate_id, actor=actor,
-                        infra_retry=infra_retry, timeout_seconds=timeout_seconds)
+                        infra_retry=infra_retry, timeout_seconds=timeout_seconds,
+                        **({'observe_only': True} if observe_only else {}))
                     if retry['status'] != 'complete':
                         if retry['status'] in ('failed', 'stopped'):
                             return dict(status='failed', reason=retry.get('reason') or 'cluster_infrastructure_retry_exhausted')
@@ -392,6 +407,9 @@ class RoundOperations:
                 else:
                     refreshed_cluster = dict(observed_original_read=True, refreshed_cluster_comparison_id=current.get('id'))
         runs = [r for r in requests if r['verb'] == 'node-run']
+        round_actions = self._round_action_ids()
+        if any(r['status'] == 'confirmed' and r['id'] not in round_actions for r in runs):
+            return dict(status='running', reason='initial_node_dispatch_in_progress', execution_in_flight=True)
         requested = sum(r['params'].get('attempts', 1) for r in runs if r['status'] in ('confirmed', 'executed'))
         if len(attempts) >= k_base or requested >= k_base:
             return dict(status='ready', execution_in_flight=in_flight, **(refreshed_cluster if cluster_id else {}))

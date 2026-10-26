@@ -894,8 +894,9 @@ class IterationService:
         ledger = BudgetLedger(self.repository)
         if protocol.get('budget'):
             count = len(self.plans.get(task_id, plan_scope['plan_id'])['content']['selection']['case_ids'])
-            reserved = ledger.reserve_many(iteration, [dict(candidate_id=candidate_id, request_key=request_key,
-                case_count=count, batch_id=batch_id)], group_key='attempt:' + hashlib.sha256(key.encode()).hexdigest())
+            step = ledger.reserved_step(iteration['id'], candidate_id, request_key,
+                dict(candidate_id=candidate_id, request_key=request_key, case_count=count, batch_id=batch_id))
+            reserved = ledger.reserve_many(iteration, [step], group_key='attempt:' + hashlib.sha256(key.encode()).hexdigest())
             if reserved['status'] != 'reserved':
                 raise Conflict('Iteration budget exceeded; request human confirmation')
         prior = self.executions.run_receipt(task_id, job['job_id'], job['state_version'], prepared['preparation_id'],
@@ -982,6 +983,14 @@ class IterationService:
         from .splits import batches
         candidate = self.candidate(candidate_id)
         iteration = self.iteration(candidate['iteration_id'])
+        if iteration['protocol'].get('budget'):
+            from .action_requests import execute
+            identity = hashlib.sha256(json.dumps(['validation-fill', candidate_id, request_key]).encode()).hexdigest()
+            params = {k: v for k, v in budget.items() if k in ('timeout_seconds', 'limit_cny')}
+            # Internal footprint only; public node-run requests still require positive attempts.
+            params['attempts'] = 0
+            return execute(self, dict(id=identity, verb='node-run', target_id=candidate_id, params=params),
+                workspace_id=self.repository.task(iteration['task_id'])['workspace_id'], actor=actor)
         for b in batches(self.repository, iteration['id'], completed=True):
             for cid in filter(None, (candidate['parent_candidate_id'], candidate_id)):
                 existing = [a for a in self.candidate(cid)['attempts'] if a.get('batch_id') == b['batch_id']]

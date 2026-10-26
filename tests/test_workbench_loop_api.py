@@ -15,6 +15,12 @@ class Rounds:
         self.rows = {}
         self.calls = []
 
+    def resume(self):
+        pass
+
+    def heartbeat(self):
+        pass
+
     def list(self, iteration_id=None):
         return [r for r in self.rows.values() if iteration_id is None or r['iteration_id'] == iteration_id]
 
@@ -131,3 +137,17 @@ def test_manager_bad_scope_does_not_starve_other_invocations():
         assert rounds.get('bad')['status'] == 'running'
     finally:
         manager.close()
+
+
+def test_stop_requires_write_permission():
+    from fastapi import HTTPException
+    rounds = Rounds()
+    rounds.start('i', actor='human', request_key='one')
+    def refuse():
+        raise HTTPException(403, 'Read only')
+    api = RoundAPI(SimpleNamespace(actor='human', _write=refuse, _scope=lambda **kw: None), rounds, None)
+    app = FastAPI()
+    app.include_router(api.router())
+    with TestClient(app) as client:
+        assert client.post('/api/rounds/r1/stop', json={}).status_code == 403
+    assert rounds.get('r1')['status'] == 'running'

@@ -75,6 +75,7 @@ def _lcd_analyst_instructions():
     primary_fields = ', '.join(f'{suite}: metrics.{metric}' for suite, metric in sorted(PRIMARY_METRIC.items()))
     fields = ', '.join(sorted(FIELDS | {'metrics.<official_primary_metric>', 'retrieval_context.*.text'}))
     return """## LCD 机械簇与合同
+长时间执行会在你的 turn 结束后继续。结果就绪但缺少下一步产物时，轮次服务会发送后续消息；请继续完成卡片草案。
 先读 search 证据。本轮基准候选、max_clusters 与 b 由服务器消息指定；最多提 max_clusters 个簇，为排名前 b 的簇各起草一张带 contract 的卡。
 `$S cluster propose --file cluster.json` 写入簇。节点会话自动绑定来源；迭代会话须在 JSON 加 candidate_id，或命令加 --parent <已评测候选>。
 ```json
@@ -176,7 +177,7 @@ def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty,
     if candidate_id:
         cluster_steps = (f" → `{s} node cluster-run {candidate_id} --reason '…'` → 读取 `{s} cluster result {cluster_id}`"
                          if cluster_id and not integration else '')
-        sequence = (f"\n## LCD 执行顺序\n实现 → 只跑与改动相关的 SN 测试（禁止全量套件） → `{s} leak-check`"
+        sequence = (f"\n## LCD 执行顺序\n长时间执行会在你的 turn 结束后继续；结果就绪时服务会发后续消息，请读取结果并继续后续步骤。\n实现 → 只跑与改动相关的 SN 测试（禁止全量套件） → `{s} leak-check`"
                     f" → `{s} node freeze {candidate_id} --reason '…'`{cluster_steps}"
                     f" → `{s} node run {candidate_id} --attempts {k_base} --reason '…'`。\n"
                     "每步用 requests 确认前一步成功，冻结成功后才能评测。attempts 取冻结协议 k_base。"

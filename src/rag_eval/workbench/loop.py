@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import math
+import sqlite3
 import threading
 import time
 import uuid
@@ -21,7 +22,8 @@ from .repository import Conflict, UnknownIdentity, _text
 
 ROUND_DEFAULTS = dict(analyst_profile='pi-flash', implementer_profile='pi-flash',
     merge_profile='pi-flash', max_clusters=6, b=2, pi=0.3, card_approval='auto',
-    agent_timeout_seconds=3600, execution_timeout_seconds=7200, infra_retry=1)
+    agent_timeout_seconds=3600, execution_timeout_seconds=7200, infra_retry=1,
+    agent_start_grace_seconds=300, agent_followups_per_stage=1)
 TERMINAL = frozenset({'completed', 'stopped', 'failed'})
 
 
@@ -32,10 +34,10 @@ def validate_settings(settings):
     if set(settings) - set(ROUND_DEFAULTS):
         raise ValueError('Unknown round settings')
     result = dict(ROUND_DEFAULTS, **settings)
-    for key in ('max_clusters', 'b', 'infra_retry'):
+    for key in ('max_clusters', 'b', 'infra_retry', 'agent_followups_per_stage'):
         if type(result[key]) is not int or result[key] < (0 if key == 'infra_retry' else 1):
             raise ValueError('Invalid round setting: ' + key)
-    for key in ('agent_timeout_seconds', 'execution_timeout_seconds'):
+    for key in ('agent_timeout_seconds', 'execution_timeout_seconds', 'agent_start_grace_seconds'):
         if type(result[key]) not in (int, float) or not math.isfinite(result[key]) or result[key] <= 0:
             raise ValueError('Invalid round setting: ' + key)
     # This value is also the per-execution budget, whose existing runner
@@ -51,6 +53,17 @@ def validate_settings(settings):
     for key in ('analyst_profile', 'implementer_profile', 'merge_profile'):
         _text(result[key], key, limit=200)
     return result
+
+
+def transient(error):
+    from .bridge_adapter import InvalidBridgeResponse
+    return isinstance(error, (OSError, sqlite3.OperationalError, InvalidBridgeResponse))
+
+
+def execution_window(settings):
+    # Includes every allowed retry and a bounded dispatch/scheduling margin.
+    timeout = settings['execution_timeout_seconds']
+    return timeout * (1 + settings['infra_retry']) + min(60, timeout)
 
 
 class _Stopped(Exception):
@@ -69,6 +82,7 @@ class RoundService:
                     id TEXT PRIMARY KEY, iteration_id TEXT NOT NULL, record TEXT NOT NULL,
                     stop_actor TEXT, stop_at REAL);
                 CREATE INDEX IF NOT EXISTS round_invocation_iteration ON iteration_round_invocations(iteration_id);
+                CREATE TABLE IF NOT EXISTS round_service_clock(id INTEGER PRIMARY KEY, heartbeat REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS iteration_round_requests(
                     iteration_id TEXT NOT NULL, request_key TEXT NOT NULL, actor TEXT NOT NULL,
                     requested_rounds INTEGER NOT NULL, invocation_id TEXT NOT NULL,
@@ -114,6 +128,88 @@ class RoundService:
                 conn.execute('UPDATE iteration_round_invocations SET record=? WHERE id=?',
                              (json.dumps(state, ensure_ascii=False, allow_nan=False), state['id']))
 
+    def heartbeat(self):
+        with self.repo.connect(write=True) as conn:
+            conn.execute('INSERT INTO round_service_clock VALUES(1,?) ON CONFLICT(id) DO UPDATE '
+                         'SET heartbeat=excluded.heartbeat', (self.clock(),))
+
+    def resume(self):
+        """Compensate downtime once per manager start, never on ordinary ticks."""
+        with self._lock('__service_resume__'):
+            with self.repo.connect() as conn:
+                row = conn.execute('SELECT heartbeat FROM round_service_clock WHERE id=1').fetchone()
+            previous = row[0] if row else None
+            at = self.clock()
+            if previous is not None and at - previous > 5:
+                for identity in self.list():
+                    if identity['status'] in TERMINAL:
+                        continue
+                    with self._lock(identity['iteration_id']):
+                        state = self.get(identity['id'])
+                        if state['status'] in TERMINAL:
+                            continue
+                        # Per-record receipt makes a crash midway through resume safe.
+                        since = max(previous, state.get('resumed_at', previous), state['created_at'])
+                        gap = max(0, at - since)
+                        def extend(value):
+                            if isinstance(value, dict):
+                                for key, child in value.items():
+                                    if key.endswith('_deadline') and type(child) in (int, float):
+                                        value[key] += gap
+                                    else:
+                                        extend(child)
+                            elif isinstance(value, list):
+                                for child in value:
+                                    extend(child)
+                        extend(state)
+                        state['resumed_at'] = at
+                        state['downtime_seconds'] = state.get('downtime_seconds', 0) + gap
+                        self._save(state)
+            self.heartbeat()
+
+    def _transient(self, state, record, error, *, save):
+        at = self.clock()
+        record['transient_error'] = dict(type=type(error).__name__, phase=record.get('phase', state['phase']), at=at)
+        # Consecutive failures are bounded even at boundary/selection/ledger.
+        holder = state['rounds'][-1] if record is state and state['rounds'] else record
+        phase = record.get('phase', state['phase'])
+        key = {'baseline': 'baseline_deadline', 'analysis': 'analysis_deadline',
+               'selection': 'analysis_deadline', 'implementation':
+               'execution_deadline' if record.get('waiting_execution') else 'agent_deadline',
+               'measure': 'execution_deadline', 'fresh': 'fresh_deadline'}.get(phase)
+        bound = holder.get(key) if key else None
+        deadline = record.setdefault('transient_deadline', bound if bound is not None else
+                                     at + state['settings']['agent_timeout_seconds'])
+        save()
+        return at >= deadline
+
+    def _followup(self, state, record, stage, deadline_key):
+        counts = record.setdefault('followups', {})
+        count = counts.get(stage, 0)
+        if count >= state['settings'].get('agent_followups_per_stage', 1):
+            return False
+        # Extra attempts, if configured, are spaced across full agent windows.
+        if count and self.clock() < record[deadline_key]:
+            return False
+        counts[stage] = count + 1
+        record['message_stage'] = f'{stage}/{count + 1}'
+        record[deadline_key] = self.clock() + state['settings']['agent_timeout_seconds']
+        return True
+
+    @staticmethod
+    def _fallback(state, record, reason):
+        accepted = [c for c in record['candidates'] if c.get('verdict', {}).get('verdict') == 'accept']
+        if not accepted:
+            return
+        def delta(candidate):
+            verdict = candidate['verdict']
+            value = verdict.get('delta', verdict.get('validation', {}).get('delta'))
+            return value if type(value) in (int, float) and math.isfinite(value) else -math.inf
+        chosen = max(accepted, key=delta)
+        state['baseline_candidate_id'] = chosen['candidate_id']
+        record['baseline_selection'] = dict(reason=reason, candidate_id=chosen['candidate_id'],
+            validation_delta=None if delta(chosen) == -math.inf else delta(chosen))
+
     def start(self, iteration_id, *, actor, request_key, rounds=1):
         iteration_id = _text(iteration_id, 'iteration identity', limit=200)
         actor, request_key = _text(actor, 'actor', limit=200), _text(request_key, 'request key', limit=200)
@@ -137,7 +233,7 @@ class RoundService:
                 active = dict(id=uuid.uuid4().hex, iteration_id=iteration_id, actor=actor,
                     request_key=request_key, requested_rounds=rounds, status='running', phase='boundary',
                     settings=settings, k_base=description['k_base'], baseline_candidate_id=baseline,
-                    no_accept_streak=previous.get('no_accept_streak', 0), rounds=[],
+                    no_accept_streak=0, previous_no_accept_streak=previous.get('no_accept_streak', 0), rounds=[],
                     created_at=self.clock(), updated_at=self.clock())
                 with self.repo.connect(write=True) as conn:
                     conn.execute('INSERT INTO iteration_round_invocations(id,iteration_id,record) VALUES(?,?,?)',
@@ -207,9 +303,15 @@ class RoundService:
                 return state
             try:
                 self._tick(state)
+                if state.pop('transient_deadline', None) is not None:
+                    self._save(state)
             except _Stopped:
                 pass
             except Exception as exc:
+                if transient(exc):
+                    if self._transient(state, state, exc, save=lambda: self._save(state)):
+                        self._finish(state, 'transient_timeout', failed=True)
+                    return self.get(round_id)
                 state['reason'] = 'round operation failed in ' + state['phase'] + ': ' + type(exc).__name__
                 if state['rounds']:
                     state['rounds'][-1]['failure'] = state['reason']
@@ -236,7 +338,7 @@ class RoundService:
         record = state['rounds'][-1]
         baseline = record['baseline_candidate_id']
         if phase == 'baseline':
-            if self._deadline(state, record, 'baseline_deadline', settings['execution_timeout_seconds']):
+            if self._deadline(state, record, 'baseline_deadline', execution_window(settings)):
                 state['reason'] = 'baseline execution timeout'
                 record['failure'] = state['reason']
                 record['ledger'] = self._call(state, 'ledger', state['iteration_id'])
@@ -259,6 +361,10 @@ class RoundService:
             return
         if phase == 'analysis':
             if self._deadline(state, record, 'analysis_deadline', settings['agent_timeout_seconds']):
+                if record.get('analyst', {}).get('status') == 'idle' and record.get('followups', {}).get('cards_missing'):
+                    if self._followup(state, record, 'cards_missing', 'analysis_deadline'):
+                        self._save(state)
+                        return
                 record['analysis_status'], record['analysis_reason'] = 'stalled', 'analyst timeout'
                 self._phase(state, 'ledger')
                 return
@@ -268,11 +374,13 @@ class RoundService:
                 self._save(state)
             analyst = self._call(state, 'agent', 'analyst', baseline, iteration_id=state['iteration_id'],
                 key=self._key(state, 'analyst'), profile=settings['analyst_profile'],
-                scope=record['analyst_scope'], text=(
+                scope=record['analyst_scope'], message_stage=record.get('message_stage', 'initial'),
+                start_grace_seconds=settings.get('agent_start_grace_seconds', 300), text=(
                     f"LCD round: read search evidence for baseline {baseline}. Propose at most {settings['max_clusters']} "
                     f"mechanical frozen clusters; draft legal contract cards for the top {settings['b']} unresolved clusters "
                     f"under this baseline. Rank by |C|*(1-q)*max(m,v,pi), pi={settings['pi']}; "
-                    "unmeasurable m/v remain null with explicit prior fallback. Follow the attached cluster and contract instructions."))
+                    "unmeasurable m/v remain null with explicit prior fallback. If clusters exist but cards are missing, "
+                    "finish drafting their legal cards now. Follow the attached cluster and contract instructions."))
             record['analyst'] = analyst
             self._save(state)
             if analyst['status'] == 'idle':
@@ -288,9 +396,8 @@ class RoundService:
             record['selection'] = selection
             record['cards'] = deepcopy(selection['cards'][:settings['b']])
             if not record['cards']:
-                record['analysis_status'] = 'stalled'
-                record['analysis_reason'] = 'analyst idle without frozen clusters and legal card drafts'
-                self._phase(state, 'ledger')
+                self._followup(state, record, 'cards_missing', 'analysis_deadline')
+                self._phase(state, 'analysis')
             else:
                 self._phase(state, 'approval')
             return
@@ -332,11 +439,13 @@ class RoundService:
                 record['accepted'] = accepted
                 if len(accepted) == 1:
                     state['baseline_candidate_id'] = accepted[0]
-                if len(accepted) >= 2 and not state.get('pending_stop'):
+                if len(accepted) >= 2 and state.get('pending_stop') != 'budget_exhausted':
                     record['merge'] = dict(phase='derive', status='running', started_at=self.clock(), timings={},
                                            hypothesis_id=None, integrated_from=accepted)
                     self._phase(state, 'merge')
                 else:
+                    if len(accepted) >= 2:
+                        self._fallback(state, record, 'merge_skipped_budget')
                     self._phase(state, 'ledger')
             return
         if phase == 'merge':
@@ -344,6 +453,8 @@ class RoundService:
             if record['merge']['phase'] == 'done':
                 if record['merge'].get('result', {}).get('status') == 'accepted':
                     state['baseline_candidate_id'] = record['merge']['candidate_id']
+                else:
+                    self._fallback(state, record, 'merge_fallback')
                 self._phase(state, 'ledger')
             return
         if phase == 'ledger':
@@ -406,7 +517,25 @@ class RoundService:
         if phase == 'implementation':
             waiting_execution = candidate.get('waiting_execution', False)
             deadline = candidate['execution_deadline'] if waiting_execution else candidate['agent_deadline']
+            implementation = self._call(state, 'implementation', cid,
+                key=key('cluster-measure'), actor=state['actor'], infra_retry=settings['infra_retry'],
+                timeout_seconds=settings['execution_timeout_seconds'],
+                **({'observe_only': True} if self.clock() >= deadline else {}))
+            if waiting_execution and not implementation.get('execution_in_flight'):
+                candidate['waiting_execution'] = waiting_execution = False
+                candidate['agent_deadline'] = self.clock() + settings['agent_timeout_seconds']
+            candidate['implementation'] = implementation
+            self._candidate_save(state, candidate, index)
+            deadline = candidate['execution_deadline'] if waiting_execution else candidate['agent_deadline']
             if self.clock() >= deadline:
+                if (not waiting_execution and candidate.get('agent', {}).get('status') == 'idle'
+                        and not implementation.get('awaiting_confirmation')
+                        and not implementation.get('execution_in_flight')
+                        and implementation['status'] == 'running'):
+                    stage = implementation.get('reason') or 'implementation_missing'
+                    if self._followup(state, candidate, stage, 'agent_deadline'):
+                        self._candidate_save(state, candidate, index)
+                        return
                 done('stalled', 'candidate execution timeout' if waiting_execution else 'implementation agent timeout')
                 return
             text = (f"Merge only approved sources {', '.join(candidate['integrated_from'])} into candidate {cid}; "
@@ -417,29 +546,28 @@ class RoundService:
                      "Use only approved implementer material; never inspect gold or validation cases.")
             agent = self._call(state, 'agent', 'implementer', cid, iteration_id=state['iteration_id'],
                 key=key('agent'), profile=settings['merge_profile' if merge else 'implementer_profile'],
-                text=text, hypothesis_id=candidate['hypothesis_id'])
+                text=text, hypothesis_id=candidate['hypothesis_id'],
+                message_stage=candidate.get('message_stage', 'initial'),
+                start_grace_seconds=settings.get('agent_start_grace_seconds', 300))
             candidate['agent'] = agent
-            self._candidate_save(state, candidate, index)
-            implementation = self._call(state, 'implementation', cid,
-                key=key('cluster-measure'), actor=state['actor'], infra_retry=settings['infra_retry'],
-                timeout_seconds=settings['execution_timeout_seconds'])
-            candidate['implementation'] = implementation
             self._candidate_save(state, candidate, index)
             if implementation.get('budget_exhausted'):
                 self._mark_stop(state, 'budget_exhausted')
                 done('budget_exhausted', implementation.get('reason', 'implementation request exceeds budget'))
             elif implementation['status'] == 'ready':
-                candidate['execution_deadline'] = self.clock() + settings['execution_timeout_seconds']
+                candidate['execution_deadline'] = self.clock() + execution_window(settings)
                 self._candidate_phase(state, candidate, index, 'measure')
             elif implementation['status'] == 'failed':
                 done('stalled', implementation.get('reason', 'implementation request failed'))
             elif agent['status'] in ('unknown', 'failed'):
                 done('stalled', agent.get('reason', 'agent ' + agent['status']))
             elif agent['status'] == 'idle' and not implementation.get('execution_in_flight') and not implementation.get('awaiting_confirmation'):
-                done('stalled', 'agent idle without frozen candidate and expected run requests')
+                stage = implementation.get('reason') or 'implementation_missing'
+                self._followup(state, candidate, stage, 'agent_deadline')
+                self._candidate_save(state, candidate, index)
             elif implementation.get('execution_in_flight') and not waiting_execution:
                 candidate['waiting_execution'] = True
-                candidate['execution_deadline'] = self.clock() + settings['execution_timeout_seconds']
+                candidate['execution_deadline'] = self.clock() + execution_window(settings)
                 self._candidate_save(state, candidate, index)
             return
         if phase == 'measure':
@@ -467,10 +595,10 @@ class RoundService:
                 if revision != candidate.get('measurement_revision'):
                     candidate.setdefault('measurement_history', []).append(deepcopy(candidate.get('measurement')))
                     candidate['measurement_revision'] = revision
-                    candidate['execution_deadline'] = self.clock() + settings['execution_timeout_seconds']
+                    candidate['execution_deadline'] = self.clock() + execution_window(settings)
                 self._candidate_phase(state, candidate, index, 'measure')
             elif candidate['verdict']['verdict'] == 'accept':
-                candidate['fresh_deadline'] = self.clock() + settings['execution_timeout_seconds']
+                candidate['fresh_deadline'] = self.clock() + execution_window(settings)
                 self._candidate_phase(state, candidate, index, 'fresh')
             else:
                 done(candidate['verdict']['verdict'])
@@ -499,9 +627,17 @@ class RoundService:
     def _candidate_safe_tick(self, state, candidate, index):
         try:
             self._candidate_tick(state, candidate, index)
+            if candidate.pop('transient_deadline', None) is not None:
+                self._candidate_save(state, candidate, index)
         except _Stopped:
             raise
         except Exception as exc:
+            if transient(exc):
+                expired = self._transient(state, candidate, exc,
+                    save=lambda: self._candidate_save(state, candidate, index))
+                if expired:
+                    self._candidate_phase(state, candidate, index, 'done', status='stalled', reason='transient timeout')
+                return
             # One bad request must not strand its siblings. Avoid copying raw
             # exception text (which may contain service addresses or secrets).
             self._candidate_phase(state, candidate, index, 'done', status='stalled',

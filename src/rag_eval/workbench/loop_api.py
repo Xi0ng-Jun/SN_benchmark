@@ -39,6 +39,7 @@ class RoundManager:
     def start(self):
         if self.thread is not None and self.thread.is_alive():
             return
+        self.service.resume()
         self.closed.clear()
         self.thread = threading.Thread(target=self._run, name='lcd-round-manager', daemon=True)
         self.thread.start()
@@ -62,6 +63,7 @@ class RoundManager:
     def _run(self):
         while not self.closed.is_set():
             try:
+                self.service.heartbeat()
                 self.workers = {key: worker for key, worker in self.workers.items() if worker.is_alive()}
                 for record in self.service.list():
                     if self.closed.is_set():
@@ -112,6 +114,7 @@ class RoundAPI:
 
         @router.post('/api/rounds/{round_id}/stop')
         def stop(round_id: str, command: StopRound):
+            self.iterations._write()
             show(round_id)
             return self.service.stop(round_id, actor=self.iterations.actor)
 

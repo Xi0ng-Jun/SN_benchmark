@@ -151,7 +151,7 @@ def test_manual_wait_is_resumable_without_duplicate_agents(setup):
     assert ports.effects['agent'] == 2
 
 
-@pytest.mark.parametrize('merge_status,expected', [('accepted', 'merge-C0'), ('withdrawn', 'C0'), ('unmeasurable', 'C0')])
+@pytest.mark.parametrize('merge_status,expected', [('accepted', 'merge-C0'), ('withdrawn', 'C0-H0-C'), ('unmeasurable', 'C0-H0-C')])
 def test_two_accepts_merge_and_rollback(setup, merge_status, expected):
     _, ports, _, service = setup
     ports.cards = 2
@@ -195,12 +195,15 @@ def test_crash_after_side_effect_recovers_receipt_without_duplicate_dispatch(set
 
 
 def test_idle_without_artifacts_and_unknown_agent_are_stalled(setup):
-    _, ports, _, service = setup
+    _, ports, clock, service = setup
     ports.implementation_states['C0-H0-C'] = 'running'
-    state = advance(service, service.start('I', actor='human', request_key='idle')['id'])
+    state = advance(service, service.start('I', actor='human', request_key='idle')['id'],
+        until=lambda s: bool(s['rounds'][0]['candidates']) and bool(s['rounds'][0]['candidates'][0].get('followups')))
+    clock[0] = state['rounds'][0]['candidates'][0]['agent_deadline'] + 1
+    state = advance(service, state['id'])
     candidate = state['rounds'][0]['candidates'][0]
     assert candidate['status'] == 'stalled'
-    assert 'idle' in candidate['reason']
+    assert 'timeout' in candidate['reason']
     assert ports.effects['gate'] == 0
 
 
@@ -233,7 +236,7 @@ def test_two_rounds_no_accept_stop_and_history_survives_invocations(setup):
     second = advance(service, service.start('I', actor='human', request_key='no2', rounds=5)['id'])
     assert first['no_accept_streak'] == 1
     assert second['stop_reason'] == 'no_accept'
-    assert len(second['rounds']) == 1
+    assert len(second['rounds']) == 2
 
 
 @pytest.mark.parametrize('resource,reason', [('budget_exhausted', 'budget_exhausted'), ('fresh_remaining', 'fresh_exhausted')])
@@ -310,7 +313,7 @@ def test_execution_timeout_is_persisted_across_restart(setup):
     ports.settings['execution_timeout_seconds'] = 5
     ports.measure_status['C0'] = 'running'
     state = service.tick(service.start('I', actor='human', request_key='timeout')['id'])
-    clock[0] += 6
+    clock[0] = state['rounds'][0]['baseline_deadline'] + 1
     state = advance(RoundService(repo, ports, clock=lambda: clock[0]), state['id'])
     assert state['status'] == 'failed'
     assert 'timeout' in state['reason']
@@ -377,7 +380,7 @@ def test_idle_agent_execution_wait_uses_execution_deadline(setup):
     clock[0] += 6
     state = service.tick(rid)
     assert state['rounds'][0]['candidates'][0]['status'] == 'running'
-    clock[0] += 15
+    clock[0] = state['rounds'][0]['candidates'][0]['execution_deadline'] + 1
     state = advance(service, rid)
     assert 'execution timeout' in state['rounds'][0]['candidates'][0]['reason']
 
@@ -505,7 +508,7 @@ def test_gate_repeated_same_pending_revision_keeps_original_deadline(setup):
     service.tick(rid)
     state = service.tick(rid)
     assert state['rounds'][0]['candidates'][0]['execution_deadline'] == deadline
-    clock[0] += 4
+    clock[0] = deadline + 1
     state = advance(service, rid)
     assert state['rounds'][0]['candidates'][0]['status'] == 'stalled'
 

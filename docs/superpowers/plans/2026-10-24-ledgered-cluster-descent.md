@@ -225,3 +225,15 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 实现：服务 lifespan 在 round manager 前恢复 execution；追加进程来源事件和跨进程 flock，用 boot／PID start ticks／session＋pidfd 证明接管身份，不能证明则发布 failed／execution_lost，经原终态重试与预算结算入口处理；取消的物理终止可恢复，记录不改写。
 - 解释与偏离：lost 用既有 closed v1 格式的 `state=failed, error_type=execution_lost` 表达，避免新增状态破坏旧消费者；无法恢复的 exit_code 保持 null。历史 failed attempt 仍占原始槽位，但不得满足准入 k_base，后续编排按原槽位追加有界重试，避免新 invocation 制造无限补跑。无法证明存活的旧进程不发信号。
 - 既有测试调整：supervisor bookkeeping 的两处事件序列及一个事件索引加入新的 `job.execution_process` 来源事件；原终态、失败证据与预算断言不放宽。
+
+### W8e · 2026-10-26 · 轮次活性、测量恢复与预算角色
+
+- [x] 审查项 A、2–9 及全部 small 项；各项先核验当前代码，未否定用户提供的行为问题。
+- 提交：本条所在 `fix(workbench): preserve round progress across waits and retries`；执行恢复单独提交 `6d2b5d7`。
+- 验证：最终按 RUNBOOK 使用现有 .venv、完整 DEEPEVAL 环境和 `-m pytest -q -rs -n 6`，**2763 passed / 7 skipped**（200.64 秒；6 条既有 Starlette 弃用警告）；Node **34 passed**。合成回归覆盖读取 unavailable、排队宽限、有界同阶段唤醒／第二次提醒、执行到 Agent 期限切换、服务停机补偿、各阶段暂时异常、confirmed node-run 防重复补跑、fresh 耗尽合并／最大 validation Δ 回退、新 invocation streak reset、retry 派发前后崩溃、停止／部分派发 fresh 对账、人工取消、父侧额度、stop 写权限和解释器探针错误。未改 UI，未调用模型／启动真实服务或 Agent／访问真实 var/／修改 .venv／推送。
+- 设置与语义：新增 round_settings `agent_start_grace_seconds=300`、`agent_followups_per_stage=1`；创建／发送未知仍 stalled，读取暂时不可用只等待。后续提醒使用原 Agent、阶段确定键和原始 actor，各阶段有界；brief 写明 turn 结束不终止执行。执行窗口为 timeout×(1+infra_retry)+min(60,timeout)，manager heartbeat 恢复停机时间；完成执行后恢复完整 Agent 窗口。状态未知／逻辑错误不伪造成成功。
+- 预算：新增可信 footprint `counts_toward_candidate_cap` 与 summary `subject_runs_by_candidate`；父侧补跑及其 retry 不占父候选上限，全局题次／金额照计。旧 action／round 来源可证明的父侧身份用于只读汇总；无证据旧预留保守计 subject。直接 validation refill 复用冻结 action footprint 和整组预留；所有既有记录不改写。
+- 测量恢复：暂时派发错误重用原步骤；retry 映射先从准备凭据恢复，终态旧 invocation 的未派发代可接手，原键／actor／角色保留。fresh 在 owner 终态或末代 retry 终态后允许对账，部分派发保留真实不完整比较，仍等待所有实际在途 attempt；人工取消不被当作 infra。lost／失败原槽位不满足 k_base，只追加有界重试。
+- 轮次决定：fresh 耗尽仍合并本轮接受候选；合并不可用时选最大 validation Δ 并记 baseline_selection。新 invocation 重置 no_accept_streak、保存前次值；同一 invocation 恢复不重置。stop 入口要求写权限，解释器探针异常转 require 风格错误。
+- 既有测试调整与原因：合并失败期望改为最佳已接受候选，空闲缺产物改为提醒后超时，streak 改为每次显式 invocation 重置，deadline 断言采用新有界重试窗口，confirmed 请求必须等派发完成，末代 retry 已终态时允许独立对账。并行全套暴露新增恢复测试在 SQLite 终态后抢读尚未写出的文件，改为等待 supervisor 完成边界，保留终态／文件／预算断言。这些均是本次明确行为决定，未降低准入／隐私／sealed／历史保留断言。
+- 复审：独立只读审查发现取消崩溃窗口与配置多次提醒的期限分支不可达，均补反例后修复；末次复核又发现超时观察可能派发重试、prepared-only attempt 阻塞 fresh 对账，补 observe_only 和未派发证据记录，使用真实比较存储回归而非仅替身。偏离仅为上条所述 lost 的兼容表示，以及明确的停机 heartbeat 粒度／无法推断旧预算角色的保守处理；W7 不在范围。

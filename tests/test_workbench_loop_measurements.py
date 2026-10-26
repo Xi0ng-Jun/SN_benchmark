@@ -254,7 +254,7 @@ def test_fresh_reconciliation_waits_for_terminal_retry_generation(env, monkeypat
     measurements.fresh(candidate, key='reconcile', actor='alice')
     finish(env, env['service'].candidate(candidate))
     finish(env, env['service'].candidate(tree['root_candidate_id']))
-    assert comparisons.reconcile_fresh(tree['id'], actor='reader') == 0
+    assert comparisons.reconcile_fresh(tree['id'], actor='reader') == 1
     result = measurements.fresh(candidate, key='reconcile', actor='alice')
     assert result['status'] == 'complete'
     assert result['delta'] == .1
@@ -319,3 +319,247 @@ def test_terminal_failed_fresh_releases_reconciliation_without_fabricated_qualit
     assert result['status'] == 'failed'
     assert result['delta'] is None and result['eta'] is None
     assert batches(env['repo'], tree['id'])[0]['comparison_id'] == 'failed-comparison'
+
+
+def test_transient_launch_failure_retries_same_reserved_slots(env, monkeypatch):
+    import sqlite3
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    original = env['service'].run
+    monkeypatch.setattr(env['service'], 'run', lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError('locked')))
+    measurements = ports(env)
+    assert measurements.measure(root, key='transient-launch', actor='alice')['status'] == 'running'
+    monkeypatch.setattr(env['service'], 'run', original)
+    assert measurements.measure(root, key='transient-launch', actor='alice')['status'] == 'running'
+    assert len(env['service'].candidate(root)['attempts']) == 2
+
+
+def test_operator_cancel_is_not_automatically_retried(env):
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    measurements = ports(env)
+    measurements.measure(root, key='cancelled', actor='alice')
+    for attempt in env['service'].candidate(root)['attempts']:
+        env['executions']._finish(attempt['execution_id'], state='cancelled', exit_code=None,
+                                 error_type=None, run_state=None)
+    result = measurements.measure(root, key='cancelled', actor='alice')
+    assert result['status'] == 'failed'
+    assert len(env['service'].candidate(root)['attempts']) == 2
+
+
+def test_later_invocation_recovers_undispatched_retry_generation(env):
+    import json
+    from rag_eval.workbench.loop import RoundService
+    from test_workbench_loop import Ports
+    rounds = RoundService(env['repo'], Ports())
+    invocation = rounds.start('I', actor='alice', request_key='old')
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    measurements = ports(env)
+    key = f"round/{invocation['id']}/1/baseline"
+    measurements.measure(root, key=key, actor='alice')
+    finish(env, env['service'].candidate(root))
+    assert measurements.measure(root, key=key, actor='alice')['reason'] == 'Infrastructure retry planned'
+    rounds.stop(invocation['id'], actor='alice')
+    assert measurements.measure(root, key='later', actor='bob')['reason'] == 'Infrastructure retry planned'
+    assert measurements.measure(root, key='later', actor='bob')['status'] == 'running'
+    assert len(env['service'].candidate(root)['attempts']) == 4
+    assert {a['created_by'] for a in env['service'].candidate(root)['attempts']} == {'alice'}
+
+
+def test_stopped_fresh_owner_allows_terminal_batch_reconciliation(env, monkeypatch):
+    from rag_eval.workbench.loop import RoundService
+    from test_workbench_loop import Ports
+    from rag_eval.workbench.comparisons import ComparisonService
+    from rag_eval.workbench.splits import batches
+    rounds = RoundService(env['repo'], Ports())
+    invocation = rounds.start('I', actor='alice', request_key='old-fresh')
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1)
+    cid = child(env, tree, 'fresh-stop')
+    measurements = ports(env)
+    measurements.fresh(cid, key=f"round/{invocation['id']}/1/fresh", actor='alice')
+    finish(env, env['service'].candidate(cid))
+    finish(env, env['service'].candidate(tree['root_candidate_id']))
+    rounds.stop(invocation['id'], actor='alice')
+    monkeypatch.setattr(ComparisonService, '_stored', lambda *a, **kw: dict(id='stop-comparison'))
+    comparisons = ComparisonService(env['repo'], env['service'], measurements.views)
+    assert comparisons.reconcile_fresh(tree['id'], actor='reader') == 1
+    assert batches(env['repo'], tree['id'])[0]['comparison_id'] == 'stop-comparison'
+
+
+def test_retry_launch_crash_does_not_turn_retry_into_new_root(env, monkeypatch):
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    measurements = ports(env)
+    measurements.measure(root, key='crash-retry', actor='alice')
+    finish(env, env['service'].candidate(root))
+    measurements.measure(root, key='crash-retry', actor='alice')
+    original = measurements._attempts
+    class Crash(BaseException):
+        pass
+    monkeypatch.setattr(measurements, '_attempts', lambda *a: (_ for _ in ()).throw(Crash()))
+    import pytest
+    with pytest.raises(Crash):
+        measurements.measure(root, key='crash-retry', actor='alice')
+    finish(env, env['service'].candidate(root))
+    result = ports(env).measure(root, key='new-invocation', actor='bob')
+    assert result['status'] == 'complete'
+    assert len(env['service'].candidate(root)['attempts']) == 4
+
+
+def test_validation_refill_parent_does_not_consume_subject_cap(env):
+    import json
+    from rag_eval.workbench.budgets import BudgetLedger
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1,
+                     budget=dict(max_case_runs=100, max_runs_per_candidate=2))
+    cid = child(env, tree, 'reference-refill')
+    root = tree['root_candidate_id']
+    ledger = BudgetLedger(env['repo'])
+    ledger.reserve_many(tree, [dict(candidate_id=root, request_key=f'root-own-{i}', case_count=1)
+                              for i in range(2)], group_key='root-own')
+    batch = tree['protocol']['fresh_batches'][0]['batch_id']
+    with env['repo'].connect(write=True) as conn:
+        conn.execute('INSERT INTO iteration_fresh_batches VALUES(?,?,?,?,?,?,?)',
+                     (tree['id'], batch, cid, 'used-fresh', 'now', 'now', None))
+    env['service'].fill_validation(cid, budget=BUDGET, actor='alice', request_key='refill')
+    assert ledger.summary(tree['id'])['subject_runs_by_candidate'] == {root: 2, cid: 2}
+    assert len(env['service'].candidate(root)['attempts']) == 2
+
+
+def test_partial_fresh_dispatch_reconciles_after_owner_fails(env, monkeypatch):
+    from rag_eval.workbench.loop import RoundService
+    from test_workbench_loop import Ports
+    from rag_eval.workbench.comparisons import ComparisonService
+    rounds = RoundService(env['repo'], Ports())
+    invocation = rounds.start('I', actor='alice', request_key='partial-fresh')
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1)
+    cid = child(env, tree, 'partial-fresh')
+    original = env['service'].run
+    def partial(candidate, **kwargs):
+        if candidate == cid:
+            raise ValueError('synthetic logical failure')
+        return original(candidate, **kwargs)
+    monkeypatch.setattr(env['service'], 'run', partial)
+    measurements = ports(env)
+    measurements.fresh(cid, key=f"round/{invocation['id']}/1/fresh", actor='alice')
+    finish(env, env['service'].candidate(tree['root_candidate_id']))
+    rounds._finish(invocation, 'operation_failed', failed=True)
+    comparisons = ComparisonService(env['repo'], env['service'], measurements.views)
+    assert comparisons.reconcile_fresh(tree['id'], actor='alice') == 1
+    from rag_eval.workbench.splits import batches
+    record = comparisons.get(batches(env['repo'], tree['id'])[0]['comparison_id'])
+    assert record['admission']['status'] == 'not_admitted'
+    assert record['mean']['delta'] is None
+    assert len(record['infrastructure']['reference']['attempts']) == 2
+    assert record['infrastructure']['subject']['attempts'] == []
+
+
+def test_restart_lost_execution_does_not_satisfy_baseline_admission(env):
+    import time
+    from rag_eval.workbench.job_execution import JobExecutionStore
+    from rag_eval.workbench.budgets import BudgetLedger
+    tree = iteration(env, budget=dict(max_case_runs=100, max_runs_per_candidate=8))
+    root = tree['root_candidate_id']
+    measurements = ports(env)
+    measurements.measure(root, key='restart-baseline', actor='alice')
+    initial = env['service'].candidate(root)['attempts']
+    # Fixture launch creates no process; release only the simulated old owners.
+    for attempt in initial:
+        env['executions']._release_supervisor(attempt['execution_id'])
+    restarted = JobExecutionStore(env['repo'])
+    restarted.recover()
+    deadline = time.monotonic() + 5
+    while any(restarted.get(tree['task_id'], a['execution_id'])['state'] == 'running' for a in initial):
+        assert time.monotonic() < deadline
+        time.sleep(.01)
+    assert all(a['admission']['status'] != 'admitted' for a in env['service'].candidate(root)['attempts'])
+    assert measurements.measure(root, key='restart-baseline', actor='alice')['reason'] == 'Infrastructure retry planned'
+    assert measurements.measure(root, key='restart-baseline', actor='alice')['status'] == 'running'
+    assert len(env['service'].candidate(root)['attempts']) == 4
+    assert BudgetLedger(env['repo']).summary(tree['id'])['runs_by_candidate'][root] == 4
+
+
+def test_observe_only_does_not_dispatch_planned_retry(env):
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    measurements = ports(env)
+    measurements.measure(root, key='observe', actor='alice')
+    finish(env, env['service'].candidate(root))
+    measurements.measure(root, key='observe', actor='alice')
+    assert measurements.measure(root, key='observe', actor='alice', observe_only=True)['status'] == 'running'
+    assert len(env['service'].candidate(root)['attempts']) == 2
+
+
+def test_prepared_only_fresh_failure_reconciles_without_fabricating_execution(env, monkeypatch):
+    from rag_eval.workbench.comparisons import ComparisonService
+    from rag_eval.workbench.splits import batches
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1)
+    cid = child(env, tree, 'prepared-only')
+    def invalid(*a, **k):
+        raise ValueError('invalid local spec')
+    monkeypatch.setattr(env['service'], 'build_spec', invalid)
+    measurements = ports(env)
+    assert measurements.fresh(cid, key='prepared-only', actor='alice')['status'] == 'failed'
+    assert len(env['service'].candidate(cid)['attempts']) == 2
+    comparisons = ComparisonService(env['repo'], env['service'], measurements.views)
+    assert comparisons.reconcile_fresh(tree['id'], actor='alice') == 1
+    record = comparisons.get(batches(env['repo'], tree['id'])[0]['comparison_id'])
+    assert record['admission']['status'] == 'not_admitted'
+    assert len(record['undispatched_attempts']['subject']) == 2
+
+
+def test_observe_only_recognizes_terminal_final_retry_without_cached_result(env):
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    measurements = ports(env)
+    measurements.measure(root, key='late-observe', actor='alice')
+    finish(env, env['service'].candidate(root))
+    measurements.measure(root, key='late-observe', actor='alice')
+    measurements.measure(root, key='late-observe', actor='alice')
+    finish(env, env['service'].candidate(root))
+    assert measurements.measure(root, key='late-observe', actor='alice', observe_only=True)['status'] == 'complete'
+    assert len(env['service'].candidate(root)['attempts']) == 4
+
+
+def test_stopped_prepared_retry_can_be_dispatched_by_later_invocation(env, monkeypatch):
+    from rag_eval.workbench.loop import RoundService
+    from test_workbench_loop import Ports
+    rounds = RoundService(env['repo'], Ports())
+    invocation = rounds.start('I', actor='alice', request_key='prepared-retry')
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    key = f"round/{invocation['id']}/1/base"
+    measurements = ports(env)
+    measurements.measure(root, key=key, actor='alice')
+    finish(env, env['service'].candidate(root))
+    measurements.measure(root, key=key, actor='alice')
+    original = env['service'].build_spec
+    def unavailable(*a, **k):
+        raise OSError('temporary spec storage')
+    monkeypatch.setattr(env['service'], 'build_spec', unavailable)
+    assert measurements.measure(root, key=key, actor='alice')['status'] == 'running'
+    rounds.stop(invocation['id'], actor='alice')
+    monkeypatch.setattr(env['service'], 'build_spec', original)
+    for _ in range(3):
+        measurements.measure(root, key='next-invocation', actor='bob')
+    candidate = env['service'].candidate(root)
+    assert len(candidate['attempts']) == 4
+    assert all(a['execution_id'] for a in candidate['attempts'])
+
+
+def test_observation_honors_retry_cap_across_invocations(env):
+    import hashlib
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    measurements = ports(env)
+    measurements.measure(root, key='finished-retries', actor='alice')
+    finish(env, env['service'].candidate(root))
+    measurements.measure(root, key='finished-retries', actor='alice')
+    measurements.measure(root, key='finished-retries', actor='alice')
+    finish(env, env['service'].candidate(root))
+    measurements.measure(root, key='finished-retries', actor='alice')
+    storage = 'round-measure:' + hashlib.sha256(b'next-observation').hexdigest()
+    state = measurements._plan(env['service'].candidate(root), tree, 'measure', storage)
+    state.update(original_key='next-observation', actor='bob', infra_retry=1, timeout_seconds=7200, override=False)
+    measurements._save(storage, state)
+    assert measurements.measure(root, key='next-observation', actor='bob', observe_only=True)['status'] == 'complete'

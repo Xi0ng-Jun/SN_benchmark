@@ -83,6 +83,12 @@ def test_restart_without_identity_publishes_lost_and_preserves_charged_attempt(t
     assert summary['runs_by_candidate'] == {'candidate': 1}
     restarted.recover()
     assert events(repo, record['execution_id']).count('job.execution_finished') == 1
+    # SQLite terminal publication precedes settlement/file publication. Wait for
+    # the supervisor's completion boundary before asserting its file side effect.
+    deadline = time.monotonic() + 5
+    while record['execution_id'] in restarted._supervisors and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert record['execution_id'] not in restarted._supervisors
     assert json.loads((tmp_path / 'run/execution-record.json').read_text())['terminal'] is True
 
 

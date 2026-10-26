@@ -116,10 +116,16 @@ def check(args):
             require(isinstance(execution.get(name), str) and Path(execution[name]).is_file(),
                     'Missing job_execution file: ' + name)
         expectation = json.loads(Path(execution['runtime_expectation']).read_text())
-        probe = subprocess.run([execution['python'], '-c',
-            'import json,sys; print(json.dumps(dict(executable=sys.executable,prefix=sys.prefix)))'],
-            capture_output=True, text=True, timeout=15, check=True)
-        observed = json.loads(probe.stdout)
+        try:
+            probe = subprocess.run([execution['python'], '-c',
+                'import json,sys; print(json.dumps(dict(executable=sys.executable,prefix=sys.prefix)))'],
+                capture_output=True, text=True, timeout=15, check=True)
+            observed = json.loads(probe.stdout)
+            require(isinstance(observed, dict) and all(isinstance(observed.get(k), str)
+                    for k in ('executable', 'prefix')), 'Invalid interpreter probe response')
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise ValueError('Cannot probe job_execution.python: ' + execution['python'] +
+                             ' (' + type(exc).__name__ + '); check executable permissions and runtime') from None
         require(type(expectation) is dict and set(expectation) == {'executable', 'prefix'}
                 and all(isinstance(v, str) and v for v in expectation.values()),
                 'Invalid interpreter expectation')

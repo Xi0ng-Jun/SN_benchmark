@@ -402,6 +402,8 @@ def test_cluster_retry_waits_and_requires_new_footprint_result_read(adapter, mon
     request = api.requests.request(f['tree']['task_id'], 'node-run', cid, dict(attempts=2),
                                     reason='full base run after read', requested_by='fixture')
     api.requests.claim(request['id'], actor='fixture')
+    assert ops.implementation(cid)['status'] == 'running'
+    api.requests.finish(request['id'], result=dict(status='dispatched'))
     assert ops.implementation(cid)['status'] == 'ready'
 
 
@@ -440,3 +442,51 @@ def test_cluster_monitor_waits_for_original_dispatch_but_not_owned_retry(adapter
                      ('ownership-fixture', json.dumps(dict(actions=[retry['id']]))))
     assert ops.implementation(cid)['reason'] == 'cluster_infrastructure_retry_running'
     assert len(calls) == 2
+
+
+def test_observation_failure_is_retryable_and_followup_is_once(adapter, monkeypatch):
+    first = agent(adapter)
+    original = adapter['reader'].read_agent
+    monkeypatch.setattr(adapter['reader'], 'read_agent', lambda *a: dict(result=dict(status='unavailable')))
+    assert agent(adapter)['status'] == 'running'
+    monkeypatch.setattr(adapter['reader'], 'read_agent', original)
+    second = agent(adapter, message_stage='cards_missing/1', text='Finish drafting cards.')
+    assert second['session_id'] == first['session_id']
+    agent(adapter, message_stage='cards_missing/1', text='Finish drafting cards.')
+    assert len(adapter['creation_bridge'].commands) == 1
+    assert len(adapter['message_bridge'].commands) == 2
+
+
+def test_pending_freeze_is_confirmation_wait(adapter):
+    f, ops, api = adapter['f'], adapter['ops'], adapter['api']
+    api.requests.request(f['tree']['task_id'], 'node-freeze', f['candidate']['id'], {},
+                         reason='freeze', requested_by='fixture')
+    assert ops.implementation(f['candidate']['id'])['awaiting_confirmation'] is True
+
+
+def test_confirmed_base_dispatch_fences_measurement_topups(adapter, monkeypatch):
+    f, ops, api = adapter['f'], adapter['ops'], adapter['api']
+    cid = f['candidate']['id']
+    Path(f['candidate']['worktree']['path'], 'backend/app/__init__.py').write_text('VALUE = 3\n')
+    api.service.freeze(cid, actor='alice')
+    monkeypatch.setattr('rag_eval.workbench.loop_services.referenced_cluster', lambda _: None)
+    request = api.requests.request(f['tree']['task_id'], 'node-run', cid, dict(attempts=2),
+                                   reason='dispatching', requested_by='fixture')
+    api.requests.claim(request['id'], actor='alice', note='dispatching')
+    result = ops.implementation(cid)
+    assert result['status'] == 'running'
+    assert result['execution_in_flight'] is True
+    assert result['reason'] == 'initial_node_dispatch_in_progress'
+
+
+def test_provider_idle_queue_uses_configured_start_grace(adapter, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    agent(adapter)
+    store = adapter['message'].store
+    original = store.list
+    def aged(*args, **kwargs):
+        return [dict(m, finished_at=(datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat())
+                for m in original(*args, **kwargs)]
+    monkeypatch.setattr(store, 'list', aged)
+    assert agent(adapter)['status'] == 'running'
+    assert agent(adapter, start_grace_seconds=45)['status'] == 'idle'

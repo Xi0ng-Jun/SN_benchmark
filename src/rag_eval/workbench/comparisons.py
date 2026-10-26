@@ -287,7 +287,9 @@ class ComparisonService:
 
     def _compute_scope(self, subject, reference, kind):
         body, reason = self._compute_quality(subject, reference, kind)
-        if body is None and self.terminal(subject) and self.terminal(reference):
+        if body is None and ((self.terminal(subject) and self.terminal(reference)) or
+                             (kind == 'fresh' and subject.get('_abandoned_fresh') and
+                              (subject.get('attempts') or reference.get('attempts')))):
             def side(c):
                 return dict(candidate_id=c['id'], execution_id=None, attempt=None,
                             runs=[r.id for m in self.terminal(c) for r in self.views.execution_runs(m['execution_id'])])
@@ -297,6 +299,10 @@ class ComparisonService:
                         mean=dict(reference=None, subject=None, delta=None),
                         admission=dict(status='not_admitted', reason=reason))
         if body is not None:
+            if subject.get('_abandoned_fresh'):
+                body['undispatched_attempts'] = {side: [dict(attempt=a.get('attempt'), job_id=a.get('job_id'),
+                    preparation_id=a.get('preparation_id')) for a in c.get('attempts', []) if not a.get('execution_id')]
+                    for side, c in (('subject', subject), ('reference', reference))}
             body['infrastructure'] = {s: self._infrastructure(c) for s, c in (
                 ('subject', subject), ('reference', reference))}
         return body, reason
@@ -320,7 +326,7 @@ class ComparisonService:
         completed = 0
         for b in batches(self.repository, iteration_id):
             from .loop_measurements import fresh_ready
-            if not fresh_ready(self.repository, b['request_key']):
+            if not fresh_ready(self.repository, b['request_key'], service=self.iterations):
                 continue
             if b['completed_at']:
                 continue
@@ -331,8 +337,16 @@ class ComparisonService:
             subject = self.scoped(fresh_subject, b['batch_id'])
             reference = self.scoped(fresh_reference, b['batch_id'])
             k = tree['protocol']['k_base']
-            if any(len(c['attempts']) < k or len(self.terminal(c)) != len(c['attempts']) for c in (subject, reference)):
+            from .loop_measurements import fresh_abandoned
+            abandoned = fresh_abandoned(self.repository, b['request_key'])
+            if not subject['attempts'] and not reference['attempts']:
                 continue
+            if any((len(c['attempts']) < k and not abandoned) or
+                   len(self.terminal(c)) != sum(bool(a.get('execution_id')) or not abandoned for a in c['attempts'])
+                   for c in (subject, reference)):
+                continue
+            if abandoned:
+                subject['_abandoned_fresh'] = True
             record = self._stored(subject, reference, 'fresh', actor)
             if not record.get('id'):
                 continue
@@ -480,8 +494,9 @@ class ComparisonService:
 
         ``store=False`` reads an existing record or computes one without saving it.
         """
+        empty = _hash(dict(unobserved_batch=subject.get('_batch_scope'))) if subject.get('_abandoned_fresh') else None
         ends = (subject['id'], kind, reference['id'],
-                self._measurement_key(subject), self._measurement_key(reference))
+                self._measurement_key(subject) or empty, self._measurement_key(reference) or empty)
         query = ('SELECT * FROM candidate_comparisons WHERE candidate_id=? AND kind=? AND reference_candidate_id=? '
                  'AND subject_execution=? AND reference_execution=?')
         with self.repository.connect() as conn:

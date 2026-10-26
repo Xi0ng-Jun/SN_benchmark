@@ -56,3 +56,18 @@ def test_partial_config_resolves_relative_paths_and_preserves_invocation_symlink
     setup.check(SimpleNamespace(config=config, execution=False))
     assert observed == [os.path.abspath(invocation)]
     assert observed[0] != str(invocation.resolve())
+
+
+@pytest.mark.parametrize('error', [OSError('cannot execute'), setup.subprocess.CalledProcessError(1, ['python']),
+                                 setup.subprocess.TimeoutExpired(['python'], 15)])
+def test_failed_probe_has_actionable_local_error(tmp_path, monkeypatch, error):
+    expectation = tmp_path / 'runtime.json'
+    expectation.write_text(json.dumps(dict(executable=sys.executable, prefix=sys.prefix)))
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps(dict(workspace=dict(location=str(setup.ROOT)),
+        job_execution=dict(python=sys.executable, runtime_expectation=str(expectation)))))
+    def probe(*a, **kw):
+        raise error
+    monkeypatch.setattr(setup.subprocess, 'run', probe)
+    with pytest.raises(ValueError, match='Cannot probe job_execution.python'):
+        setup.check(SimpleNamespace(config=config, execution=False))

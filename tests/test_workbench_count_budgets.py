@@ -337,3 +337,63 @@ def test_request_only_cli_checks_config_without_enabling_execution(env):
     with pytest.raises(ValueError, match='company-chat.*max_case_runs'):
         tools.request('node run', [tree['root_candidate_id']], options)
     assert len(tools.requests.list(task_id=tree['task_id'])) == 1
+
+
+def test_reference_topups_charge_total_caps_but_not_subject_cap(tmp_path):
+    repo, tree = setup(tmp_path)
+    tree['protocol']['budget'] = dict(max_case_runs=6, max_runs_per_candidate=1)
+    ledger = BudgetLedger(repo)
+    assert ledger.reserve_many(tree, [step('own', 'parent')], group_key='own')['status'] == 'reserved'
+    references = [dict(step(key, 'parent'), counts_toward_candidate_cap=False)
+                  for key in ('cluster-parent', 'fresh-parent', 'retry-parent')]
+    result = ledger.reserve_many(tree, references, group_key='topups')
+    assert result['status'] == 'reserved'
+    assert result['summary']['case_runs_used'] == 4
+    assert result['summary']['runs_by_candidate']['parent'] == 4
+    assert result['summary']['subject_runs_by_candidate']['parent'] == 1
+    assert ledger.reserve_many(tree, [step('own-again', 'parent')], group_key='own2')['reasons'] == ['max_runs_per_candidate']
+    denied = ledger.reserve_many(tree, [dict(step('large', 'parent', count=3),
+        counts_toward_candidate_cap=False)], group_key='large')
+    assert denied['reasons'] == ['max_case_runs']
+
+
+def test_cluster_parent_topup_ignores_full_parent_subject_cap(frozen_cluster):
+    from rag_eval.workbench.action_requests import ActionRequestStore, auto_execute
+    f = frozen_cluster
+    service, repo, tree = f['service'], f['env']['repo'], f['tree']
+    protocol = dict(tree['protocol'], budget=dict(max_case_runs=100, max_runs_per_candidate=2))
+    with repo.connect(write=True) as conn:
+        conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(protocol), tree['id']))
+    tree = service.iteration(tree['id'])
+    parent = tree['root_candidate_id']
+    ledger = BudgetLedger(repo)
+    ledger.reserve_many(tree, [dict(candidate_id=parent, request_key=f'own-{i}', case_count=1)
+                              for i in range(2)], group_key='parent-own')
+    cid = f['candidate']['id']
+    (Path(f['candidate']['worktree']['path']) / 'backend/app/__init__.py').write_text('VALUE = 3\n')
+    service.freeze(cid, actor='test')
+    request = ActionRequestStore(repo).request(tree['task_id'], 'node-cluster-run', cid,
+        {'cluster_id': 'c01'}, reason='reference topup', requested_by='agent:implementer')
+    assert auto_execute(service, request, workspace_id=f['env']['workspace']['id'])['status'] == 'executed'
+    assert ledger.summary(tree['id'])['subject_runs_by_candidate'] == {parent: 2, cid: 2}
+
+
+def test_legacy_parent_reservation_uses_durable_action_role(tmp_path):
+    repo, tree = setup(tmp_path)
+    from rag_eval.workbench.action_requests import ActionRequestStore
+    from rag_eval.workbench.execution_scopes import initialize
+    initialize(repo)
+    store = ActionRequestStore(repo)
+    request = store.request(tree['task_id'], 'node-run', 'child', dict(attempts=1),
+                            reason='legacy reference refill', requested_by='fixture')
+    old = step('reference', 'parent')
+    with repo.connect(write=True) as conn:
+        conn.execute('INSERT INTO action_dispatches VALUES(?,?,?,?)',
+                     (request['id'], tree['id'], json.dumps([old]), 'now'))
+    ledger = BudgetLedger(repo)
+    ledger.reserve_many(tree, [old], group_key='legacy')
+    summary = ledger.summary(tree['id'])
+    assert summary['runs_by_candidate'] == {'parent': 1}
+    assert summary['subject_runs_by_candidate'] == {}
+    with repo.connect() as conn:
+        assert json.loads(conn.execute('SELECT step_json FROM iteration_budget_reservations').fetchone()[0]) == old

@@ -78,7 +78,8 @@ def dispatch_steps(service, record):
     base_count = len(tree['protocol']['splits']['search']) + len(tree['protocol']['splits']['validation'])
     key, steps = 'action:' + record['id'], []
     def add(cid, request_key, scope=None, count=base_count):
-        steps.append(dict(candidate_id=cid, request_key=request_key, batch_id=scope, case_count=count))
+        steps.append(dict(candidate_id=cid, request_key=request_key, batch_id=scope, case_count=count,
+                          counts_toward_candidate_cap=cid == candidate["id"]))
     def fill(scope, count, prefix):
         for cid in filter(None, (candidate['parent_candidate_id'], candidate['id'])):
             attempts = [a for a in service.candidate(cid)['attempts'] if a.get('batch_id') == scope]

@@ -39,8 +39,10 @@ HTTP（沿用工作台 token、`X-Workbench: 1` 与同源校验）：
 | `pi` | 0.3 | 排序先验；不可测 m/v 保留 null |
 | `card_approval` | `auto` | `manual` 时等待既有 proposal 批准入口 |
 | `agent_timeout_seconds` | 3600 | 分析／实现／合并 Agent 阶段期限 |
-| `execution_timeout_seconds` | 7200 | 基准、候选测量、新鲜确认阶段期限；整数 1–86400（既有 runner 上限） |
-| `infra_retry` | 1 | 基础设施失败追加 attempt 次数；不重跑低分 |
+| `execution_timeout_seconds` | 7200 | 每次执行的超时；整数 1–86400（既有 runner 上限） |
+| `infra_retry` | 1 | 基础设施失败追加 attempt 次数；不重跑低分或人工取消 |
+| `agent_start_grace_seconds` | 300 | 未曾观测到 active 时的发送后排队宽限；可按 provider 排队情况调整 |
+| `agent_followups_per_stage` | 1 | 每个缺失产物阶段的后续提醒上限；正整数，每次提醒重新给一个 Agent 工作窗口 |
 
 执行调度仍由原 `execution` 设置控制，未增加本机硬件上限。`preparation_policy` 在新 iteration 中冻结显式值或服务器默认值；之后服务器改变时使用冻结值，并把两侧策略与 execution ID 写入历史。旧协议缺键继续使用服务器值。
 
@@ -58,6 +60,8 @@ HTTP（沿用工作台 token、`X-Workbench: 1` 与同源校验）：
 ```
 
 题次按每个已预留 attempt 的完整 `case_count` 累加：例如 20 题 × 2 次 = 40 题次，父补跑、簇试验、fresh、失败、取消及基础设施重试全部计入。派发前整组原子预留；重复同一 attempt 不重复计数，重试的新 attempt 另计。终态费用结算不会退还题次，预留后未完成的工作也不会被当作免费。超出任一上限的请求保留 pending，等待人工明确覆盖；round 的预算耗尽判断同时检查题次和金额，原有启动确认基准派发的语义不变。
+
+单候选上限只限制该候选作为 subject 的 node-run／cluster-run／fresh 及其重试。父／root 作为 reference 的簇子集、fresh、验证池扩张、比较补跑及对应基础设施重试，不占父节点的 `max_runs_per_candidate`，但完整占用全局题次／CNY。`runs_by_candidate` 保留所有预留计数，新增 `subject_runs_by_candidate` 是单候选上限的计数。新 footprint 的角色由可信调度层确定；旧预留可从原 action／round footprint 证明父侧身份时按 reference 汇总，不改写旧记录；没有角色证据的旧预留保守按 subject 计。
 
 `iteration show` 的 `budget_usage`、`iteration ledger` 的 `sampling_ledger.budget_usage` 与三笔账面板显示 `case_runs_used`／`policy.max_case_runs`；配置金额上限时同时显示 CNY 占用／额度。未知实际费用仍为 null；count-only 的内部历史 CNY 估算保留，但不参与额度判断、不冒充报价。
 
@@ -77,15 +81,17 @@ HTTP（沿用工作台 token、`X-Workbench: 1` 与同源校验）：
 
 invocation 持久状态为 `running`、`waiting_approval`、`completed`、`stopped`、`failed`；阶段为边界检查 → 基准 → 分析 → 选择 → 批准 → 并行候选 → 可选合并 → 账本 → 本轮完成。候选独立经过派生、实现、测量、gate、fresh；合并经过派生、实现、测量、合并比较。时间点、期限、卡片／排名快照、verdict 和账本写入 SQLite。
 
-服务启动重新扫描活动 invocation；同一 iteration 的进程间锁防止并发推进。每个外部动作使用确定请求键，恢复复用创建／消息／执行凭据；不确定的远端创建或发送不自动重放。Agent 已发送任务后观测到运行再空闲，或发送后经过 30 秒启动宽限仍空闲而缺预期产物，会记 `stalled`；阶段超过冻结期限也记 `stalled`，保留原因，其他候选继续。存在执行中的请求时按执行期限等待，而不把 Agent 空闲误当完成。
+服务启动重新扫描活动 invocation；同一 iteration 的进程间锁防止并发推进。每个外部动作使用确定请求键，恢复复用创建／消息／执行凭据；不确定的远端创建或发送仍保守 stalled，不自动重放。Agent 状态读取暂时不可用视为继续等待，记录原因；观测过 active，或经过冻结的启动宽限后，idle 才代表 turn 结束。缺下一步产物时按阶段确定键发送有界后续提醒（读 cluster result、请求完整 runs、补卡片等），提醒后仍无进展并超过期限才 stalled。freeze 等待人工确认不算立即停滞；confirmed 请求尚在派发时不提前冻结补跑清单。
 
-基础设施失败和原 attempt 永久保留，允许的重试追加新键、重跑该 attempt 的完整冻结选择，并经过同一预算账。人工 stop 不回滚来源、成绩或记录。轮数耗尽、新鲜批次耗尽、连续两轮无 accept、预算耗尽时不再开新轮，并收拢已启动候选的结果。manual 卡片批准等待不消耗 Agent 期限；人批准后后台自动继续。
+SQLite 暂时锁定、OSError、桥接观测边界异常保留当前阶段并下 tick 重试，只记录异常类型，不写原始私有错误文本；重试受阶段期限限制，逻辑／契约错误仍失败。执行等待窗口为 `execution_timeout_seconds × (1 + infra_retry) + min(60, execution_timeout_seconds)`，容纳晚失败后的重试与调度余量；单个执行仍使用原超时。执行完成后清除 waiting_execution，重新给 Agent 完整工作窗口；期限已到的实现进度查询只观察，不派发新的 retry。manager 独立持久 heartbeat；重启时将检测到的停机间隔（大于 5 秒）一次性加回活动轮次的 deadlines，逐记录回执避免恢复中再次崩溃导致重复延长。仅轮次期限扣除停机，仍存活执行的物理超时照常计算。
 
-合并使用无逐题预测的 `component=integration` 元数据卡授权实现者，仅下发来源 commit／路径；它不冒充 LCD 合同，使用完整 validation 池的 Δ 与 η 决定保留或撤回。普通选择仍要求有簇、有合法合同并通过泄漏检查。
+基础设施失败和原 attempt 永久保留，允许的重试追加新键、重跑该 attempt 的完整冻结选择，并经过同一预算账。人工 stop 不回滚来源、成绩或记录。轮数耗尽、新鲜批次耗尽、连续两轮无 accept、预算耗尽时不再开新轮，并收拢已启动候选的结果。manual 卡片批准等待不消耗 Agent 期限；人批准后后台自动继续。新 invocation 是操作者新的实验决定，`no_accept_streak` 从 0 开始并记录 previous_no_accept_streak；恢复同一 invocation 不重置。
 
-重试限制按原 attempt 持久计数，换 round 请求键不重置；每代重试有独立 action request 与不可变派发清单，超额人工确认仍执行同一清单。运行中或已有终态的执行不重复派发。若源码捕获／配置准备在发布 execution 前失败，记录失败并停止该路径，不把无法证明的准备异常当作可重试模型基础设施错误。新鲜批次领取若与并发既有请求冲突，保留原选择并报失败，不悄悄换用下一批。
+合并使用无逐题预测的 `component=integration` 元数据卡授权实现者，仅下发来源 commit／路径；它不冒充 LCD 合同，使用完整 validation 池的 Δ 与 η 决定保留或撤回。普通选择仍要求有簇、有合法合同并通过泄漏检查。fresh 耗尽只阻止后续新轮，不跳过本轮 ≥2 accepts 的合并；预算耗尽或明确 stop 才可跳过。合并 withdrawn／stalled／unmeasurable 时，用已接受候选中 validation Δ 最大者作为下一基准，baseline_selection 记录选择和原因。
 
-簇试验同样参与基础设施重试，只处理实现者已经请求的本簇及父侧测量，不越权启动其他簇。若实现者已读初次结果，随后自动重试改变测量，记账人重新计算诊断并分别记录“已读原结果”和“服务刷新比较 ID”，不声称 Agent 已读新的诊断；未读过任何结果仍等待 Agent。fresh 的完成入池延后到该批的有界重试全部终态，普通树／账本查询不能提前冻结初次失败的比较。并行候选遇到刚扩大的 validation 池时，先以新的确定键补测新增批次，再针对同一份不可变比较做 gate。
+重试限制按原 attempt 持久计数，换 round 请求键不重置；每代重试有独立 action request 与不可变派发清单，超额人工确认仍执行同一清单。运行中或已有终态的执行不重复派发。若发布 execution 前发生暂时 I/O／SQLite 异常，以原稳定键继续准备／派发，不创建新 attempt 名额；逻辑配置错误记录失败。原 invocation 已终态时，后来调用可接手已分配但未派发的 retry，保留原键、actor、预算角色；启动后尚未记实际 attempt 的重试也先重建映射，不能当成新的原始槽位。人工取消不自动重试，timeout／execution_lost 才属于自动基础设施失败。新鲜批次领取若与并发既有请求冲突，保留原选择并报失败，不悄悄换用下一批。
+
+簇试验同样参与基础设施重试，只处理实现者已经请求的本簇及父侧测量，不越权启动其他簇。若实现者已读初次结果，随后自动重试改变测量，记账人重新计算诊断并分别记录“已读原结果”和“服务刷新比较 ID”，不声称 Agent 已读新的诊断；未读过任何结果仍等待 Agent。fresh 在有界重试终态或 owning invocation 已停止／失败后允许对账；实际已启动的 attempts 仍须全部终态。部分派发后失败也留下不完整比较及实际池证据，准备完成但无 execution 的 attempt 记录在 undispatched_attempts，不补零、不伪造准入；完全未使用的领取不当作有测量的批次。正常活动调用不能提前冻结仍待重试的初次失败比较。并行候选遇到刚扩大的 validation 池时，先以新的确定键补测新增批次，再针对同一份不可变比较做 gate。
 
 ### W8e：执行进程恢复
 
