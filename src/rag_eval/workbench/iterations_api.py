@@ -101,7 +101,7 @@ class IterationAPI:
         self.comparisons = ComparisonService(repository, self.service, run_views)
         self.hypotheses = HypothesisStore(repository)
         self.views = run_views
-        self.requests = ActionRequestStore(repository)
+        self.requests = ActionRequestStore(repository, execution_config=self.service.execution_config)
         self.repository = repository
         self._shown = {}  # iteration id -> (version, tree) last served
 
@@ -145,6 +145,7 @@ class IterationAPI:
         ('candidate_comparisons', 'SELECT COUNT(*),MAX(rowid) FROM candidate_comparisons WHERE iteration_id=?', 'id'),
         ('iteration_fresh_batches', 'SELECT * FROM iteration_fresh_batches WHERE iteration_id=? ORDER BY batch_id', 'id'),
         ('hypotheses', 'SELECT id,status,parent_candidate_id FROM hypotheses WHERE task_id=? ORDER BY id', 'task'),
+        ('iteration_budget_reservations', 'SELECT * FROM iteration_budget_reservations WHERE iteration_id=? ORDER BY id', 'id'),
         ('history', 'SELECT MAX(seq) FROM history WHERE task_id=?', 'task'),
         # Sealed cases come from every iteration's protocol (splits.Policy).
         ('all_iterations', 'SELECT COUNT(*),MAX(rowid) FROM iterations', None),

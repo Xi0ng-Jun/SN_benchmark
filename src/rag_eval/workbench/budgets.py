@@ -27,13 +27,46 @@ def _amount(value, *, positive=False):
 def validate_policy(policy):
     if policy is None:
         return None
-    if (type(policy) is not dict or set(policy) != {'limit_cny', 'max_runs_per_candidate'}
-            or not _amount(policy['limit_cny'], positive=True)
-            or type(policy['max_runs_per_candidate']) is not int
+    if (type(policy) is not dict
+            or set(policy) - {'limit_cny', 'max_case_runs', 'max_runs_per_candidate'}
+            or not set(policy) & {'limit_cny', 'max_case_runs'}
+            or ('limit_cny' in policy and not _amount(policy['limit_cny'], positive=True))
+            or ('max_case_runs' in policy and (type(policy['max_case_runs']) is not int or policy['max_case_runs'] < 1))
+            or type(policy.get('max_runs_per_candidate')) is not int
             or policy['max_runs_per_candidate'] < 1):
         raise ValueError('Invalid iteration budget policy')
-    return dict(limit_cny=float(policy['limit_cny']),
-                max_runs_per_candidate=policy['max_runs_per_candidate'])
+    result = dict(policy)
+    if 'limit_cny' in result:
+        result['limit_cny'] = float(result['limit_cny'])
+    return result
+
+
+def validate_model_budget(budget, execution_config):
+    """Price admission belongs before requests, reservations and dispatch."""
+    if isinstance(budget, dict) and 'limit_cny' in budget:
+        from ..model_budget import check_priced_models
+        check_priced_models((execution_config or {}).get('model_config'))
+
+
+def exceeded_caps(policy, summary, steps, per_case):
+    """Check all present limits against only the unreserved attempt footprint."""
+    counts = Counter(summary['runs_by_candidate'])
+    counts.update(step['candidate_id'] for step in steps)
+    added = sum(step['case_count'] for step in steps)
+    reasons = []
+    if 'limit_cny' in policy and summary['charged_cny'] + added * per_case > policy['limit_cny'] + 1e-12:
+        reasons.append('limit_cny')
+    if 'max_case_runs' in policy and summary['case_runs_used'] + added > policy['max_case_runs']:
+        reasons.append('max_case_runs')
+    if any(count > policy['max_runs_per_candidate'] for count in counts.values()):
+        reasons.append('max_runs_per_candidate')
+    return reasons
+
+
+def exhausted(summary):
+    policy = summary.get('policy') or {}
+    return (('limit_cny' in policy and summary['charged_cny'] >= policy['limit_cny'])
+            or ('max_case_runs' in policy and summary['case_runs_used'] >= policy['max_case_runs']))
 
 
 def initialize(repository):
@@ -105,14 +138,22 @@ class BudgetLedger:
 
     def _summary(self, conn, iteration_id):
         policy = conn.execute('SELECT policy_json FROM iteration_budget_policies WHERE iteration_id=?',
-                              (iteration_id,)).fetchone()
+                              (iteration_id,)).fetchone() if self._available(conn) else None
         if policy is None:
-            return dict(iteration_id=iteration_id, policy=None, charged_cny=0, reserved_cny=0,
-                        actual_cny=None, observed_cny=0, unknown_count=0, runs_by_candidate={})
+            # The first reservation materializes the ledger policy. Until then
+            # report the already-frozen protocol without creating records.
+            frozen = None
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone():
+                row = conn.execute('SELECT protocol_json FROM iterations WHERE id=?', (iteration_id,)).fetchone()
+                if row and row[0]:
+                    frozen = json.loads(row[0]).get('budget')
+            return dict(iteration_id=iteration_id, policy=frozen, charged_cny=0, reserved_cny=0,
+                        actual_cny=None, observed_cny=0, unknown_count=0, runs_by_candidate={}, case_runs_used=0)
         rows = conn.execute('SELECT * FROM iteration_budget_reservations WHERE iteration_id=?',
                             (iteration_id,)).fetchall()
         complete = bool(rows) and all(r['state'] == 'settled' for r in rows)
         return dict(iteration_id=iteration_id, policy=json.loads(policy['policy_json']),
+                    case_runs_used=sum(r['case_count'] for r in rows),
                     charged_cny=sum(r['charged_cny'] for r in rows),
                     reserved_cny=sum(r['reserved_cny'] for r in rows if r['state'] != 'settled'),
                     actual_cny=sum(r['actual_cny'] for r in rows) if complete else None,
@@ -120,8 +161,9 @@ class BudgetLedger:
                     unknown_count=sum(r['state'] == 'unknown' for r in rows),
                     runs_by_candidate=dict(Counter(r['candidate_id'] for r in rows)))
 
-    def summary(self, iteration_id):
-        self.reconcile(iteration_id)
+    def summary(self, iteration_id, *, reconcile=True):
+        if reconcile:
+            self.reconcile(iteration_id)
         with self.repository.connect() as conn:
             return self._summary(conn, iteration_id)
 
@@ -213,13 +255,7 @@ class BudgetLedger:
                         raise ValueError('Budget estimate overflow')
                     missing.append((step, cost))
             summary = self._summary(conn, iteration['id'])
-            counts = Counter(summary['runs_by_candidate'])
-            counts.update(step['candidate_id'] for step, _ in missing)
-            reasons = []
-            if summary['charged_cny'] + sum(cost for _, cost in missing) > policy['limit_cny'] + 1e-12:
-                reasons.append('limit_cny')
-            if any(count > policy['max_runs_per_candidate'] for count in counts.values()):
-                reasons.append('max_runs_per_candidate')
+            reasons = exceeded_caps(policy, summary, [step for step, _ in missing], per_case)
             if reasons and not override and (missing or not steps):
                 # Pending actions may be retried after settlement or trusted human
                 # confirmation. Only successful reservations acquire a receipt.
@@ -240,7 +276,7 @@ class BudgetLedger:
                 reservations.append(_reservation(reservation))
                 repo._event(conn, iteration['task_id'], 'budget.reserved', reservation['id'],
                             dict(candidate_id=step['candidate_id'], request_key=step['request_key'],
-                                 reserved_cny=cost, override=override, estimate_source=source))
+                                 case_count=step['case_count'], reserved_cny=cost, override=override, estimate_source=source))
             result = dict(status='reserved', reservations=reservations,
                           summary=self._summary(conn, iteration['id']))
             repo._receipt(conn, scope, group_key, payload, result)

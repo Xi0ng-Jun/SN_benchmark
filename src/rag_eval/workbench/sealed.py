@@ -41,6 +41,8 @@ class SealedService:
         actor = _text(actor, 'human confirmer', limit=200)
         from .job_execution import validate_execution_budget
         validate_execution_budget(budget)
+        from .budgets import validate_model_budget
+        validate_model_budget(budget, self.iterations.execution_config)
         candidate = self.iterations.candidate(candidate_id)
         tree = self.iterations.iteration(candidate['iteration_id'])
         protocol = tree.get('protocol') or {}

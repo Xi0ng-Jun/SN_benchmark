@@ -249,7 +249,10 @@ def aggregate_ledger(iteration, comparisons, hypotheses, clusters, *, seed_searc
         if not resolved:
             wishlist.append(dict(cluster_id=cluster_id, **numbers))
     seed = _number(seed_search_mean)
-    return dict(sampling_ledger=dict(k=1, verifier='none', seed_search_mean=seed, S_B=seed),
+    sampling = dict(k=1, verifier='none', seed_search_mean=seed, S_B=seed)
+    if iteration.get('budget_usage') is not None:
+        sampling['budget_usage'] = iteration['budget_usage']
+    return dict(sampling_ledger=sampling,
                 overfit_ledger=dict(stats, pools=pools, accepted=accepted_rows,
                     K_semantics='distinct subject and reference frozen commits within this validation pool'),
                 structure_ledger=dict(clusters=cluster_rows, contracts=contracts,

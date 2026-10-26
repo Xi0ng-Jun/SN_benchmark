@@ -301,7 +301,11 @@ class IterationService:
         from .splits import batches, roles
         used = batches(self.repository, iteration_id)
         pool = roles(iteration.get('protocol'), {b['batch_id'] for b in used if b['completed_at']})
-        return dict(iteration, candidates=ordered, proposals=proposals, unassigned_executions=unassigned,
+        from .budgets import BudgetLedger
+        # Brief resolution can run inside a writer: reporting must stay read-only.
+        usage = BudgetLedger(self.repository, initialize=False).summary(iteration_id, reconcile=False)
+        usage['policy'] = (iteration.get('protocol') or {}).get('budget')
+        return dict(iteration, budget_usage=usage, candidates=ordered, proposals=proposals, unassigned_executions=unassigned,
                     fresh_usage=used, validation_pool=[c for c, r in (pool or {}).items() if r == 'validation'])
 
     def _unassigned(self, conn, iteration):
@@ -434,6 +438,8 @@ class IterationService:
         if prior is not None:
             self._settle_root(prior['id'])
             return self.iteration(prior['id'])
+        from .budgets import validate_model_budget
+        validate_model_budget(budget, self.execution_config)
         if seeded_from is not None:
             if type(seeded_from) is not dict or set(seeded_from) != {'iteration_id', 'candidate_id'}:
                 raise ValueError('seeded_from names an iteration and one of its candidates')
@@ -815,6 +821,8 @@ class IterationService:
         if batch_id is not None and batch_id.startswith('sealed:'):
             from .sealed import authorize
             authorize(self.repository, iteration['id'], candidate_id, _sealed_capability)
+        from .budgets import validate_model_budget
+        validate_model_budget(budget, self.execution_config)
         task_id, key = iteration['task_id'], 'candidate:' + candidate_id + ':' + request_key
         # Job receipts include actor. Bind it before preparation so changing actor
         # cannot dispatch twice against one budget reservation.
@@ -916,6 +924,8 @@ class IterationService:
 
     def cluster_run(self, candidate_id, cluster_id, *, budget, actor, request_key):
         """Dispatch parent and child on an independent frozen cluster selection."""
+        from .budgets import validate_model_budget
+        validate_model_budget(budget, self.execution_config)
         if self.iteration(self.candidate(candidate_id)['iteration_id'])['protocol'].get('budget'):
             return self.dispatch_run(candidate_id, 'node-cluster-run', budget=budget, actor=actor,
                                      request_key=request_key, cluster_id=cluster_id)
@@ -936,6 +946,8 @@ class IterationService:
 
     def fresh_run(self, candidate_id, *, budget, actor, request_key):
         """Claim one fresh batch and dispatch bounded parent/candidate repetitions."""
+        from .budgets import validate_model_budget
+        validate_model_budget(budget, self.execution_config)
         if self.iteration(self.candidate(candidate_id)['iteration_id'])['protocol'].get('budget'):
             return self.dispatch_run(candidate_id, 'node-fresh-run', budget=budget, actor=actor, request_key=request_key)
         from .splits import claim

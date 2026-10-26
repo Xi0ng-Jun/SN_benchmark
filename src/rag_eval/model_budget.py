@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+import tomllib
 import uuid
 
 RATES = {'qwen-turbo': (.30, 3.00), 'qwen-flash': (.15, 1.50), 'text-embedding-v4': (.50, 0),
@@ -20,6 +21,40 @@ CHAT_MODELS = frozenset({'qwen-turbo', 'qwen-flash'})
 # qwen-flash is priced per request by input-length tier; RATES carry the first
 # tier only. Input bytes bound tokens, so a byte bound inside the tier is safe.
 INPUT_TIER_LIMIT = {'qwen-flash': 131072}
+
+
+class ModelPricingError(ValueError):
+    """Public, credential-free diagnostic for a CNY policy's model config."""
+
+
+def check_priced_models(model_config):
+    """Check every bound chat/embedding/rerank model without loading SN or credentials."""
+    try:
+        with Path(model_config).open('rb') as stream:
+            config = tomllib.load(stream)
+    except (OSError, ValueError, TypeError):
+        raise ModelPricingError('Cannot read model config for limit_cny; provide a readable TOML model config '
+                                'or use an iteration max_case_runs budget without limit_cny') from None
+    services, bindings = config.get('services'), config.get('bindings')
+    invalid = 'Cannot resolve bound models from model config for limit_cny; check services/bindings or use max_case_runs'
+    if not isinstance(services, dict) or not isinstance(bindings, dict) or not bindings:
+        raise ModelPricingError(invalid)
+    from .runtime_model_identity import _MODEL, _SECRET
+    models = set()
+    for service_id in bindings.values():
+        service = services.get(service_id) if isinstance(service_id, str) else None
+        if not isinstance(service, dict) or service.get('kind') not in ('chat', 'embedding', 'rerank'):
+            raise ModelPricingError(invalid)
+        model = service.get('model')
+        # Reuse the public identity rules; never echo credentials, URLs or TOML parse errors.
+        if (not isinstance(model, str) or not _MODEL.fullmatch(model)
+                or '//' in model or '..' in model or _SECRET.search(model)):
+            raise ModelPricingError(invalid)
+        models.add(model)
+    unpriced = sorted(models - RATES.keys())
+    if unpriced:
+        raise ModelPricingError('limit_cny requires priced models; unpriced models: ' + ', '.join(unpriced)
+                                + '. Use an iteration max_case_runs budget and omit limit_cny from run requests')
 
 
 class BudgetStopped(KeyboardInterrupt):

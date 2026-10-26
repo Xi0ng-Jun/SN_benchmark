@@ -5,8 +5,12 @@ import { Copy } from '../ui';
 import { Mono, Section } from './parts';
 
 type Pool = { batch_id: string; selection_hash: string | null; n: number };
+type BudgetUsage = {
+  policy: { max_case_runs?: number; limit_cny?: number; max_runs_per_candidate: number } | null;
+  case_runs_used: number; charged_cny: number; actual_cny: number | null;
+};
 type Ledger = {
-  sampling_ledger: { k: number; verifier: string; seed_search_mean: number | null; S_B: number | null };
+  sampling_ledger: { k: number; verifier: string; seed_search_mean: number | null; S_B: number | null; budget_usage?: BudgetUsage | null };
   overfit_ledger: { n: number | null; n_eff: number | null; K: number | null; eta: number | null;
     expected_bias: number | null; pool: Pool[] | null; accepted: Array<{ candidate_id: string;
       validation: { delta: number | null; pool: Pool[] | null }; fresh: Array<{ batch_id: string;
@@ -21,9 +25,13 @@ const pool = (p: Pool[] | null) => p?.map(b => `${b.batch_id} (${b.n}, ${b.selec
 export function LedgerPanel({ iterationId, refresh }: { iterationId: string; refresh: number }) {
   const state = useResource<Ledger>(`/iterations/${iterationId}/ledger`, refresh);
   const data = state.data;
+  const budget = data?.sampling_ledger.budget_usage;
   return <Section title="三笔账" defaultOpen={false} testID="iteration-ledger">
     {state.error ? <Copy small>{state.error}</Copy> : !data ? <Copy small muted>正在读取账本…</Copy> : <View style={{ gap: 10 }}>
       <Copy small>采样：k = {data.sampling_ledger.k}；verifier = {data.sampling_ledger.verifier}；种子 search 均值 / S(B) = {num(data.sampling_ledger.S_B)}</Copy>
+      {budget?.policy && <Copy small>预算：题次 {num(budget.case_runs_used)} / {budget.policy.max_case_runs ?? '未设上限'}
+        {budget.policy.limit_cny !== undefined ? `；CNY 占用 ${num(budget.charged_cny)} / ${num(budget.policy.limit_cny)}（实测 ${num(budget.actual_cny)}）` : ''}
+        {`；每候选最多 ${budget.policy.max_runs_per_candidate} 次运行`}</Copy>}
       <Copy small>过拟合：n = {num(data.overfit_ledger.n)}；n_eff = {num(data.overfit_ledger.n_eff)}；K = {num(data.overfit_ledger.K)}；η = {num(data.overfit_ledger.eta)}；期望偏差 = {num(data.overfit_ledger.expected_bias)}</Copy>
       <Copy small muted>validation 池：{pool(data.overfit_ledger.pool)}</Copy>
       {data.overfit_ledger.accepted.map(row => <View key={row.candidate_id} style={{ gap: 4 }}>

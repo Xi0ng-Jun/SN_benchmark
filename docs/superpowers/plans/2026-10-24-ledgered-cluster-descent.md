@@ -104,6 +104,8 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   8. **记账**：更新三笔账与愿望清单，写轮次记录（选了哪些簇、每个候选的各阶段时间点与结果、verdict、各步耗时）。
   停机：`--rounds` 用尽、新鲜批次用尽、连续两轮无 accept、预算耗尽。
 
+  **8d 预算补充（2026-10-26）**：公司模型不在 `model_budget.RATES` 时，iteration 预算支持 `{max_case_runs, max_runs_per_candidate}`；`limit_cny` 可选，保留旧金额形式并支持混合额度，自动确认须满足全部上限。题次为全部预留 attempt 的 case_count 之和，父补跑、fresh、失败和 infra retry 均计入；结算不退题次。summary／账本／预算视图显示已用题次与额度，round 停机包含题次耗尽。创建 CNY iteration 或提交 CNY run 前读取实际模型配置，核对全部绑定 chat／embedding／rerank 价格；未知价格或配置不可读直接拒绝，错误指向题次形式。W8 仍只传 timeout_seconds，金额护栏留给已定价 DashScope 配置。服务器示例见 [轮次操作](../../product/sn-workbench/lcd-round-operator.md)。
+
   **可靠性要求**（来自本机 R1：WSL 崩溃时所有进程丢失，代理中途停住而没有任何人发现）：
   - round 的状态机持久化在 SQLite，每一步有确定的 request_key；进程或服务器重启后再次调用 `iteration round` 从上一个完成的步骤继续，已派发的执行与已创建的 Agent 不重复。
   - 编排在工作台服务内以后台任务运行，客户端断开不影响；有 HTTP 接口启动 / 查看 / 停止，CLI 是它的薄封装；进度可读（当前步骤、每个候选的状态、各步耗时）。
@@ -204,3 +206,13 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 解释与偏离：人工启动放在现有操作者 CLI，sn-eval 保持 Agent 角色边界；启动本身确认基准冷预算覆盖。m/v 部分不可测时仅对可测维度和 π 取最大值，两者未知才完全退化，null 不变零。合并使用 component=integration、无逐题预测／合同／簇的元数据卡，避免伪造 benchmark 预测；正常选择仍必须有合法簇合同。实现者已读原簇结果、自动重试后才产生新诊断时，由服务器刷新并单列原读凭据与刷新比较 ID，不伪造 Agent 已读新结果。重试重跑整份冻结 selection；发布 execution 前的源码捕获／配置异常只记失败，不猜测可安全重试。新鲜批次领取竞争失败保留原选择并报错，不自动换下一批。
 - 可靠性修复：合并派生复制请求参数后再补来源 metadata，避免重放冲突；持久 actor 避免服务器身份改变后重复建 Agent；iteration 分析作用域不再同时绑定 candidate。并发 fresh 扩大验证池时，gate 使用新确定键补测新增 scope，再核对同一不可变比较。fresh 入池须等有界重试全部终态，读取旧树快照也会在就绪屏障后重读两侧 attempt。原簇请求尚在准备剩余 attempt 时不冻结重试观察清单；超预算／人工确认／崩溃不覆盖前代 action 与结果。未知远端创建／发送保守 stalled，不重放；stop 停后续派发，已启动工作与预留保留。
 - 复审：三项中风险发现及修复引入的竞态已补回归、逐项复审关闭；最终无未解决高／中风险项。服务器真实模型吞吐与 Agent 行为尚未验收，不能由离线测试推断实验成功。W7 未开始。
+
+### W8d · 2026-10-26
+
+- [x] 公司模型无价格时的题次预算与 CNY 请求前置拒绝。
+- 提交：本条所在 `feat(workbench): support case-run budgets for unpriced models`（基线 W8c `bd9fb21`）。
+- 验证：最终按 RUNBOOK 使用现有 .venv、完整 DEEPEVAL 离线环境与 `-m pytest -q -rs -n 6`，**2702 passed / 7 skipped**（192.77 秒；6 条既有 Starlette 弃用警告）；Node **34 passed**；`npm --prefix apps/sn-workbench run typecheck` 通过。新增 33 项合成测试覆盖 count-only／混合额度、并发原子预留、自动确认／超额 pending、失败与重试不退题次、fresh 父子共同计数、round 停机、创建／请求／HTTP／CLI 的价格检查、不可读配置及已定价配置。未调用模型、创建真实 Agent、启动服务、访问真实 var/、改私有配置或 .venv，也未运行 SN 全套。
+- 实现：预算必须含正整数 max_runs_per_candidate，以及 max_case_runs（正整数）／limit_cny（正数）至少一种；混合形式逐项满足，旧金额形式有效。case_runs_used 从已有 reservation.case_count 累加，整组预留、失败保留、重试追加、同 attempt 去重与人工覆盖沿用原账本；金额结算不改变题次。轮次检查与预留共用额度判定，达到题次总额即预算耗尽。W8 派发仍只传 timeout_seconds。
+- 价格检查：model_budget.check_priced_models 只读取 TOML 的 services／bindings，按全部实际绑定的 chat／embedding／rerank 模型查 RATES，不使用展示用 model_names、不导入 SN、不读取凭据环境。通过 budgets.validate_model_budget 接到 iteration 创建、action request 登记／执行、候选运行、fresh／cluster／sealed 以及 Job spec；未知模型报名称并指向 max_case_runs，配置不可读／绑定不可解析明确拒绝，HTTP 与 Job CLI 返回可操作的 MODEL_PRICING_REJECTED。仅登记请求的 CLI 保留模型配置用于检查，但不因此开放执行。
+- 展示与取舍：iteration show 附加 budget_usage，四个顶层账本键不变，在 sampling_ledger 内附加 budget_usage，三笔账面板显示题次用量／上限及已配置 CNY 用量／上限。预算视图保持只读，避免 brief 的写事务内再开写事务；首次预留前直接读取冻结协议，旧记录无需迁移。count-only 继续保存原 CNY 估算字段以保留历史语义，但它不参与额度判断；actual 未知仍为 null，不补零。无功能范围偏离。
+- 既有测试调整：Notebook settings fixture 原来把 model.toml 写成不可解析的 `{}`；现在换成绑定已定价 chat／embedding／rerank 的最小 TOML，因为 CNY 前置校验必须读取真实绑定，不能再以占位文件通过。既有断言未放宽。操作文档已加入服务器 `{max_case_runs: 10000, max_runs_per_candidate: 100}` 示例及 DashScope 金额额度说明。

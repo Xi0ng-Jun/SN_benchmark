@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..model_budget import ModelPricingError
 from ..artifact_store import ArtifactStore
 from .evaluation_jobs import EvaluationJobStore, JobRejected
 from .job_execution import ExecutionRejected, JobExecutionStore
@@ -73,6 +74,8 @@ def build_execution_spec(store, task_id, job_id, preparation_id, execution_confi
     """Build argv solely from trusted server configuration and a receipt."""
     if not isinstance(execution_config, dict):
         raise ExecutionRejected('Job execution is not configured')
+    from .budgets import validate_model_budget
+    validate_model_budget(budget, execution_config)
     if execution_config.get('mode') == 'notebook':
         from .notebook_job import execution_spec
         return execution_spec(store, task_id, job_id, preparation_id, execution_config,
@@ -116,6 +119,9 @@ class JobAPI:
         try:
             self._scope(task_id)
             record = call()
+        except ModelPricingError as error:
+            return JSONResponse({'error': str(error), 'code': 'MODEL_PRICING_REJECTED',
+                                 'operation': operation, 'request_key': key}, status_code=422)
         except (Conflict, JobRejected, ExecutionRejected) as error:
             status = 409 if isinstance(error, Conflict) else 422
             return JSONResponse({'error': 'Job command rejected; check the original receipt and current record',

@@ -80,7 +80,7 @@ class RoundOperations:
 
     def _pending_budget_blocked(self, tree, requests):
         """Observe a frozen request footprint; a newly filed request is not exhaustion."""
-        from .budgets import BudgetLedger
+        from .budgets import BudgetLedger, exceeded_caps
         policy = tree['protocol'].get('budget')
         if not policy:
             return False
@@ -97,11 +97,8 @@ class RoundOperations:
                 missing = [step for step in json.loads(row[0]) if not conn.execute(
                     'SELECT 1 FROM iteration_budget_reservations WHERE iteration_id=? AND candidate_id=? AND request_key=?',
                     (tree['id'], step['candidate_id'], step['request_key'])).fetchone()]
-                if summary['charged_cny'] + sum(s['case_count'] * per_case for s in missing) > policy['limit_cny'] + 1e-12:
+                if exceeded_caps(policy, summary, missing, per_case):
                     return True
-                for cid in {s['candidate_id'] for s in missing}:
-                    if summary['runs_by_candidate'].get(cid, 0) + sum(s['candidate_id'] == cid for s in missing) > policy['max_runs_per_candidate']:
-                        return True
         return False
 
     def _tree(self, iteration_id):
@@ -109,7 +106,7 @@ class RoundOperations:
         return self.service.iteration(iteration_id)
 
     def describe(self, iteration_id):
-        from .budgets import BudgetLedger
+        from .budgets import BudgetLedger, exhausted
         tree = self._tree(iteration_id)
         self.api._write()
         protocol = tree.get('protocol') or {}
@@ -123,8 +120,8 @@ class RoundOperations:
         if not callable(getattr(getattr(self.sessions, 'bridge', None), 'call', None)):
             raise ValueError('Round Agent observation bridge must be configured')
         budget = BudgetLedger(self.repository).summary(iteration_id)
-        policy = budget.get('policy')
-        exhausted = bool(policy and budget['charged_cny'] >= policy['limit_cny'])
+        budget['policy'] = protocol.get('budget')
+        budget_exhausted = exhausted(budget)
         with self.repository.connect() as conn:
             completed = {r[0] for r in conn.execute('SELECT batch_id FROM iteration_fresh_batches '
                          'WHERE iteration_id=?', (iteration_id,))}
@@ -133,7 +130,7 @@ class RoundOperations:
                     k_base=protocol.get('k_base', 2),
                     evaluated_count=sum(c['state'] == 'evaluated' for c in tree['candidates']),
                     fresh_remaining=sum(b['batch_id'] not in completed for b in protocol.get('fresh_batches', [])),
-                    budget_exhausted=exhausted)
+                    budget_exhausted=budget_exhausted, budget_usage=budget)
 
     def measure(self, candidate_id, **kwargs):
         return self.measurements.measure(candidate_id, **kwargs)

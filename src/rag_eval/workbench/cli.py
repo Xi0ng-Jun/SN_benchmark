@@ -197,6 +197,7 @@ def main():
         result = WorkbenchRepository(args.state).save_review(reviewer=args.actor, **command)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command.startswith('job-'):
+        from ..model_budget import ModelPricingError
         from .evaluation_jobs import EvaluationJobStore, JobRejected
         from .job_execution import ExecutionRejected, JobExecutionStore
         from .repository import Conflict
@@ -235,6 +236,11 @@ def main():
                                          operation=args.operation)
         try:
             result = call()
+        except ModelPricingError as error:
+            print(json.dumps({'error': str(error), 'code': 'MODEL_PRICING_REJECTED',
+                              'operation': operation, 'request_key': getattr(args, 'request_key', None)}),
+                  file=sys.stderr)
+            raise SystemExit(2) from None
         except (Conflict, JobRejected, ExecutionRejected):
             print(json.dumps({'error': 'Job command rejected; check the original receipt and current record',
                               'code': 'JOB_COMMAND_REJECTED',

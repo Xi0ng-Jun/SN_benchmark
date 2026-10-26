@@ -15,8 +15,22 @@ def prepared(tmp_path):
 
 
 def settings(tmp_path, args):
-    for name in ('model.toml', 'requirements.txt', 'expectation.json'):
+    for name in ('requirements.txt', 'expectation.json'):
         (tmp_path / name).write_text('{}')
+    (tmp_path / 'model.toml').write_text('''[services.chat]
+kind = "chat"
+model = "qwen-flash"
+[services.embedding]
+kind = "embedding"
+model = "text-embedding-v4"
+[services.rerank]
+kind = "rerank"
+model = "qwen3-rerank"
+[bindings]
+ask_answer = "chat"
+chunk_embedding = "embedding"
+retrieval_rerank = "rerank"
+''')
     return dict(mode='notebook', output_root=str(tmp_path / 'executions'),
         artifact_root=str(args['artifact_store'].root), python=sys.executable,
         project_root=str(tmp_path / 'sn'), model_config=str(tmp_path / 'model.toml'),

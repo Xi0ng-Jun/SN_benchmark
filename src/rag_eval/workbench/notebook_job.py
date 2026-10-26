@@ -42,7 +42,10 @@ SUMMARY = 'official-summary.json'
 
 
 def validate_budget(budget, config):
-    return validate_execution_budget(budget, max_limit_cny=config.get('max_limit_cny', 10))
+    approved = validate_execution_budget(budget, max_limit_cny=config.get('max_limit_cny', 10))
+    from .budgets import validate_model_budget
+    validate_model_budget(approved, config)
+    return approved
 
 
 def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key, budget):

@@ -56,6 +56,7 @@ def iteration_service(repository, views, *, initialize=True):
             preparation_config=config.get('job_preparation'), execution_config=config.get('job_execution'),
             build_spec=build_execution_spec)
     return IterationService(repository, views._worktree_service, executions=JobExecutionStore(repository),
+                            execution_config=config.get('job_execution'),
                             admission=Admission(views), initialize=initialize)
 
 
@@ -239,7 +240,7 @@ class IterationTools:
         self.service = iteration_service(repository, views)
         self.views = views
         self.comparisons = ComparisonService(repository, self.service, views)
-        self.requests = ActionRequestStore(repository)
+        self.requests = ActionRequestStore(repository, execution_config=self.service.execution_config)
         self.task_id, self.role, self.actor = task_id, role, 'agent:' + role
         found = [i for i in self.service.iterations() if i['task_id'] == task_id]
         self.iteration_id = found[0]['id'] if found else None

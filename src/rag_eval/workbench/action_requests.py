@@ -90,8 +90,9 @@ def _record(row):
 
 
 class ActionRequestStore:
-    def __init__(self, repository):
+    def __init__(self, repository, *, execution_config=None):
         self.repository = repository
+        self.execution_config = execution_config
         initialize_action_requests(repository)
 
     def get(self, request_id):
@@ -114,6 +115,8 @@ class ActionRequestStore:
         """Record a pending request; an identical pending one is returned instead of duplicated."""
         needs_target = VERBS.get(verb, (None,))[0]
         params = normalize(verb, params)
+        from .budgets import validate_model_budget
+        validate_model_budget(params.get('budget') if verb == 'iteration-create' else params, self.execution_config)
         if needs_target != (target_id is not None):
             raise ValueError(f'{verb} {"needs" if needs_target else "takes no"} target candidate')
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 4000:
@@ -187,6 +190,9 @@ def _candidate_summary(view):
 def execute(service, record, *, workspace_id, actor, budget_override=False, human_confirmed=False):
     """Run a confirmed request through IterationService; returns a compact receipt."""
     verb, target, params, key = record['verb'], record['target_id'], record['params'], 'action:' + record['id']
+    from .budgets import validate_model_budget
+    validate_model_budget(params.get('budget') if verb == 'iteration-create' else params,
+                          getattr(service, 'execution_config', None))
     from .loop_measurements import execute_round_action
     round_result = execute_round_action(service, record, actor=actor, override=budget_override)
     if round_result is not None:
@@ -241,6 +247,8 @@ def auto_execute(service, record, *, workspace_id):
     if (record['status'] != 'pending' and not (record['status'] == 'confirmed' and record.get('decided_by') == 'budget')) or record['verb'] not in (
             'node-run', 'node-cluster-run', 'node-fresh-run', 'node-freeze'):
         return record
+    from .budgets import validate_model_budget
+    validate_model_budget(record['params'], getattr(service, 'execution_config', None))
     candidate = service.candidate(record['target_id'])
     tree = service.iteration(candidate['iteration_id'])
     if not tree['protocol'].get('budget'):
