@@ -616,6 +616,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
         resolved, models = resolve_models(Path(agent_config['judge_config']).resolve(), ['judge'])
     if model_config is not None:
         model_config = Path(model_config).resolve()
+        from .model_service_limits import check_preparation_workers
+        check_preparation_workers(preparation_workers, model_config)
     if dependency_requirements is not None:
         dependency_requirements = Path(dependency_requirements).resolve()
     generation_private_values = (*sensitive_strings([question.get('question') for question in product['questions']]),

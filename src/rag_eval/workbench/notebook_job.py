@@ -83,6 +83,11 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
     preparation_workers = config.get('preparation_workers', 1)
     if type(preparation_workers) is not int or not 1 <= preparation_workers <= 64:
         raise ExecutionRejected('Invalid preparation_workers setting')
+    from ..model_service_limits import check_preparation_workers
+    try:
+        check_preparation_workers(preparation_workers, config.get('model_config'))
+    except ValueError as exc:
+        raise ExecutionRejected(str(exc)) from None
     deadlines = {}
     for key in ('case_deadline_seconds', 'partition_deadline_seconds'):
         value = config.get(key)
