@@ -146,7 +146,7 @@ class _CandidateWorktreeView(TaskWorktreeService):
 
 
 EXECUTION_POLICY_KEYS = ('parallel', 'question_workers', 'preparation_workers', 'case_deadline_seconds',
-                         'partition_deadline_seconds')
+                         'partition_deadline_seconds', 'preparation_policy')
 
 
 def validate_execution_policy(policy):
@@ -156,6 +156,10 @@ def validate_execution_policy(policy):
     if type(policy) is not dict or not set(policy) <= set(EXECUTION_POLICY_KEYS):
         raise ValueError('execution accepts only ' + ', '.join(EXECUTION_POLICY_KEYS))
     for key, value in policy.items():
+        if key == 'preparation_policy':
+            from ..benchmark_runtime import validate_preparation_policy
+            validate_preparation_policy(value)
+            continue
         limit = {'parallel': 64, 'question_workers': 32, 'preparation_workers': 64}.get(key, 86400)
         if type(value) not in (int, float) or type(value) is bool or not 0 < value <= limit \
                 or (key in ('parallel', 'question_workers', 'preparation_workers') and type(value) is not int):
@@ -468,9 +472,11 @@ class IterationService:
                         gate_rule=dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90'))
         if budget is not None:
             protocol['budget'] = budget
-        if execution is not None:
-            # Scheduling only (parallelism, deadlines); never a comparison condition.
-            protocol['execution'] = execution
+        from ..benchmark_runtime import DEFAULT_PREPARATION_POLICY
+        frozen_execution = dict(execution or {})
+        frozen_execution.setdefault('preparation_policy', (self.execution_config or {}).get(
+            'preparation_policy', DEFAULT_PREPARATION_POLICY))
+        protocol['execution'] = validate_execution_policy(frozen_execution)
         project = self.trees.project_root
         common = str(Path(_text_git(project, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve())
         iteration_id, root_id, created = uid(), uid(), now()
@@ -889,8 +895,16 @@ class IterationService:
             ledger.attach(iteration['id'], candidate_id, request_key, prior['execution_id'])
             ledger.settle_execution(prior)
         with self.repository.connect(write=True) as conn:
-            conn.execute('UPDATE candidate_attempts SET execution_id=? WHERE candidate_id=? AND attempt=? '
+            attached = conn.execute('UPDATE candidate_attempts SET execution_id=? WHERE candidate_id=? AND attempt=? '
                          'AND execution_id IS NULL', (prior['execution_id'], candidate_id, attempt))
+            from ..benchmark_runtime import DEFAULT_PREPARATION_POLICY
+            server_policy = (self.execution_config or {}).get('preparation_policy', DEFAULT_PREPARATION_POLICY)
+            frozen_policy = (protocol.get('execution') or {}).get('preparation_policy')
+            if attached.rowcount and frozen_policy is not None and frozen_policy != server_policy:
+                self.repository._event(conn, task_id, 'candidate.execution.preparation_policy_override', candidate_id,
+                                       dict(execution_id=prior['execution_id'], attempt=attempt,
+                                            server_preparation_policy=server_policy,
+                                            preparation_policy=frozen_policy, source='iteration_protocol'))
         return self.candidate(candidate_id)
 
     def cluster_run(self, candidate_id, cluster_id, *, budget, actor, request_key):

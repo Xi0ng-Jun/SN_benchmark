@@ -549,7 +549,8 @@ def test_iteration_execution_policy_schedules_runs_without_entering_identity(env
     with pytest.raises(ValueError, match='execution.question_workers'):
         iteration(env, execution=dict(question_workers=1.5), request_key='bad-workers')
     tree = iteration(env, execution=dict(parallel=8, question_workers=4, case_deadline_seconds=300))
-    assert tree['protocol']['execution'] == dict(parallel=8, question_workers=4, case_deadline_seconds=300)
+    assert tree['protocol']['execution'] == dict(parallel=8, question_workers=4, case_deadline_seconds=300,
+                                                preparation_policy='per-source-metadata-v1')
     root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='scheduled')
     sent = payload(env, root)
     assert (sent['parallel'], sent['question_workers'], sent['case_deadline_seconds']) == (8, 4, 300)
@@ -562,3 +563,32 @@ def test_iteration_execution_policy_carries_preparation_workers(env):
     assert payload(env, root)['preparation_workers'] == 8
     with pytest.raises(ValueError, match='execution.preparation_workers'):
         iteration(env, execution=dict(preparation_workers=0), request_key='prep-bad')
+
+
+def test_preparation_policy_freezes_server_default_and_discloses_override(env):
+    service = env['service']
+    service.execution_config['preparation_policy'] = 'deferred-notebook-metadata-v1'
+    tree = iteration(env)
+    assert tree['protocol']['execution']['preparation_policy'] == 'deferred-notebook-metadata-v1'
+    service.execution_config['preparation_policy'] = 'per-source-metadata-v1'
+    assert iteration(env)['id'] == tree['id']
+    root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='override')
+    assert payload(env, root)['preparation_policy'] == 'deferred-notebook-metadata-v1'
+    with env['repo'].connect() as conn:
+        rows = conn.execute("SELECT * FROM history WHERE kind='candidate.execution.preparation_policy_override'").fetchall()
+    assert len(rows) == 1
+    assert root['attempts'][0]['execution_id'] in rows[0]['content']
+
+
+def test_explicit_preparation_policy_and_legacy_missing_key(env):
+    service = env['service']
+    tree = iteration(env, execution=dict(preparation_policy='deferred-notebook-metadata-v1'))
+    assert tree['protocol']['execution']['preparation_policy'] == 'deferred-notebook-metadata-v1'
+    with env['repo'].connect(write=True) as conn:
+        protocol = dict(tree['protocol'])
+        protocol.pop('execution')
+        conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(protocol), tree['id']))
+    root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='legacy')
+    assert payload(env, root)['preparation_policy'] == 'per-source-metadata-v1'
+    with pytest.raises(ValueError, match='Unknown preparation policy'):
+        iteration(env, execution=dict(preparation_policy='invalid'), request_key='invalid-policy')
