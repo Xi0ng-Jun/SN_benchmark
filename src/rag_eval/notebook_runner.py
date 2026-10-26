@@ -186,6 +186,27 @@ def _publish_preparation(cache, key, material, receipt, run, lock):
     save_json(run / 'preparation-cache.json', dict(receipt, store=stored))
 
 
+def _check_preparation(run, cell, notebook):
+    """Record preparation diagnostics; return failure fields when infrastructure failed.
+
+    A notebook prepared while model calls were refused, rate-limited or timed
+    out carries SN's fallback summaries instead of the system's work. It is
+    marked not prepared (so no cache entry, seed or retry reuses it).
+    """
+    from .preparation_diagnostics import preparation_diagnostics
+    diagnostics = preparation_diagnostics(run, notebook)
+    save_json(run / 'preparation-diagnostics.json', diagnostics)
+    infrastructure = diagnostics['infrastructure_errors']
+    if not infrastructure:
+        return None
+    state = json.loads((cell / 'state.json').read_text(encoding='utf-8'))
+    state.update(prepared=False, preparation_infrastructure_errors=infrastructure)
+    save_json(cell / 'state.json', state)
+    counts = ', '.join(f'{name} x{count}' for name, count in infrastructure.items())
+    return dict(error_type='PreparationInfrastructureError', failed_phase='importing',
+                error_message='Model calls failed for infrastructure reasons during preparation: ' + counts)
+
+
 def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=None, session_factory=None,
                 qasper_catalogues=None, hotpot_evidence=False, multihop_retrieval=False,
                 diagnostic_sensitive_values=(), reasoning_protocol='reasoning-v1',
@@ -197,6 +218,7 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
     from .usage_capture import capture_usage
     from app.core.llm_logging import LLMInteractionLogger
     cell = run / 'product-artifacts'
+    preparation_failure = None
     if prepared_seed is not None:
         notebook, mapping = load_prepared_notebook(cell, product['documents'], preparation_policy=preparation_policy)
         save_json(run / 'preparation-usage.json', {})
@@ -211,8 +233,9 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                                                         if preparation_workers != 1 else {}))
         finally:
             save_json(run / 'preparation-usage.json', usage)
-        if after_preparation is not None:
-            after_preparation()
+        preparation_failure = _check_preparation(run, cell, notebook)
+        if preparation_failure is None and after_preparation is not None:
+            after_preparation()  # publishing a degraded notebook to the cache is never allowed
     selected = {case['case_id']: case for case in cases}
     documents = {document['id']: document for document in product['documents']}
     questions = [question for question in product['questions'] if question['case_id'] in selected]
@@ -280,6 +303,16 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
                          reason=record.get('reason'), behavior=record.get('behavior'), trace=record.get('trace')))
             attempts(dict(event='finished', case_id=question['case_id'], mode=mode, status=record['status']))
             return record
+
+        if preparation_failure is not None:
+            # No question is asked of a notebook prepared under infrastructure
+            # failures; every case is an infrastructure error, not a low score.
+            for question in questions:
+                attempts(dict(event='started', case_id=question['case_id'], mode=mode))
+                persist(question, complete(question, dict(question, status='error', answer='', response={},
+                                                          reason='preparation infrastructure failure',
+                                                          **preparation_failure)))
+            return
 
         # Observation captures that patch shared objects and native Agent
         # sessions are not safe to interleave, and an abandoned call cannot be
