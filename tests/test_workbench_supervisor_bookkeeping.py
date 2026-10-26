@@ -42,9 +42,9 @@ def test_busy_finish_is_retried_and_execution_reaches_terminal(tmp_path, monkeyp
     assert calls['finish'] == 4
     assert sleeps == [1.0, 2.0, 4.0]  # exponential backoff
     kinds = [kind for kind, _ in history(repo, started['execution_id'])]
-    assert kinds == ['job.execution_started', 'execution.finish_failed', 'execution.finish_failed',
+    assert kinds == ['job.execution_started', 'job.execution_process', 'execution.finish_failed', 'execution.finish_failed',
                      'execution.finish_failed', 'job.execution_finished']
-    failure = history(repo, started['execution_id'])[1][1]
+    failure = history(repo, started['execution_id'])[2][1]
     assert failure['error_type'] == 'OperationalError' and failure['attempt'] == 1
     assert failure['process_exited_at'] <= finished['finished_at']
     record = json.loads((Path(started['run_dir']) / 'execution-record.json').read_text())
@@ -69,7 +69,7 @@ def test_unlogged_failures_land_with_the_terminal_record(tmp_path, monkeypatch):
                         execution_spec=spec(tmp_path), actor='alice', request_key='run')
     assert wait_terminal(store, task['id'], started['execution_id'])['terminal']
     events = history(repo, started['execution_id'])
-    assert [kind for kind, _ in events] == ['job.execution_started', 'execution.finish_failed',
+    assert [kind for kind, _ in events] == ['job.execution_started', 'job.execution_process', 'execution.finish_failed',
                                            'execution.finish_failed', 'job.execution_finished']
     assert [content['attempt'] for kind, content in events if kind == 'execution.finish_failed'] == [1, 2]
 

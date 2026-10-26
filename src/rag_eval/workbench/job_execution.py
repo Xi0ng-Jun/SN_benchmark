@@ -8,6 +8,7 @@ HTTP input is never treated as an executable command.
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import time
 from .evaluation_jobs import _text, _version
 from ..execution_diagnostics import exception_details, sanitize_diagnostic
 from .repository import Conflict, UnknownIdentity, now, uid
+from .execution_recovery import claim_supervisor, completed_state, process_identity, RecoveredProcess
 
 
 FORMAT = 'sn-workbench-job-execution-v1'
@@ -92,6 +94,124 @@ class JobExecutionStore:
 
     def __init__(self, repository):
         self.repository = repository
+        self._supervisors = {}
+
+    def _claim_supervisor(self, execution_id):
+        with self._lock:
+            if execution_id in self._supervisors:
+                return False
+            handle = claim_supervisor(self.repository.root, execution_id)
+            if handle is None:
+                return False
+            self._supervisors[execution_id] = handle
+            return True
+
+    def _release_supervisor(self, execution_id):
+        with self._lock:
+            handle = self._supervisors.pop(execution_id, None)
+            if handle is not None:
+                handle.close()
+
+    def recover(self, *, execution_id=None):
+        """Claim orphaned executions without competing with a live supervisor.
+
+        Locks cover launch through settlement. A crash before launch identity
+        persistence cannot be distinguished from a child that never started;
+        those legacy/ambiguous records are conservatively execution_lost.
+        """
+        with self.repository.connect() as conn:
+            rows = conn.execute("SELECT task_id,object_id FROM history "
+                                "WHERE kind='job.execution_started' "
+                                "AND (? IS NULL OR object_id=?) ORDER BY seq",
+                                (execution_id, execution_id)).fetchall()
+        for row in rows:
+            with self.repository.connect() as conn:
+                record = self._read(conn, row['task_id'], row['object_id'])
+            if ((record['terminal'] and record['state'] != 'cancelled')
+                    or not self._claim_supervisor(record['execution_id'])):
+                continue
+            try:
+                with self.repository.connect() as conn:
+                    record = self._read(conn, row['task_id'], row['object_id'])
+                    saved = conn.execute("SELECT content FROM history WHERE object_id=? "
+                                         "AND kind='job.execution_process' ORDER BY seq DESC LIMIT 1",
+                                         (record['execution_id'],)).fetchone()
+                if record['terminal'] and record['state'] != 'cancelled':
+                    self._release_supervisor(record['execution_id'])
+                    continue
+                metadata = json.loads(saved['content']) if saved else {}
+                identity = metadata.get('process_identity') if (
+                    isinstance(metadata, dict) and metadata.get('execution_id') == record['execution_id']
+                    and metadata.get('run_dir') == record['run_dir']) else None
+                process = RecoveredProcess.attach(identity)
+                if process is not None:
+                    with self._lock:
+                        self._processes[record['execution_id']] = process
+                threading.Thread(target=self._watch_recovered, args=(record, identity, process),
+                                 daemon=True).start()
+            except BaseException:
+                self._release_supervisor(record['execution_id'])
+                raise
+
+    def _watch_recovered(self, record, identity, process):
+        execution_id = record['execution_id']
+        try:
+            if record['state'] == 'cancelled':
+                # The durable cancellation intent can precede physical stop.
+                # A restart must finish it without publishing a new outcome.
+                if process is not None:
+                    if process.signal_group(15):
+                        process.stop_after_grace()
+                    process.wait()
+                self._settle_budget(record)
+                try:
+                    self._write_record_file(record)
+                except OSError:
+                    pass
+                return
+            if process is not None:
+                elapsed = (datetime.now(timezone.utc)
+                           - datetime.fromisoformat(record['started_at'])).total_seconds()
+                remaining = max(0, record['budget']['timeout_seconds'] - elapsed)
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    if process.signal_group(15):
+                        process.stop_after_grace()
+                    process.wait()
+                    self._settle(record, now(), lambda failures: self._finish(
+                        execution_id, state='timeout', exit_code=None, error_type='timeout', run_state=None,
+                        finish_failures=failures))
+                    return
+            parent = Path(record['run_dir']).parent
+            try:
+                self._finalize_logs(record['run_dir'], parent / (Path(record['run_dir']).name + '.stdout.log'),
+                                    parent / (Path(record['run_dir']).name + '.stderr.log'))
+            except OSError:
+                # Runtime artifacts can be unavailable after a crash. SQLite
+                # still needs its terminal record and reservation settlement.
+                pass
+            self._settle(record, now(), lambda failures: self._finish_recovered(record, identity, failures))
+        finally:
+            with self._lock:
+                self._processes.pop(execution_id, None)
+            if process is not None:
+                process.close()
+            self._release_supervisor(execution_id)
+
+    def _finish_recovered(self, record, identity, failures):
+        state = completed_state(record, identity)
+        if state is not None:
+            successful = state['phase'] == 'finished'
+            self._finish(record['execution_id'], state='finished' if successful else 'failed',
+                         exit_code=None, error_type=None if successful else 'recovered_failure',
+                         run_state=state, finish_failures=failures)
+        else:
+            self._finish(record['execution_id'], state='failed', exit_code=None,
+                         error_type='execution_lost', run_state=dict(
+                             phase='failed', failed_phase='supervising', error_type='execution_lost',
+                             error_message='Execution supervision was lost; no trustworthy terminal outcome is available'),
+                         finish_failures=failures)
 
     def _workspace(self, conn, task_id):
         try:
@@ -171,53 +291,67 @@ class JobExecutionStore:
                        execution_spec=raw_spec, actor=actor)
         scope = 'job.run:' + task_id + ':' + actor
         repo = self.repository
-        with repo.connect(write=True) as conn:
-            self._workspace(conn, task_id)
-            prior = repo._prior(conn, scope, request_key, payload)
-            if prior is not None:
-                return _closed(prior)
-            spec = _validate_spec(raw_spec)
-            job_row = conn.execute('SELECT record FROM jobs WHERE id=? AND task_id=?',
-                                   (job_id, task_id)).fetchone()
-            if job_row is None:
-                raise ExecutionRejected('Unknown execution Job identity')
-            job = json.loads(job_row['record'])
-            from .sealed import _CAPABILITY
-            if _sealed_capability is not _CAPABILITY:
-                from .splits import Policy
-                policy = Policy(repo, task_id)
-                for cid in job['plan_snapshot']['content']['selection']['case_ids']:
-                    policy.refuse_sealed(cid)
-            if job.get('state') != 'not_dispatched' or job.get('state_version') != expected_state_version:
-                raise Conflict('Job changed before execution')
-            prepared = conn.execute("SELECT content FROM history WHERE task_id=? AND object_id=? "
-                                    "AND kind='job.inputs_source_captured' ORDER BY seq DESC",
-                                    (task_id, job_id)).fetchall()
-            if not any(json.loads(row['content']).get('preparation', {}).get('preparation_id') ==
-                       spec['preparation_id'] for row in prepared):
-                raise ExecutionRejected('Verified preparation is required')
-            latest = {}
-            for row in conn.execute("SELECT object_id,content FROM history WHERE task_id=? "
-                                    "AND kind IN ('job.execution_started','job.execution_finished',"
-                                    "'job.execution_cancelled') ORDER BY seq", (task_id,)):
-                latest[row['object_id']] = json.loads(row['content'])
-            existing = any(value.get('job_id') == job_id for value in latest.values())
-            if existing:
-                raise Conflict('Job already has an execution; prepare a new Job to rerun')
-            record = dict(format=FORMAT, execution_id=uid(), job_id=job_id, task_id=task_id,
-                          state='running', terminal=False, argv=spec['argv'], run_dir=spec['run_dir'],
-                          budget=spec['budget'], preparation_id=spec['preparation_id'],
-                          started_at=now(), finished_at=None, cancelled_at=None, exit_code=None,
-                          run_state=None, error_type=None)
-            _closed(record)
-            repo._event(conn, task_id, 'job.execution_started', record['execution_id'], record)
-            repo._receipt(conn, scope, request_key, payload, record)
+        claimed_execution = None
+        try:
+            with repo.connect(write=True) as conn:
+                self._workspace(conn, task_id)
+                prior = repo._prior(conn, scope, request_key, payload)
+                if prior is not None:
+                    return _closed(prior)
+                spec = _validate_spec(raw_spec)
+                job_row = conn.execute('SELECT record FROM jobs WHERE id=? AND task_id=?',
+                                       (job_id, task_id)).fetchone()
+                if job_row is None:
+                    raise ExecutionRejected('Unknown execution Job identity')
+                job = json.loads(job_row['record'])
+                from .sealed import _CAPABILITY
+                if _sealed_capability is not _CAPABILITY:
+                    from .splits import Policy
+                    policy = Policy(repo, task_id)
+                    for cid in job['plan_snapshot']['content']['selection']['case_ids']:
+                        policy.refuse_sealed(cid)
+                if job.get('state') != 'not_dispatched' or job.get('state_version') != expected_state_version:
+                    raise Conflict('Job changed before execution')
+                prepared = conn.execute("SELECT content FROM history WHERE task_id=? AND object_id=? "
+                                        "AND kind='job.inputs_source_captured' ORDER BY seq DESC",
+                                        (task_id, job_id)).fetchall()
+                if not any(json.loads(row['content']).get('preparation', {}).get('preparation_id') ==
+                           spec['preparation_id'] for row in prepared):
+                    raise ExecutionRejected('Verified preparation is required')
+                latest = {}
+                for row in conn.execute("SELECT object_id,content FROM history WHERE task_id=? "
+                                        "AND kind IN ('job.execution_started','job.execution_finished',"
+                                        "'job.execution_cancelled') ORDER BY seq", (task_id,)):
+                    latest[row['object_id']] = json.loads(row['content'])
+                existing = any(value.get('job_id') == job_id for value in latest.values())
+                if existing:
+                    raise Conflict('Job already has an execution; prepare a new Job to rerun')
+                record = dict(format=FORMAT, execution_id=uid(), job_id=job_id, task_id=task_id,
+                              state='running', terminal=False, argv=spec['argv'], run_dir=spec['run_dir'],
+                              budget=spec['budget'], preparation_id=spec['preparation_id'],
+                              started_at=now(), finished_at=None, cancelled_at=None, exit_code=None,
+                              run_state=None, error_type=None)
+                _closed(record)
+                if not self._claim_supervisor(record['execution_id']):
+                    raise Conflict('Execution already has a live supervisor')
+                claimed_execution = record['execution_id']
+                repo._event(conn, task_id, 'job.execution_started', record['execution_id'], record)
+                repo._receipt(conn, scope, request_key, payload, record)
+        except BaseException:
+            if claimed_execution is not None:
+                self._release_supervisor(claimed_execution)
+            raise
         try:
             self._start(record)
         except BaseException as exc:
             details = exception_details(exc, phase='launching')
-            self._finish(record['execution_id'], state='failed', exit_code=None,
-                         error_type=type(exc).__name__, run_state=dict(phase='failed', **details))
+            try:
+                self._settle(record, now(), lambda failures: self._finish(
+                    record['execution_id'], state='failed', exit_code=None,
+                    error_type=type(exc).__name__, run_state=dict(phase='failed', **details),
+                    finish_failures=failures))
+            finally:
+                self._release_supervisor(record['execution_id'])
             return self.get(task_id, record['execution_id'])
         return record
 
@@ -240,6 +374,23 @@ class JobExecutionStore:
         except BaseException:
             stdout.close(); stderr.close()
             raise
+        try:
+            # An immediately exited child remains an unreaped zombie here;
+            # its kernel start identity still proves this particular launch.
+            identity = process_identity(process.pid, allow_exited=True)
+            with self.repository.connect(write=True) as conn:
+                self.repository._event(conn, record['task_id'], 'job.execution_process', record['execution_id'],
+                                       dict(execution_id=record['execution_id'], run_dir=record['run_dir'],
+                                            process_identity=identity))
+        except BaseException:
+            try:
+                os.killpg(process.pid, 15)
+            except ProcessLookupError:
+                pass
+            self._stop_after_grace(process)
+            process.wait()
+            stdout.close(); stderr.close()
+            raise
         with self._lock:
             self._processes[record['execution_id']] = process
         thread = threading.Thread(target=self._watch,
@@ -260,6 +411,8 @@ class JobExecutionStore:
     @staticmethod
     def _finalize_logs(run_dir, stdout_path, stderr_path):
         run = Path(run_dir)
+        if run.is_symlink():
+            raise OSError('Execution run directory cannot be a symlink')
         run.mkdir(parents=True, exist_ok=True, mode=0o700)
         for source, name in ((stdout_path, 'stdout.log'), (stderr_path, 'stderr.log')):
             try:
@@ -268,6 +421,14 @@ class JobExecutionStore:
                 pass
 
     def _watch(self, record, process, stdout, stderr, stdout_path, stderr_path):
+        try:
+            self._watch_process(record, process, stdout, stderr, stdout_path, stderr_path)
+        finally:
+            with self._lock:
+                self._processes.pop(record['execution_id'], None)
+            self._release_supervisor(record['execution_id'])
+
+    def _watch_process(self, record, process, stdout, stderr, stdout_path, stderr_path):
         execution_id = record['execution_id']
         timed_out = False
         try:
@@ -287,15 +448,19 @@ class JobExecutionStore:
         finally:
             stdout.close(); stderr.close()
         exited_at = now()
-        self._finalize_logs(record['run_dir'], stdout_path, stderr_path)
-        with self._lock:
-            self._processes.pop(execution_id, None)
-        if timed_out:
-            self._settle(record, exited_at, lambda failures: self._finish(
-                execution_id, state='timeout', exit_code=None, error_type='timeout', run_state=None,
-                finish_failures=failures))
-            return
-        self._settle(record, exited_at, lambda failures: self._finish_exited(execution_id, code, failures))
+        def finish(failures):
+            try:
+                self._finalize_logs(record['run_dir'], stdout_path, stderr_path)
+            except OSError:
+                # The original sibling log files remain available. Moving
+                # them cannot block authoritative terminal publication.
+                pass
+            if timed_out:
+                self._finish(execution_id, state='timeout', exit_code=None, error_type='timeout', run_state=None,
+                             finish_failures=failures)
+            else:
+                self._finish_exited(execution_id, code, failures)
+        self._settle(record, exited_at, finish)
 
     # Terminal bookkeeping retries while SQLite is busy or briefly unavailable.
     # Waits double up to a cap, so contention lasting well over a minute is
@@ -405,13 +570,14 @@ class JobExecutionStore:
         with self.repository.connect(write=True) as conn:
             prior = self.repository._prior(conn, scope, request_key, payload)
             if prior is not None:
-                return _closed(prior)
-            current = self._read(conn, task_id, execution_id)
-            if not current['terminal']:
-                current.update(state='cancelled', terminal=True, cancelled_at=now(), finished_at=now())
-                _closed(current)
-                self.repository._event(conn, task_id, 'job.execution_cancelled', execution_id, current)
-            self.repository._receipt(conn, scope, request_key, payload, current)
+                current = _closed(prior)
+            else:
+                current = self._read(conn, task_id, execution_id)
+                if not current['terminal']:
+                    current.update(state='cancelled', terminal=True, cancelled_at=now(), finished_at=now())
+                    _closed(current)
+                    self.repository._event(conn, task_id, 'job.execution_cancelled', execution_id, current)
+                self.repository._receipt(conn, scope, request_key, payload, current)
         self._settle_budget(current)
         try:
             self._write_record_file(current)
@@ -419,12 +585,20 @@ class JobExecutionStore:
             pass
         with self._lock:
             process = self._processes.get(execution_id)
+        if process is None and current['state'] == 'cancelled':
+            # Idempotent receipt replay must also retry the physical effect.
+            # An existing supervisor's flock prevents competing ownership.
+            self.recover(execution_id=execution_id)
         if process is not None and process.poll() is None:
-            try:
-                os.killpg(process.pid, 15)
-            except ProcessLookupError:
-                pass
-            threading.Thread(target=self._stop_after_grace, args=(process,), daemon=True).start()
+            if isinstance(process, RecoveredProcess):
+                if process.signal_group(15):
+                    threading.Thread(target=process.stop_after_grace, daemon=True).start()
+            else:
+                try:
+                    os.killpg(process.pid, 15)
+                except ProcessLookupError:
+                    pass
+                threading.Thread(target=self._stop_after_grace, args=(process,), daemon=True).start()
         return current
 
     def _settle_budget(self, record):

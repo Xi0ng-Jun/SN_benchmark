@@ -216,3 +216,12 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 价格检查：model_budget.check_priced_models 只读取 TOML 的 services／bindings，按全部实际绑定的 chat／embedding／rerank 模型查 RATES，不使用展示用 model_names、不导入 SN、不读取凭据环境。通过 budgets.validate_model_budget 接到 iteration 创建、action request 登记／执行、候选运行、fresh／cluster／sealed 以及 Job spec；未知模型报名称并指向 max_case_runs，配置不可读／绑定不可解析明确拒绝，HTTP 与 Job CLI 返回可操作的 MODEL_PRICING_REJECTED。仅登记请求的 CLI 保留模型配置用于检查，但不因此开放执行。
 - 展示与取舍：iteration show 附加 budget_usage，四个顶层账本键不变，在 sampling_ledger 内附加 budget_usage，三笔账面板显示题次用量／上限及已配置 CNY 用量／上限。预算视图保持只读，避免 brief 的写事务内再开写事务；首次预留前直接读取冻结协议，旧记录无需迁移。count-only 继续保存原 CNY 估算字段以保留历史语义，但它不参与额度判断；actual 未知仍为 null，不补零。无功能范围偏离。
 - 既有测试调整：Notebook settings fixture 原来把 model.toml 写成不可解析的 `{}`；现在换成绑定已定价 chat／embedding／rerank 的最小 TOML，因为 CNY 前置校验必须读取真实绑定，不能再以占位文件通过。既有断言未放宽。操作文档已加入服务器 `{max_case_runs: 10000, max_runs_per_candidate: 100}` 示例及 DashScope 金额额度说明。
+
+### W8e · 2026-10-26 · 执行恢复
+
+- [x] 审查项 1：重启恢复、lost 基础设施结果、费用结算；补充修复取消写入后／发信号前崩溃、启动事务回滚的 supervisor 锁泄漏。
+- 提交：本条所在 `fix(workbench): recover execution supervision after restart`（起点 W8d `547c01a`）；轮次状态机与预算语义另提交。
+- 验证：按 RUNBOOK 使用现有 .venv、完整 DEEPEVAL 环境与 `-m pytest -q -rs -n 6`，全套 **2755 passed / 7 skipped**（190.16 秒；含同时准备的后续 W8e 合成测试），Node **34 passed**；无 UI 改动。定向执行／恢复／结算套件 48 passed。全部使用临时目录、合成执行或本地无模型 sleep 子进程；未启动真实服务／Agent、访问真实 var/、修改 .venv 或推送。
+- 实现：服务 lifespan 在 round manager 前恢复 execution；追加进程来源事件和跨进程 flock，用 boot／PID start ticks／session＋pidfd 证明接管身份，不能证明则发布 failed／execution_lost，经原终态重试与预算结算入口处理；取消的物理终止可恢复，记录不改写。
+- 解释与偏离：lost 用既有 closed v1 格式的 `state=failed, error_type=execution_lost` 表达，避免新增状态破坏旧消费者；无法恢复的 exit_code 保持 null。历史 failed attempt 仍占原始槽位，但不得满足准入 k_base，后续编排按原槽位追加有界重试，避免新 invocation 制造无限补跑。无法证明存活的旧进程不发信号。
+- 既有测试调整：supervisor bookkeeping 的两处事件序列及一个事件索引加入新的 `job.execution_process` 来源事件；原终态、失败证据与预算断言不放宽。

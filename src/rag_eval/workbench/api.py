@@ -226,6 +226,7 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
 
     @asynccontextmanager
     async def lifespan(app):
+        job_api.execution.recover()
         round_manager.start()
         try:
             yield
