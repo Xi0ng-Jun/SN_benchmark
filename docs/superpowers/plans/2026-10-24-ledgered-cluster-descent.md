@@ -87,9 +87,31 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
   sampling：k = 1、verifier none、种子 search 均值、S(B) = 种子。overfit：n、n_eff、K（在 validation 池上比较过的不同 frozen_commit 数）、期望偏差 = η·sqrt(2 ln K)、每个 accept 候选的 validation Δ 与 fresh Δ 按 batch 对齐（validation 池随并入批次增长，比较时注明池的组成）、配对观测偏差。structure：各簇状态由后续证据派生（有 accept 候选且该候选在簇成员上 ρ ≥ τ → resolved，否则 open；不改冻结成员）、每笔合同的 ρ 与 verdict、audit 数、愿望清单（open 簇，附 q/m/v）。`sealed_score` 只在人显式调用 `iteration sealed-run` 时填：需要独立的可信授权（`job_preparation.sealed_selections` 登记加人工确认），领取持久化且一次性，用后任何再次调用都拒绝；UI 在调用前提示"整个研究只此一次"。
   测试：从合成的比较记录与簇算出的账本键齐全、数字可手算；sealed 未触发时为 null，触发一次后第二次被拒。
 
-- [ ] 8. **闭环编排**（`iteration round`，`loop.py`）。
-  一条命令跑一轮：确保当前基准有 k_base 次 attempt → 记账人重扫全部簇、按 |C|·(1−q)·max(m, v, π) 排序取前 b 个未解决簇 → 每簇派生一个候选并创建实现者 Agent（带簇证据）→ 实现者的 freeze / cluster-run / run 在预算内自动执行 → 门判定 → 通过 Ladder 的候选做 fresh-run 确认 → accept 的候选按 `integrated_from` 合并派生一个新候选并重测（干扰检查）→ 更新账本、愿望清单，写轮次记录。停机：新鲜批次用尽、连续两轮无 accept、预算耗尽。人只在创建迭代时批预算，之后读审计与愿望清单。
-  测试：用假 Creator 与合成执行走完一轮的状态机；停机三条件；预算耗尽时已评测的记录完整。
+- [ ] 8. **闭环编排**（`iteration round`，`loop.py`）。2026-10-26 按本机 R1-mini 的经验重写（见 `docs/experiments/2026-10-26-lcd-r1-mini.md` 的运行记录）。实验改在评测服务器上跑，模型服务由公司提供，**花费不是约束，墙钟是**：凡能并行的都并行，凡能自动的都自动，人只在创建迭代（批预算、批本轮设置）和事后读审计时出现。
+
+  **8a 前置：准备策略冻结进协议。**`preparation_policy` 现在是服务器级 `job_execution` 设置，迭代中途改了不会被发现。把它加进 `EXECUTION_POLICY_KEYS`，创建 iteration 时冻结（缺省取服务器值并写入协议），执行时以协议为准；与服务器值不同时以协议为准并在执行记录里注明。准备缓存键已含该策略，不变。测试：冻结、覆盖、旧 iteration 无该键时的兼容。
+
+  **8b 前置：配置检查核对解释器。**本机第一次 smoke 在初始化阶段失败（`Selected interpreter executable does not match invocation`），而 `configure_workbench_server.py check` 显示通过。让 check（不需要 `--execution`）比较 `job_execution.python` 与 `runtime_expectation` 的 interpreter executable / prefix，不一致时报错并给出两个路径。测试：一致通过、不一致报错。
+
+  **8c 编排本体。**`iteration round ITERATION [--rounds N]` 跑一轮或多轮；每轮的步骤与要求：
+  1. **基准测量**：当前基准（第 1 轮是 C0，之后是上一轮 accept 的候选或其合并）在 search ∪ validation 上补足 k_base 次准入 attempt，所有缺的 attempt 一次并行派发（准备缓存按键加锁，每题只导入一次）。启动 round 的人即视为确认了这次派发（冷启动预留超出冻结预算时走 override，记录 actor 与原因），不再单独挂起等人。
+  2. **分析与提簇**：创建分析 Agent（profile 取迭代设置，缺省 `pi-flash`）。只有一个已评测候选时绑定基准候选，两个及以上时 `scope = iteration`。发给它的任务由服务器生成：读 search 题、提 ≤ `max_clusters`（缺省 6）个机械簇、为排名前 b 的簇各起草一张带 `contract` 的卡。**分析 brief 补全**提簇所需的一切（`cluster propose` 用法、签名算子与字段白名单、`missing_signature` / `violation_signature`、写入即冻结、合同格式、predicted_flips ⊆ 成员且与 guards 不重叠、排序公式），不再依赖人在消息里补。
+  3. **选择**：记账人重扫全部簇，按 |C|·(1−q)·max(m, v, π) 排序（π 缺省 0.3；m、v 不可测时为 null，不当作 0，排序记录里注明退化为 |C|·(1−q)·π），取前 b 个（缺省 2）未解决且有合法卡片草稿的簇。卡片批准方式是迭代设置 `card_approval: auto | manual`，缺省 auto（泄漏扫描、合同校验照旧）；manual 时本步停在待批状态，人批准后 round 自动继续。
+  4. **实现（各候选并行）**：每张卡派生一个候选、创建实现 Agent。**实现 brief 写明 LCD 顺序**：实现 → 只跑与改动相关的 SN 测试 → leak-check → `node freeze` → `node cluster-run` → 读 `cluster result` → `node run --attempts k_base`；这些请求在预算内自动执行。各候选之间不互相等待。
+  5. **门**：候选在 validation 上有 k_base 次准入 attempt 后自动做合同核对，写入 verdict（W2 已有）。
+  6. **新鲜确认**：accept 的候选自动 fresh-run，结果写入账本。
+  7. **合并**：两个及以上 accept 时按 `integrated_from` 派生合并候选，创建一个实现 Agent 只做合并（解决同一文件 / 同一提示片段的冲突，不加新改动），跑 k_base 次；合并候选在 validation 上低于基准减 η 则撤回，否则成为下一轮基准。只有一个 accept 时它就是下一轮基准；没有 accept 时基准不变。
+  8. **记账**：更新三笔账与愿望清单，写轮次记录（选了哪些簇、每个候选的各阶段时间点与结果、verdict、各步耗时）。
+  停机：`--rounds` 用尽、新鲜批次用尽、连续两轮无 accept、预算耗尽。
+
+  **可靠性要求**（来自本机 R1：WSL 崩溃时所有进程丢失，代理中途停住而没有任何人发现）：
+  - round 的状态机持久化在 SQLite，每一步有确定的 request_key；进程或服务器重启后再次调用 `iteration round` 从上一个完成的步骤继续，已派发的执行与已创建的 Agent 不重复。
+  - 编排在工作台服务内以后台任务运行，客户端断开不影响；有 HTTP 接口启动 / 查看 / 停止，CLI 是它的薄封装；进度可读（当前步骤、每个候选的状态、各步耗时）。
+  - 每个 Agent 步骤有超时（可配置）。Agent 空闲却没有产出预期结果（没有冻结的簇、没有卡片、没有冻结请求、运行请求失败）时，记为该候选的 `stalled` 并写明原因，其余候选照常推进；不无限等待。
+  - 题级基础设施失败（P9 的 `PreparationInfrastructureError`、执行 error / missing）按现有口径单列；迭代设置 `infra_retry`（缺省 1）允许对基础设施失败的 attempt 追加一次新的、记账的 attempt，不覆盖原记录。
+  - 编排本身不调用模型；它只通过已有的服务接口派发执行与创建 Agent。
+
+  测试：用假 Creator / 假 Agent 与合成执行走完一轮与两轮的状态机；card_approval 两种模式；单候选与多候选并行；合并与撤回；在每一步之后模拟重启并恢复（不重复派发、不重复建 Agent）；Agent 超时 / 无产出被记为 stalled 而其余候选继续；infra_retry；四个停机条件；预算耗尽时已评测的记录完整。
 
 - [ ] 7. **第一次实验的预注册与运行**（不交给开发 agent；由研究者与用户执行）。
   QASPER chunk，qwen-flash。search 15 篇、validation 10 篇、fresh 3 批 × 8 篇、sealed = 既有 5 篇留出。C0 跑 k_base = 2；诊断一次取前 3 个簇；每簇一个实现者；门判定；两轮。预算估计 ¥40 内。预注册写 `docs/experiments/2026-10-xx-lcd-r1.md`，运行前提交。
