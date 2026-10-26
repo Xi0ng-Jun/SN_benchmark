@@ -110,6 +110,11 @@ def check(args):
         protected += [Path(e['bundle']).resolve() for e in config['inputs']]
         require(all(not output.is_relative_to(p) and not p.is_relative_to(output) for p in protected),
                 'Execution output overlaps source or inputs')
+    execution = config.get('job_execution', {})
+    if execution:
+        for name in ('python', 'runtime_expectation'):
+            require(isinstance(execution.get(name), str) and Path(execution[name]).is_file(),
+                    'Missing job_execution file: ' + name)
         expectation = json.loads(Path(execution['runtime_expectation']).read_text())
         probe = subprocess.run([execution['python'], '-c',
             'import json,sys; print(json.dumps(dict(executable=sys.executable,prefix=sys.prefix)))'],
@@ -121,7 +126,10 @@ def check(args):
         # Match the runner contract: normalize .. while preserving venv invocation symlinks.
         require(os.path.abspath(expectation['executable']) == os.path.abspath(observed['executable'])
                 and Path(expectation['prefix']).resolve() == Path(observed['prefix']).resolve(),
-                'Interpreter expectation differs from selected Python')
+                'Interpreter expectation differs from selected Python: '
+                f"expected executable={expectation['executable']}, prefix={expectation['prefix']}; "
+                f"selected executable={observed['executable']}, prefix={observed['prefix']}")
+    if args.execution:
         from rag_eval.runtime_dependency_identity import parse_dependency_requirements
         parse_dependency_requirements(Path(execution['dependency_requirements']).read_bytes())
         require(bool(config.get('agent_creation', {}).get('profiles')),

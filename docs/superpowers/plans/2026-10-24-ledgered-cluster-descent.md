@@ -186,3 +186,10 @@ search 与 validation 来自同一个 plan selection，每个 case 带 `role`；
 - 验证：按 RUNBOOK 的离线环境、现有解释器执行全套 pytest，依用户要求将 `-n auto` 限为 `-n 6`，**2607 passed / 7 skipped**（含并行开发中 W8c 的合成测试）；Node **34 passed**。未改 UI；未调用模型／启动服务／访问真实 var/／修改 .venv。
 - 实现：创建迭代冻结显式准备策略或服务器缺省值；执行继续以冻结值覆盖服务器，首次附加 attempt 时原子记录 execution ID、两侧策略与覆盖来源。创建凭据保留原请求参数，重试不受后来服务器设置影响；旧协议缺键仍走旧行为。
 - 解释与偏离：覆盖说明放在任务执行历史而非改写原协议；事件与 execution 关联且重试不重复。现有调度协议测试增加准备策略缺省值断言，因为新协议现在必须显式冻结该键。无功能范围偏离；W8b/W8c 另提交。
+
+### W8b · 2026-10-26
+
+- 提交：本条所在 `fix(workbench): check configured interpreter without execution mode`（W8a：`018cf5f`）。
+- 验证：RUNBOOK 离线 pytest，现有解释器与 DEEPEVAL 环境、`-n 6`，**2663 passed / 7 skipped**（含未提交 W8c 合成测试）；Node **34 passed**。无 UI 改动，未操作模型、服务、真实 var/ 或 .venv。
+- 实现：存在 job_execution 时，普通 check 即启动所选 Python 的纯 sys/json 身份探针，按运行器同样口径比较 executable 与 prefix；不一致列出预期／实际路径，保留虚拟环境调用 symlink。完整 `--execution` 的输出隔离等检查优先级保留。
+- 解释与偏离：复审发现缺 output_root 的部分配置未按配置目录解析相对路径，因此在 load_config 的统一路径边界修复，而不在 check 重复兜底。新增相对路径／缺省／一致／两种不一致回归；现有测试无需改断言。第一次全套揭示检查顺序回归，修复后重新全套通过。

@@ -56,8 +56,9 @@ def load_config(path):
         if key not in {'mode', 'artifact_index_id'} and value and not value.startswith('$'):
             views['batch'][key] = str((path.parent / value).resolve())
     execution = config.get('job_execution')
-    if isinstance(execution, dict) and execution.get('output_root'):
-        execution['output_root'] = str((path.parent / execution['output_root']).resolve())
+    if isinstance(execution, dict):
+        if execution.get('output_root'):
+            execution['output_root'] = str((path.parent / execution['output_root']).resolve())
         for key in ('python', 'artifact_root', 'project_root', 'model_config',
                     'dependency_requirements', 'runtime_expectation', 'scorer_sources', 'adoptable_runs'):
             if execution.get(key):
