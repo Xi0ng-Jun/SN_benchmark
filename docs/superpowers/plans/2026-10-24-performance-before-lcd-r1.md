@@ -82,6 +82,12 @@
 
 **验收。**假 SN 100 篇、每篇 0.1 s 模拟延迟：串行约 10 s，8 并发 < 2 s；产物（chunk 数、embedding 覆盖、document-map 内容除时间字段）与串行逐字节一致；一篇失败时准备失败且已完成篇的记录保留；准备缓存键在 workers=1 与 8 之间相同。真实 SN 集成测试（离线 fixture 模型）在 workers=4 下通过。
 
+## P9. 准备期模型调度失败按基础设施失败处理（2026-10-26 补）
+
+**原因。**LCD R1-mini（ALCE-ASQA，每题 100 篇片段）用 `preparation_workers = 8` 运行。SN 0680aa12 的 `ServiceScheduler` 每个 actor 最多排队 2 × `max_concurrency` 个请求（每进程总队列 10 ×）；qwen-flash 对话服务 `max_concurrency = 2`，同一 notebook 最多排 4 个对话请求。P8 的每个准备工作线程同时持有一个对话请求（先 summary，后 paper_metadata），8 个工作线程溢出队列：1559 次调用以 `ModelQueueFull` 结束（source_summary 779、paper_metadata 780），不重试。SN 的 `summarize()` 吞掉一切异常，返回回退摘要 "N parsed text element(s). <前 260 字>"，paper metadata 同样静默回退，所以导入"成功"：2400 篇里 960 篇（40%）是回退摘要。我们的准备只检查"文档没有 chunk"，于是降级的 notebook 被标为已准备、写进准备缓存（之后每个候选都会复用）、执行被准入。该次运行已作废。`preparation_workers = 4` 时 `ModelQueueFull` 为 0（smoke 与有效的 R1 C0）。`MalformedModelResponse`（qwen-flash 约 10% 的 source_summary）是 SN 的真实产品行为，必须保持非致命、计入测量。上面 P8 的"R1 用 8"据此作废。
+
+**改动与验证**见执行记录 P9。
+
 ## 不做
 
 不动模型客户端的超时与退避策略（60 s、2^n）——这是 SN 项目的配置，记录观察即可；不引入新的存储后端；不改 LCD 的门、簇、划分语义；不为了性能放松任何不变量。
@@ -223,3 +229,12 @@
   - 真实 SN（离线 fixture 模型）`test_sn_preparation_integration` 新增 workers=4 参数：两种准备策略下 source summary／paper metadata／元素 embedding／chunk embedding 各 100 次，100 个 chunk 全部有 embedding、100 条 summary、100 条 paper meta、notebook 用途写入；延迟策略 notebook metadata 仍为 8 次。逐篇策略的 notebook metadata 次数取决于完成顺序（每次刷新批量覆盖当时已有的 source），串行为 448，并发只断言 ≥ 1。fixture 模型无延迟，两种 worker 数耗时都约 13 s（受本地数据库与 GIL 约束），本机测不到真实模型下的加速。
 - **偏离与原因。** 用传给 `upload_sources` 的 `scheduler` 提交 `repo.process_source`，与计划所列"或等价地给 `upload_sources` 传一个提交到我们自己线程池的 `scheduler`"一致，这样上传、去重与容量检查仍走 SN 原路径。source id 由 SN 随机生成，"逐字节一致"在假 SN（确定性 id）上验证；真实 SN 上比较的是计数、覆盖与内容（summary、paper meta、chunk 数）。
 - **测试。** 全量 `-n auto`：**2515 passed, 7 skipped，墙钟 69 s**。
+
+### P9 · 2026-10-26 · 准备期调度失败、并发上限与诊断（分支 `fix/prep-scheduling-guard`，未合并）
+
+- **改动 1：基础设施失败让准备作废（`92243b7`）。** runner 在准备结束后（串行与 P8 并发两条路径都在 `prepare_notebook` 返回之后，延迟元数据的最终刷新也在其内）读取本分区截至此刻的 model-service journal，把 `model_service_future_terminal` 且 `status=error` 的事件按 `error_type` 计数。命中基础设施类型（见下）即：每个题以 `status=error`、`error_type=PreparationInfrastructureError`、`failed_phase=importing` 落盘（沿用 FAILURE_FIELDS，运行终态 `finished_with_errors`，infrastructure 计数单列，不进干净分母），不向这个 notebook 提问；`product-artifacts/state.json` 改为 `prepared=false` 并记 `preparation_infrastructure_errors`，因此准备缓存不发布条目、显式种子与工作台重试也不会复用它。`MalformedModelResponse` 及其他内容类错误照旧非致命。
+  - **基础设施类型（journal 里是异常类名）：** SN `model_work` 的调度族 `ModelSchedulingError`、`ModelQueueFull`、`ModelQueueTimeout`、`ModelServiceUnavailable`；`ModelNotConfiguredError`（工作负载无绑定，全部回退）；SN 客户端所用 OpenAI SDK 的 `RateLimitError`（429）、`InternalServerError`（5xx）、`APIConnectionError`、`APITimeoutError`、`AuthenticationError`、`PermissionDeniedError`；httpx 传输层 `TimeoutException`、`ConnectTimeout`、`ReadTimeout`、`WriteTimeout`、`PoolTimeout`、`ConnectError`、`ReadError`、`WriteError`、`RemoteProtocolError`、`NetworkError`、`TransportError`；内建 `TimeoutError`、`ConnectionError` 及其子类；评测侧预算守卫 `BudgetStopped`。journal 只记类名、不记状态码，所以 429 只能靠 SDK 的 `RateLimitError` 类名识别；被 SN 包成 `ModelInvocationError`／泛化 `ModelProviderError`／`APIStatusError` 的错误分不出原因，按内容类处理（非致命、计数披露）。
+- **改动 2：工作线程上限（`86baba8`）。** `rag_eval/model_service_limits.py` 只解析私有服务配置里的 `[bindings]` 与相应服务的 `kind`、`max_concurrency`（不读、不输出其他字段），取 source_summary／paper_metadata／notebook_metadata 所绑定对话服务中最小的 `max_concurrency`。`preparation_workers > 2 × max_concurrency` 时：工作台 `execution_spec`（`job_execution` 或 iteration `execution` 合并后的值）抛 `ExecutionRejected`，runner `execute()` 在建运行目录之前抛 `ValueError`，消息含工作线程数、`max_concurrency`、服务名与上限。配置读不到或没有绑定时不猜，不拦截。
+- **改动 3：诊断（`e41af38`）。** 每个由本运行准备的分区写 `preparation-diagnostics.json`：源总数、带 SN 回退摘要前缀（`\d+ parsed text element(s). `）的源数（只读打开 `runtime/database.db`）、准备期模型调用错误按类型与按"类型:工作负载"、其中的基础设施子集。阶段指标带 `preparation` 字段并把该文件计入输入哈希；运行报告多一行"资料准备诊断"（基础设施失败时标"准备作废"）；批次行带 `preparation_diagnostics`，执行汇总带全执行合计 `preparation`。只作诊断，不进任何分数。
+- **验证（离线）。** `tests/test_preparation_infrastructure.py`（33 项，journal 事件按真实 schema 构造，`load_run` 的 journal 审计照常通过）：桩出的 `ModelQueueFull` 让准备作废、所有题为 `error`/`PreparationInfrastructureError`/`importing`、运行 `finished_with_errors`、cell 标 `prepared=false`、准备缓存无条目、未提问，下一次 attempt 重新导入并正常发布；`MalformedModelResponse` 不致命、照常发布缓存；基础设施集合中每个类型都让准备作废（参数化 29 项）；诊断正确计数回退摘要（只计本 notebook）、错误按类型与工作负载、容忍日志尾部残行；阶段指标、报告行与执行汇总带出诊断。`tests/test_preparation_worker_cap.py`（4 项）：取最小对话服务上限；workers 8 对 max_concurrency 2 被拒且消息含 8、2、4，workers 4 通过；配置不可读或无绑定不拦截；runner 在建目录前拒绝；工作台执行规格拒绝 8、接受 4。全量 `-n auto`：**2552 passed, 7 skipped**（新 worktree 的 `apps/*/node_modules`、`apps/*/dist` 为指向主线 worktree 的只读符号链接，供 bridge／前端服务测试使用，未提交）。
+- **已知边界。** 只看准备结束那一刻 journal 里已结束的调用；SN 若有准备返回后才结束的后台调用，不在判断内。逐篇元数据策略下的 notebook_metadata 也计入（它同样走对话服务）。R1 下一轮的 `preparation_workers` 不得超过 4（qwen-flash `max_concurrency = 2`）。
