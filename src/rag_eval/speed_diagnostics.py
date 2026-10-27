@@ -81,6 +81,7 @@ class SpeedObserver:
                     phases=[dict(name=name, start=start, seconds=round(end - start, 3))
                             for (name, start), end in zip(phases, bounds)],
                     gate_slots=self.gate.slots if self.gate is not None else None,
+                    gate_requested_slots=self.gate.requested_slots if self.gate is not None else None,
                     requests=dict(columns=list(COLUMNS), rows=rows), **extra)
 
     def save(self, run, **extra):

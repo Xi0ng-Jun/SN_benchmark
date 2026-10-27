@@ -237,8 +237,7 @@ def test_a_killed_process_gives_its_slots_back(gate_dir):
     child.send_signal(signal.SIGKILL)
     child.wait(timeout=10)
     gate.release(gate.acquire(timeout=5))
-    assert [dict(s, record=None) for s in gate_status(gate_dir)] == [
-        dict(slots=2, in_flight=0, waiting=0, record=None, state='live')]
+    assert gate_status(gate_dir) == dict(slots=2, in_flight=0, waiting=0, state='live')
 
 
 def test_waiters_are_served_in_arrival_order(gate_dir):
@@ -272,10 +271,62 @@ def test_a_removed_gate_is_recreated_for_waiters_and_new_processes(gate_dir):
     gate.release(token)  # the old semaphore is gone; giving back is a no-op
     assert result and ModelGate(gate_dir, 1).status() == dict(slots=1, in_flight=1, waiting=0)
     gate.release(result[0])
-    # Different slot counts are separate gates.
-    other = ModelGate(gate_dir, 3)
-    assert other.status() == dict(slots=3, in_flight=0, waiting=0)
-    assert sorted(p.name for p in gate_dir.glob('semaphore-*.json')) == ['semaphore-1.json', 'semaphore-3.json']
+
+
+def test_one_directory_is_one_cap_whatever_slot_counts_processes_ask_for(gate_dir):
+    from rag_eval.model_gate import ModelGate, gate_status
+    old = ModelGate(gate_dir, 2)
+    first = old.acquire()
+    # Busy: a process asking for more uses the current capacity; the two never add up.
+    new = ModelGate(gate_dir, 4)
+    assert (new.slots, new.requested_slots) == (2, 4)
+    second = new.acquire(timeout=1)
+    with pytest.raises(TimeoutError):
+        new.acquire(timeout=0.2)
+    assert gate_status(gate_dir) == dict(slots=2, in_flight=2, waiting=0, state='live')
+    old.release(first)
+    new.release(second)
+    # Idle: the next process's count becomes the capacity, up or down, for everyone.
+    assert ModelGate(gate_dir, 4).slots == 4 and old.status()['slots'] == 4
+    tokens = [old.acquire(timeout=1) for _ in range(4)]
+    with pytest.raises(TimeoutError):
+        old.acquire(timeout=0.1)
+    [old.release(t) for t in tokens]
+    assert ModelGate(gate_dir, 1).slots == 1
+    assert gate_status(gate_dir) == dict(slots=1, in_flight=0, waiting=0, state='live')
+    assert sorted(p.name for p in gate_dir.iterdir()) == ['gate.lock', 'semaphore.json']
+
+
+def test_a_crash_while_creating_never_records_a_gate_without_slots(gate_dir, monkeypatch):
+    from rag_eval import model_gate
+    real, calls = model_gate._semctl, []
+
+    def crash_after_capacity(libc, semid, number, command, value=0):
+        calls.append(semid)
+        if command == model_gate.SETVAL and number == model_gate.FREE:
+            raise KeyboardInterrupt  # the process dies before free slots are set
+        return real(libc, semid, number, command, value)
+    monkeypatch.setattr(model_gate, '_semctl', crash_after_capacity)
+    with pytest.raises(KeyboardInterrupt):
+        model_gate.ModelGate(gate_dir, 2)
+    monkeypatch.setattr(model_gate, '_semctl', real)
+    assert not (gate_dir / 'semaphore.json').exists()
+    gate = model_gate.ModelGate(gate_dir, 2)  # a fresh key, fully set before it is recorded
+    assert gate._semid != calls[0] and gate.status() == dict(slots=2, in_flight=0, waiting=0)
+    gate.release(gate.acquire(timeout=1))
+    real(gate._libc, calls[0], 0, model_gate.IPC_RMID)  # the unrecorded orphan
+
+
+def test_removal_waits_for_the_gate_lock(gate_dir):
+    from rag_eval.model_gate import ModelGate, _locked, gate_status, remove_gates
+    ModelGate(gate_dir, 1)
+    done = threading.Event()
+    with _locked(gate_dir):  # e.g. a waiter recreating the gate
+        remover = threading.Thread(target=lambda: (remove_gates(gate_dir), done.set()))
+        remover.start()
+        assert not done.wait(0.3) and gate_status(gate_dir)['state'] == 'live'
+    remover.join(timeout=5)
+    assert done.is_set() and gate_status(gate_dir) == dict(state='absent')
 
 
 # ------------------------------------------------------------ retry merging

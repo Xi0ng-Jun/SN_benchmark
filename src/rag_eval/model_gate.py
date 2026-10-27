@@ -7,12 +7,22 @@ transports as the budget guard: every outgoing request first takes one of N
 slots, held until the response body is read. The gate changes only timing;
 requests, retries and responses are untouched.
 
-The N slots are one System V counting semaphore per (directory, N) shared by
-every process of the server. A waiter blocks in the kernel (no polling) and
-waiters are served in arrival order. Every take and give back uses
-``SEM_UNDO``, so the kernel returns the slots of a process that dies, however
-it dies. The semaphore key is kept in ``semaphore-<N>.json`` under the
-directory; creating it is serialized by ``gate.lock``. A semaphore outlives
+One gate directory is one server-wide cap: a System V semaphore set of two
+values, the free slots and the capacity N. A waiter blocks in the kernel (no
+polling) and waiters are served in arrival order. Every take and give back
+uses ``SEM_UNDO``, so the kernel returns the slots of a process that dies,
+however it dies.
+
+A process asking for a different N does not get a gate of its own (two caps
+would add up). The capacity follows a new N only while the gate is idle (no
+request holds or waits for a slot); both values then change by the same
+difference in one atomic operation. Otherwise the process uses the current
+capacity (``ModelGate.slots``; ``requested_slots`` keeps what it asked for).
+
+The semaphore's key is recorded in ``semaphore.json``; creation and removal
+are serialized by ``gate.lock``. A new semaphore always gets a fresh random
+key and is recorded only once both values are set, so a crash while creating
+leaves an unrecorded orphan, never a recorded gate with no slots. It outlives
 its processes (until reboot or ``remove_gates``); a reboot recreates it.
 ``gate_status`` (``scripts/model_gate_status.py``) shows how full it is now.
 """
@@ -30,9 +40,11 @@ import threading
 import time
 
 # Linux values (asm-generic, the same on every architecture).
-IPC_CREAT, IPC_EXCL, IPC_RMID = 0o1000, 0o2000, 0
+IPC_CREAT, IPC_EXCL, IPC_NOWAIT, IPC_RMID = 0o1000, 0o2000, 0o4000, 0
 GETVAL, GETNCNT, SETVAL = 12, 14, 16
 SEM_UNDO = 0x1000
+FREE, CAPACITY = 0, 1  # semaphore numbers in the set
+RECORD = 'semaphore.json'
 
 
 class _SemBuf(ctypes.Structure):
@@ -61,45 +73,67 @@ def _check(result):
     return result
 
 
-def _semctl(libc, semid, command, value=0):
-    return _check(libc.semctl(semid, 0, command, ctypes.c_ulong(value)))
+def _semctl(libc, semid, number, command, value=0):
+    return _check(libc.semctl(semid, number, command, ctypes.c_ulong(value)))
 
 
-def _status(libc, semid, slots):
-    return dict(slots=slots, in_flight=slots - _semctl(libc, semid, GETVAL), waiting=_semctl(libc, semid, GETNCNT))
+def _status(libc, semid):
+    capacity = _semctl(libc, semid, CAPACITY, GETVAL)
+    return dict(slots=capacity, in_flight=capacity - _semctl(libc, semid, FREE, GETVAL),
+                waiting=_semctl(libc, semid, FREE, GETNCNT))
 
 
-def _recorded(directory):
-    for record in sorted(Path(directory).glob('semaphore-*.json')):
-        try:
-            saved = json.loads(record.read_text(encoding='utf-8'))
-            yield record, saved['key'], saved['slots']
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
+@contextmanager
+def _locked(directory):
+    with open(Path(directory) / 'gate.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _recorded_key(directory):
+    try:
+        key = json.loads((Path(directory) / RECORD).read_text(encoding='utf-8'))['key']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return key if type(key) is int else None
+
+
+def _existing(libc, key):
+    """The recorded set, or None when it is gone (reboot, removal, or not ours)."""
+    if key is None:
+        return None
+    semid = libc.semget(key, 2, 0o600)
+    if semid != -1:
+        return semid
+    if ctypes.get_errno() not in (errno.ENOENT, errno.EINVAL):
+        _check(-1)
+    return None
 
 
 def gate_status(directory):
-    """Server-wide state of every gate recorded under ``directory``; never creates one."""
-    libc, result = _libc(), []
-    for record, key, slots in _recorded(directory):
-        semid = libc.semget(key, 1, 0o600)
-        result.append(dict(_status(libc, semid, slots), record=record.name, state='live') if semid != -1
-                      else dict(slots=slots, record=record.name, state='absent'))
-    return result
+    """Server-wide state of the gate recorded under ``directory``; never creates one."""
+    libc = _libc()
+    if not (Path(directory) / RECORD).exists():
+        return dict(state='absent')
+    semid = _existing(libc, _recorded_key(directory))
+    return dict(_status(libc, semid), state='live') if semid is not None else dict(state='absent')
 
 
 def remove_gates(directory):
-    """Delete every gate recorded under ``directory`` (tests, or retiring a server's gate)."""
+    """Delete the gate recorded under ``directory`` (tests, or retiring a server's gate)."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return
     libc = _libc()
-    for record, key, _ in _recorded(directory):
-        semid = libc.semget(key, 1, 0o600)
-        if semid != -1:
+    with _locked(directory):
+        semid = _existing(libc, _recorded_key(directory))
+        if semid is not None:
             try:
-                _semctl(libc, semid, IPC_RMID)
+                _semctl(libc, semid, 0, IPC_RMID)
             except OSError as exc:
                 if exc.errno not in (errno.EIDRM, errno.EINVAL):
                     raise
-        record.unlink(missing_ok=True)
+        (directory / RECORD).unlink(missing_ok=True)
 
 
 class ModelGate:
@@ -108,44 +142,50 @@ class ModelGate:
             raise ValueError('Model gate needs a positive slot count')
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.slots = slots
+        self.requested_slots = slots
         self.waited_seconds, self.waited_max, self.requests = 0.0, 0.0, 0
         self._stats = threading.Lock()
         self._libc = _libc()
-        self._record = self.directory / f'semaphore-{slots}.json'
         self._semid = self._open()
 
+    def _create(self):
+        while True:
+            key = secrets.randbelow(2**31 - 2) + 1
+            semid = self._libc.semget(key, 2, IPC_CREAT | IPC_EXCL | 0o600)
+            if semid != -1:
+                break
+            if ctypes.get_errno() != errno.EEXIST:
+                _check(-1)
+        _semctl(self._libc, semid, CAPACITY, SETVAL, self.requested_slots)
+        _semctl(self._libc, semid, FREE, SETVAL, self.requested_slots)
+        temporary = self.directory / (RECORD + '.tmp')
+        temporary.write_text(json.dumps(dict(key=key)) + '\n', encoding='utf-8')
+        temporary.replace(self.directory / RECORD)
+        return semid
+
+    def _resize_if_idle(self, semid):
+        status = _status(self._libc, semid)
+        change = self.requested_slots - status['slots']
+        if not change or status['in_flight'] or status['waiting']:
+            return
+        operations = (_SemBuf * 2)(_SemBuf(FREE, change, IPC_NOWAIT), _SemBuf(CAPACITY, change, IPC_NOWAIT))
+        # Atomic for both values; fails harmlessly if a request took a slot meanwhile.
+        if self._libc.semtimedop(semid, operations, 2, None) == -1 and ctypes.get_errno() != errno.EAGAIN:
+            _check(-1)
+
     def _open(self):
-        """The semaphore named by the record; created (holding N slots) when missing."""
-        with open(self.directory / 'gate.lock', 'a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                key = json.loads(self._record.read_text(encoding='utf-8'))['key']
-            except (OSError, ValueError, KeyError, TypeError):
-                key = None
-            if key is not None:
-                semid = self._libc.semget(key, 1, 0o600)
-                if semid != -1:
-                    return semid
-                if ctypes.get_errno() != errno.ENOENT:
-                    _check(-1)
-                # Gone (reboot or removal): recreate under the same key if it is free.
-            while True:
-                key = key or secrets.randbelow(2**31 - 2) + 1
-                semid = self._libc.semget(key, 1, IPC_CREAT | IPC_EXCL | 0o600)
-                if semid != -1:
-                    break
-                if ctypes.get_errno() != errno.EEXIST:
-                    _check(-1)
-                key = None
-            _semctl(self._libc, semid, SETVAL, self.slots)
-            temporary = self._record.with_suffix('.tmp')
-            temporary.write_text(json.dumps(dict(key=key, slots=self.slots)) + '\n', encoding='utf-8')
-            temporary.replace(self._record)
+        """The recorded gate (resized to the requested count while idle), created when missing."""
+        with _locked(self.directory):
+            semid = _existing(self._libc, _recorded_key(self.directory))
+            if semid is None:
+                semid = self._create()
+            else:
+                self._resize_if_idle(semid)
+            self.slots = _semctl(self._libc, semid, CAPACITY, GETVAL)
             return semid
 
     def _op(self, semid, delta, timeout=None):
-        operation = _SemBuf(0, delta, SEM_UNDO)
+        operation = _SemBuf(FREE, delta, SEM_UNDO)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             limit = None
@@ -171,7 +211,7 @@ class ModelGate:
         except OSError as exc:
             if exc.errno not in (errno.EIDRM, errno.EINVAL):
                 raise
-            # Removed while waiting: reopen (recreated with N slots) and wait there.
+            # Removed while waiting: reopen (recreated if needed) and wait there.
             self._semid = semid = self._open()
             self._op(semid, -1, timeout)
         waited = time.monotonic() - started
@@ -189,8 +229,8 @@ class ModelGate:
                 raise  # a removed semaphore has no slot to give back
 
     def status(self):
-        """Server-wide, now: slots, requests holding one, and waiters queued."""
-        return _status(self._libc, self._semid, self.slots)
+        """Server-wide, now: capacity, requests holding a slot, and waiters queued."""
+        return _status(self._libc, self._semid)
 
 
 @contextmanager
