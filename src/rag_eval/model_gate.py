@@ -265,10 +265,12 @@ def install_request_hooks(*, gate=None, observer=None):
             if done:
                 return
             done.append(True)
+            # Ended before the slot is given back: the next holder starts after it.
+            ended = observer.now() if observer is not None else None
             if fd is not None:
                 gate.release(fd)
             if observer is not None:
-                observer.record(phase, request_path, started, acquired - started, observer.now() - acquired, outcome)
+                observer.record(phase, request_path, started, acquired, ended, outcome)
         return leave
 
     def http_send(client, request, **kwargs):

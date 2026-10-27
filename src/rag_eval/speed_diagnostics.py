@@ -4,10 +4,12 @@ Diagnostics only: requests, responses, scores and comparison identity are
 untouched. A partition process installs one observer around every outgoing
 model request (the transports the model gate wraps, see ``model_gate``). The
 runner marks phase boundaries with ``phase(name)``; each request is attributed
-to the phase in which it started and keeps its start time, gate wait and
-service time. Start times are wall-clock offsets, so the partitions of one
-execution (or of several executions on one server) merge exactly and show how
-many requests were waiting or holding a gate slot at any moment.
+to the phase in which it started and keeps three instants: started, slot
+acquired (after the gate returned) and ended (before the slot is given back),
+so a recorded holding interval lies inside the real one. Instants are offsets
+from the process's wall-clock start, so the partitions of one execution (or of
+several executions on one server) merge and show how many requests were
+waiting for or holding a gate slot at any moment.
 
 Only the last path segments of a request URL are kept (``chat/completions``);
 hosts, queries, headers and bodies are never recorded.
@@ -26,7 +28,7 @@ import time
 
 FORMAT = 'sn-speed-diagnostics-v1'
 FILENAME = 'speed-diagnostics.json'
-COLUMNS = ('phase', 'endpoint', 'start', 'gate_wait', 'service', 'outcome')
+COLUMNS = ('phase', 'endpoint', 'start', 'acquired', 'end', 'outcome')
 _SEGMENT = re.compile(r'[A-Za-z][A-Za-z0-9_.-]{0,39}')
 _observer = None
 
@@ -65,8 +67,9 @@ class SpeedObserver:
     def current(self):
         return self._phases[-1][0]
 
-    def record(self, phase_name, path, start, gate_wait, service, outcome):
-        row = [phase_name, endpoint(path), round(start, 3), round(gate_wait, 4), round(service, 4), outcome]
+    def record(self, phase_name, path, start, acquired, end, outcome):
+        # Rounding each instant (not durations) keeps their order.
+        row = [phase_name, endpoint(path), round(start, 6), round(acquired, 6), round(end, 6), outcome]
         with self._lock:
             self._rows.append(row)
 
@@ -131,24 +134,39 @@ def distribution(values):
 
 
 def _concurrency(requests, slots):
-    """Peak waiting/holding requests and how long the gate was full, from merged timelines."""
-    events = []
-    for start, wait, service in requests:
-        # At one instant ends come first, so a slot freed and retaken is not counted twice.
-        events += [(start + wait + service, 0, 0, -1), (start, 1, 1, 0), (start + wait, 2, -1, 1)]
-    events.sort()
+    """Peak waiting/holding requests and how long the gate was full, from merged timelines.
+
+    ``requests`` are (start, acquired, end) wall-clock seconds, put on a 1 ms
+    grid. All changes at one instant apply before peaks are read, so a request
+    that never waited is never counted as queued, a slot given back and taken
+    at the same instant is not counted twice, and a zero-length interval
+    counts for nothing.
+    """
+    changes = {}
+
+    def add(at, index, delta):
+        changes.setdefault(at, [0, 0])[index] += delta
+    for start, acquired, end in requests:
+        start, acquired, end = round(start, 3), round(acquired, 3), round(end, 3)
+        if acquired > start:
+            add(start, 0, 1)
+            add(acquired, 0, -1)
+        if end > acquired:
+            add(acquired, 1, 1)
+            add(end, 1, -1)
     waiting = holding = peak_waiting = peak_holding = 0
     saturated = queued = 0.0
-    last = events[0][0] if events else 0.0
-    for at, _, dwait, dhold in events:
-        if slots is not None and holding >= slots:
-            saturated += at - last
-        if waiting > 0:
-            queued += at - last
-        last = at
-        waiting += dwait
-        holding += dhold
+    previous = None
+    for at in sorted(changes):
+        if previous is not None:
+            if slots is not None and holding >= slots:
+                saturated += at - previous
+            if waiting > 0:
+                queued += at - previous
+        waiting += changes[at][0]
+        holding += changes[at][1]
         peak_waiting, peak_holding = max(peak_waiting, waiting), max(peak_holding, holding)
+        previous = at
     return dict(peak_in_flight=peak_holding, peak_waiting=peak_waiting,
                 gate_full_seconds=round(saturated, 3) if slots is not None else None,
                 seconds_with_waiters=round(queued, 3))
@@ -174,11 +192,12 @@ def summarize(observations):
             value = {column: row[i] for column, i in index.items()}
             group = groups.setdefault((value['phase'], value['endpoint']),
                                       dict(service=[], gate_wait=[], outcomes={}))
-            group['service'].append(value['service'])
-            group['gate_wait'].append(value['gate_wait'])
+            group['service'].append(round(value['end'] - value['acquired'], 6))
+            group['gate_wait'].append(round(value['acquired'] - value['start'], 6))
             outcome = str(value['outcome'])
             group['outcomes'][outcome] = group['outcomes'].get(outcome, 0) + 1
-            timeline.append((item['started_epoch'] + value['start'], value['gate_wait'], value['service']))
+            origin = item['started_epoch']
+            timeline.append((origin + value['start'], origin + value['acquired'], origin + value['end']))
     requests = {}
     for (phase_name, path), group in sorted(groups.items()):
         requests.setdefault(phase_name, {})[path] = dict(

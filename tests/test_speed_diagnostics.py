@@ -57,9 +57,11 @@ def test_requests_are_timed_per_phase_with_gate_waits(tmp_path, request):
     assert [(r['phase'], r['endpoint'], r['outcome']) for r in rows][-2:] == [
         ('answer', 'chat/fail', 429), ('answer', 'chat/completions', 200)]
     embeddings = [r for r in rows if r['endpoint'] == 'v1/embeddings']
-    assert len(embeddings) == 3 and all(r['service'] >= 0.04 for r in rows)
+    assert len(embeddings) == 3 and all(r['end'] - r['acquired'] >= 0.04 for r in rows)
     # One slot: the second and third embedding waited for the earlier ones.
-    assert sorted(r['gate_wait'] for r in embeddings)[-1] >= 0.08
+    assert sorted(r['acquired'] - r['start'] for r in embeddings)[-1] >= 0.08
+    # Recorded holding intervals never overlap beyond the single slot.
+    assert summarize({'p': saved})['concurrency']['peak_in_flight'] == 1
 
 
 def test_failed_requests_release_and_record_the_exception(tmp_path, request):
@@ -78,9 +80,11 @@ def test_failed_requests_release_and_record_the_exception(tmp_path, request):
 
 
 def snapshot(epoch, phases, rows, slots=2):
+    """rows: [phase, endpoint, start, gate wait, service, outcome], stored as instants."""
+    rows = [[p, e, start, start + wait, start + wait + service, o] for p, e, start, wait, service, o in rows]
     return dict(format='sn-speed-diagnostics-v1', started_epoch=epoch, wall_seconds=phases[-1][1] + phases[-1][2],
                 phases=[dict(name=n, start=s, seconds=d) for n, s, d in phases], gate_slots=slots,
-                requests=dict(columns=['phase', 'endpoint', 'start', 'gate_wait', 'service', 'outcome'], rows=rows))
+                requests=dict(columns=['phase', 'endpoint', 'start', 'acquired', 'end', 'outcome'], rows=rows))
 
 
 def test_summary_merges_partitions_and_rebuilds_gate_occupancy():
@@ -104,6 +108,30 @@ def test_summary_merges_partitions_and_rebuilds_gate_occupancy():
     # taken at the same instant is never counted twice; both slots are full on [1002,1007) and [1011,1016).
     assert summary['concurrency'] == dict(peak_in_flight=2, peak_waiting=1, gate_full_seconds=10.0,
                                           seconds_with_waiters=2.0)
+
+
+def concurrency(rows, slots):
+    return summarize({'p': snapshot(0.0, [('answer', 0, 10)], [['answer', 'chat', *r, 200] for r in rows],
+                                    slots=slots)})['concurrency']
+
+
+def test_requests_that_never_waited_are_never_counted_as_queued():
+    # No gate: 20 requests at the same instant, none waits.
+    assert concurrency([(0.0, 0.0, 1.0)] * 20, None) == dict(
+        peak_in_flight=20, peak_waiting=0, gate_full_seconds=None, seconds_with_waiters=0.0)
+
+
+def test_a_zero_length_service_never_makes_in_flight_negative():
+    # A request served in no time beside one holding the only slot for 2 s.
+    result = concurrency([(0.0, 0.0, 0.0), (0.0, 0.0, 2.0)], 1)
+    assert result == dict(peak_in_flight=1, peak_waiting=0, gate_full_seconds=2.0, seconds_with_waiters=0.0)
+
+
+def test_a_slot_handed_over_within_rounding_is_not_counted_twice():
+    # B takes the single slot as A gives it back; their instants differ below 1 ms.
+    result = concurrency([(0.0, 0.0, 1.0000004), (0.5, 0.5000001, 0.9999999)], 1)
+    assert result['peak_in_flight'] == 1 and result['peak_waiting'] == 1
+    assert result['gate_full_seconds'] == 2.0 and result['seconds_with_waiters'] == 0.5
 
 
 def test_execution_summary_merges_partitions_and_retry_runs(tmp_path, monkeypatch):
