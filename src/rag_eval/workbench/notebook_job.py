@@ -82,6 +82,9 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
     rounds = config.get('retry_rounds', 0)
     if type(parallel) is not int or not 1 <= parallel <= 64 or type(rounds) is not int or not 0 <= rounds <= 10:
         raise ExecutionRejected('Invalid parallel or retry_rounds setting')
+    rule = config.get('case_retry_rule', False)
+    if type(rule) is not bool:
+        raise ExecutionRejected('Invalid case_retry_rule setting')
     workers = config.get('question_workers', 1)
     if type(workers) is not int or not 1 <= workers <= 32:
         raise ExecutionRejected('Invalid question_workers setting')
@@ -139,6 +142,7 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
         maps = dict(path=str(path), sha256=hashlib.sha256(data).hexdigest(), keys=sorted(extras))
     payload = dict(run_dir=run_dir, job_id=job_id, preparation_id=preparation_id,
         parallel=parallel, retry_rounds=rounds, preparation_policy=policy, run_maps=maps,
+        **({'case_retry_rule': True} if rule else {}),
         artifact_root=str(store.root), bundle=str(bundle), bundle_ref=prep['input']['bundle_ref'],
         index_ref=prep['input']['index_ref'], sn_ref=prep['source']['artifact_ref'],
         selection=prep['input']['selection'], mode=prep['execution_intent']['mode'],
@@ -549,8 +553,11 @@ def execute(payload):
                     future.result()
         ordered = [outcomes[job['partition_id']] for job in jobs if job['partition_id'] in outcomes]
         for outcome in ordered:
+            # replaces_failed: run under an iteration's frozen case_retry rule, so a
+            # retry answer replaces the failed first answer in admission and infra checks.
             outcome['job']['retries'] = [dict(r, selected_case_ids=sorted(
-                cid for cid, source in outcome['selection'].items() if source == r['run_dir']))
+                cid for cid, source in outcome['selection'].items() if source == r['run_dir']),
+                **({'replaces_failed': True} if payload.get('case_retry_rule') else {}))
                 for r in outcome['retries']]
         save_json(run / 'batch-plan.json', jobs)
         rounds = [dict(round=n, partitions=sum(1 for o in ordered if len(o['retries']) >= n),
@@ -560,7 +567,8 @@ def execute(payload):
         failed_cases = [case for o in ordered for case in (o.get('cases') or {}).values()]
         save_json(run / 'retry-rounds.json', dict(format='sn-workbench-retry-rounds-v2', rounds=rounds,
             note='Only failed (error/missing) cases are asked again; a case uses the latest run that answered it.',
-            case_retry=dict(max_retries_per_case=retry_count, cases=planned, first_failed=len(failed_cases),
+            case_retry=dict(max_retries_per_case=retry_count, frozen_rule=bool(payload.get('case_retry_rule')),
+                            cases=planned, first_failed=len(failed_cases),
                             retried_cases=sum(1 for c in failed_cases if c['re_asks']),
                             re_asks=sum(c['re_asks'] for c in failed_cases),
                             still_failed=sum(c['final_status'] in ('error', 'missing') for c in failed_cases),

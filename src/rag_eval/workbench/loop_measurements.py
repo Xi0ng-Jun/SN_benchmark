@@ -157,12 +157,14 @@ class RoundMeasurements:
         runs = self.views.execution_runs(attempt['execution_id'])
         if not runs:
             return True
-        # A case answered again inside the attempt counts with its retry answer;
-        # only a case still error/missing after the protocol's re-asks needs a
-        # new attempt (older executions have no retries: unchanged).
+        # Under an iteration's frozen case_retry rule a case answered again inside
+        # the attempt counts with its retry answer; only a case still error/missing
+        # after the protocol's re-asks needs a new attempt. Executions without the
+        # rule (older iterations, server-level retry_rounds) are judged by their
+        # partition runs alone, as before.
         for run in runs:
             answered = {}
-            for retry_id, case_ids in getattr(run, 'retries', ()):
+            for retry_id, case_ids in getattr(run, 'retries', ()) if getattr(run, 'retries_replace', False) else ():
                 retried = {c.get('case_id'): c['status'] for c in self.views.cases(retry_id)['cases']}
                 answered.update({cid: retried.get(cid, 'missing') for cid in case_ids})
             if any(answered.get(case.get('case_id'), case['status']) in ('error', 'missing')

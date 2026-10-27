@@ -27,6 +27,7 @@ def test_new_iterations_freeze_one_re_ask_and_attempts_use_the_frozen_rule(env):
     assert iteration(env)['id'] == tree['id']
     root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='r')
     assert payload(env, root)['retry_rounds'] == 1  # the protocol overrides the server setting
+    assert payload(env, root)['case_retry_rule'] is True
     off = iteration(env, case_retry={'max_retries_per_case': 0}, request_key='off', title='off')
     assert off['protocol']['case_retry'] == {'max_retries_per_case': 0}
     root = service.run(off['root_candidate_id'], budget=BUDGET, actor='alice', request_key='r0')
@@ -52,6 +53,7 @@ def test_iterations_without_the_rule_keep_their_old_behaviour(env):
     _strip_rule(env, plain)
     root = service.run(plain['root_candidate_id'], budget=BUDGET, actor='alice', request_key='p')
     assert payload(env, root)['retry_rounds'] == 3  # unbudgeted: the server setting
+    assert 'case_retry_rule' not in payload(env, root)  # its retries never replace failed answers
     budgeted = iteration(env, budget=dict(max_case_runs=100, max_runs_per_candidate=10),
                          request_key='b', title='budgeted')
     _strip_rule(env, budgeted)
@@ -139,7 +141,8 @@ def test_formal_admission_excuses_only_cases_a_retry_answered():
     require_complete(dict(coverage=dict(generation_complete=True), predictions=[]))
 
 
-def test_run_admission_and_flips_pass_retried_cases_to_formal_admission(tmp_path, monkeypatch):
+@pytest.mark.parametrize('rule', [True, False])
+def test_run_admission_and_flips_pass_retried_cases_to_formal_admission(tmp_path, monkeypatch, rule):
     from rag_eval import flip_report
     from rag_eval.workbench.run_views import RunViews
     root = tmp_path / 'exec'
@@ -150,9 +153,9 @@ def test_run_admission_and_flips_pass_retried_cases_to_formal_admission(tmp_path
         partition_id='p', case_ids=['a', 'b', 'c'], run_dir=str(first), suite='alce', mode='chunk',
         official_name='0001', retries=[
             dict(round=1, run_dir=str(r1), case_ids=['b', 'c'], official_name='0001-r1', complete=True,
-                 selected_case_ids=['b']),
+                 selected_case_ids=['b'], **({'replaces_failed': True} if rule else {})),
             dict(round=2, run_dir=str(r2), case_ids=['c'], official_name='0001-r2', complete=True,
-                 selected_case_ids=['c'])])]))
+                 selected_case_ids=['c'], **({'replaces_failed': True} if rule else {}))])]))
     seen = {}
 
     def spy(before, after, *, before_replaced=(), **kwargs):
@@ -162,6 +165,9 @@ def test_run_admission_and_flips_pass_retried_cases_to_formal_admission(tmp_path
     views = RunViews([], execution_records=lambda: [dict(execution_id='exec', task_id='t', run_dir=str(root),
                                                          state='finished', terminal=True)])
     assert views.admission('exec-1')['status'] == 'admitted'
+    if not rule:  # server-level retries (older iterations, plain jobs): nothing is excused, as before
+        assert seen == {'partitions': [], 'retry-1': [], 'retry-2': []}
+        return
     # The partition run is excused for both re-asked cases; round 1 for the case round 2 answered.
     assert seen == {'partitions': ['b', 'c'], 'retry-1': ['c'], 'retry-2': []}
     seen.clear()
@@ -170,12 +176,12 @@ def test_run_admission_and_flips_pass_retried_cases_to_formal_admission(tmp_path
 
 
 class _Views:
-    def __init__(self, statuses, retries=()):
-        self.statuses, self.retries = statuses, retries
+    def __init__(self, statuses, retries=(), replace=True):
+        self.statuses, self.retries, self.replace = statuses, retries, replace
 
     def execution_runs(self, execution_id):
         from types import SimpleNamespace
-        return [SimpleNamespace(id='run', retries=self.retries)]
+        return [SimpleNamespace(id='run', retries=self.retries, retries_replace=self.replace)]
 
     def cases(self, run_id):
         return dict(cases=[dict(case_id=c, status=s) for c, s in self.statuses[run_id].items()])
@@ -188,7 +194,10 @@ def test_infra_retry_only_when_a_case_is_still_failed_after_its_re_asks(retry_st
     statuses = dict(run=dict(a='success', b='error'), retry={} if retry_status is None else dict(b=retry_status))
     measurements.views = _Views(statuses, retries=(('retry', ('b',)),))
     assert measurements._infra(dict(execution_id='e', execution_state='finished')) is infra
-    measurements.views = _Views(dict(run=dict(a='success', b='error')))  # no retries: unchanged
+    measurements.views = _Views(dict(run=dict(a='success', b='error')))  # no retries
+    assert measurements._infra(dict(execution_id='e', execution_state='finished')) is True
+    # Retries outside the frozen rule do not rescue the attempt (behaviour before S3).
+    measurements.views = _Views(statuses, retries=(('retry', ('b',)),), replace=False)
     assert measurements._infra(dict(execution_id='e', execution_state='finished')) is True
 
 
@@ -200,7 +209,8 @@ def test_infra_retry_only_when_a_case_is_still_failed_after_its_re_asks(retry_st
 def test_execution_records_re_asked_cases_with_failure_categories(tmp_path, monkeypatch, first, again, category):
     from test_workbench_seeded_execution import fake_scoring, spec_for
     from rag_eval.workbench.notebook_job import execute
-    _, payload_, prep = spec_for(tmp_path, retry_rounds=1)
+    _, payload_, prep = spec_for(tmp_path, retry_rounds=1, case_retry_rule=True)
+    assert payload_['case_retry_rule'] is True
     case_ids = prep['input']['selection']['case_ids']
 
     def plan(**kwargs):
@@ -231,13 +241,16 @@ def test_execution_records_re_asked_cases_with_failure_categories(tmp_path, monk
     execute(payload_)
     saved = json.loads((Path(payload_['run_dir']) / 'retry-rounds.json').read_text())
     n = len(case_ids)
-    assert saved['case_retry'] == dict(max_retries_per_case=1, cases=n, first_failed=n, retried_cases=n,
+    assert saved['case_retry'] == dict(max_retries_per_case=1, frozen_rule=True, cases=n, first_failed=n,
+                                       retried_cases=n,
                                        re_asks=n, still_failed=n if again == 'error' else 0,
                                        categories={category: n})
     case = saved['partitions']['0001']['cases'][case_ids[0]]
     assert case['re_asks'] == 1 and case['final_status'] == again
     assert case['first_failure']['category'] == category
     assert case['scored_from'].endswith('retry-1/0001/' + case_ids[0])
+    plan = json.loads((Path(payload_['run_dir']) / 'batch-plan.json').read_text())
+    assert plan[0]['retries'][0]['replaces_failed'] is True
 
 
 def test_failure_categories():

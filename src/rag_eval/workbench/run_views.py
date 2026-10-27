@@ -121,6 +121,11 @@ class RunEntry:
     # ((retry run id, case ids it answers for this partition), ...): a retry
     # asked only failed cases; those cases take their values from the retry.
     retries: tuple = ()
+    # Retries ran under an iteration's frozen case_retry rule: their answers
+    # also replace the failed first answers in formal admission. Executions
+    # without the rule (older iterations, plain jobs) keep requiring the
+    # partition run itself to be complete.
+    retries_replace: bool = False
 
 
 def _replaced(entry):
@@ -129,6 +134,8 @@ def _replaced(entry):
     Their failed first answers do not block admission; every such retry run
     must itself be admitted (``RunViews.admission``) and supplies the values.
     """
+    if not entry.retries_replace:
+        return ()
     return tuple(cid for _, case_ids in entry.retries for cid in case_ids)
 
 
@@ -284,7 +291,7 @@ class RunViews:
                         continue
                     scores = root / 'official' / name / 'scores' / 'scores.json'
                     state = record.get('state') if record.get('terminal') else None
-                    retries = []
+                    retries, replace = [], False
                     for retry in job.get('retries') or ():
                         selected = tuple(retry.get('selected_case_ids') or ())
                         if not selected or not retry.get('complete') or not retry.get('run_dir'):
@@ -297,17 +304,18 @@ class RunViews:
                                 or not _ID.match(retry['official_name'])):
                             continue
                         retry_id = _registered_id(f"{identity}-r{retry['round']}", 'run')
+                        replace = retry.get('replaces_failed') is True
                         self._runs[retry_id] = RunEntry(
                             retry_id, retry_path.resolve(),
                             root / 'official' / retry['official_name'] / 'scores' / 'scores.json',
                             task_id=record['task_id'], case_ids=tuple(retry['case_ids']), execution_state=state,
-                            suite=job.get('suite'), mode=job.get('mode'))
+                            suite=job.get('suite'), mode=job.get('mode'), retries_replace=replace)
                         retries.append((retry_id, selected))
                     self._runs[identity] = RunEntry(identity, path.resolve(), scores,
                         task_id=record['task_id'], case_ids=tuple(job['case_ids']),
                         execution_state=state, suite=job.get('suite'), mode=job.get('mode'),
                         failure=next((row for row in failures if row.get('run_dir') == str(path)), None),
-                        retries=tuple(retries))
+                        retries=tuple(retries), retries_replace=replace)
             except (OSError, ValueError, KeyError, TypeError):
                 continue
 
@@ -869,7 +877,7 @@ class RunViews:
         entry = self._runs.get(retry_id)
         if entry is None:
             return None, 'retry run is not registered'
-        replaced = tuple(cid for cid in entry.case_ids if cid not in set(selected))
+        replaced = tuple(cid for cid in entry.case_ids if cid not in set(selected)) if entry.retries_replace else ()
         report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
                                     after_scores=entry.scores, bundle=bundle,
                                     before_replaced=replaced, after_replaced=replaced)

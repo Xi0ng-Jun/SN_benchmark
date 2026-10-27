@@ -924,6 +924,8 @@ class IterationService:
         frozen_retry = (protocol.get('case_retry') or {}).get('max_retries_per_case')
         if type(frozen_retry) is int:
             config['retry_rounds'] = frozen_retry
+            # Only under the frozen rule does a retry answer replace a failed first answer.
+            config['case_retry_rule'] = True
         elif protocol.get('budget'):
             # Retries must be new ledgered attempts, not hidden runner rounds.
             config['retry_rounds'] = 0
