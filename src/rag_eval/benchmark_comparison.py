@@ -212,8 +212,21 @@ def _scorer_difference(left, right):
     return 'official scorer sources or dependencies differ: ' + ', '.join(keys)
 
 
+def require_complete(submission, replaced_case_ids=()):
+    """Formal comparison needs every case answered.
+
+    A case answered again by an admitted in-attempt retry takes that answer, so
+    only its failed first answer (``replaced_case_ids``) may stay incomplete.
+    """
+    if submission['coverage']['generation_complete']:
+        return
+    incomplete = {r['case_id'] for r in submission['predictions'] if r['status'] in ('missing', 'error')}
+    if not incomplete <= set(replaced_case_ids):
+        raise ValueError('Main comparison requires complete generation; missing/error cases remain incomplete')
+
+
 def validate_scored_submission(bundle, submission, scores, *, require_complete_generation=False,
-                               saved_prepared=None, notes=None):
+                               saved_prepared=None, notes=None, replaced_case_ids=()):
     """Validate one score artifact against its frozen bundle and submission.
 
     Returns per-case metric names, denominators, eligible case IDs and batch-only
@@ -364,8 +377,8 @@ def validate_scored_submission(bundle, submission, scores, *, require_complete_g
             raise ValueError('Metrics without per-case values require batch_only_metrics')
         if set(declared_batch_only) & per_case_metrics:
             raise ValueError('batch_only_metrics contains a metric with per-case values')
-    if require_complete_generation and not submission['coverage']['generation_complete']:
-        raise ValueError('Main comparison requires complete generation; missing/error cases remain incomplete')
+    if require_complete_generation:
+        require_complete(submission, replaced_case_ids)
     return per_case_metrics or set(), denominators, metric_cases, set(declared_batch_only)
 
 
@@ -451,7 +464,7 @@ def _compare_objects(bundle, entries, *, allow_method_attempts=False):
         notes = {}
         per_metrics, denominators, metric_cases, batch_only = validate_scored_submission(
             bundle, submission, scores, require_complete_generation=True, saved_prepared=entry.get('prepared'),
-            notes=notes)
+            notes=notes, replaced_case_ids=entry.get('replaced_case_ids', ()))
         compared, disclosure = scorer_comparison(scores)
         disclosure.update(notes, scorer_id=scores['scorer_id'])
         if loaded:

@@ -1,446 +1,270 @@
-"""S3: per-case retry accounting, protocol freeze, budget, and comparison reporting.
+"""S3: in-attempt re-asks of failed cases, frozen in the iteration protocol and counted in the ledger.
 
-Rules covered:
-1. case_retry frozen at iteration creation; default 1; old iterations (no key) → unchanged behaviour.
-2. Retry limit enforced; still-failed after limit → infra path; retry success → admitted.
-3. Budget worst-case reservation includes retries; settle accounts actual retried cases; estimate denominator includes retries.
-4. Attempt records retry info; classifications present.
-5. retry_summary appears in comparisons; gate verdict unchanged.
+1. The rule is frozen at creation (default one re-ask per case) and drives every attempt;
+   iterations without the key keep their old behaviour.
+2. A re-ask that answers admits the attempt; a case still failed after the limit takes the infra path.
+3. Every re-ask is a case run: reserved at its worst case, settled to what happened.
+4. Each attempt records which cases were re-asked, how often and why they failed.
+5. Comparisons and gate results show both sides' re-ask rates without changing the verdict.
 """
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from rag_eval.workbench.repository import WorkbenchRepository
+from rag_eval.workbench.budgets import BudgetLedger
+from test_workbench_budgets import setup, step
+from test_workbench_iterations import BUDGET, env, iteration, payload  # noqa: F401
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _repo(tmp_path):
-    repo = WorkbenchRepository(tmp_path / 'state')
-    repo.register_workspace('ws', tmp_path / 'project')
-    return repo
-
-
-def _make_iteration(protocol):
-    return dict(id='iter1', task_id='task1', protocol=protocol)
-
-
-# ---------------------------------------------------------------------------
-# Rule 1: validate_case_retry and protocol defaults
-# ---------------------------------------------------------------------------
-
-def test_validate_case_retry_defaults_and_rejects_invalid():
-    from rag_eval.workbench.iterations import validate_case_retry
-    assert validate_case_retry(None) is None
-    assert validate_case_retry({'max_retries_per_case': 0}) == {'max_retries_per_case': 0}
-    assert validate_case_retry({'max_retries_per_case': 1}) == {'max_retries_per_case': 1}
-    assert validate_case_retry({'max_retries_per_case': 10}) == {'max_retries_per_case': 10}
-    with pytest.raises(ValueError):
-        validate_case_retry({'max_retries_per_case': -1})
-    with pytest.raises(ValueError):
-        validate_case_retry({'max_retries_per_case': 11})
-    with pytest.raises(ValueError):
-        validate_case_retry({'unexpected': 1})
-    with pytest.raises(ValueError):
-        validate_case_retry({'max_retries_per_case': 'one'})
+# ------------------------------------------------------------------ 1. protocol
+def test_new_iterations_freeze_one_re_ask_and_attempts_use_the_frozen_rule(env):
+    service = env['service']
+    service.execution_config = dict(service.execution_config, retry_rounds=3)
+    tree = iteration(env)
+    assert tree['protocol']['case_retry'] == {'max_retries_per_case': 1}
+    # A replay of the same creation (no explicit rule) is the same iteration.
+    assert iteration(env)['id'] == tree['id']
+    root = service.run(tree['root_candidate_id'], budget=BUDGET, actor='alice', request_key='r')
+    assert payload(env, root)['retry_rounds'] == 1  # the protocol overrides the server setting
+    off = iteration(env, case_retry={'max_retries_per_case': 0}, request_key='off', title='off')
+    assert off['protocol']['case_retry'] == {'max_retries_per_case': 0}
+    root = service.run(off['root_candidate_id'], budget=BUDGET, actor='alice', request_key='r0')
+    assert payload(env, root)['retry_rounds'] == 0
+    for bad in ({'max_retries_per_case': -1}, {'max_retries_per_case': 11}, {'other': 1},
+                {'max_retries_per_case': True}, 'one'):
+        with pytest.raises(ValueError, match='case_retry'):
+            iteration(env, case_retry=bad, request_key='bad', title='bad')
 
 
-def test_new_iteration_defaults_to_1_retry(tmp_path):
-    """create_iteration with no case_retry arg stores max_retries_per_case=1."""
-    from rag_eval.workbench.iterations import validate_case_retry
-    # Default: pass None for case_retry → frozen as 1
-    result = validate_case_retry({'max_retries_per_case': 1})
-    assert result == {'max_retries_per_case': 1}
+def _strip_rule(env, tree):
+    """An iteration frozen before the rule existed."""
+    protocol = dict(tree['protocol'])
+    protocol.pop('case_retry')
+    with env['repo'].connect(write=True) as conn:
+        conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(protocol), tree['id']))
 
 
-def test_old_iteration_protocol_no_case_retry_key_has_none():
-    """Iterations created before this feature have no case_retry key → None."""
-    from rag_eval.workbench.iterations import validate_case_retry
-    protocol = {}  # old protocol without case_retry
-    assert protocol.get('case_retry') is None
-    assert validate_case_retry(protocol.get('case_retry')) is None
+def test_iterations_without_the_rule_keep_their_old_behaviour(env):
+    service = env['service']
+    service.execution_config = dict(service.execution_config, retry_rounds=3)
+    plain = iteration(env)
+    _strip_rule(env, plain)
+    root = service.run(plain['root_candidate_id'], budget=BUDGET, actor='alice', request_key='p')
+    assert payload(env, root)['retry_rounds'] == 3  # unbudgeted: the server setting
+    budgeted = iteration(env, budget=dict(max_case_runs=100, max_runs_per_candidate=10),
+                         request_key='b', title='budgeted')
+    _strip_rule(env, budgeted)
+    root = service.run(budgeted['root_candidate_id'], budget=BUDGET, actor='alice', request_key='b')
+    assert payload(env, root)['retry_rounds'] == 0  # budgeted: retries were new attempts
+    with env['repo'].connect() as conn:
+        assert conn.execute('SELECT retry_case_count FROM iteration_budget_reservations').fetchone()[0] == 0
 
 
-def test_case_retry_0_disables_retries():
-    from rag_eval.workbench.iterations import validate_case_retry
-    result = validate_case_retry({'max_retries_per_case': 0})
-    assert result['max_retries_per_case'] == 0
+# ------------------------------------------------------------------ 3. ledger
+def counted(tmp_path, cap=100, retries=1):
+    repo, tree = setup(tmp_path)
+    tree['protocol']['budget'] = dict(max_case_runs=cap, max_runs_per_candidate=10)
+    if retries is not None:
+        tree['protocol']['case_retry'] = dict(max_retries_per_case=retries)
+    return repo, tree, BudgetLedger(repo)
 
 
-# ---------------------------------------------------------------------------
-# Rule 1: idempotency — payload must include case_retry only when explicitly passed
-# ---------------------------------------------------------------------------
-
-def test_create_iteration_payload_includes_case_retry_only_when_passed():
-    """Payload construction: case_retry absent by default to keep old receipt hashes stable."""
-    # We mimic the logic in create_iteration without running the full service.
-    def build_payload(case_retry_arg, case_retry_frozen):
-        payload = dict(workspace_id='ws', title='t', start_commit='a' * 40,
-                       input_id='inp', expected_bundle_id='b' * 64,
-                       case_ids=['c1'], mode='chunk', seeded_from=None,
-                       sealed_ref=None, split_seed=0,
-                       fresh_batch_count=0, fresh_papers_per_batch=8)
-        if case_retry_arg is not None:
-            payload['case_retry'] = case_retry_frozen
-        return payload
-
-    p_default = build_payload(None, {'max_retries_per_case': 1})
-    p_explicit = build_payload({'max_retries_per_case': 2}, {'max_retries_per_case': 2})
-    assert 'case_retry' not in p_default  # old receipt hash not perturbed
-    assert p_explicit['case_retry'] == {'max_retries_per_case': 2}
+def settle(ledger, tree, tmp_path, key, execution_id, re_asked, *, state='finished', cny=None):
+    run = tmp_path / execution_id
+    run.mkdir()
+    (run / 'retry-rounds.json').write_text(json.dumps(dict(format='sn-workbench-retry-rounds-v2', rounds=[],
+        partitions={'0001': dict(run_dir=str(run), retries=[dict(round=1, case_ids=re_asked, complete=True)])})))
+    ledger.attach(tree['id'], 'candidate', key, execution_id)
+    run_state = dict(cost_observation=dict(currency='CNY', complete=True, total_cny=cny)) if cny is not None else None
+    ledger.settle_execution(dict(execution_id=execution_id, terminal=True, state=state, run_dir=str(run),
+                                 run_state=run_state))
 
 
-# ---------------------------------------------------------------------------
-# Rule 1: retry_rounds config driven by frozen protocol
-# ---------------------------------------------------------------------------
-
-def test_retry_rounds_config_new_budgeted_iteration():
-    """New budgeted iteration: retry_rounds = frozen max_retries_per_case."""
-    # Mirrors the logic in IterationService.run()
-    def compute_retry_rounds(protocol, server_config):
-        config = dict(server_config)
-        frozen_retry = (protocol.get('case_retry') or {}).get('max_retries_per_case')
-        if type(frozen_retry) is int:
-            config['retry_rounds'] = frozen_retry
-        elif protocol.get('budget'):
-            config['retry_rounds'] = 0
-        return config.get('retry_rounds')
-
-    new_budgeted = {'budget': {'limit_cny': 5, 'max_runs_per_candidate': 4},
-                    'case_retry': {'max_retries_per_case': 1}}
-    assert compute_retry_rounds(new_budgeted, {'retry_rounds': 3}) == 1
-
-    # Old budgeted iteration (no case_retry key) → 0
-    old_budgeted = {'budget': {'limit_cny': 5, 'max_runs_per_candidate': 4}}
-    assert compute_retry_rounds(old_budgeted, {'retry_rounds': 3}) == 0
-
-    # New un-budgeted → frozen value wins
-    new_unbudgeted = {'case_retry': {'max_retries_per_case': 2}}
-    assert compute_retry_rounds(new_unbudgeted, {'retry_rounds': 0}) == 2
-
-    # Old un-budgeted → server setting unchanged
-    old_unbudgeted = {}
-    assert compute_retry_rounds(old_unbudgeted, {'retry_rounds': 5}) == 5
+def test_re_asks_are_reserved_at_worst_case_and_settled_to_what_happened(tmp_path):
+    repo, tree, ledger = counted(tmp_path, cap=10)
+    assert ledger.reserve_many(tree, [step('a', count=4)], group_key='a')['status'] == 'reserved'
+    assert ledger.summary(tree['id'])['case_runs_used'] == 8  # 4 cases, each may be asked twice
+    # A second attempt cannot slip under the cap by ignoring the first one's pending re-asks.
+    denied = ledger.reserve_many(tree, [step('b', count=2)], group_key='b')
+    assert denied['status'] == 'budget_exceeded' and denied['reasons'] == ['max_case_runs']
+    settle(ledger, tree, tmp_path, 'a', 'exec-a', ['q1'], cny=2.0)
+    assert ledger.summary(tree['id'])['case_runs_used'] == 5  # 4 first asks + 1 re-ask
+    assert ledger.reserve_many(tree, [step('b', count=2)], group_key='b')['status'] == 'reserved'
 
 
-# ---------------------------------------------------------------------------
-# Rule 2: _infra reads retry-rounds selection
-# ---------------------------------------------------------------------------
-
-class _FakeRun:
-    def __init__(self, run_id, run_dir, case_ids, retries=()):
-        self.id = run_id
-        self.run_dir = Path(run_dir)
-        self.case_ids = case_ids
-        self.retries = retries  # tuple of (retry_run_id, selected_case_ids)
+def test_unsettled_cost_keeps_the_worst_case(tmp_path):
+    repo, tree, ledger = counted(tmp_path)
+    ledger.reserve_many(tree, [step('a', count=3)], group_key='a')
+    settle(ledger, tree, tmp_path, 'a', 'exec-a', [], state='cancelled')
+    assert ledger.summary(tree['id'])['case_runs_used'] == 6
 
 
-class _FakeViews:
-    def __init__(self, runs_dict):
-        self._runs = runs_dict
+def test_without_the_rule_nothing_extra_is_reserved_and_old_rows_count_as_none(tmp_path):
+    repo, tree, ledger = counted(tmp_path, cap=4, retries=None)
+    assert ledger.reserve_many(tree, [step('a', count=4)], group_key='a')['status'] == 'reserved'
+    with repo.connect(write=True) as conn:  # a row written before the column existed
+        conn.execute('UPDATE iteration_budget_reservations SET retry_case_count=NULL')
+    assert ledger.summary(tree['id'])['case_runs_used'] == 4
+
+
+def test_per_case_estimate_divides_by_asks_including_re_asks(tmp_path):
+    repo, tree, ledger = counted(tmp_path)
+    ledger.reserve_many(tree, [step('a', count=4)], group_key='a')
+    settle(ledger, tree, tmp_path, 'a', 'exec-a', ['q1', 'q2'], cny=6.0)
+    with repo.connect() as conn:
+        assert ledger._estimate(conn, tree) == (1.0, 'historical_observed_per_case')
+
+
+# ------------------------------------------------------------------ 2. admission and infra
+def test_formal_admission_excuses_only_cases_a_retry_answered():
+    from rag_eval.benchmark_comparison import require_complete
+    submission = dict(coverage=dict(generation_complete=False), predictions=[
+        dict(case_id='a', status='success'), dict(case_id='b', status='error'), dict(case_id='c', status='missing')])
+    with pytest.raises(ValueError, match='complete generation'):
+        require_complete(submission, ['b'])
+    require_complete(submission, ['b', 'c'])
+    require_complete(dict(coverage=dict(generation_complete=True), predictions=[]))
+
+
+def test_run_admission_and_flips_pass_retried_cases_to_formal_admission(tmp_path, monkeypatch):
+    from rag_eval import flip_report
+    from rag_eval.workbench.run_views import RunViews
+    root = tmp_path / 'exec'
+    first, r1, r2 = root / 'partitions/0001', root / 'retry-1/0001/r', root / 'retry-2/0001/r'
+    for path in (first, r1, r2):
+        path.mkdir(parents=True)
+    (root / 'batch-plan.json').write_text(json.dumps([dict(
+        partition_id='p', case_ids=['a', 'b', 'c'], run_dir=str(first), suite='alce', mode='chunk',
+        official_name='0001', retries=[
+            dict(round=1, run_dir=str(r1), case_ids=['b', 'c'], official_name='0001-r1', complete=True,
+                 selected_case_ids=['b']),
+            dict(round=2, run_dir=str(r2), case_ids=['c'], official_name='0001-r2', complete=True,
+                 selected_case_ids=['c'])])]))
+    seen = {}
+
+    def spy(before, after, *, before_replaced=(), **kwargs):
+        seen[Path(before).relative_to(root).parts[0]] = sorted(before_replaced)
+        return dict(admission=dict(status='admitted', reason=None), before={}, cases=[])
+    monkeypatch.setattr(flip_report, 'compare_runs_flips', spy)
+    views = RunViews([], execution_records=lambda: [dict(execution_id='exec', task_id='t', run_dir=str(root),
+                                                         state='finished', terminal=True)])
+    assert views.admission('exec-1')['status'] == 'admitted'
+    # The partition run is excused for both re-asked cases; round 1 for the case round 2 answered.
+    assert seen == {'partitions': ['b', 'c'], 'retry-1': ['c'], 'retry-2': []}
+    seen.clear()
+    views.flips('exec-1', 'exec-1', bundle=object())
+    assert seen['partitions'] == ['b', 'c']
+
+
+class _Views:
+    def __init__(self, statuses, retries=()):
+        self.statuses, self.retries = statuses, retries
 
     def execution_runs(self, execution_id):
-        prefix = execution_id + '-'
-        found = [e for i, e in self._runs.items() if i.startswith(prefix)]
-        return sorted(found, key=lambda e: e.id)
+        from types import SimpleNamespace
+        return [SimpleNamespace(id='run', retries=self.retries)]
 
     def cases(self, run_id):
-        entry = self._runs[run_id]
-        cases = [{'case_id': cid, 'status': entry._case_statuses.get(cid, 'success')}
-                 for cid in entry.case_ids]
-        return {'cases': cases}
+        return dict(cases=[dict(case_id=c, status=s) for c, s in self.statuses[run_id].items()])
 
 
-def _fake_run(run_id, run_dir, case_ids, statuses, retries=()):
-    r = _FakeRun(run_id, run_dir, case_ids, retries)
-    r._case_statuses = statuses
-    return r
-
-
-def _make_infra_checker(views):
+@pytest.mark.parametrize('retry_status,infra', [('success', False), ('error', True), (None, True)])
+def test_infra_retry_only_when_a_case_is_still_failed_after_its_re_asks(retry_status, infra):
     from rag_eval.workbench.loop_measurements import RoundMeasurements
-    rm = object.__new__(RoundMeasurements)
-    rm.views = views
-    return rm
+    measurements = object.__new__(RoundMeasurements)
+    statuses = dict(run=dict(a='success', b='error'), retry={} if retry_status is None else dict(b=retry_status))
+    measurements.views = _Views(statuses, retries=(('retry', ('b',)),))
+    assert measurements._infra(dict(execution_id='e', execution_state='finished')) is infra
+    measurements.views = _Views(dict(run=dict(a='success', b='error')))  # no retries: unchanged
+    assert measurements._infra(dict(execution_id='e', execution_state='finished')) is True
 
 
-def test_infra_false_when_all_cases_success(tmp_path):
-    run = _fake_run('exec1-1', tmp_path / 'r1', ['c1', 'c2'], {'c1': 'success', 'c2': 'success'})
-    views = _FakeViews({'exec1-1': run})
-    rm = _make_infra_checker(views)
-    attempt = dict(execution_id='exec1', execution_state='finished')
-    assert rm._infra(attempt) is False
+# ------------------------------------------------------------------ 4. per-attempt record
+@pytest.mark.parametrize('first,again,category', [
+    (dict(response=dict(llm_mode='synthesis_failed')), 'success', 'synthesis_failed'),
+    (dict(error_type='case_timeout', failed_phase='asking'), 'error', 'case_timeout'),
+])
+def test_execution_records_re_asked_cases_with_failure_categories(tmp_path, monkeypatch, first, again, category):
+    from test_workbench_seeded_execution import fake_scoring, spec_for
+    from rag_eval.workbench.notebook_job import execute
+    _, payload_, prep = spec_for(tmp_path, retry_rounds=1)
+    case_ids = prep['input']['selection']['case_ids']
+
+    def plan(**kwargs):
+        ids = Path(kwargs['case_id_file']).read_text().split()
+        return [dict(partition_id=payload_['selection']['partition_ids'][case_ids.index(cid)], case_ids=[cid],
+                     run_dir=str(kwargs['output_root'] / cid), suite='alce', mode='chunk') for cid in ids]
+
+    def batch(jobs, *, output_root, parallel, after_run=None, **kwargs):
+        rows = []
+        for job in jobs:
+            cid, run = job['case_ids'][0], Path(job['run_dir'])
+            status = again if 'retry-1' in str(output_root) else 'error'
+            run.mkdir(parents=True)
+            (run / 'product-artifacts').mkdir()
+            (run / 'product-artifacts/state.json').write_text('{"prepared": true}')
+            record = dict(first, status=status) if status == 'error' else dict(status=status)
+            (run / 'outputs.jsonl').write_text(json.dumps(dict(case_id=cid, status=status,
+                                                               product_record=record)) + '\n')
+            (run / 'state.json').write_text(json.dumps({'phase': 'finished'}))
+            (run / 'manifest.json').write_text('{}')
+            rows.append(dict(run_dir=job['run_dir'], exit_code=0))
+            if after_run is not None:
+                after_run(job, rows[-1])
+        return dict(exit_code=0, runs=rows)
+    monkeypatch.setattr('rag_eval.notebook_batch.plan_batch', plan)
+    monkeypatch.setattr('rag_eval.notebook_batch.execute_batch', batch)
+    fake_scoring(monkeypatch, lambda run, cid: 1.0)
+    execute(payload_)
+    saved = json.loads((Path(payload_['run_dir']) / 'retry-rounds.json').read_text())
+    n = len(case_ids)
+    assert saved['case_retry'] == dict(max_retries_per_case=1, cases=n, first_failed=n, retried_cases=n,
+                                       re_asks=n, still_failed=n if again == 'error' else 0,
+                                       categories={category: n})
+    case = saved['partitions']['0001']['cases'][case_ids[0]]
+    assert case['re_asks'] == 1 and case['final_status'] == again
+    assert case['first_failure']['category'] == category
+    assert case['scored_from'].endswith('retry-1/0001/' + case_ids[0])
 
 
-def test_infra_true_when_case_error_no_retries(tmp_path):
-    run = _fake_run('exec2-1', tmp_path / 'r2', ['c1', 'c2'], {'c1': 'success', 'c2': 'error'})
-    views = _FakeViews({'exec2-1': run})
-    rm = _make_infra_checker(views)
-    attempt = dict(execution_id='exec2', execution_state='finished')
-    assert rm._infra(attempt) is True
+def test_failure_categories():
+    from rag_eval.workbench.notebook_job import failure_category
+    assert failure_category(None) == 'missing'
+    assert failure_category(dict(product_record=dict(error_type='partition_deadline'))) == 'partition_deadline'
+    assert failure_category(dict(product_record=dict(error_type='ReadTimeout'))) == 'model_infrastructure'
+    assert failure_category(dict(product_record=dict(reason='native invocation/capture failed'))) == 'capture_failed'
+    assert failure_category(dict(product_record=dict(error_type='ValueError'))) == 'other'
 
 
-def test_infra_false_when_retry_answered_error_case(tmp_path):
-    """After retry answered c2, the original error is resolved → not infra."""
-    retry_run = _fake_run('exec3-1-r1', tmp_path / 'retry', ['c2'], {'c2': 'success'})
-    # Primary run: c2=error, but retry (listed in retries) answered it as success
-    primary = _fake_run('exec3-1', tmp_path / 'r3', ['c1', 'c2'], {'c1': 'success', 'c2': 'error'},
-                        retries=(('exec3-1-r1', ('c2',)),))
-    views = _FakeViews({'exec3-1': primary, 'exec3-1-r1': retry_run})
-    rm = _make_infra_checker(views)
-    attempt = dict(execution_id='exec3', execution_state='finished')
-    assert rm._infra(attempt) is False
-
-
-def test_infra_true_when_retry_still_error(tmp_path):
-    """Retry ran but c2 still error → infra path must fire."""
-    retry_run = _fake_run('exec4-1-r1', tmp_path / 'retry', ['c2'], {'c2': 'error'})
-    primary = _fake_run('exec4-1', tmp_path / 'r4', ['c1', 'c2'], {'c1': 'success', 'c2': 'error'},
-                        retries=(('exec4-1-r1', ('c2',)),))
-    views = _FakeViews({'exec4-1': primary, 'exec4-1-r1': retry_run})
-    rm = _make_infra_checker(views)
-    attempt = dict(execution_id='exec4', execution_state='finished')
-    assert rm._infra(attempt) is True
-
-
-def test_infra_cancelled_is_not_infra(tmp_path):
-    attempt = dict(execution_id='exec5', execution_state='cancelled')
-    views = _FakeViews({})
-    rm = _make_infra_checker(views)
-    assert rm._infra(attempt) is False
-
-
-# ---------------------------------------------------------------------------
-# Rule 3: Budget worst-case cap includes retries
-# ---------------------------------------------------------------------------
-
-def test_exceeded_caps_includes_retry_worst_case():
-    from rag_eval.workbench.budgets import exceeded_caps
-    policy = {'limit_cny': 10, 'max_case_runs': 4, 'max_runs_per_candidate': 3}
-    summary = dict(charged_cny=0, case_runs_used=0,
-                   runs_by_candidate={}, subject_runs_by_candidate={})
-
-    # 2 base cases + 1 retry = 4 case-runs worst case → fits exactly
-    steps_fit = [dict(candidate_id='c1', request_key='k1', case_count=2,
-                      max_retries_per_case=1, counts_toward_candidate_cap=True)]
-    assert exceeded_caps(policy, summary, steps_fit, 1.0) == []
-
-    # 2 base cases + 2 retries = 6 case-runs → exceeds max_case_runs=4
-    steps_over = [dict(candidate_id='c1', request_key='k1', case_count=2,
-                       max_retries_per_case=2, counts_toward_candidate_cap=True)]
-    reasons = exceeded_caps(policy, summary, steps_over, 1.0)
-    assert 'max_case_runs' in reasons
-
-
-def test_exceeded_caps_no_retry_key_uses_base_count():
-    """Steps without max_retries_per_case use only case_count (backward compat)."""
-    from rag_eval.workbench.budgets import exceeded_caps
-    policy = {'max_case_runs': 2, 'limit_cny': 10, 'max_runs_per_candidate': 3}
-    summary = dict(charged_cny=0, case_runs_used=0,
-                   runs_by_candidate={}, subject_runs_by_candidate={})
-    steps = [dict(candidate_id='c1', request_key='k1', case_count=2,
-                  counts_toward_candidate_cap=True)]
-    assert exceeded_caps(policy, summary, steps, 0.5) == []
-
-
-# ---------------------------------------------------------------------------
-# Rule 3: settle_execution records retry_case_count
-# ---------------------------------------------------------------------------
-
-def _write_retry_rounds(run_dir, partitions_retries):
-    """partitions_retries: {partition_name: [{round, case_ids, complete}]}"""
-    path = Path(run_dir) / 'retry-rounds.json'
-    partitions = {}
-    for name, retries in partitions_retries.items():
-        partitions[name] = dict(run_dir=str(run_dir), retries=retries)
-    path.write_text(json.dumps(dict(format='sn-workbench-retry-rounds-v2',
-                                    rounds=[], partitions=partitions)))
-
-
-def setup_budget(tmp_path):
-    from rag_eval.workbench.budgets import BudgetLedger
-    repo = WorkbenchRepository(tmp_path / 'state')
-    ws = repo.register_workspace('ws', tmp_path / 'project')
-    task = repo.create_task(ws['id'], 'task', '', request_key='t1')
-    iteration = dict(id='iter1', task_id=task['id'],
-                     protocol={'budget': {'limit_cny': 100, 'max_case_runs': 200,
-                                          'max_runs_per_candidate': 10}})
-    ledger = BudgetLedger(repo)
-    return repo, iteration, ledger
-
-
-def test_settle_records_retry_case_count(tmp_path):
-    repo, iteration, ledger = setup_budget(tmp_path)
-    step = dict(candidate_id='c1', request_key='k1', case_count=4)
-    ledger.reserve_many(iteration, [step], group_key='g1')
-    run_dir = tmp_path / 'run1'
-    run_dir.mkdir()
-    _write_retry_rounds(run_dir, {'p1': [{'round': 1, 'case_ids': ['a', 'b'], 'complete': True}]})
-    record = dict(execution_id='exec1', terminal=True, state='finished', run_dir=str(run_dir),
-                  run_state={'cost_observation': {'currency': 'CNY', 'complete': True, 'total_cny': 4.0}})
-    with repo.connect(write=True) as conn:
-        conn.execute("UPDATE iteration_budget_reservations SET execution_id='exec1' "
-                     "WHERE iteration_id='iter1' AND candidate_id='c1' AND request_key='k1'")
-    ledger.settle_execution(record)
-    with repo.connect() as conn:
-        row = conn.execute("SELECT retry_case_count,case_count FROM iteration_budget_reservations "
-                           "WHERE execution_id='exec1'").fetchone()
-    assert row['retry_case_count'] == 2  # 2 retried cases from retry-rounds.json
-    assert row['case_count'] == 4
-
-
-def test_case_runs_used_includes_retries(tmp_path):
-    repo, iteration, ledger = setup_budget(tmp_path)
-    step = dict(candidate_id='c1', request_key='k1', case_count=4)
-    ledger.reserve_many(iteration, [step], group_key='g1')
-    run_dir = tmp_path / 'run2'
-    run_dir.mkdir()
-    _write_retry_rounds(run_dir, {'p1': [{'round': 1, 'case_ids': ['a', 'b', 'c'], 'complete': True}]})
-    record = dict(execution_id='exec2', terminal=True, state='finished', run_dir=str(run_dir),
-                  run_state={'cost_observation': {'currency': 'CNY', 'complete': True, 'total_cny': 7.0}})
-    with repo.connect(write=True) as conn:
-        conn.execute("UPDATE iteration_budget_reservations SET execution_id='exec2' "
-                     "WHERE iteration_id='iter1' AND candidate_id='c1' AND request_key='k1'")
-    ledger.settle_execution(record)
-    summary = ledger.summary('iter1', reconcile=False)
-    assert summary['case_runs_used'] == 7  # 4 base + 3 retried
-
-
-def test_old_reservation_row_without_retry_case_count(tmp_path):
-    """Rows with NULL retry_case_count (old DB) are counted as 0 retries."""
-    repo, iteration, ledger = setup_budget(tmp_path)
-    step = dict(candidate_id='c2', request_key='k2', case_count=3)
-    ledger.reserve_many(iteration, [step], group_key='g2')
-    with repo.connect(write=True) as conn:
-        conn.execute("UPDATE iteration_budget_reservations SET retry_case_count=NULL "
-                     "WHERE iteration_id='iter1'")
-    summary = ledger.summary('iter1', reconcile=False)
-    assert summary['case_runs_used'] == 3  # only base count
-
-
-# ---------------------------------------------------------------------------
-# Rule 3: estimate denominator includes retries
-# ---------------------------------------------------------------------------
-
-def test_estimate_denominator_includes_retries(tmp_path):
-    from rag_eval.workbench.budgets import BudgetLedger
-    repo, iteration, ledger = setup_budget(tmp_path)
-    step1 = dict(candidate_id='c1', request_key='k1', case_count=4)
-    step2 = dict(candidate_id='c2', request_key='k2', case_count=4)
-    ledger.reserve_many(iteration, [step1], group_key='g1')
-    ledger.reserve_many(iteration, [step2], group_key='g2')
-    for eid, rdir, retried in [('e1', 'run1', 2), ('e2', 'run2', 0)]:
-        run_dir = tmp_path / rdir
-        run_dir.mkdir()
-        if retried:
-            _write_retry_rounds(run_dir, {'p': [{'round': 1, 'case_ids': ['a', 'b'], 'complete': True}]})
-        rec = dict(execution_id=eid, terminal=True, state='finished', run_dir=str(run_dir),
-                   run_state={'cost_observation': {'currency': 'CNY', 'complete': True, 'total_cny': 6.0}})
-        cid = 'c1' if eid == 'e1' else 'c2'
-        with repo.connect(write=True) as conn:
-            conn.execute(f"UPDATE iteration_budget_reservations SET execution_id=? "
-                         f"WHERE iteration_id='iter1' AND candidate_id=?", (eid, cid))
-        ledger.settle_execution(rec)
-    # e1: 4 base + 2 retry = 6 actual case-runs; e2: 4 base + 0 = 4 actual
-    # total cost = 12, total case-runs = 10 → per_case = 1.2
-    with repo.connect() as conn:
-        per_case, source = ledger._estimate(conn, iteration)
-    assert source == 'historical_observed_per_case'
-    assert abs(per_case - 12.0 / 10.0) < 1e-9
-
-
-# ---------------------------------------------------------------------------
-# Rule 4: retry_summary in comparisons
-# ---------------------------------------------------------------------------
-
-def test_classify_failure():
-    from rag_eval.workbench.comparisons import _classify_failure
-    assert _classify_failure({'error_type': 'malformed_response'}) == 'malformed_response'
-    assert _classify_failure({'error_type': 'incomplete_object'}) == 'malformed_response'
-    assert _classify_failure({'error_type': 'case_timeout'}) == 'case_timeout'
-    assert _classify_failure({'error_type': 'partition_deadline'}) == 'partition_deadline'
-    assert _classify_failure({'failed_phase': 'generating', 'error_type': 'child_exit'}) == 'generation_failure'
-    assert _classify_failure({'error_type': 'model_error'}) == 'model_infrastructure'
-    assert _classify_failure({'error_type': 'rate_limit'}) == 'model_infrastructure'
-    assert _classify_failure({'error_type': 'unknown_thing'}) == 'other'
-    assert _classify_failure({}) == 'other'
-
-
-def test_retry_summary_in_comparison_scope(tmp_path):
-    """_compute_scope includes retry_summary; gate is not affected by it."""
+# ------------------------------------------------------------------ 5. side-by-side disclosure
+def test_comparisons_and_gate_show_both_sides_re_ask_rates_without_changing_the_verdict(tmp_path):
     from rag_eval.workbench.comparisons import ComparisonService
-
-    class _StubViews:
-        def execution_runs(self, eid): return []
-        def cases(self, rid): return {'cases': []}
-
-    class _StubIterations:
-        def iteration_record(self, iid):
-            return dict(id=iid, protocol={'k_base': 2, 'success_threshold': 0.5})
-        iteration = iteration_record
-
-    cs = object.__new__(ComparisonService)
-    cs.repository = None
-    cs.iterations = _StubIterations()
-    cs.views = _StubViews()
-
-    # Both sides have a terminal non-finished execution so _compute_scope
-    # returns a body with infrastructure + retry_summary.
-    def _make_side(cid, eid, parent=None):
-        return dict(id=cid, iteration_id='iter1', status='frozen',
-                    parent_candidate_id=parent,
-                    attempts=[dict(execution_id=eid, execution_state='failed',
-                                   attempt=1, run_dir=None, batch_id=None,
-                                   job_id='j-' + cid, preparation_id='p-' + cid,
-                                   created_by='test', created_at='',
-                                   admission={'status': 'not_admitted', 'reason': 'failed'})],
-                    links=[], reference=None, decision=None)
-
-    subject = _make_side('s1', 'ex1', parent='r1')
-    reference = _make_side('r1', 'ex2')
-    body, _ = cs._compute_scope(subject, reference, 'parent')
-    assert body is not None
-    assert 'retry_summary' in body
-    assert 'subject' in body['retry_summary']
-    assert 'reference' in body['retry_summary']
-    # Gate-relevant fields present and unchanged by retry_summary
-    assert 'admission' in body
-    assert 'mean' in body
-
-
-# ---------------------------------------------------------------------------
-# Rule 5: gate verdict not affected by retry_summary
-# ---------------------------------------------------------------------------
-
-def test_gate_verdict_unaffected_by_retry_summary():
-    """The gate reads mean/noise/admission; retry_summary is metadata-only.
-
-    judge() requires a real contract (predicted_flips + guards), so we supply
-    a minimal one. The test confirms that a body carrying retry_summary produces
-    a verdict via judge() and that the verdict fields are the standard ones.
-    """
     from rag_eval.workbench.gate import DEFAULT_RULE, judge
+    service = object.__new__(ComparisonService)
+
+    def side(name, record):
+        run = tmp_path / name
+        run.mkdir()
+        if record is not None:
+            (run / 'retry-rounds.json').write_text(json.dumps(dict(case_retry=record)))
+        return dict(attempts=[dict(execution_id=name, execution_state='finished', run_dir=str(run))], links=[])
+    child = side('child', dict(cases=10, first_failed=3, re_asks=3, still_failed=1,
+                               categories=dict(synthesis_failed=3)))
+    parent = side('parent', dict(cases=10, first_failed=1, re_asks=1, still_failed=0,
+                                 categories=dict(case_timeout=1)))
+    legacy = side('legacy', None)
+    stats = service._retry_stats(child)
+    assert (stats['re_asks'], stats['re_ask_rate'], stats['still_failed'], stats['unobserved']) == (3, .3, 1, 0)
+    assert service._retry_stats(legacy)['unobserved'] == 1 and service._retry_stats(legacy)['re_ask_rate'] is None
+    summary = dict(subject=stats, reference=service._retry_stats(parent))
+    noise = dict(eta=.05, reference=dict(success_threshold=.5, k_base=2, cases={}),
+                 subject=dict(success_threshold=.5, k_base=2, cases={}))
+    body = dict(admission=dict(status='admitted'), mean=dict(delta=.1),
+                rows=[dict(case_id='c1', left=.4, right=.6, delta=.2)])
     contract = dict(predicted_flips=['c1'], guards=[])
-    body = dict(
-        admission={'status': 'admitted'},
-        mean=dict(reference=0.5, subject=0.6, delta=0.1),
-        noise=dict(eta=0.05, reference=dict(success_threshold=0.5, k_base=2, cases={}, eta=0.05),
-                   subject=dict(success_threshold=0.5, k_base=2, cases={}, eta=0.05)),
-        rows=[{'case_id': 'c1', 'left': 0.5, 'right': 0.6, 'delta': 0.1, 'flip': 'better'}],
-        retry_summary={'subject': {'total_retried_cases': 3, 'still_failed_after_retry': 0},
-                       'reference': {'total_retried_cases': 0, 'still_failed_after_retry': 0}},
-    )
-    verdict = judge(body, body['noise'], contract, DEFAULT_RULE)
-    # Gate fields must be present regardless of retry_summary contents.
-    assert verdict is not None
-    assert 'rho' in verdict
-    assert 'tau' in verdict
-
-
-
-
+    plain = judge(body, noise, contract, DEFAULT_RULE)
+    disclosed = judge(dict(body, retry_summary=summary), noise, contract, DEFAULT_RULE)
+    assert disclosed['case_retry'] == summary and plain['case_retry'] is None
+    assert {k: v for k, v in disclosed.items() if k != 'case_retry'} == {k: v for k, v in plain.items()
+                                                                         if k != 'case_retry'}

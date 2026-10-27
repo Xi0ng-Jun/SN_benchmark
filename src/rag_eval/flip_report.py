@@ -156,7 +156,8 @@ def _admit_side(bundle, side, entry):
 
 
 def compare_runs_flips(before, after, *, before_scores=None, after_scores=None,
-                       before_submission=None, after_submission=None, bundle_directory=None, bundle=None):
+                       before_submission=None, after_submission=None, bundle_directory=None, bundle=None,
+                       before_replaced=(), after_replaced=()):
     """Return a report for two run paths or run-ledger rows; never raises admission errors.
 
     Scores default to run/scores.json, submissions to scores.parent/submission.json.
@@ -171,6 +172,10 @@ def compare_runs_flips(before, after, *, before_scores=None, after_scores=None,
     """
     left, a = _read_side(before, before_scores, before_submission)
     right, b = _read_side(after, after_scores, after_submission)
+    # ``*_replaced``: cases whose failed answers an admitted retry run replaces.
+    for entry, replaced in ((a, before_replaced), (b, after_replaced)):
+        if entry is not None and replaced:
+            entry['replaced_case_ids'] = tuple(replaced)
     report = dict(format=FORMAT, before=left, after=right, self_comparison=False,
                   admission={'status': 'not_admitted', 'reason': None}, cases=[], summary={}, comparison=None,
                   interpretation='Directions describe each official quality metric independently; '

@@ -41,6 +41,8 @@ def judge(comparison, noise, contract, rule):
     result = dict(rule_id=rule['id'], rule=dict(rule), tau=tau, eta=eta, delta=delta,
                   success_threshold=threshold, rho=None, flips=[], guards=[], guard_broken=[],
                   infrastructure=None, verdict='unmeasurable', reasons=[],
+                  # Disclosure only: in-attempt re-asks of each side never change the verdict.
+                  case_retry=comparison.get('retry_summary'),
                   evidence=dict(noise=noise, mean=comparison.get('mean'),
                                 validation=comparison.get('validation'), rows=comparison.get('rows', []),
                                 attempts_used=comparison.get('attempts_used')))

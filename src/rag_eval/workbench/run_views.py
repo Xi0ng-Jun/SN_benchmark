@@ -123,6 +123,15 @@ class RunEntry:
     retries: tuple = ()
 
 
+def _replaced(entry):
+    """Cases of a partition run answered again by its registered retry runs.
+
+    Their failed first answers do not block admission; every such retry run
+    must itself be admitted (``RunViews.admission``) and supplies the values.
+    """
+    return tuple(cid for _, case_ids in entry.retries for cid in case_ids)
+
+
 @dataclass(frozen=True)
 class WorktreeEntry:
     id: str
@@ -817,12 +826,13 @@ class RunViews:
         metric = (self._official_scores(left) or {}).get('primary_metric') if bundle is not None else \
             self._load(left_id)['official'].get('primary_metric')
         report = compare_runs_flips(left.run_dir, right.run_dir, before_scores=left.scores,
-                                   after_scores=right.scores, bundle=bundle)
+                                   after_scores=right.scores, bundle=bundle,
+                                   before_replaced=_replaced(left), after_replaced=_replaced(right))
         admission, note = report['admission']['status'], report['admission']['reason']
         overrides = {}
         for side, entry in (('left', left), ('right', right)):
             for retry_id, case_ids in entry.retries:
-                values, reason = self._retry_values(retry_id, metric, bundle)
+                values, reason = self._retry_values(retry_id, metric, bundle, selected=case_ids)
                 if reason is not None:
                     admission, note = 'not_admitted', f'{retry_id}: {reason}'
                     continue
@@ -847,14 +857,20 @@ class RunViews:
                     left_run=left_id, right_run=right_id, metric=metric, counts=counts, rows=rows,
                     note=note, admission_detail=dict(report['admission'], status=admission, reason=note))
 
-    def _retry_values(self, retry_id, metric, bundle=None):
-        """Admitted per-case metric values of one retry run, or a refusal reason."""
+    def _retry_values(self, retry_id, metric, bundle=None, *, selected):
+        """Admitted per-case metric values of one retry run, or a refusal reason.
+
+        Cases this retry asked but that a later round answers (``selected``
+        lists the ones taken from this run) are replaced there.
+        """
         from ..flip_report import compare_runs_flips
         entry = self._runs.get(retry_id)
         if entry is None:
             return None, 'retry run is not registered'
+        replaced = tuple(cid for cid in entry.case_ids if cid not in set(selected))
         report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
-                                    after_scores=entry.scores, bundle=bundle)
+                                    after_scores=entry.scores, bundle=bundle,
+                                    before_replaced=replaced, after_replaced=replaced)
         if report['admission']['status'] != 'admitted':
             return None, report['before'].get('reason') or report['admission']['reason']
         return {row['case_id']: row['metrics'].get(metric, {}).get('before') for row in report['cases']}, None
@@ -883,12 +899,14 @@ class RunViews:
         self._assert_unsealed(run_id)
         from ..flip_report import compare_runs_flips
         entry = self._entry(run_id)
+        replaced = _replaced(entry)
         report = compare_runs_flips(entry.run_dir, entry.run_dir, before_scores=entry.scores,
-                                    after_scores=entry.scores, bundle=bundle)
+                                    after_scores=entry.scores, bundle=bundle,
+                                    before_replaced=replaced, after_replaced=replaced)
         status = report['admission']['status']
         reason = None if status == 'admitted' else report['before'].get('reason') or report['admission']['reason']
-        for retry_id, _ in entry.retries if status == 'admitted' else ():
-            _, refused = self._retry_values(retry_id, None, bundle)
+        for retry_id, selected in entry.retries if status == 'admitted' else ():
+            _, refused = self._retry_values(retry_id, None, bundle, selected=selected)
             if refused is not None:
                 status, reason = 'not_admitted', f'{retry_id}: {refused}'
                 break

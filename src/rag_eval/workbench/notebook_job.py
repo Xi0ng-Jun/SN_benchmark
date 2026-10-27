@@ -179,6 +179,52 @@ def _failed_cases(run, case_ids):
     return [cid for cid in case_ids if (outputs.get(cid) or {}).get('status') in (None, 'error')]
 
 
+# Substrings of exception class names raised by model transports and services.
+_TRANSPORT_ERRORS = ('Timeout', 'Connect', 'RateLimit', 'APIStatus', 'HTTPStatus', 'ServiceUnavailable',
+                     'RemoteProtocol', 'ReadError', 'ModelQueueFull', 'BudgetStopped')
+
+
+def failure_category(row):
+    """Why one saved answer failed (``row`` from outputs.jsonl; None when missing).
+
+    missing: no output saved; case_timeout / partition_deadline: the runner's
+    deadlines; synthesis_failed: SN reported a failed answer synthesis (e.g. an
+    incomplete or malformed model JSON); model_infrastructure: a transport or
+    model-service exception; capture_failed: the evaluator could not invoke or
+    capture the answer; other: anything else.
+    """
+    if row is None:
+        return 'missing'
+    record = row.get('product_record') or {}
+    error_type = str(record.get('error_type') or '')
+    if error_type in ('case_timeout', 'partition_deadline'):
+        return error_type
+    if (record.get('response') or {}).get('llm_mode') == 'synthesis_failed':
+        return 'synthesis_failed'
+    if any(name in error_type for name in _TRANSPORT_ERRORS):
+        return 'model_infrastructure'
+    if record.get('reason') == 'native invocation/capture failed':
+        return 'capture_failed'
+    return 'other'
+
+
+def _case_retry_record(job, outcome, first_failed):
+    """Per failed case: why it failed first, how often it was asked again, how it ended."""
+    first = _outputs(Path(job['run_dir']))
+    cases = {}
+    for cid in first_failed:
+        row = first.get(cid)
+        record = (row or {}).get('product_record') or {}
+        source = outcome['selection'].get(cid)
+        final = (_outputs(Path(source)).get(cid) if source else row) or {}
+        cases[cid] = dict(re_asks=sum(cid in r['case_ids'] for r in outcome['retries']),
+                          first_failure=dict(category=failure_category(row), status=(row or {}).get('status', 'missing'),
+                                             error_type=record.get('error_type'),
+                                             failed_phase=record.get('failed_phase') or record.get('error_phase')),
+                          final_status=final.get('status', 'missing'), scored_from=source or job['run_dir'])
+    return cases
+
+
 def _partition_complete(run):
     """The runner reached its own terminal phase; case errors are statuses, not failures."""
     try:
@@ -410,6 +456,7 @@ def execute(payload):
             outcome = outcomes[job['partition_id']] = dict(job=job, row=row, retries=[], selection={},
                                                            failures=[], per_case={}, metric=None)
             failed = _failed_cases(partition, job['case_ids']) if row is not None else None
+            first_failed = list(failed or [])
             for number in range(1, retry_count + 1):
                 if not failed or (deadline is not None and time.monotonic() >= deadline):
                     break
@@ -420,6 +467,7 @@ def execute(payload):
                     outcome['retry_error'] = exception_details(exc, phase=f'retry-{number}', directory=run)
                     break
             outcome['still_failed'] = len(failed or [])
+            outcome['cases'] = _case_retry_record(job, outcome, first_failed)
             if row is None:
                 saved = json.loads((partition / 'state.json').read_text()) if (partition / 'state.json').is_file() else {}
                 generated = saved.get('phase') == 'finished'
@@ -501,11 +549,19 @@ def execute(payload):
         rounds = [dict(round=n, partitions=sum(1 for o in ordered if len(o['retries']) >= n),
                        still_failed=sum(o['still_failed'] for o in ordered if len(o['retries']) == n))
                   for n in range(1, max((len(o['retries']) for o in ordered), default=0) + 1)]
+        from collections import Counter
+        failed_cases = [case for o in ordered for case in (o.get('cases') or {}).values()]
         save_json(run / 'retry-rounds.json', dict(format='sn-workbench-retry-rounds-v2', rounds=rounds,
             note='Only failed (error/missing) cases are asked again; a case uses the latest run that answered it.',
+            case_retry=dict(max_retries_per_case=retry_count, cases=planned, first_failed=len(failed_cases),
+                            retried_cases=sum(1 for c in failed_cases if c['re_asks']),
+                            re_asks=sum(c['re_asks'] for c in failed_cases),
+                            still_failed=sum(c['final_status'] in ('error', 'missing') for c in failed_cases),
+                            categories=dict(sorted(Counter(c['first_failure']['category']
+                                                           for c in failed_cases).items()))),
             partitions={o['job']['official_name']: dict(run_dir=o['job']['run_dir'], retries=o['job']['retries'],
-                                                        selection=o['selection'])
-                        for o in ordered if o['retries']}))
+                                                        selection=o['selection'], cases=o.get('cases') or {})
+                        for o in ordered if o['retries'] or o.get('cases')}))
         generation_failures = [o['generation_failure'] for o in ordered if 'generation_failure' in o]
         generation_failures += [dict(run_dir=job['run_dir'], error_type='not_started',
                                      error_message='Partition produced no batch row', failed_phase='generating',

@@ -76,7 +76,8 @@ def test_cluster_auto_confirmation_obeys_case_run_cap(frozen_cluster, cap, expec
     from rag_eval.workbench.action_requests import ActionRequestStore, auto_execute
     f = frozen_cluster
     service, repo, tree = f['service'], f['env']['repo'], f['tree']
-    protocol = dict(tree['protocol'], budget=dict(max_case_runs=cap, max_runs_per_candidate=20))
+    # Count caps alone; in-attempt re-asks are covered in test_workbench_s3_case_retry.py.
+    protocol = dict(tree['protocol'], budget=dict(max_case_runs=cap, max_runs_per_candidate=20), case_retry=dict(max_retries_per_case=0))
     with repo.connect(write=True) as conn:
         conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(protocol), tree['id']))
     cid = f['candidate']['id']
@@ -97,6 +98,7 @@ def test_round_stops_at_case_run_exhaustion(adapter):
     f, ops = adapter['f'], adapter['ops']
     repo, tree = adapter['api'].repository, f['tree']
     tree['protocol']['budget'] = dict(max_case_runs=2, max_runs_per_candidate=10)
+    tree['protocol']['case_retry'] = dict(max_retries_per_case=0)
     with repo.connect(write=True) as conn:
         conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(tree['protocol']), tree['id']))
     BudgetLedger(repo).reserve_many(tree, [step(candidate=tree['root_candidate_id'], count=2)], group_key='used')
@@ -223,7 +225,7 @@ def test_http_run_returns_actionable_price_error_without_dispatch(tmp_path, monk
 
 def test_round_retry_charges_new_attempts_without_per_run_cny_guard(env):
     from test_workbench_loop_measurements import ports, finish
-    tree = iteration(env, budget=dict(max_case_runs=4, max_runs_per_candidate=10))
+    tree = iteration(env, budget=dict(max_case_runs=4, max_runs_per_candidate=10), case_retry=dict(max_retries_per_case=0))
     root = tree['root_candidate_id']
     model_config(Path(env['service'].execution_config['model_config']))
     assert ports(env).measure(root, key='retry-count', actor='alice')['status'] == 'running'
@@ -247,7 +249,7 @@ def test_round_retry_charges_new_attempts_without_per_run_cny_guard(env):
 
 def test_count_budget_views_are_additive_and_read_only(env):
     from rag_eval.workbench.ledger import aggregate_ledger
-    tree = iteration(env, budget=dict(max_case_runs=10, max_runs_per_candidate=4))
+    tree = iteration(env, budget=dict(max_case_runs=10, max_runs_per_candidate=4), case_retry=dict(max_retries_per_case=0))
     assert tree['budget_usage']['case_runs_used'] == 0
     assert tree['budget_usage']['policy']['max_case_runs'] == 10
     ledger = BudgetLedger(env['repo'])
@@ -281,7 +283,7 @@ def test_count_only_concurrent_admission_and_candidate_cap(tmp_path):
 
 
 def test_summary_reports_frozen_count_cap_before_first_reservation(env):
-    tree = iteration(env, budget=dict(max_case_runs=10, max_runs_per_candidate=4))
+    tree = iteration(env, budget=dict(max_case_runs=10, max_runs_per_candidate=4), case_retry=dict(max_retries_per_case=0))
     summary = BudgetLedger(env['repo']).summary(tree['id'])
     assert summary['case_runs_used'] == 0
     assert summary['policy'] == tree['protocol']['budget']

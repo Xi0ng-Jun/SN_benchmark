@@ -80,7 +80,7 @@ class RoundOperations:
 
     def _pending_budget_blocked(self, tree, requests):
         """Observe a frozen request footprint; a newly filed request is not exhaustion."""
-        from .budgets import BudgetLedger, exceeded_caps
+        from .budgets import BudgetLedger, case_retries, exceeded_caps
         policy = tree['protocol'].get('budget')
         if not policy:
             return False
@@ -97,7 +97,7 @@ class RoundOperations:
                 missing = [step for step in json.loads(row[0]) if not conn.execute(
                     'SELECT 1 FROM iteration_budget_reservations WHERE iteration_id=? AND candidate_id=? AND request_key=?',
                     (tree['id'], step['candidate_id'], step['request_key'])).fetchone()]
-                if exceeded_caps(policy, summary, missing, per_case):
+                if exceeded_caps(policy, summary, missing, per_case, case_retries(tree)):
                     return True
         return False
 

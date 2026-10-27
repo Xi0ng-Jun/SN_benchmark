@@ -24,37 +24,6 @@ KINDS = ('parent', 'root', 'fresh', 'cluster')
 ADMISSION_FORMAT = 'sn-execution-admission-cache-v1'
 ADMISSION_CACHE = 'admission-cache.json'
 
-# Failure classification table for retry disclosure (§4 of S3 spec).
-# Maps (error_type pattern, failed_phase pattern) to a category label.
-_FAILURE_CATEGORIES = (
-    ('malformed_response', None, 'malformed_response'),
-    ('incomplete_object', None, 'malformed_response'),
-    ('incomplete_json', None, 'malformed_response'),
-    (None, 'generating', 'generation_failure'),
-    ('case_timeout', None, 'case_timeout'),
-    ('partition_deadline', None, 'partition_deadline'),
-    ('model_error', None, 'model_infrastructure'),
-    ('provider_error', None, 'model_infrastructure'),
-    ('rate_limit', None, 'model_infrastructure'),
-    ('connection_error', None, 'model_infrastructure'),
-)
-
-
-def _classify_failure(failure):
-    """Return a category string for a single partition generation failure record."""
-    if not isinstance(failure, dict):
-        return 'other'
-    error_type = (failure.get('error_type') or '').lower()
-    failed_phase = (failure.get('failed_phase') or '').lower()
-    for et_pat, fp_pat, label in _FAILURE_CATEGORIES:
-        if et_pat is not None and et_pat not in error_type:
-            continue
-        if fp_pat is not None and fp_pat not in failed_phase:
-            continue
-        return label
-    return 'other'
-
-
 def initialize_comparisons(repository):
     with repository.connect(write=True) as conn:
         conn.executescript('''
@@ -316,63 +285,32 @@ class ComparisonService:
                     unobserved=sum(r['unobserved'] for r in rows), attempts=rows)
 
     def _retry_stats(self, candidate):
-        """Per-execution retry counts and error classifications, reported side by side.
+        """In-attempt re-asks over every terminal execution (disclosure; the gate never reads it).
 
-        Reads each terminal execution's ``retry-rounds.json`` (which records the
-        final selected run per case) and the partition generation failures to
-        classify why retries were needed. Nothing here feeds the gate; it is a
-        disclosure for comparisons and round reports.
+        From each execution's ``retry-rounds.json`` (``notebook_job``): cases
+        planned, cases whose first answer failed, re-asks, cases still failed
+        after them, and the first-failure categories.
         """
-        from .notebook_job import SUMMARY as _SUMMARY  # noqa: F401  (kept for the symbol; not read)
-        attempts = []
-        total_retried_cases = 0
-        still_failed_after_retry = 0
+        from collections import Counter
+        totals, categories, attempts = Counter(), Counter(), []
         for m in self.terminal(candidate):
-            execution_id = m['execution_id']
-            run_dir = getattr(self.views, '_execution_run_dir', None)
-            run_dir = run_dir(execution_id) if callable(run_dir) else None
-            stats = dict(execution_id=execution_id, retried_cases=0, rounds=0,
-                         still_failed=0, classifications=[])
-            path = Path(run_dir) / 'retry-rounds.json' if run_dir else None
-            data = None
-            if path is not None and not path.is_symlink():
+            path = Path(m['run_dir']) / 'retry-rounds.json' if m.get('run_dir') else None
+            saved = None
+            if path is not None and path.is_file() and not path.is_symlink():
                 try:
-                    data = json.loads(path.read_text(encoding='utf-8'))
-                except (OSError, ValueError):
-                    data = None
-            if isinstance(data, dict) and data.get('format') == 'sn-workbench-retry-rounds-v2':
-                rounds = data.get('rounds') or []
-                stats['rounds'] = max((r.get('round', 0) for r in rounds), default=0)
-                for partition in (data.get('partitions') or {}).values():
-                    if not isinstance(partition, dict):
-                        continue
-                    retries = partition.get('retries') or []
-                    for retry in retries:
-                        if not isinstance(retry, dict):
-                            continue
-                        ids = retry.get('case_ids') or []
-                        stats['retried_cases'] += len(ids)
-                        total_retried_cases += len(ids)
-                        if not retry.get('complete'):
-                            still_failed_after_retry += len(ids)
-                            stats['still_failed'] += len(ids)
-            # Classify the original failure cause from the official-summary state and
-            # partition generation failures. Categories are reported, not gated on.
-            summary_path = Path(run_dir) / 'official-summary.json' if run_dir else None
-            classifications = []
-            if summary_path is not None and not summary_path.is_symlink():
-                try:
-                    summary = json.loads(summary_path.read_text(encoding='utf-8'))
-                except (OSError, ValueError):
-                    summary = None
-                if isinstance(summary, dict):
-                    for failure in (summary.get('generation_failures') or []):
-                        if isinstance(failure, dict):
-                            classifications.append(_classify_failure(failure))
-            stats['classifications'] = classifications
-            attempts.append(stats)
-        return dict(attempts=attempts, total_retried_cases=total_retried_cases,
-                    still_failed_after_retry=still_failed_after_retry)
+                    saved = json.loads(path.read_text(encoding='utf-8')).get('case_retry')
+                except (OSError, ValueError, AttributeError):
+                    saved = None
+            if not isinstance(saved, dict):
+                attempts.append(dict(execution_id=m['execution_id'], observed=False))
+                continue
+            attempts.append(dict(saved, execution_id=m['execution_id'], observed=True))
+            totals.update({k: saved.get(k) or 0 for k in ('cases', 'first_failed', 're_asks', 'still_failed')})
+            categories.update(saved.get('categories') or {})
+        return dict(attempts=attempts, unobserved=sum(not a['observed'] for a in attempts),
+                    **{k: totals[k] for k in ('cases', 'first_failed', 're_asks', 'still_failed')},
+                    re_ask_rate=totals['re_asks'] / totals['cases'] if totals['cases'] else None,
+                    categories=dict(sorted(categories.items())))
 
     def _compute_scope(self, subject, reference, kind):
         body, reason = self._compute_quality(subject, reference, kind)

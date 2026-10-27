@@ -67,7 +67,8 @@ def test_budget_auto_dispatch_reserves_parent_and_child_and_reuses_receipts(froz
     ledger = BudgetLedger(f['env']['repo'])
     summary = ledger.summary(f['tree']['id'])
     assert summary['runs_by_candidate'] == {candidate: 2, f['tree']['root_candidate_id']: 2}
-    assert summary['charged_cny'] == 8
+    # Each case may be asked twice (the frozen default of one in-attempt re-ask).
+    assert summary['charged_cny'] == 16
     execute(service, request, workspace_id=f['env']['workspace']['id'], actor='budget')
     assert ledger.summary(f['tree']['id']) == summary
     attempts = service.candidate(candidate)['attempts']
@@ -76,9 +77,9 @@ def test_budget_auto_dispatch_reserves_parent_and_child_and_reuses_receipts(froz
         f['env']['executions']._finish(a['execution_id'], state='failed', exit_code=1, error_type='synthetic',
             run_state=dict(phase='failed', cost_observation=dict(currency='CNY', complete=True, total_cny=.2)))
     settled = ledger.summary(f['tree']['id'])
-    assert settled['charged_cny'] == pytest.approx(4.4)
+    assert settled['charged_cny'] == pytest.approx(8.4)
     assert settled['runs_by_candidate'] == summary['runs_by_candidate']
-    assert payload(f['env'], service.candidate(candidate))['retry_rounds'] == 0
+    assert payload(f['env'], service.candidate(candidate))['retry_rounds'] == 1
 
 
 def test_budget_over_limit_keeps_cluster_request_pending_without_partial_dispatch(frozen_cluster):

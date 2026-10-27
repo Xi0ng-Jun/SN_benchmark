@@ -48,25 +48,21 @@ def validate_model_budget(budget, execution_config):
         check_priced_models((execution_config or {}).get('model_config'))
 
 
-def _step_case_count(step):
-    """Cases a step reserves, including its worst-case retries (0 means unknown/legacy)."""
-    retry = step.get('max_retries_per_case')
-    base = step.get('case_count')
-    if type(retry) is int and retry > 0 and type(base) is int and base > 0:
-        return base * (1 + retry)
-    return base
+def case_retries(iteration):
+    """In-attempt re-asks allowed per case by the frozen protocol (0 for older iterations)."""
+    return ((iteration.get('protocol') or {}).get('case_retry') or {}).get('max_retries_per_case') or 0
 
 
-def exceeded_caps(policy, summary, steps, per_case):
+def exceeded_caps(policy, summary, steps, per_case, retries=0):
     """Check all present limits against only the unreserved attempt footprint.
 
-    The hard cap uses each step's worst-case case-runs (``case_count`` times
-    one plus ``max_retries_per_case``); a candidate may not reserve more than
-    the protocol admits even before any retry is observed.
+    Each attempt reserves its worst case: every case asked once plus
+    ``retries`` re-asks (see ``case_retries``), so a hard cap holds before any
+    retry is observed; settlement keeps only the re-asks that happened.
     """
     counts = Counter(summary.get('subject_runs_by_candidate', summary['runs_by_candidate']))
     counts.update(step['candidate_id'] for step in steps if step.get('counts_toward_candidate_cap', True))
-    added = sum(_step_case_count(step) for step in steps)
+    added = sum(step['case_count'] * (1 + retries) for step in steps)
     reasons = []
     if 'limit_cny' in policy and summary['charged_cny'] + added * per_case > policy['limit_cny'] + 1e-12:
         reasons.append('limit_cny')
@@ -122,7 +118,8 @@ def initialize(repository):
                 retry_case_count INTEGER,
                 UNIQUE(iteration_id,candidate_id,request_key));
         ''')
-        # Migration: add retry_case_count to pre-existing databases.
+        # retry_case_count: re-asks inside the attempt; the reserved worst case
+        # until settled, then the observed count. Older rows (NULL) had none.
         cols = {r['name'] for r in conn.execute(
             "PRAGMA table_info(iteration_budget_reservations)")}
         if 'retry_case_count' not in cols:
@@ -317,6 +314,7 @@ class BudgetLedger:
                     on_reserve(conn)
                 return prior
             per_case, source = self._estimate(conn, iteration)
+            retries = case_retries(iteration)
             reservations, missing = [], []
             for step in steps:
                 saved = conn.execute('SELECT * FROM iteration_budget_reservations WHERE iteration_id=? '
@@ -328,12 +326,12 @@ class BudgetLedger:
                         raise Conflict('Budget attempt footprint changed')
                     reservations.append(_reservation(saved))
                 else:
-                    cost = per_case * step['case_count']
+                    cost = per_case * step['case_count'] * (1 + retries)
                     if not math.isfinite(cost):
                         raise ValueError('Budget estimate overflow')
                     missing.append((step, cost))
             summary = self._summary(conn, iteration['id'])
-            reasons = exceeded_caps(policy, summary, [step for step, _ in missing], per_case)
+            reasons = exceeded_caps(policy, summary, [step for step, _ in missing], per_case, retries)
             if reasons and not override and (missing or not steps):
                 # Pending actions may be retried after settlement or trusted human
                 # confirmation. Only successful reservations acquire a receipt.
@@ -346,7 +344,8 @@ class BudgetLedger:
                     case_count=step['case_count'], step_json=json.dumps(step, sort_keys=True),
                     reserved_cny=cost, estimate_source=source, execution_id=None,
                     state='reserved', actual_cny=None, observed_cny=None, charged_cny=cost,
-                    cost_source=None, created_at=now(), settled_at=None, retry_case_count=None)
+                    cost_source=None, created_at=now(), settled_at=None,
+                    retry_case_count=step['case_count'] * retries)
                 conn.execute('INSERT INTO iteration_budget_reservations VALUES('
                              ':id,:iteration_id,:candidate_id,:request_key,:case_count,:step_json,'
                              ':reserved_cny,:estimate_source,:execution_id,:state,:actual_cny,'
@@ -425,10 +424,10 @@ class BudgetLedger:
             if not complete and row['observed_cny'] is not None:
                 observed = max(row['observed_cny'], observed or 0)
             charged = observed if complete else max(row['charged_cny'], row['reserved_cny'], observed or 0)
-            # Keep the higher of any previously recorded retry count.
-            new_retry = max(retried, row['retry_case_count'] or 0) if complete else (row['retry_case_count'] or 0)
+            # Complete: the re-asks that happened. Otherwise keep the reserved worst case.
+            retry_count = retried if complete else row['retry_case_count']
             conn.execute('UPDATE iteration_budget_reservations SET state=?,actual_cny=?,observed_cny=?,'
                          'charged_cny=?,cost_source=?,settled_at=?,retry_case_count=? WHERE id=?',
                          ('settled' if complete else 'unknown', observed if complete else None,
                           observed, charged, observation['source'] if observation else None, now(),
-                          new_retry if complete else None, row['id']))
+                          retry_count, row['id']))

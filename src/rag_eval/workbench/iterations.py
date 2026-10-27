@@ -928,13 +928,10 @@ class IterationService:
         ledger = BudgetLedger(self.repository)
         if protocol.get('budget'):
             count = len(self.plans.get(task_id, plan_scope['plan_id'])['content']['selection']['case_ids'])
-            # Do not add max_retries_per_case to the fallback step here: the worst-case
-            # cap was already checked when _plan built the initial generation steps with
-            # that field set. Infra retry attempts are fresh whole-attempt slots whose
-            # within-attempt retries are accounted at settlement via retry_case_count.
-            fallback_step = dict(candidate_id=candidate_id, request_key=request_key,
-                                 case_count=count, batch_id=batch_id)
-            step = ledger.reserved_step(iteration['id'], candidate_id, request_key, fallback_step)
+            # Worst-case in-attempt re-asks are reserved from the frozen protocol
+            # (budgets.case_retries), never from fields of the step.
+            step = ledger.reserved_step(iteration['id'], candidate_id, request_key,
+                dict(candidate_id=candidate_id, request_key=request_key, case_count=count, batch_id=batch_id))
             reserved = ledger.reserve_many(iteration, [step], group_key='attempt:' + hashlib.sha256(key.encode()).hexdigest())
             if reserved['status'] != 'reserved':
                 raise Conflict('Iteration budget exceeded; request human confirmation')
