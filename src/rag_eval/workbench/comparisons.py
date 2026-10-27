@@ -24,6 +24,18 @@ KINDS = ('parent', 'root', 'fresh', 'cluster')
 ADMISSION_FORMAT = 'sn-execution-admission-cache-v1'
 ADMISSION_CACHE = 'admission-cache.json'
 
+def _add_retry_stats(total, extra):
+    """Fold one scope's re-ask disclosure (``ComparisonService._retry_stats``) into another."""
+    total['attempts'].extend(extra['attempts'])
+    for key in ('unobserved', 'cases', 'first_failed', 're_asks', 'still_failed'):
+        total[key] += extra[key]
+    categories = dict(total['categories'])
+    for name, count in extra['categories'].items():
+        categories[name] = categories.get(name, 0) + count
+    total['categories'] = dict(sorted(categories.items()))
+    total['re_ask_rate'] = total['re_asks'] / total['cases'] if total['cases'] else None
+
+
 def initialize_comparisons(repository):
     with repository.connect(write=True) as conn:
         conn.executescript('''
@@ -453,6 +465,10 @@ class ComparisonService:
             desc = descriptor(b['batch_id'], b['case_ids'])
             pool.append(desc)
             batch_rows.append(batch_summary(extra, desc, set(b['case_ids'])))
+            if extra and 'retry_summary' in extra:
+                # Re-asks are disclosed for every fresh batch, admitted or not.
+                for side in ('reference', 'subject'):
+                    _add_retry_stats(body['retry_summary'][side], extra['retry_summary'][side])
             if not extra or extra['admission']['status'] != 'admitted':
                 missing.append(b['batch_id'])
                 continue

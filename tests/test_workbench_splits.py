@@ -112,8 +112,20 @@ def test_fresh_claim_recovery_completion_and_validation_growth(env):
             views.partitions[a['execution_id']] = [('qasper:q3',)]
             env['executions']._finish(a['execution_id'], state='finished', exit_code=0, error_type=None,
                                       run_state=dict(phase='finished'))
+    # Re-asks of every scope, fresh batches included, are disclosed (S3).
+    import json
+    for a in service.candidate(later['id'])['attempts']:
+        run_dir = Path(env['executions'].get(a['task_id'], a['execution_id'])['run_dir'])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / 'retry-rounds.json').write_text(json.dumps(dict(case_retry=dict(
+            cases=1, first_failed=1, re_asks=1, still_failed=0, categories=dict(synthesis_failed=1)))))
     after = comparisons.for_candidate(later['id'], actor='reader')['parent']
     assert after['id'] != before['id']
+    retry = after['retry_summary']['subject']
+    attempts = service.candidate(later['id'])['attempts']
+    fresh = sum(a['batch_id'] == 'f1' for a in attempts)
+    assert fresh and retry['re_asks'] == retry['cases'] == len(attempts)
+    assert retry['categories'] == dict(synthesis_failed=len(attempts))
     assert after['validation']['delta'] == -.5 and not after['validation']['incomplete']
     assert after['validation']['pool'] == [dict(batch_id='base', selection_hash=tree['selection_hash'], n=0), *record['pool']]
     assert after['validation']['batches'][1]['delta'] == -.5
