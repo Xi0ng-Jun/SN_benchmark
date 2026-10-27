@@ -209,3 +209,34 @@ def test_speed_report_merges_executions(tmp_path, capsys, monkeypatch):
     assert module.main() == 0
     merged = json.loads(capsys.readouterr().out)
     assert merged['partitions'] == 3 and merged['concurrency']['peak_in_flight'] == 3
+
+
+def test_a_speed_summary_failure_never_fails_a_scored_execution(tmp_path, monkeypatch):
+    from test_workbench_seeded_execution import fake_scoring, finish, spec_for
+    from rag_eval.workbench.notebook_job import SUMMARY, execute
+    _, payload, prep = spec_for(tmp_path)
+    case_ids = prep['input']['selection']['case_ids']
+
+    def plan(**kwargs):
+        ids = Path(kwargs['case_id_file']).read_text().split()
+        return [dict(partition_id=payload['selection']['partition_ids'][case_ids.index(cid)], case_ids=[cid],
+                     run_dir=str(kwargs['output_root'] / cid), suite='alce', mode='chunk') for cid in ids]
+
+    def batch(jobs, *, output_root, parallel, after_run=None, **kwargs):
+        rows = []
+        for job in jobs:
+            finish(Path(job['run_dir']))
+            rows.append(dict(run_dir=job['run_dir'], exit_code=0))
+            if after_run is not None:
+                after_run(job, rows[-1])
+        return dict(exit_code=0, runs=rows)
+
+    def broken(observations):
+        raise ValueError('malformed speed file')
+    monkeypatch.setattr('rag_eval.notebook_batch.plan_batch', plan)
+    monkeypatch.setattr('rag_eval.notebook_batch.execute_batch', batch)
+    monkeypatch.setattr('rag_eval.speed_diagnostics.summarize', broken)
+    fake_scoring(monkeypatch, lambda run, cid: 1.0)
+    assert execute(payload) == 0
+    summary = json.loads((Path(payload['run_dir']) / SUMMARY).read_text())
+    assert summary['scored'] == summary['planned'] and summary['speed']['error_type'] == 'ValueError'
