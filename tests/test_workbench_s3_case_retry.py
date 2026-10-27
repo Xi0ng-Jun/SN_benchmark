@@ -73,8 +73,9 @@ def counted(tmp_path, cap=100, retries=1):
 def settle(ledger, tree, tmp_path, key, execution_id, re_asked, *, state='finished', cny=None):
     run = tmp_path / execution_id
     run.mkdir()
-    (run / 'retry-rounds.json').write_text(json.dumps(dict(format='sn-workbench-retry-rounds-v2', rounds=[],
-        partitions={'0001': dict(run_dir=str(run), retries=[dict(round=1, case_ids=re_asked, complete=True)])})))
+    if re_asked is not None:  # None: the execution never wrote its retry record
+        (run / 'retry-rounds.json').write_text(json.dumps(dict(format='sn-workbench-retry-rounds-v2', rounds=[],
+            partitions={'0001': dict(run_dir=str(run), retries=[dict(round=1, case_ids=re_asked, complete=True)])})))
     ledger.attach(tree['id'], 'candidate', key, execution_id)
     run_state = dict(cost_observation=dict(currency='CNY', complete=True, total_cny=cny)) if cny is not None else None
     ledger.settle_execution(dict(execution_id=execution_id, terminal=True, state=state, run_dir=str(run),
@@ -93,11 +94,22 @@ def test_re_asks_are_reserved_at_worst_case_and_settled_to_what_happened(tmp_pat
     assert ledger.reserve_many(tree, [step('b', count=2)], group_key='b')['status'] == 'reserved'
 
 
-def test_unsettled_cost_keeps_the_worst_case(tmp_path):
+@pytest.mark.parametrize('state', ['finished', 'failed', 'cancelled'])
+def test_without_a_retry_record_the_worst_case_stays_charged(tmp_path, state):
     repo, tree, ledger = counted(tmp_path)
     ledger.reserve_many(tree, [step('a', count=3)], group_key='a')
-    settle(ledger, tree, tmp_path, 'a', 'exec-a', [], state='cancelled')
+    settle(ledger, tree, tmp_path, 'a', 'exec-a', None, state=state)
     assert ledger.summary(tree['id'])['case_runs_used'] == 6
+
+
+@pytest.mark.parametrize('state', ['finished', 'failed'])
+def test_re_asks_settle_without_any_cost_observation(tmp_path, state):
+    # Count-only budgets (company models, no limit_cny) never observe cost.
+    repo, tree, ledger = counted(tmp_path)
+    ledger.reserve_many(tree, [step('a', count=3)], group_key='a')
+    settle(ledger, tree, tmp_path, 'a', 'exec-a', ['q1'], state=state)
+    summary = ledger.summary(tree['id'])
+    assert summary['case_runs_used'] == 4 and summary['unknown_count'] == 1
 
 
 def test_without_the_rule_nothing_extra_is_reserved_and_old_rows_count_as_none(tmp_path):
@@ -299,3 +311,46 @@ def test_iterations_with_reservations_read_and_settle_on_a_ledger_without_the_ne
     initialize_iterations(repo)
     with repo.connect() as conn:
         assert 'retry_case_count' in {r['name'] for r in conn.execute('PRAGMA table_info(iteration_budget_reservations)')}
+
+
+def test_an_interrupted_retry_round_still_counts_its_re_asks(tmp_path, monkeypatch):
+    from test_workbench_seeded_execution import fake_scoring, spec_for
+    from rag_eval.workbench.budgets import _count_retried_cases
+    from rag_eval.workbench.notebook_job import execute
+    from rag_eval.workbench.run_views import RunViews
+    _, payload_, prep = spec_for(tmp_path, retry_rounds=1)
+    case_ids = prep['input']['selection']['case_ids']
+
+    def plan(**kwargs):
+        ids = Path(kwargs['case_id_file']).read_text().split()
+        return [dict(partition_id=payload_['selection']['partition_ids'][case_ids.index(cid)], case_ids=[cid],
+                     run_dir=str(kwargs['output_root'] / cid), suite='alce', mode='chunk') for cid in ids]
+
+    def batch(jobs, *, output_root, parallel, after_run=None, **kwargs):
+        if 'retry-1' in str(output_root):
+            raise RuntimeError('supervisor lost the retry child')
+        rows = []
+        for job in jobs:
+            cid, run = job['case_ids'][0], Path(job['run_dir'])
+            run.mkdir(parents=True)
+            (run / 'product-artifacts').mkdir()
+            (run / 'product-artifacts/state.json').write_text('{"prepared": true}')
+            (run / 'outputs.jsonl').write_text(json.dumps(dict(case_id=cid, status='error', product_record={})) + '\n')
+            (run / 'state.json').write_text('{"phase": "finished"}')
+            (run / 'manifest.json').write_text('{}')
+            rows.append(dict(run_dir=job['run_dir'], exit_code=0))
+            if after_run is not None:
+                after_run(job, rows[-1])
+        return dict(exit_code=0, runs=rows)
+    monkeypatch.setattr('rag_eval.notebook_batch.plan_batch', plan)
+    monkeypatch.setattr('rag_eval.notebook_batch.execute_batch', batch)
+    fake_scoring(monkeypatch, lambda run, cid: 0.0)
+    execute(payload_)
+    run = Path(payload_['run_dir'])
+    assert _count_retried_cases(dict(run_dir=str(run))) == len(case_ids)
+    saved = json.loads((run / 'retry-rounds.json').read_text())
+    assert saved['case_retry']['re_asks'] == len(case_ids) and saved['case_retry']['still_failed'] == len(case_ids)
+    # The interrupted round is never registered as an answering run.
+    views = RunViews([], execution_records=lambda: [dict(execution_id='exec', task_id='t', run_dir=str(run),
+                                                         state='finished', terminal=True)])
+    assert [r.retries for r in views.execution_runs('exec')] == [()] * len(case_ids)

@@ -286,9 +286,11 @@ class RunViews:
                     state = record.get('state') if record.get('terminal') else None
                     retries = []
                     for retry in job.get('retries') or ():
-                        retry_path = Path(retry['run_dir'])
                         selected = tuple(retry.get('selected_case_ids') or ())
-                        if (not selected or not retry.get('complete') or retry_path.is_symlink()
+                        if not selected or not retry.get('complete') or not retry.get('run_dir'):
+                            continue  # an interrupted round answers nothing
+                        retry_path = Path(retry['run_dir'])
+                        if (retry_path.is_symlink()
                                 or not retry_path.resolve().is_relative_to(root.resolve())
                                 or not set(selected) <= set(job['case_ids'])
                                 or type(retry.get('official_name')) is not str

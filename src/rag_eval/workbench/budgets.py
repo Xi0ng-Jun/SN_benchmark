@@ -141,28 +141,28 @@ def _retry_count(row):
 
 
 def _count_retried_cases(record):
-    """Total (case × retry-round) pairs run as retries in this execution.
+    """Re-asks (case x retry round) this execution made, or None when not observable.
 
-    Reads only the execution's own retry-rounds.json; zero when absent or
-    the run did not complete.  Never reads a symlink.
+    Reads only the bound execution's own retry-rounds.json (never a symlink).
+    The supervisor writes it after every retry ran, including interrupted
+    ones; when it is absent (a killed, timed-out or failed execution) the
+    re-asks are unknown and the caller keeps the reserved worst case.
     """
     run_dir = record.get('run_dir')
     if not run_dir:
-        return 0
+        return None
     path = Path(run_dir) / 'retry-rounds.json'
     try:
         if path.is_symlink():
-            return 0
+            return None
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return 0
+        return None
     if not isinstance(data, dict) or data.get('format') != 'sn-workbench-retry-rounds-v2':
-        return 0
+        return None
     total = 0
-    for partition in data.get('partitions', {}).values():
-        if not isinstance(partition, dict):
-            continue
-        for retry in partition.get('retries', []):
+    for partition in (data.get('partitions') or {}).values():
+        for retry in (partition.get('retries') or []) if isinstance(partition, dict) else ():
             if isinstance(retry, dict) and isinstance(retry.get('case_ids'), list):
                 total += len(retry['case_ids'])
     return total
@@ -440,8 +440,10 @@ class BudgetLedger:
             if not complete and row['observed_cny'] is not None:
                 observed = max(row['observed_cny'], observed or 0)
             charged = observed if complete else max(row['charged_cny'], row['reserved_cny'], observed or 0)
-            # Complete: the re-asks that happened. Otherwise keep the reserved worst case.
-            retry_count = retried if complete else row['retry_case_count']
+            # Case runs settle apart from cost: the re-asks the execution recorded,
+            # whether or not its cost was observed (count-only budgets never are);
+            # without that record, the reserved worst case stays charged.
+            retry_count = retried if retried is not None else row['retry_case_count']
             conn.execute('UPDATE iteration_budget_reservations SET state=?,actual_cny=?,observed_cny=?,'
                          'charged_cny=?,cost_source=?,settled_at=?,retry_case_count=? WHERE id=?',
                          ('settled' if complete else 'unknown', observed if complete else None,
