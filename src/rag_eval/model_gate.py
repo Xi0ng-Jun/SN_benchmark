@@ -51,47 +51,80 @@ class ModelGate:
 
 
 @contextmanager
-def install_model_gate(directory, slots):
+def install_model_gate(directory, slots, *, observer=None):
+    gate = ModelGate(directory, slots)
+    if observer is not None and observer.gate is None:
+        observer.gate = gate
+    with install_request_hooks(gate=gate, observer=observer):
+        yield gate
+
+
+@contextmanager
+def install_request_hooks(*, gate=None, observer=None):
+    """Wrap the sync transports with an optional gate and an optional speed observer.
+
+    The observer (``speed_diagnostics.SpeedObserver``) times the gate wait and
+    the service (until the body is read or a streamed response is closed).
+    """
     import httpx
     import requests
-    gate = ModelGate(directory, slots)
     original_http = httpx.Client.send
     original_requests = requests.Session.send
 
+    def enter(request_path):
+        started = observer.now() if observer is not None else None
+        phase = observer.current() if observer is not None else None
+        fd = gate.acquire() if gate is not None else None
+        acquired = observer.now() if observer is not None else None
+        done = []
+
+        def leave(outcome):
+            if done:
+                return
+            done.append(True)
+            if fd is not None:
+                gate.release(fd)
+            if observer is not None:
+                observer.record(phase, request_path, started, acquired - started, observer.now() - acquired, outcome)
+        return leave
+
     def http_send(client, request, **kwargs):
-        fd = gate.acquire()
+        leave = enter(request.url.path)
         try:
             response = original_http(client, request, **kwargs)
-        except BaseException:
-            gate.release(fd)
+        except BaseException as exc:
+            leave(type(exc).__name__)
             raise
         if not kwargs.get('stream', False):
-            gate.release(fd)
+            leave(response.status_code)
             return response
         # A streamed body is still being produced by the service: hold the
         # slot until the caller closes the response.
-        released = []
         close = response.close
 
         def close_and_release():
             try:
                 close()
             finally:
-                if not released:
-                    released.append(True)
-                    gate.release(fd)
+                leave(response.status_code)
         response.close = close_and_release
         return response
 
     def request_send(session, request, **kwargs):
-        fd = gate.acquire()
+        leave = enter(request.path_url)
+        outcome = 'error'
         try:
-            return original_requests(session, request, **kwargs)
+            response = original_requests(session, request, **kwargs)
+            outcome = response.status_code
+            return response
+        except BaseException as exc:
+            outcome = type(exc).__name__
+            raise
         finally:
-            gate.release(fd)
+            leave(outcome)
 
     httpx.Client.send, requests.Session.send = http_send, request_send
     try:
-        yield gate
+        yield
     finally:
         httpx.Client.send, requests.Session.send = original_http, original_requests

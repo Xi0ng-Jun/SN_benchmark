@@ -40,6 +40,8 @@
 
 调度相关的可选键（`job_execution` 或 iteration 创建时的 `execution`，后者覆盖前者，只影响调度、不进比较身份）：`parallel`（分区并行数）、`preparation_workers`（分区内同时处理的导入文档数，上传仍逐篇顺序；默认 1，内容不随它变化，不进准备缓存键）、`question_workers`（分区内同时提问数，默认 1 即原顺序路径；Agent 评测与 MultiHop 排名捕获仍顺序执行）、`case_deadline_seconds`／`partition_deadline_seconds`（超时题记 `error` 并带 `failed_phase`，分区照常结束、评分；进程超出分区期限 120 s 后被杀）、`model_concurrency`（本服务器所有分区进程共享的模型请求槽位数，槽位文件在 `<output_root>/model-gate`）。每个分区结束即官方评分；子进程在监督超时前预留余量停止启动新分区，已完成分区照常评分。`retry_rounds` 只重问失败（`error`／缺失）的题，原运行与各轮重试都保留，`retry-rounds.json` 与 `batch-plan.json` 的 `retries` 写明每题用哪一份；比较时只对这些题取重试运行的官方分。题目带 `error` 的分区不再使整个执行失败；只有分区没有走到自身终态（崩溃、被杀、未启动）或评分失败才算执行失败。
 
+速度诊断（只记时间，不改请求、评分和比较身份）：每个分区进程（含重试运行）在运行目录写 `speed-diagnostics.json`——各阶段墙钟（`setup`／`preparation`（含准备缓存锁等待、复制或导入）／`answer`／`scoring`／`reporting`）、准备缓存锁等待，以及每个模型请求的阶段、端点（只留 URL 路径末两段）、相对开始时间、闸门等待、服务时间和结果（HTTP 状态或异常类名）。执行的 `official-summary.json` 在 `speed` 下汇总：各阶段墙钟的最大值／总和及最慢分区、闸门获取次数与等待总和／最大值／占比、按阶段与端点的延迟分布（p50／p90／p99／max），以及由合并时间线重建的峰值在途数、峰值等待数、闸门满载秒数。同一服务器上同时运行的多个执行共用闸门，用 `scripts/speed_report.py <执行目录>...` 合并查看。
+
 ```bash
 paseo script start workbench --cwd /home/wabiwabi/silicon-notebook/benchmark-deepeval/.worktrees/benchmark-protocol-correctness
 ```

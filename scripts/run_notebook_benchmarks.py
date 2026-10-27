@@ -109,11 +109,15 @@ def main():
     run = args.run_dir.resolve()
     run_existed = run.exists()
     code = 0
+    from rag_eval.model_gate import ModelGate, install_request_hooks
+    from rag_eval.speed_diagnostics import SpeedObserver, observing
+    observer = None
     try:
         from rag_eval.model_budget import install_budget_guard
-        from rag_eval.model_gate import install_model_gate
+        gate = ModelGate(args.model_gate, args.model_gate_slots) if args.model_gate else None
+        observer = SpeedObserver(gate=gate)
         with install_budget_guard(args.budget_ledger) if args.budget_ledger else nullcontext(), \
-                install_model_gate(args.model_gate, args.model_gate_slots) if args.model_gate else nullcontext():
+                install_request_hooks(gate=gate, observer=observer), observing(observer):
             execute(root=ROOT, project=args.project_root, bundle_dir=args.bundle, run=run,
                     mode=args.mode, partition_id=args.partition_id, request_revision=args.request_revision,
                     case_ids=case_ids, model_config=args.model_config, artifact_root=args.artifact_root,
@@ -133,6 +137,8 @@ def main():
               file=sys.stderr)
         code = 130 if interrupted else 2
     if not run_existed and (run / 'state.json').exists():
+        if observer is not None:
+            observer.enter('reporting')
         try:
             report = write_report([run], run / 'report', partition_only=args.artifact_root is not None,
                                   save_stage_metrics=True)
@@ -144,7 +150,19 @@ def main():
                                         sensitive_values=config_sensitive_values(args.model_config))
             print('Report failed: ' + failure_summary(details), file=sys.stderr)
             code = code or 2
+        if observer is not None:
+            _save_speed(observer, run)
     return code
+
+
+def _save_speed(observer, run):
+    """Timing diagnostics never change the run's outcome."""
+    try:
+        cache = json.loads((run / 'preparation-cache.json').read_text(encoding='utf-8')) \
+            if (run / 'preparation-cache.json').is_file() else {}
+        observer.save(run, preparation_cache_lock_waited_seconds=cache.get('lock_waited_seconds'))
+    except Exception as exc:
+        print(f'Speed diagnostics not saved: {type(exc).__name__}', file=sys.stderr)
 
 
 if __name__ == '__main__':

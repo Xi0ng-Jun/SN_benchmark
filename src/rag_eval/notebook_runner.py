@@ -236,6 +236,8 @@ def predictions(run, cases, product, mode, repo, outputs, *, agent_evaluation=No
         preparation_failure = _check_preparation(run, cell, notebook)
         if preparation_failure is None and after_preparation is not None:
             after_preparation()  # publishing a degraded notebook to the cache is never allowed
+    from .speed_diagnostics import phase
+    phase('answer')
     selected = {case['case_id']: case for case in cases}
     documents = {document['id']: document for document in product['documents']}
     questions = [question for question in product['questions'] if question['case_id'] in selected]
@@ -733,6 +735,8 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             identity['multihop_retrieval'] = ranking_identity()
         if case_ids is not None:
             identity['notebook_context']['case_ids'] = [case['case_id'] for case in cases]
+        from .speed_diagnostics import phase
+        phase('preparation')  # seed, cache lookup (and its lock) or importing
         seed = seed_record = None
         if seed_prepared_run is not None:
             seed, seed_manifest = validate_prepared_seed(
@@ -836,6 +840,7 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
                         preparation_workers=preparation_workers,
                         partition_deadline=started_at + partition_deadline_seconds
                         if partition_deadline_seconds is not None else None)
+            phase('scoring')
             score_outputs(run, cases, planned, scores)
         errors, failures = _saved_failures(run)
         errors = errors or bool(agent_evaluation and agent_evaluation.has_errors)
