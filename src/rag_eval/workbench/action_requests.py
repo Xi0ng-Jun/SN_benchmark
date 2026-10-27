@@ -51,7 +51,7 @@ def normalize(verb, params):
                'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'node-fresh-run': {'timeout_seconds', 'limit_cny'},
                'node-cluster-run': {'timeout_seconds', 'limit_cny', 'cluster_id'},
                'iteration-sealed-run': {'timeout_seconds', 'limit_cny'},
-               'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch', 'budget', 'execution', 'round_settings'}}[verb]
+               'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch', 'budget', 'execution', 'round_settings', 'case_retry'}}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
     if verb == 'node-cluster-run' and (not isinstance(params.get('cluster_id'), str) or not params['cluster_id']):

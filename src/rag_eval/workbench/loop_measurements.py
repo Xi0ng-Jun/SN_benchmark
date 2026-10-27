@@ -157,8 +157,36 @@ class RoundMeasurements:
         runs = self.views.execution_runs(attempt['execution_id'])
         if not runs:
             return True
-        return any(case['status'] in ('error', 'missing') for run in runs
-                   for case in self.views.cases(run.id)['cases'])
+        # For each case, use the final selected run's status. RunEntry.retries is a
+        # tuple of (retry_run_id, selected_case_ids_tuple): if a retry answered a
+        # case, read that retry run's status. If after all retries the selected
+        # outcome is still error/missing, this attempt needs an infra retry.
+        # Old iterations with no retries fall back to reading the primary run directly.
+        for run in runs:
+            retry_selection = {cid: retry_run_id
+                               for retry_run_id, selected in getattr(run, 'retries', ())
+                               for cid in selected}
+            all_cases = self.views.cases(run.id)['cases']
+            if retry_selection:
+                # Retries present: check final-selected outcome per case_id.
+                primary_by_cid = {c['case_id']: c['status'] for c in all_cases if 'case_id' in c}
+                for cid, status in primary_by_cid.items():
+                    final_run_id = retry_selection.get(cid, run.id)
+                    if final_run_id != run.id:
+                        try:
+                            retry_cases = {c['case_id']: c['status']
+                                           for c in self.views.cases(final_run_id)['cases']
+                                           if 'case_id' in c}
+                            status = retry_cases.get(cid, status)
+                        except Exception:
+                            pass
+                    if status in ('error', 'missing'):
+                        return True
+            else:
+                # No retry selection: check all returned cases directly.
+                if any(c.get('status') in ('error', 'missing') for c in all_cases):
+                    return True
+        return False
 
     @staticmethod
     def _eligible(attempt):
@@ -211,8 +239,14 @@ class RoundMeasurements:
                 missing = 0 if kind == 'cluster' else max(0, protocol['k_base'] - len(existing))
                 for index in range(missing):
                     stepkey = 'round-measure:' + hashlib.sha256(f'{key}:{cid}:{scope}:{index}'.encode()).hexdigest()
-                    steps.append(dict(candidate_id=cid, request_key=stepkey, batch_id=scope, case_count=count,
-                                        counts_toward_candidate_cap=cid == candidate['id']))
+                    step = dict(candidate_id=cid, request_key=stepkey, batch_id=scope, case_count=count,
+                                counts_toward_candidate_cap=cid == candidate['id'])
+                    # Propagate the frozen per-case retry limit so the budget
+                    # reservation can account for the worst-case case-run count.
+                    frozen_retry = (protocol.get('case_retry') or {}).get('max_retries_per_case')
+                    if type(frozen_retry) is int and frozen_retry > 0:
+                        step['max_retries_per_case'] = frozen_retry
+                    steps.append(step)
         return dict(candidate_id=candidate['id'], iteration_id=tree['id'], kind=kind, scope_id=scope_id,
                     generations=[steps], watched=watched, launched=[], created_at=now())
 

@@ -290,8 +290,11 @@ def test_summary_reports_frozen_count_cap_before_first_reservation(env):
 @pytest.mark.parametrize('cap,expected', [(4, 'running'), (3, 'budget_exhausted')])
 def test_fresh_parent_and_child_share_count_cap(env, cap, expected):
     from test_workbench_loop_measurements import ports, child
+    # case_retry=0 isolates the count-cap behavior: the worst-case retry
+    # multiplier is not the subject of this test.
     tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1,
-                     budget=dict(max_case_runs=cap, max_runs_per_candidate=10))
+                     budget=dict(max_case_runs=cap, max_runs_per_candidate=10),
+                     case_retry={'max_retries_per_case': 0})
     candidate = child(env, tree, 'fresh-child')
     result = ports(env).fresh(candidate, key='fresh-count', actor='alice')
     assert result['status'] == expected

@@ -46,6 +46,7 @@ class CreateIteration(_Command):
     budget: dict | None = None
     execution: dict | None = None
     round_settings: dict | None = None
+    case_retry: dict | None = None
 
 
 class Integration(_Command):

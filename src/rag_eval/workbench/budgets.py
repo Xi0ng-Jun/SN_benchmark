@@ -48,11 +48,25 @@ def validate_model_budget(budget, execution_config):
         check_priced_models((execution_config or {}).get('model_config'))
 
 
+def _step_case_count(step):
+    """Cases a step reserves, including its worst-case retries (0 means unknown/legacy)."""
+    retry = step.get('max_retries_per_case')
+    base = step.get('case_count')
+    if type(retry) is int and retry > 0 and type(base) is int and base > 0:
+        return base * (1 + retry)
+    return base
+
+
 def exceeded_caps(policy, summary, steps, per_case):
-    """Check all present limits against only the unreserved attempt footprint."""
+    """Check all present limits against only the unreserved attempt footprint.
+
+    The hard cap uses each step's worst-case case-runs (``case_count`` times
+    one plus ``max_retries_per_case``); a candidate may not reserve more than
+    the protocol admits even before any retry is observed.
+    """
     counts = Counter(summary.get('subject_runs_by_candidate', summary['runs_by_candidate']))
     counts.update(step['candidate_id'] for step in steps if step.get('counts_toward_candidate_cap', True))
-    added = sum(step['case_count'] for step in steps)
+    added = sum(_step_case_count(step) for step in steps)
     reasons = []
     if 'limit_cny' in policy and summary['charged_cny'] + added * per_case > policy['limit_cny'] + 1e-12:
         reasons.append('limit_cny')
@@ -105,8 +119,43 @@ def initialize(repository):
                 execution_id TEXT UNIQUE, state TEXT NOT NULL, actual_cny REAL,
                 observed_cny REAL, charged_cny REAL NOT NULL, cost_source TEXT,
                 created_at TEXT NOT NULL, settled_at TEXT,
+                retry_case_count INTEGER,
                 UNIQUE(iteration_id,candidate_id,request_key));
         ''')
+        # Migration: add retry_case_count to pre-existing databases.
+        cols = {r['name'] for r in conn.execute(
+            "PRAGMA table_info(iteration_budget_reservations)")}
+        if 'retry_case_count' not in cols:
+            conn.execute(
+                'ALTER TABLE iteration_budget_reservations ADD COLUMN retry_case_count INTEGER')
+
+
+def _count_retried_cases(record):
+    """Total (case × retry-round) pairs run as retries in this execution.
+
+    Reads only the execution's own retry-rounds.json; zero when absent or
+    the run did not complete.  Never reads a symlink.
+    """
+    run_dir = record.get('run_dir')
+    if not run_dir:
+        return 0
+    path = Path(run_dir) / 'retry-rounds.json'
+    try:
+        if path.is_symlink():
+            return 0
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(data, dict) or data.get('format') != 'sn-workbench-retry-rounds-v2':
+        return 0
+    total = 0
+    for partition in data.get('partitions', {}).values():
+        if not isinstance(partition, dict):
+            continue
+        for retry in partition.get('retries', []):
+            if isinstance(retry, dict) and isinstance(retry.get('case_ids'), list):
+                total += len(retry['case_ids'])
+    return total
 
 
 def execution_cost(record):
@@ -177,7 +226,7 @@ class BudgetLedger:
         roles = subject_roles(conn, iteration_id)
         complete = bool(rows) and all(r['state'] == 'settled' for r in rows)
         return dict(iteration_id=iteration_id, policy=json.loads(policy['policy_json']),
-                    case_runs_used=sum(r['case_count'] for r in rows),
+                    case_runs_used=sum((r['retry_case_count'] or 0) + r['case_count'] for r in rows),
                     charged_cny=sum(r['charged_cny'] for r in rows),
                     reserved_cny=sum(r['reserved_cny'] for r in rows if r['state'] != 'settled'),
                     actual_cny=sum(r['actual_cny'] for r in rows) if complete else None,
@@ -212,8 +261,11 @@ class BudgetLedger:
 
     def _estimate(self, conn, iteration):
         # Keep the estimate within this iteration's frozen execution conditions.
-        row = conn.execute('SELECT SUM(actual_cny),SUM(case_count) FROM iteration_budget_reservations '
-                           "WHERE iteration_id=? AND state='settled'", (iteration['id'],)).fetchone()
+        # The denominator is actual case-runs (base + observed retries), so the
+        # per-case estimate reflects what a candidate really spends to answer.
+        row = conn.execute('SELECT SUM(actual_cny),SUM(case_count + COALESCE(retry_case_count,0)) '
+                           "FROM iteration_budget_reservations WHERE iteration_id=? AND state='settled'",
+                           (iteration['id'],)).fetchone()
         if row[1] and row[0] > 0:
             return row[0] / row[1], 'historical_observed_per_case'
         return COLD_START_CNY_PER_CASE, 'cold_start_per_case'
@@ -294,11 +346,12 @@ class BudgetLedger:
                     case_count=step['case_count'], step_json=json.dumps(step, sort_keys=True),
                     reserved_cny=cost, estimate_source=source, execution_id=None,
                     state='reserved', actual_cny=None, observed_cny=None, charged_cny=cost,
-                    cost_source=None, created_at=now(), settled_at=None)
+                    cost_source=None, created_at=now(), settled_at=None, retry_case_count=None)
                 conn.execute('INSERT INTO iteration_budget_reservations VALUES('
                              ':id,:iteration_id,:candidate_id,:request_key,:case_count,:step_json,'
                              ':reserved_cny,:estimate_source,:execution_id,:state,:actual_cny,'
-                             ':observed_cny,:charged_cny,:cost_source,:created_at,:settled_at)', reservation)
+                             ':observed_cny,:charged_cny,:cost_source,:created_at,:settled_at,'
+                             ':retry_case_count)', reservation)
                 reservations.append(_reservation(reservation))
                 repo._event(conn, iteration['task_id'], 'budget.reserved', reservation['id'],
                             dict(candidate_id=step['candidate_id'], request_key=step['request_key'],
@@ -355,6 +408,8 @@ class BudgetLedger:
             if linked is None or linked['state'] == 'settled':
                 return
         observation = execution_cost(record)
+        # Count retried cases for ledger accounting (visible, not hidden).
+        retried = _count_retried_cases(record)
         with self.repository.connect(write=True) as conn:
             if not self._available(conn):
                 return
@@ -370,7 +425,10 @@ class BudgetLedger:
             if not complete and row['observed_cny'] is not None:
                 observed = max(row['observed_cny'], observed or 0)
             charged = observed if complete else max(row['charged_cny'], row['reserved_cny'], observed or 0)
+            # Keep the higher of any previously recorded retry count.
+            new_retry = max(retried, row['retry_case_count'] or 0) if complete else (row['retry_case_count'] or 0)
             conn.execute('UPDATE iteration_budget_reservations SET state=?,actual_cny=?,observed_cny=?,'
-                         'charged_cny=?,cost_source=?,settled_at=? WHERE id=?',
+                         'charged_cny=?,cost_source=?,settled_at=?,retry_case_count=? WHERE id=?',
                          ('settled' if complete else 'unknown', observed if complete else None,
-                          observed, charged, observation['source'] if observation else None, now(), row['id']))
+                          observed, charged, observation['source'] if observation else None, now(),
+                          new_retry if complete else None, row['id']))

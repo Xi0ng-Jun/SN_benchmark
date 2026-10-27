@@ -149,6 +149,23 @@ EXECUTION_POLICY_KEYS = ('parallel', 'question_workers', 'preparation_workers', 
                          'partition_deadline_seconds', 'preparation_policy')
 
 
+def validate_case_retry(policy):
+    """Validate and normalise the ``case_retry`` protocol field.
+
+    ``None`` means "not set" (old iteration – unchanged behaviour).
+    ``{'max_retries_per_case': 0}`` disables within-attempt retries.
+    ``{'max_retries_per_case': 1}`` is the new default for fresh iterations.
+    """
+    if policy is None:
+        return None
+    if type(policy) is not dict or set(policy) - {'max_retries_per_case'}:
+        raise ValueError('case_retry accepts only max_retries_per_case')
+    value = policy.get('max_retries_per_case')
+    if type(value) is not int or value < 0 or value > 10:
+        raise ValueError('case_retry.max_retries_per_case must be an integer 0–10')
+    return dict(max_retries_per_case=value)
+
+
 def validate_execution_policy(policy):
     """Per-iteration scheduling overrides of the server's job_execution settings."""
     if policy is None:
@@ -401,7 +418,7 @@ class IterationService:
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
                          split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None,
-                         execution=None, round_settings=None):
+                         execution=None, round_settings=None, case_retry=None):
         """Create the backing Task, freeze its plan, then provision root C0.
 
         Retrying the same request key completes an interrupted creation: each
@@ -420,6 +437,10 @@ class IterationService:
         settings = validate_settings(round_settings or {})
         if round_settings is not None and not isinstance(round_settings, dict):
             raise ValueError('Round settings must be an object')
+        if case_retry is not None and not isinstance(case_retry, dict):
+            raise ValueError('case_retry must be an object or null')
+        case_retry_frozen = validate_case_retry(case_retry if case_retry is not None
+                                                else {'max_retries_per_case': 1})
         binding = ((self.preparation_config or {}).get('inputs') or {}).get(input_id)
         if not isinstance(binding, dict) or set(binding) != {'bundle_ref', 'index_ref'}:
             raise ValueError('No trusted artifact binding for this iteration input')
@@ -433,6 +454,8 @@ class IterationService:
             payload['execution'] = execution
         if round_settings is not None:
             payload['round_settings'] = settings
+        if case_retry is not None:
+            payload['case_retry'] = case_retry_frozen
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -485,6 +508,9 @@ class IterationService:
         if budget is not None:
             protocol['budget'] = budget
         protocol['round_settings'] = settings
+        # Freeze case_retry into protocol. New iterations default to 1 retry per
+        # case; the key is always written so callers can distinguish new from old.
+        protocol['case_retry'] = case_retry_frozen
         from ..benchmark_runtime import DEFAULT_PREPARATION_POLICY
         frozen_execution = dict(execution or {})
         frozen_execution.setdefault('preparation_policy', (self.execution_config or {}).get(
@@ -887,15 +913,28 @@ class IterationService:
             if type(path) is not str or not path:
                 raise ValueError('No adoptable runs are configured on this server')
             config['adopt_runs'] = json.loads(Path(path).read_text(encoding='utf-8'))
-        if protocol.get('budget'):
+        # case_retry is frozen in the protocol (a methodological choice, not a
+        # scheduling key), so it overrides the server's job_execution retry_rounds
+        # for both budgeted and un-budgeted iterations. Old iterations that did
+        # not set the key keep their old behaviour: budgeted → 0, un-budgeted →
+        # server setting.
+        frozen_retry = (protocol.get('case_retry') or {}).get('max_retries_per_case')
+        if type(frozen_retry) is int:
+            config['retry_rounds'] = frozen_retry
+        elif protocol.get('budget'):
             # Retries must be new ledgered attempts, not hidden runner rounds.
             config['retry_rounds'] = 0
         from .budgets import BudgetLedger
         ledger = BudgetLedger(self.repository)
         if protocol.get('budget'):
             count = len(self.plans.get(task_id, plan_scope['plan_id'])['content']['selection']['case_ids'])
-            step = ledger.reserved_step(iteration['id'], candidate_id, request_key,
-                dict(candidate_id=candidate_id, request_key=request_key, case_count=count, batch_id=batch_id))
+            # Do not add max_retries_per_case to the fallback step here: the worst-case
+            # cap was already checked when _plan built the initial generation steps with
+            # that field set. Infra retry attempts are fresh whole-attempt slots whose
+            # within-attempt retries are accounted at settlement via retry_case_count.
+            fallback_step = dict(candidate_id=candidate_id, request_key=request_key,
+                                 case_count=count, batch_id=batch_id)
+            step = ledger.reserved_step(iteration['id'], candidate_id, request_key, fallback_step)
             reserved = ledger.reserve_many(iteration, [step], group_key='attempt:' + hashlib.sha256(key.encode()).hexdigest())
             if reserved['status'] != 'reserved':
                 raise Conflict('Iteration budget exceeded; request human confirmation')
