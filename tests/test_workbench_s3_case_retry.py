@@ -268,3 +268,34 @@ def test_comparisons_and_gate_show_both_sides_re_ask_rates_without_changing_the_
     assert disclosed['case_retry'] == summary and plain['case_retry'] is None
     assert {k: v for k, v in disclosed.items() if k != 'case_retry'} == {k: v for k, v in plain.items()
                                                                          if k != 'case_retry'}
+
+
+# ------------------------------------------------------------------ deployment over an older ledger
+def _drop_retry_column(repo):
+    with repo.connect(write=True) as conn:
+        conn.execute('ALTER TABLE iteration_budget_reservations DROP COLUMN retry_case_count')
+
+
+def test_iterations_with_reservations_read_and_settle_on_a_ledger_without_the_new_column(env, tmp_path):
+    from rag_eval.workbench.iterations import initialize_iterations
+    repo = env['repo']
+    tree = iteration(env, budget=dict(max_case_runs=100, max_runs_per_candidate=10))
+    BudgetLedger(repo).reserve_many(tree, [step(candidate=tree['root_candidate_id'], count=2)], group_key='old')
+    _drop_retry_column(repo)  # as written by the deployed version
+    # Readers never migrate (they may run inside an open writer) and still work.
+    assert env['service'].iteration(tree['id'])['budget_usage']['case_runs_used'] == 2
+    # Settlement through the execution store's ledger migrates inside its own writer.
+    ledger = BudgetLedger(repo, initialize=False)
+    ledger.attach(tree['id'], tree['root_candidate_id'], 'one', 'exec-old')
+    run = tmp_path / 'exec-old'
+    run.mkdir()
+    ledger.settle_execution(dict(execution_id='exec-old', terminal=True, state='finished', run_dir=str(run),
+                                 run_state=None))
+    with repo.connect() as conn:
+        assert conn.execute('SELECT state FROM iteration_budget_reservations').fetchone()[0] == 'unknown'
+        assert 'retry_case_count' in {r['name'] for r in conn.execute('PRAGMA table_info(iteration_budget_reservations)')}
+    # Service start migrates too.
+    _drop_retry_column(repo)
+    initialize_iterations(repo)
+    with repo.connect() as conn:
+        assert 'retry_case_count' in {r['name'] for r in conn.execute('PRAGMA table_info(iteration_budget_reservations)')}

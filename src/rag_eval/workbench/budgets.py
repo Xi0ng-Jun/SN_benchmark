@@ -118,13 +118,26 @@ def initialize(repository):
                 retry_case_count INTEGER,
                 UNIQUE(iteration_id,candidate_id,request_key));
         ''')
-        # retry_case_count: re-asks inside the attempt; the reserved worst case
-        # until settled, then the observed count. Older rows (NULL) had none.
-        cols = {r['name'] for r in conn.execute(
-            "PRAGMA table_info(iteration_budget_reservations)")}
-        if 'retry_case_count' not in cols:
-            conn.execute(
-                'ALTER TABLE iteration_budget_reservations ADD COLUMN retry_case_count INTEGER')
+        migrate(conn)
+
+
+def _has_retry_column(conn):
+    return 'retry_case_count' in {r['name'] for r in conn.execute('PRAGMA table_info(iteration_budget_reservations)')}
+
+
+def migrate(conn):
+    """Add retry_case_count to a ledger created before it (inside the caller's writer).
+
+    retry_case_count: re-asks inside the attempt; the reserved worst case until
+    settled, then the observed count. Older rows (NULL) had none. Readers never
+    depend on it (``_retry_count``), so an unmigrated database stays readable.
+    """
+    if BudgetLedger._available(conn) and not _has_retry_column(conn):
+        conn.execute('ALTER TABLE iteration_budget_reservations ADD COLUMN retry_case_count INTEGER')
+
+
+def _retry_count(row):
+    return (row['retry_case_count'] if 'retry_case_count' in row.keys() else None) or 0
 
 
 def _count_retried_cases(record):
@@ -223,7 +236,7 @@ class BudgetLedger:
         roles = subject_roles(conn, iteration_id)
         complete = bool(rows) and all(r['state'] == 'settled' for r in rows)
         return dict(iteration_id=iteration_id, policy=json.loads(policy['policy_json']),
-                    case_runs_used=sum((r['retry_case_count'] or 0) + r['case_count'] for r in rows),
+                    case_runs_used=sum(_retry_count(r) + r['case_count'] for r in rows),
                     charged_cny=sum(r['charged_cny'] for r in rows),
                     reserved_cny=sum(r['reserved_cny'] for r in rows if r['state'] != 'settled'),
                     actual_cny=sum(r['actual_cny'] for r in rows) if complete else None,
@@ -260,7 +273,8 @@ class BudgetLedger:
         # Keep the estimate within this iteration's frozen execution conditions.
         # The denominator is actual case-runs (base + observed retries), so the
         # per-case estimate reflects what a candidate really spends to answer.
-        row = conn.execute('SELECT SUM(actual_cny),SUM(case_count + COALESCE(retry_case_count,0)) '
+        retries = 'COALESCE(retry_case_count,0)' if _has_retry_column(conn) else '0'
+        row = conn.execute(f'SELECT SUM(actual_cny),SUM(case_count + {retries}) '
                            "FROM iteration_budget_reservations WHERE iteration_id=? AND state='settled'",
                            (iteration['id'],)).fetchone()
         if row[1] and row[0] > 0:
@@ -301,6 +315,7 @@ class BudgetLedger:
         repo = self.repository
         self.reconcile(iteration['id'])
         with repo.connect(write=True) as conn:
+            migrate(conn)
             saved = conn.execute('SELECT * FROM iteration_budget_policies WHERE iteration_id=?',
                                  (iteration['id'],)).fetchone()
             if saved is None:
@@ -410,6 +425,7 @@ class BudgetLedger:
         # Count retried cases for ledger accounting (visible, not hidden).
         retried = _count_retried_cases(record)
         with self.repository.connect(write=True) as conn:
+            migrate(conn)
             if not self._available(conn):
                 return
             row = conn.execute('SELECT * FROM iteration_budget_reservations WHERE execution_id=?',

@@ -84,6 +84,9 @@ def initialize_iterations(repository):
     initialize(repository)
     from .execution_scopes import initialize as initialize_scopes
     initialize_scopes(repository)
+    # Service start migrates the budget ledger, before any reader or settlement.
+    from .budgets import initialize as initialize_budgets
+    initialize_budgets(repository)
 
 
 def _json(value):
