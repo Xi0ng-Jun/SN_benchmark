@@ -42,6 +42,8 @@ def judge(comparison, noise, contract, rule):
                   success_threshold=threshold, rho=None, flips=[], guards=[], guard_broken=[],
                   infrastructure=None, verdict='unmeasurable', reasons=[],
                   # Disclosure only: in-attempt re-asks of each side never change the verdict.
+                  # The infrastructure check below still counts first-answer failures,
+                  # including those a re-ask later answered.
                   case_retry=comparison.get('retry_summary'),
                   evidence=dict(noise=noise, mean=comparison.get('mean'),
                                 validation=comparison.get('validation'), rows=comparison.get('rows', []),
