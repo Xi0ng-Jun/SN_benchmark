@@ -171,7 +171,16 @@ def test_execution_deadline_leaves_late_partitions_not_started(tmp_path):
 
 
 # --------------------------------------------------------------- model gate
-def test_model_gate_caps_requests_across_threads(tmp_path):
+@pytest.fixture
+def gate_dir(tmp_path):
+    """Kernel semaphores outlive the test; remove every one recorded here."""
+    from rag_eval.model_gate import remove_gates
+    directory = tmp_path / 'gate'
+    yield directory
+    remove_gates(directory)
+
+
+def test_model_gate_caps_requests_across_threads(gate_dir):
     import httpx
     from rag_eval.model_gate import install_model_gate
     active, peak, lock = [0], [0], threading.Lock()
@@ -184,33 +193,89 @@ def test_model_gate_caps_requests_across_threads(tmp_path):
         with lock:
             active[0] -= 1
         return httpx.Response(200, json={'ok': True})
-    with install_model_gate(tmp_path / 'gate', 2) as gate:
+    with install_model_gate(gate_dir, 2) as gate:
         def call():
             with httpx.Client(transport=httpx.MockTransport(handler)) as client:
                 assert client.post('http://model.invalid/v1', json={}).json() == {'ok': True}
         threads = [threading.Thread(target=call) for _ in range(6)]
         [t.start() for t in threads]
         [t.join() for t in threads]
-    assert peak[0] == 2 and gate.requests == 6
+    assert peak[0] == 2 and gate.requests == 6 and gate.waited_max > 0
+    assert gate.status() == dict(slots=2, in_flight=0, waiting=0)
     assert httpx.Client.send.__name__ == 'send'  # restored
 
 
-def test_model_gate_slots_are_shared_between_processes(tmp_path):
-    import fcntl
-    import os
+def _child(gate_dir, slots, body):
     import subprocess
-    from rag_eval.model_gate import ModelGate
-    gate = ModelGate(tmp_path / 'gate', 1, poll=0.01)
-    fd = gate.acquire()
-    child = subprocess.Popen([sys.executable, '-c', (
-        'import sys, time; sys.path.insert(0, %r)\n'
+    return subprocess.Popen([sys.executable, '-c', (
+        'import os, sys, time; sys.path.insert(0, %r)\n'
         'from rag_eval.model_gate import ModelGate\n'
-        'g = ModelGate(%r, 1, poll=0.01); t = time.monotonic(); fd = g.acquire(); print(time.monotonic() - t)'
-    ) % (str(Path(__file__).resolve().parents[1] / 'src'), str(tmp_path / 'gate'))], stdout=subprocess.PIPE, text=True)
+        'g = ModelGate(%r, %d)\n' + body) % (str(Path(__file__).resolve().parents[1] / 'src'), str(gate_dir), slots)],
+        stdout=subprocess.PIPE, text=True)
+
+
+def test_model_gate_slots_are_shared_between_processes(gate_dir):
+    from rag_eval.model_gate import ModelGate
+    gate = ModelGate(gate_dir, 1)
+    token = gate.acquire()
+    child = _child(gate_dir, 1, 't = time.monotonic(); g.acquire(); print(time.monotonic() - t)')
     time.sleep(0.5)
-    gate.release(fd)
-    waited = float(child.communicate(timeout=10)[0])
-    assert waited >= 0.4
+    assert gate.status() == dict(slots=1, in_flight=1, waiting=1)  # the child is queued, not polling
+    gate.release(token)
+    assert float(child.communicate(timeout=10)[0]) >= 0.4
+
+
+def test_a_killed_process_gives_its_slots_back(gate_dir):
+    import signal
+    from rag_eval.model_gate import ModelGate, gate_status
+    child = _child(gate_dir, 2, 'g.acquire(); g.acquire(); print("held", flush=True); time.sleep(60)')
+    assert child.stdout.readline().strip() == 'held'
+    gate = ModelGate(gate_dir, 2)
+    assert gate.status()['in_flight'] == 2
+    with pytest.raises(TimeoutError):
+        gate.acquire(timeout=0.2)
+    child.send_signal(signal.SIGKILL)
+    child.wait(timeout=10)
+    gate.release(gate.acquire(timeout=5))
+    assert [dict(s, record=None) for s in gate_status(gate_dir)] == [
+        dict(slots=2, in_flight=0, waiting=0, record=None, state='live')]
+
+
+def test_waiters_are_served_in_arrival_order(gate_dir):
+    from rag_eval.model_gate import ModelGate
+    gate = ModelGate(gate_dir, 1)
+    token, order = gate.acquire(), []
+
+    def wait(index):
+        gate.release(order.append(index) or gate.acquire())
+    threads = []
+    for index in range(6):
+        threads.append(threading.Thread(target=wait, args=(index,)))
+        threads[-1].start()
+        while gate.status()['waiting'] < index + 1:  # queued before the next one arrives
+            time.sleep(0.01)
+    gate.release(token)
+    [t.join(timeout=10) for t in threads]
+    assert order == list(range(6))
+
+
+def test_a_removed_gate_is_recreated_for_waiters_and_new_processes(gate_dir):
+    from rag_eval.model_gate import ModelGate, remove_gates
+    gate = ModelGate(gate_dir, 1)
+    token, result = gate.acquire(), []
+    waiter = threading.Thread(target=lambda: result.append(gate.acquire(timeout=5)))
+    waiter.start()
+    while gate.status()['waiting'] < 1:
+        time.sleep(0.01)
+    remove_gates(gate_dir)
+    waiter.join(timeout=10)
+    gate.release(token)  # the old semaphore is gone; giving back is a no-op
+    assert result and ModelGate(gate_dir, 1).status() == dict(slots=1, in_flight=1, waiting=0)
+    gate.release(result[0])
+    # Different slot counts are separate gates.
+    other = ModelGate(gate_dir, 3)
+    assert other.status() == dict(slots=3, in_flight=0, waiting=0)
+    assert sorted(p.name for p in gate_dir.glob('semaphore-*.json')) == ['semaphore-1.json', 'semaphore-3.json']
 
 
 # ------------------------------------------------------------ retry merging

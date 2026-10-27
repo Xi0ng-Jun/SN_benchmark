@@ -24,9 +24,9 @@ def test_distribution_uses_observed_values():
     assert distribution([]) == dict(count=0)
 
 
-def test_requests_are_timed_per_phase_with_gate_waits(tmp_path):
+def test_requests_are_timed_per_phase_with_gate_waits(tmp_path, request):
     import httpx
-    from rag_eval.model_gate import install_model_gate
+    from rag_eval.model_gate import install_model_gate, remove_gates
 
     def handler(request):
         time.sleep(0.05)
@@ -34,7 +34,8 @@ def test_requests_are_timed_per_phase_with_gate_waits(tmp_path):
             return httpx.Response(429, json={})
         return httpx.Response(200, json={'ok': True})
     observer = SpeedObserver()
-    with install_model_gate(tmp_path / 'gate', 1, observer=observer) as gate, observing(observer):
+    request.addfinalizer(lambda: remove_gates(tmp_path / 'gate'))
+    with install_model_gate(tmp_path / 'gate', 1, observer=observer), observing(observer):
         phase('preparation')
 
         def call(path):
@@ -61,9 +62,10 @@ def test_requests_are_timed_per_phase_with_gate_waits(tmp_path):
     assert sorted(r['gate_wait'] for r in embeddings)[-1] >= 0.08
 
 
-def test_failed_requests_release_and_record_the_exception(tmp_path):
+def test_failed_requests_release_and_record_the_exception(tmp_path, request):
     import httpx
-    from rag_eval.model_gate import install_model_gate
+    from rag_eval.model_gate import install_model_gate, remove_gates
+    request.addfinalizer(lambda: remove_gates(tmp_path / 'gate'))
 
     def handler(request):
         raise httpx.ConnectError('down')
@@ -139,9 +141,11 @@ def test_execution_summary_merges_partitions_and_retry_runs(tmp_path, monkeypatc
     assert speed['execution_wall_seconds'] >= 0
 
 
-def test_partition_cli_saves_speed_diagnostics_beside_the_run(tmp_path, monkeypatch):
+def test_partition_cli_saves_speed_diagnostics_beside_the_run(tmp_path, monkeypatch, request):
     import httpx
     from rag_eval import notebook_runner, run_report
+    from rag_eval.model_gate import remove_gates
+    request.addfinalizer(lambda: remove_gates(tmp_path / 'gate'))
     from test_notebook_cli_launch import _script, captured_argv
     _, argv = captured_argv(tmp_path)
 

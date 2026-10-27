@@ -17,7 +17,7 @@ finished work is scored instead of killed. Optional server settings:
   questions asked at once inside a partition, and deadlines after which a
   question is saved as ``error`` and the partition finishes;
 - ``model_concurrency``: model requests allowed at once across all partition
-  processes of this server (slot files under ``<output_root>/model-gate``);
+  processes of this server (a semaphore recorded under ``<output_root>/model-gate``);
   each partition saves ``speed-diagnostics.json`` (phase walls, gate waits,
   request latencies) and ``official-summary.json`` merges them under ``speed``;
 - ``adopt_runs`` ({case_id: run dir}): register already finished runs of the
