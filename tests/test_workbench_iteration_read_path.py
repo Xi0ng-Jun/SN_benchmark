@@ -167,3 +167,32 @@ def test_ledger_rows_are_reparsed_only_when_the_file_changes(tmp_path, monkeypat
     views._ledger_rows()[0]['run_dir'] = 'mutated'  # callers get copies
     ledger.write_text('{}\n')
     assert views._ledger_rows() == [dict(run_dir='x')] and len(parsed) == 2
+
+
+def test_concurrent_http_gets_of_one_tree_build_it_once(tree, monkeypatch):
+    import asyncio
+    import time
+    import httpx
+    from fastapi import FastAPI
+    grow(tree, 2)
+    api = reader(tree)
+    monkeypatch.setattr(api, '_scope', lambda **kwargs: None)
+    real, calls = api.show, []
+
+    def counted(iteration_id):
+        calls.append(iteration_id)
+        time.sleep(0.2)  # a slow rebuild that polls keep arriving during
+        return real(iteration_id)
+    monkeypatch.setattr(api, 'show', counted)
+    app = FastAPI()
+    app.include_router(api.router())
+
+    async def main():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://workbench') as client:
+            path = f"/api/iterations/{tree['tree']['id']}"
+            burst = await asyncio.gather(*[client.get(path) for _ in range(8)])
+            return burst, await client.get(path)
+    burst, later = asyncio.run(main())
+    assert {r.status_code for r in burst} == {200} and len({r.headers['etag'] for r in burst}) == 1
+    # One rebuild for the burst; the unchanged version is then served without another.
+    assert later.status_code == 200 and len(calls) == 1

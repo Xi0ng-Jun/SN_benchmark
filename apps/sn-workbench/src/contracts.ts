@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type Metric = { value: number; denominator: number; kind: 'per-case' | 'batch-only' };
 export type CaseRow = { case_id: string; question: string; task: string; status: string; metrics: Record<string, number> };
@@ -132,17 +132,27 @@ export function date(value: string): string { return new Date(value).toLocaleStr
 export const judgmentLabels: Record<string, string> = { confirmed: '问题成立', rejected: '不支持该问题', undecided: '无法判断' };
 export const statusLabels: Record<string, string> = { success: '已回答', no_answer: '空回答', error: '执行错误', missing: '缺失', clarification: '澄清' };
 
+/** Read ``path``; re-read when ``refresh`` changes.
+
+A refresh while the previous read of the same path is still in flight is
+skipped, not restarted: aborting only drops the response, the server would
+still compute it, and slow reads polled every few seconds would pile up.
+Another path (or unmounting) aborts the read in flight. */
 export function useResource<T>(path: string | null, refresh = 0) {
   const [state, setState] = useState<{ path: string | null; data?: T; error?: string }>({ path: null });
+  const inflight = useRef<{ path: string; controller: AbortController } | null>(null);
   useEffect(() => {
-    if (!path) return;
-    const controller = new AbortController();
-    api<T>(path, undefined, controller.signal).then(data => {
-      if (!controller.signal.aborted) setState({ path, data });
+    if (!path || inflight.current?.path === path) return;
+    inflight.current?.controller.abort();
+    const read = { path, controller: new AbortController() };
+    inflight.current = read;
+    const { signal } = read.controller;
+    api<T>(path, undefined, signal).then(data => {
+      if (!signal.aborted) setState({ path, data });
     }).catch(error => {
-      if (!controller.signal.aborted) setState({ path, error: String(error.message) });
-    });
-    return () => controller.abort();
+      if (!signal.aborted) setState({ path, error: String(error.message) });
+    }).finally(() => { if (inflight.current === read) inflight.current = null; });
   }, [path, refresh]);
+  useEffect(() => () => { inflight.current?.controller.abort(); inflight.current = null; }, []);
   return state.path === path ? state : { path };
 }

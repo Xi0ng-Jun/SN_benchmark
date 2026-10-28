@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { useResource } from '../contracts';
 import { Copy } from '../ui';
@@ -22,8 +22,19 @@ type Ledger = {
 const num = (n: number | null | undefined) => typeof n === 'number' ? Number(n.toFixed(4)).toString() : '—';
 const pool = (p: Pool[] | null) => p?.map(b => `${b.batch_id} (${b.n}, ${b.selection_hash?.slice(0, 8) ?? '—'})`).join(' + ') ?? '未知';
 
+// The ledger is rebuilt from every execution of the iteration; the page's 4 s
+// poll re-reads it at most every 30 s.
+const LEDGER_REFRESH_MS = 30000;
+
 export function LedgerPanel({ iterationId, refresh }: { iterationId: string; refresh: number }) {
-  const state = useResource<Ledger>(`/iterations/${iterationId}/ledger`, refresh);
+  const [slow, setSlow] = useState(0);
+  const last = useRef(Date.now());
+  useEffect(() => {
+    if (Date.now() - last.current < LEDGER_REFRESH_MS) return;
+    last.current = Date.now();
+    setSlow(n => n + 1);
+  }, [refresh]);
+  const state = useResource<Ledger>(`/iterations/${iterationId}/ledger`, slow);
   const data = state.data;
   const budget = data?.sampling_ledger.budget_usage;
   return <Section title="三笔账" defaultOpen={false} testID="iteration-ledger">

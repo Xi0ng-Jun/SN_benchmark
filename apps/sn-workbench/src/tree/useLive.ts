@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, AgentSnapshot, liveSessions, ReadEnvelope, Task } from '../contracts';
 import type { CandidateChanges, IterationTree } from './contracts';
 import type { AgentLive } from './next';
@@ -13,10 +13,18 @@ export function useLive(task: Task | undefined, tree: IterationTree | undefined,
   const [readyFor, setReadyFor] = useState<string | null>(null);
   const sessions = liveSessions(task?.sessions ?? []).slice(-12);
   const implementing = (tree?.candidates ?? []).filter(c => c.state === 'implementing' && c.worktree?.status === 'ready');
-  const key = `${task?.id}|${sessions.map(s => s.id).join()}|${implementing.map(c => c.id).join()}|${refresh}|${tick}`;
+  const scope = `${task?.id}|${sessions.map(s => s.id).join()}|${implementing.map(c => c.id).join()}`;
+  const key = `${scope}|${refresh}|${tick}`;
+  // A refresh while the previous reads of the same scope are in flight is skipped
+  // (see useResource); a new scope or unmounting aborts them.
+  const inflight = useRef<{ scope: string; controller: AbortController } | null>(null);
+  useEffect(() => () => { inflight.current?.controller.abort(); inflight.current = null; }, []);
   useEffect(() => {
-    if (!task) return;
-    const controller = new AbortController();
+    if (!task || inflight.current?.scope === scope) return;
+    inflight.current?.controller.abort();
+    const reading = { scope, controller: new AbortController() };
+    inflight.current = reading;
+    const { controller } = reading;
     const statuses = Promise.all(sessions.map(async s => {
       try {
         const read = await api<ReadEnvelope<{ agent: AgentSnapshot }>>(`/tasks/${task.id}/sessions/${s.id}/agent`, undefined, controller.signal);
@@ -27,8 +35,8 @@ export function useLive(task: Task | undefined, tree: IterationTree | undefined,
       try { return [c.id, (await api<CandidateChanges>(`/candidates/${c.id}/changes`, undefined, controller.signal)).file_count] as const; }
       catch { return [c.id, undefined] as const; }
     })).then(rows => { if (!controller.signal.aborted) setChanges(Object.fromEntries(rows)); });
-    void Promise.all([statuses, counts]).then(() => { if (!controller.signal.aborted) setReadyFor(task.id); });
-    return () => controller.abort();
+    void Promise.all([statuses, counts]).then(() => { if (!controller.signal.aborted) setReadyFor(task.id); })
+      .finally(() => { if (inflight.current === reading) inflight.current = null; });
   }, [key]);
   const active = implementing.length > 0 || Object.values(live).some(l => l.status === 'running' || l.status === 'initializing');
   useEffect(() => {

@@ -239,10 +239,31 @@ class IterationAPI:
         if not self.writable:
             raise ValueError('服务器未开放迭代与候选的写操作')
 
+    @property
+    def heavy(self):
+        """Tree, ledger, comparisons and changes: one computation per key at a time,
+        two at most across keys (see heavy_reads)."""
+        if '_heavy' not in self.__dict__:
+            from .heavy_reads import HeavyReads
+            self._heavy = HeavyReads(limit=2)
+        return self._heavy
+
+    def _prepare(self, *, iteration_id=None, candidate_id=None, versioned=True):
+        """Scope check, then the iteration version a heavy read is cached at (None: not cached)."""
+        self._scope(iteration_id=iteration_id, candidate_id=candidate_id)
+        if not versioned:
+            return None
+        return self._version(iteration_id or self._iteration_of(candidate_id))
+
+    def _iteration_of(self, candidate_id):
+        # The bare row: the full candidate view measures (admits) every attempt.
+        with self.repository.connect() as conn:
+            return self.service._candidate(conn, candidate_id)['iteration_id']
+
     def _scope(self, iteration_id=None, candidate_id=None):
         """Reject identities outside this workspace before acting on them."""
         if candidate_id is not None:
-            iteration_id = self.service.candidate(candidate_id)['iteration_id']
+            iteration_id = self._iteration_of(candidate_id)
         if iteration_id is not None:
             ids = {i['id'] for i in self.service.iterations(self.workspace['id'])}
             if iteration_id not in ids:
@@ -267,8 +288,10 @@ class IterationAPI:
 
         @router.get('/api/iterations/{iteration_id}')
         async def iteration_show(iteration_id: str, request: Request):
-            self._scope(iteration_id=iteration_id)
-            tree, version = await asyncio.to_thread(self.show, iteration_id)
+            # show() returns the version taken after the comparison records it stored.
+            tree, version = await self.heavy.get(('show', iteration_id), lambda: self.show(iteration_id),
+                                                 prepare=lambda: self._prepare(iteration_id=iteration_id),
+                                                 version_of=lambda shown: shown[1])
             etag = '"' + version + '"'
             headers = {'ETag': etag, 'Cache-Control': 'no-cache'}
             if request.headers.get('if-none-match') == etag:
@@ -276,12 +299,14 @@ class IterationAPI:
             return JSONResponse(jsonable_encoder(tree), headers=headers)
 
         @router.get('/api/iterations/{iteration_id}/ledger')
-        def iteration_ledger(iteration_id: str):
-            self._scope(iteration_id=iteration_id)
-            from .ledger import LedgerService
-            from .sealed import SealedService
-            score = SealedService(self.repository, service, self.views).score(iteration_id)
-            return LedgerService(self.repository, service, self.views).read(iteration_id, sealed_score=score)
+        async def iteration_ledger(iteration_id: str):
+            def read():
+                from .ledger import LedgerService
+                from .sealed import SealedService
+                score = SealedService(self.repository, service, self.views).score(iteration_id)
+                return LedgerService(self.repository, service, self.views).read(iteration_id, sealed_score=score)
+            return await self.heavy.get(('ledger', iteration_id), read,
+                                        prepare=lambda: self._prepare(iteration_id=iteration_id))
 
         @router.get('/api/candidates/{candidate_id}')
         def node_show(candidate_id: str):
@@ -289,15 +314,19 @@ class IterationAPI:
             return service.candidate(candidate_id)
 
         @router.get('/api/candidates/{candidate_id}/changes')
-        def node_changes(candidate_id: str):
-            self._scope(candidate_id=candidate_id)
-            view = service.view(candidate_id)
-            return {'binding': None} if view.binding(view.task_id) is None else view.read(view.task_id)
+        async def node_changes(candidate_id: str):
+            def read():
+                view = service.view(candidate_id)
+                return {'binding': None} if view.binding(view.task_id) is None else view.read(view.task_id)
+            # The worktree changes outside the database: never cached, only shared.
+            return await self.heavy.get(('changes', candidate_id), read,
+                                        prepare=lambda: self._prepare(candidate_id=candidate_id, versioned=False))
 
         @router.get('/api/candidates/{candidate_id}/comparisons')
-        def node_comparisons(candidate_id: str):
-            self._scope(candidate_id=candidate_id)
-            return self.comparisons.for_candidate(candidate_id, actor=actor)
+        async def node_comparisons(candidate_id: str):
+            return await self.heavy.get(('comparisons', candidate_id),
+                                        lambda: self.comparisons.for_candidate(candidate_id, actor=actor),
+                                        prepare=lambda: self._prepare(candidate_id=candidate_id))
 
         @router.get('/api/comparisons/{comparison_id}')
         def comparison_show(comparison_id: str):
