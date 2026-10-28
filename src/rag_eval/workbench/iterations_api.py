@@ -7,6 +7,7 @@ name a candidate; nothing here depends on what the browser has selected.
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import nullcontext
 import hashlib
 import json
@@ -265,9 +266,9 @@ class IterationAPI:
             return service.create_iteration(self.workspace['id'], actor=actor, **command.model_dump())
 
         @router.get('/api/iterations/{iteration_id}')
-        def iteration_show(iteration_id: str, request: Request):
+        async def iteration_show(iteration_id: str, request: Request):
             self._scope(iteration_id=iteration_id)
-            tree, version = self.show(iteration_id)
+            tree, version = await asyncio.to_thread(self.show, iteration_id)
             etag = '"' + version + '"'
             headers = {'ETag': etag, 'Cache-Control': 'no-cache'}
             if request.headers.get('if-none-match') == etag:

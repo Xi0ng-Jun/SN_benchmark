@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import hmac
+import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 import secrets
@@ -247,6 +249,17 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
     def read_worktree(task_id: str):
         binding = worktree_service.binding(task_id)
         return {'binding': None} if binding is None else worktree_service.read(task_id)
+
+    _slow_log = logging.getLogger(__name__)
+
+    @app.middleware('http')
+    async def slow_request(request: Request, call_next):
+        start = time.monotonic()
+        response = await call_next(request)
+        elapsed = time.monotonic() - start
+        if elapsed > 3.0:
+            _slow_log.warning('[SLOW] %s %s %.1fs', request.method, request.url.path, elapsed)
+        return response
 
     @app.middleware('http')
     async def access(request: Request, call_next):
