@@ -10,7 +10,7 @@ import type { Step } from './next';
 
 export type NodeAgent = { sessionId: string; role: 'analyst' | 'implementer'; label: string; status: string | null };
 import { ActionRequest, Candidate, CandidateChanges, CandidateComparisons, ChangedFile, ComparisonRecord, decisionLabels,
-  IterationTree, Proposal, requestStatusLabels, short, stateLabels, verbLabels } from './contracts';
+  IterationTree, Proposal, requestStatusLabels, short, signed, stateLabels, verbLabels } from './contracts';
 
 const caseShort = (id: string) => id.split(':').pop()!.slice(0, 8);
 
@@ -40,7 +40,7 @@ function FlipTable({ record, rootRegressed, testID }: { record: ComparisonRecord
       <View style={{ width: 56, alignItems: 'flex-end' }}><Mono size={12}>{fmt(record.mean?.subject)}</Mono></View>
       <View style={{ width: 60, alignItems: 'flex-end' }}><Delta value={record.mean?.delta} /></View>
     </View>
-    <Copy small muted>记录 {short(record.id)} · 不可变；均值变好不等于不退化或显著</Copy>
+    <Copy small muted>记录 {short(record.id)}</Copy>
   </View>;
 }
 
@@ -166,7 +166,7 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         <Button label="打开对话" onPress={() => onOpenAgent(a.sessionId)} testID={'open-agent-' + a.sessionId} />
         <RemoveConfirm onRemove={() => onRemoveAgent(a.sessionId)} testID={'remove-agent-' + a.sessionId} />
       </View>)}
-      {!agents.some(a => a.role === 'implementer') && c.state === 'implementing' && <Copy small muted>这个候选还没有实现 Agent。它只在该候选的 worktree 里工作，只拿到提议里给实现者的字段。</Copy>}
+      {!agents.some(a => a.role === 'implementer') && c.state === 'implementing' && <Copy small muted>还没有实现 Agent</Copy>}
       {(canAnalyse || canImplement) && <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
         {canAnalyse && <Button label="新建分析 Agent" onPress={onNewAnalyst} testID="agent-new-analyst" />}
         {canImplement && proposal && <Button label="新建实现 Agent" onPress={() => onImplementer(c, proposal)} testID="agent-new-implementer" />}
@@ -186,6 +186,25 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
       {!c.reference ? <Copy small muted>本节点还没有通过准入的运行</Copy> : comparisons.error ? <Copy small style={{ color: theme.error }}>{comparisons.error}</Copy>
         : parentRecord ? <FlipTable record={parentRecord} rootRegressed={rootRegressed} testID="parent-flips" /> : <Copy small muted>读取中…</Copy>}
     </Section>}
+    {!isRoot && parentRecord?.admission?.status === 'admitted' && !c.decision && (() => {
+      const kBase = tree.protocol?.k_base ?? 2;
+      const admittedCount = c.attempts.filter(a => a.admission?.status === 'admitted').length;
+      const delta = parentRecord.validation?.delta ?? parentRecord.mean?.delta ?? null;
+      const eta = parentRecord.validation?.eta ?? parentRecord.eta ?? null;
+      const tau = tree.protocol?.gate_rule?.tau ?? 0.5;
+      const passesDelta = delta !== null && eta !== null ? delta >= -eta : null;
+      const passesKBase = admittedCount >= kBase;
+      const Step = ({ ok, children }: { ok: boolean | null; children: React.ReactNode }) =>
+        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+          <Text style={{ width: 14, fontSize: 12, color: ok === null ? theme.muted : ok ? theme.success : theme.warning }}>{ok === null ? '·' : ok ? '✓' : '○'}</Text>
+          <Mono size={12}>{children}</Mono>
+        </View>;
+      return <Section title="门" testID="section-gate-status">
+        <Step ok={passesDelta}>Δ {signed(delta)} {eta !== null ? `≥ −${eta.toFixed(3)}` : '· η 未知'}</Step>
+        <Step ok={passesKBase}>准入 {admittedCount}/{kBase}</Step>
+        <Step ok={null}>ρ ? ≥ τ {tau.toFixed(2)}</Step>
+      </Section>;
+    })()}
     {!isRoot && comparisons.data && comparisons.data.root.status !== 'same_as_parent' && <Section title="相对根 C0" testID="section-root" defaultOpen={false}
       meta={rootRecord?.admission?.status === 'admitted' ? <Delta value={rootRecord.mean?.delta} /> : null}>
       {rootRecord && <FlipTable record={rootRecord} rootRegressed={rootRegressed} />}
@@ -211,7 +230,6 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         </View>;
       })}
       {!c.attempts.length && !c.links.length && <Copy small muted>还没有运行</Copy>}
-      <Copy small muted>参考运行取第一次通过准入的 attempt，与分数无关；之后的运行作为重复测量。</Copy>
     </Section>
     {mine.some(r => r.status !== 'pending') && <Section title="请求记录" defaultOpen={false}>
       {mine.filter(r => r.status !== 'pending').map(r => <RequestRow key={r.id} request={r} label={label} actions={actions} onConfirm={onConfirm} />)}

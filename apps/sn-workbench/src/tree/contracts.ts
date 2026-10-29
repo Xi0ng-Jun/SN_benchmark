@@ -24,7 +24,7 @@ export type ProposalRow = { id: string; status: string; title: string | null; pa
 export type Iteration = {
   id: string; task_id: string; origin: string; title: string; start_commit: string | null; selection_hash: string | null;
   plan_id: string | null; plan_revision: string | null; root_candidate_id: string | null; created_at: string;
-  protocol: { mode?: string; request_revision?: string; input?: { input_id?: string; bundle_id?: string; suite?: string } } | null;
+  protocol: { mode?: string; k_base?: number; gate_rule?: { id: string; tau: number; eta: string }; request_revision?: string; input?: { input_id?: string; bundle_id?: string; suite?: string } } | null;
 };
 export type IterationTree = Iteration & { candidates: Candidate[]; proposals: ProposalRow[]; unassigned_executions: string[] };
 
@@ -34,6 +34,8 @@ export type ComparisonRecord = { verdict?: GateVerdict;
   id?: string; kind: string; status?: string; reason?: string | null; comparison_id?: string;
   metric?: string | null; subject?: ComparisonSideRef; reference?: ComparisonSideRef; reference_candidate_id?: string;
   admission?: Admission; counts?: Counts; rows?: ComparisonRow[]; regressed?: string[];
+  eta?: number | null;
+  validation?: { n: number; delta: number | null; eta: number | null; incomplete: boolean };
   mean?: { reference: number | null; subject: number | null; delta: number | null }; created_at?: string; stored?: boolean;
 };
 export type CandidateComparisons = { candidate_id: string; parent: ComparisonRecord; root: ComparisonRecord };
