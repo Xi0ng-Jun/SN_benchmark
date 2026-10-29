@@ -370,7 +370,7 @@ class JobExecutionStore:
         try:
             process = subprocess.Popen(record['argv'], cwd=parent, stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr, start_new_session=True,
-                                       close_fds=True)
+                                       close_fds=True, env=os.environ.copy())
         except BaseException:
             stdout.close(); stderr.close()
             raise
