@@ -158,6 +158,23 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         {c.state === 'evaluated' && !isRoot && <Button label="放弃" onPress={() => onConfirm(actions.decide(c, 'rejected'))} testID="act-reject" />}
       </View>
     </View>
+    {/* ── 1. 假设 ── 分析 Agent 提出、批准后才有候选 */}
+    {mine.some(r => r.status === 'pending') && <Section title="待确认请求" testID="section-requests"
+      meta={<Badge label={String(mine.filter(r => r.status === 'pending').length)} tone="warning" />}>
+      {mine.filter(r => r.status === 'pending').map(r => <RequestRow key={r.id} request={r} label={label} actions={actions} onConfirm={onConfirm} />)}
+    </Section>}
+    {proposal && <Section title="假设" testID="section-proposal" meta={<Text style={{ fontSize: 11, color: theme.muted }}>{proposal.status}</Text>}>
+      {!!proposal.card.mechanism && <Text style={{ fontSize: 12, lineHeight: 19, color: theme.secondary }}>{proposal.card.mechanism}</Text>}
+      <Predictions proposal={proposal} />
+      {proposal.conclusion && <Copy small>结论：{proposal.conclusion.effect} / {proposal.conclusion.cause} {proposal.conclusion.note}</Copy>}
+    </Section>}
+    {/* ── 2. 实现 ── Agent 改代码，冻结到 commit */}
+    {!isRoot && <Section title="代码差异" testID="section-diff" defaultOpen={c.state === 'implementing' || c.state === 'frozen'}
+      meta={changes.data?.file_count !== undefined ? <Text style={{ fontSize: 11, color: theme.muted }}>{changes.data.file_count} 个文件</Text> : null}>
+      {changes.error ? <Copy small style={{ color: theme.error }}>{changes.error}</Copy> : !changes.data ? <Copy small muted>{c.worktree?.status === 'ready' ? '读取中…' : 'worktree 未就绪'}</Copy>
+        : <View style={{ gap: 6 }}>{!!changes.data.diff_stat && <Mono size={11} muted>{changes.data.diff_stat.trim()}</Mono>}
+          {(changes.data.files ?? []).map(file => <DiffFile key={file.path} file={file} />)}</View>}
+    </Section>}
     {(agents.length > 0 || canAnalyse || c.state === 'implementing') && <Section title="Agent" testID="section-agents" meta={<Text style={{ fontSize: 11, color: theme.muted }}>{agents.length ? `${agents.length} 个` : '无'}</Text>}>
       {agents.map(a => <View key={a.sessionId} testID={'node-agent-' + a.sessionId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: a.status === 'running' || a.status === 'initializing' ? theme.primary : theme.lineStrong }} />
@@ -172,50 +189,8 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         {canImplement && proposal && <Button label="新建实现 Agent" onPress={() => onImplementer(c, proposal)} testID="agent-new-implementer" />}
       </View>}
     </Section>}
-    {mine.some(r => r.status === 'pending') && <Section title="待确认请求" testID="section-requests"
-      meta={<Badge label={String(mine.filter(r => r.status === 'pending').length)} tone="warning" />}>
-      {mine.filter(r => r.status === 'pending').map(r => <RequestRow key={r.id} request={r} label={label} actions={actions} onConfirm={onConfirm} />)}
-    </Section>}
-    {proposal && <Section title="假设与逐题预测" testID="section-proposal" meta={<Text style={{ fontSize: 11, color: theme.muted }}>{proposal.status}</Text>}>
-      {!!proposal.card.mechanism && <Text style={{ fontSize: 12, lineHeight: 19, color: theme.secondary }}>{proposal.card.mechanism}</Text>}
-      <Predictions proposal={proposal} />
-      {proposal.conclusion && <Copy small>结论：{proposal.conclusion.effect} / {proposal.conclusion.cause} {proposal.conclusion.note}</Copy>}
-    </Section>}
-    {!isRoot && <Section title={`对父 ${label(c.parent_candidate_id)} 的翻转`} testID="section-parent"
-      meta={parentRecord?.admission?.status === 'admitted' ? <Delta value={parentRecord.mean?.delta} /> : null}>
-      {!c.reference ? <Copy small muted>本节点还没有通过准入的运行</Copy> : comparisons.error ? <Copy small style={{ color: theme.error }}>{comparisons.error}</Copy>
-        : parentRecord ? <FlipTable record={parentRecord} rootRegressed={rootRegressed} testID="parent-flips" /> : <Copy small muted>读取中…</Copy>}
-    </Section>}
-    {!isRoot && parentRecord?.admission?.status === 'admitted' && !c.decision && (() => {
-      const kBase = tree.protocol?.k_base ?? 2;
-      const admittedCount = c.attempts.filter(a => a.admission?.status === 'admitted').length;
-      const delta = parentRecord.validation?.delta ?? parentRecord.mean?.delta ?? null;
-      const eta = parentRecord.validation?.eta ?? parentRecord.eta ?? null;
-      const tau = tree.protocol?.gate_rule?.tau ?? 0.5;
-      const passesDelta = delta !== null && eta !== null ? delta >= -eta : null;
-      const passesKBase = admittedCount >= kBase;
-      const Step = ({ ok, children }: { ok: boolean | null; children: React.ReactNode }) =>
-        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-          <Text style={{ width: 14, fontSize: 12, color: ok === null ? theme.muted : ok ? theme.success : theme.warning }}>{ok === null ? '·' : ok ? '✓' : '○'}</Text>
-          <Mono size={12}>{children}</Mono>
-        </View>;
-      return <Section title="门" testID="section-gate-status">
-        <Step ok={passesDelta}>Δ {signed(delta)} {eta !== null ? `≥ −${eta.toFixed(3)}` : '· η 未知'}</Step>
-        <Step ok={passesKBase}>准入 {admittedCount}/{kBase}</Step>
-        <Step ok={null}>ρ ? ≥ τ {tau.toFixed(2)}</Step>
-      </Section>;
-    })()}
-    {!isRoot && comparisons.data && comparisons.data.root.status !== 'same_as_parent' && <Section title="相对根 C0" testID="section-root" defaultOpen={false}
-      meta={rootRecord?.admission?.status === 'admitted' ? <Delta value={rootRecord.mean?.delta} /> : null}>
-      {rootRecord && <FlipTable record={rootRecord} rootRegressed={rootRegressed} />}
-    </Section>}
-    {!isRoot && <Section title="代码差异" testID="section-diff" defaultOpen={false}
-      meta={changes.data?.file_count !== undefined ? <Text style={{ fontSize: 11, color: theme.muted }}>{changes.data.file_count} 个文件</Text> : null}>
-      {changes.error ? <Copy small style={{ color: theme.error }}>{changes.error}</Copy> : !changes.data ? <Copy small muted>{c.worktree?.status === 'ready' ? '读取中…' : 'worktree 未就绪'}</Copy>
-        : <View style={{ gap: 6 }}>{!!changes.data.diff_stat && <Mono size={11} muted>{changes.data.diff_stat.trim()}</Mono>}
-          {(changes.data.files ?? []).map(file => <DiffFile key={file.path} file={file} />)}</View>}
-    </Section>}
-    <Section title="运行与准入" testID="section-runs" meta={<Text style={{ fontSize: 11, color: theme.muted }}>{c.attempts.length + c.links.length} 次</Text>}>
+    {/* ── 3. 运行 ── 在冻结代码上跑所有题 */}
+    <Section title="运行" testID="section-runs" meta={<Text style={{ fontSize: 11, color: theme.muted }}>{c.attempts.length + c.links.length} 次</Text>}>
       {[...c.attempts, ...c.links].map(m => {
         const isReference = c.reference?.execution_id === m.execution_id;
         const runId = m.execution_id + '-1';
@@ -231,18 +206,47 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
       })}
       {!c.attempts.length && !c.links.length && <Copy small muted>还没有运行</Copy>}
     </Section>
-    {mine.some(r => r.status !== 'pending') && <Section title="请求记录" defaultOpen={false}>
-      {mine.filter(r => r.status !== 'pending').map(r => <RequestRow key={r.id} request={r} label={label} actions={actions} onConfirm={onConfirm} />)}
+    {/* ── 4. 比较 ── 与父节点的逐题翻转 */}
+    {!isRoot && <Section title={`与 ${label(c.parent_candidate_id)} 的比较`} testID="section-parent"
+      meta={parentRecord?.admission?.status === 'admitted' ? <Delta value={parentRecord.mean?.delta} /> : null}>
+      {!c.reference ? <Copy small muted>本节点还没有通过准入的运行</Copy> : comparisons.error ? <Copy small style={{ color: theme.error }}>{comparisons.error}</Copy>
+        : parentRecord ? <FlipTable record={parentRecord} rootRegressed={rootRegressed} testID="parent-flips" /> : <Copy small muted>读取中…</Copy>}
     </Section>}
-    {c.decision?.gate_verdict && <Section title="LCD 接受规则" testID="section-gate">
-      <Copy small>{c.decision.gate_verdict.verdict} · {c.decision.gate_verdict.rule_id}</Copy>
-      <Copy small>τ {fmt(c.decision.gate_verdict.tau)} · η {fmt(c.decision.gate_verdict.eta)} · ρ {fmt(c.decision.gate_verdict.rho)} · Δ {fmt(c.decision.gate_verdict.delta)}</Copy>
-      <Copy small muted>{c.decision.gate_verdict.reasons.join(' · ')}</Copy>
-      <Section title="判定依据" defaultOpen={false}><Copy small>{JSON.stringify(c.decision.gate_verdict, null, 2)}</Copy></Section>
+    {!isRoot && comparisons.data && comparisons.data.root.status !== 'same_as_parent' && <Section title="与根 C0 的比较" testID="section-root" defaultOpen={false}
+      meta={rootRecord?.admission?.status === 'admitted' ? <Delta value={rootRecord.mean?.delta} /> : null}>
+      {rootRecord && <FlipTable record={rootRecord} rootRegressed={rootRegressed} />}
     </Section>}
-    {c.decision && <Section title="审批与结论">
+    {/* ── 5. 门 ── LCD 接受条件 */}
+    {!isRoot && parentRecord?.admission?.status === 'admitted' && (() => {
+      const kBase = tree.protocol?.k_base ?? 2;
+      const admittedCount = c.attempts.filter(a => a.admission?.status === 'admitted').length;
+      const delta = parentRecord.validation?.delta ?? parentRecord.mean?.delta ?? null;
+      const eta = parentRecord.validation?.eta ?? parentRecord.eta ?? null;
+      const tau = tree.protocol?.gate_rule?.tau ?? 0.5;
+      const passesDelta = delta !== null && eta !== null ? delta >= -eta : null;
+      const passesKBase = admittedCount >= kBase;
+      const GateVerdict = c.decision?.gate_verdict;
+      const GateStep = ({ ok, children }: { ok: boolean | null; children: React.ReactNode }) =>
+        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+          <Text style={{ width: 14, fontSize: 12, color: ok === null ? theme.muted : ok ? theme.success : theme.warning }}>{ok === null ? '·' : ok ? '✓' : '○'}</Text>
+          <Mono size={12}>{children}</Mono>
+        </View>;
+      return <Section title="门" testID="section-gate-status"
+        meta={GateVerdict ? <Badge label={GateVerdict.verdict} tone={GateVerdict.verdict === 'accept' ? 'success' : GateVerdict.verdict === 'reject' ? 'danger' : undefined} /> : null}>
+        <GateStep ok={passesDelta}>Δ {signed(delta)} {eta !== null ? `≥ −${eta.toFixed(3)}` : '· η 未知'}</GateStep>
+        <GateStep ok={passesKBase}>准入 {admittedCount}/{kBase}</GateStep>
+        <GateStep ok={GateVerdict ? GateVerdict.rho !== null && GateVerdict.rho >= GateVerdict.tau : null}>ρ {GateVerdict?.rho !== null && GateVerdict?.rho !== undefined ? GateVerdict.rho.toFixed(3) : '?'} ≥ τ {tau.toFixed(2)}</GateStep>
+        {GateVerdict?.reasons.length ? <Copy small muted>{GateVerdict.reasons.join(' · ')}</Copy> : null}
+        {GateVerdict && <Section title="判定依据" defaultOpen={false}><Copy small>{JSON.stringify(GateVerdict, null, 2)}</Copy></Section>}
+      </Section>;
+    })()}
+    {/* ── 6. 决策 ── 采纳或放弃 */}
+    {c.decision && <Section title="决策">
       <Copy small>{decisionLabels[c.decision.decision]} · {c.decision.actor} · {new Date(c.decision.at).toLocaleString('zh-CN', { hour12: false })}</Copy>
       <Copy small muted>{c.decision.note}</Copy>
+    </Section>}
+    {mine.some(r => r.status !== 'pending') && <Section title="请求记录" defaultOpen={false}>
+      {mine.filter(r => r.status !== 'pending').map(r => <RequestRow key={r.id} request={r} label={label} actions={actions} onConfirm={onConfirm} />)}
     </Section>}
   </View>;
 }
