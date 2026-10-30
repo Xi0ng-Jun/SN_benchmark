@@ -41,3 +41,7 @@ var/**
 configs/sn-workbench-local.json
 apps/sn-workbench/dist-*/
 apps/sn-agent-bridge/.send-test-*/
+
+# Cluster reports contain benchmark questions and gold answers; never commit them.
+cluster-report-*.html
+cluster-report-*.json

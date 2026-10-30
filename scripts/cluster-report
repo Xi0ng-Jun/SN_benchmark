@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Render an iteration's frozen failure clusters as one HTML page for people.
+# Stays in the caller's directory, so the report lands where it was asked for.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$ROOT/src" exec "${SN_WORKBENCH_PYTHON:-$ROOT/.venv/bin/python}" -m rag_eval.workbench.cluster_report "$@"
