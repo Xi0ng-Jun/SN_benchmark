@@ -214,6 +214,7 @@ class RunViews:
         self._read_context = RunReadContext()
         self._partition_context = RunReadContext(partition_only=True)
         self._request_local = threading.local()
+        self._discover_lock = threading.Lock()
         self._ledger_cache = None
 
     @contextmanager
@@ -246,6 +247,13 @@ class RunViews:
     def _discover_executions(self):
         if self._execution_records is None or not self.once_per_request('discover'):
             return
+        # Round ticks and web requests discover concurrently. One scan at a time,
+        # and its signature is published only after its runs are registered: a
+        # caller that sees an unchanged signature must also see those runs.
+        with self._discover_lock:
+            self._discover_executions_locked()
+
+    def _discover_executions_locked(self):
         records = self._execution_records()
         # Hundreds of partitions are looked up one by one; rescan only when a record or plan changed.
         def stamp(record):
@@ -258,7 +266,6 @@ class RunViews:
         signature = tuple(stamp(record) for record in records)
         if signature == getattr(self, '_discovered', None):
             return
-        self._discovered = signature
         for record in records:
             root = Path(record['run_dir'])
             plan = root / 'batch-plan.json'
@@ -318,6 +325,7 @@ class RunViews:
                         retries=tuple(retries), retries_replace=replace)
             except (OSError, ValueError, KeyError, TypeError):
                 continue
+        self._discovered = signature
 
     @classmethod
     def from_config(cls, section: dict | None, base: Path, *, worktree_service=None,

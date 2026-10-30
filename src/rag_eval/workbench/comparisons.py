@@ -23,6 +23,7 @@ FORMAT = 'sn-candidate-comparison-v1'
 KINDS = ('parent', 'root', 'fresh', 'cluster')
 ADMISSION_FORMAT = 'sn-execution-admission-cache-v1'
 ADMISSION_CACHE = 'admission-cache.json'
+NO_RUNS = 'no run discovered for this execution'
 
 def _add_retry_stats(total, extra):
     """Fold one scope's re-ask disclosure (``ComparisonService._retry_stats``) into another."""
@@ -90,9 +91,13 @@ class Admission:
         with self._guard:
             lock = self._locks.setdefault(execution_id, threading.Lock())
         with lock:
-            if execution_id not in self._cache:
-                self._cache[execution_id] = self._admit(execution_id, measurement.get('run_dir'))
-        return self._cache[execution_id]
+            if execution_id in self._cache:
+                return self._cache[execution_id]
+            result = self._admit(execution_id, measurement.get('run_dir'))
+            # A finished execution whose runs are not discovered yet is not a verdict.
+            if result.get('reason') != NO_RUNS:
+                self._cache[execution_id] = result
+        return result
 
     def _admit(self, execution_id, execution_dir):
         runs = self.views.execution_runs(execution_id)
@@ -107,7 +112,7 @@ class Admission:
                 pass
         started = time.monotonic()
         result = dict(status='admitted', reason=None) if runs else dict(
-            status='not_admitted', reason='no run discovered for this execution')
+            status='not_admitted', reason=NO_RUNS)
         # Partitions of one execution share a frozen bundle: verify and load it once.
         bundle = self.views.shared_bundle(runs[0].id) if len(runs) > 1 else None
         for run in runs:

@@ -253,3 +253,22 @@ def test_version4_comparison_migration_preserves_record_bytes(tree):
         assert tuple(conn.execute('SELECT record,content_hash FROM candidate_comparisons').fetchone()) == saved
         assert conn.execute('SELECT verdict_json FROM candidate_comparisons').fetchone()[0] is None
     assert t['comparisons'].get(record['id']) == record
+
+
+def test_runs_not_yet_discovered_are_not_a_cached_refusal(tmp_path):
+    run = tmp_path / 'run'
+    (run / 'scores').mkdir(parents=True)
+    for name in ('manifest.json', 'outputs.jsonl', 'scores/scores.json', 'scores/submission.json'):
+        (run / name).write_text('{}')
+    found = []
+
+    class Late(Views):
+        def execution_runs(self, execution_id):
+            return list(found)
+
+    views = Late()
+    admission = Admission(views)
+    measurement = dict(execution_state='finished', execution_id='exec', run_dir=str(tmp_path))
+    assert admission(measurement) == dict(status='not_admitted', reason='no run discovered for this execution')
+    found.append(SimpleNamespace(id='exec-1', run_dir=run, scores=run / 'scores/scores.json'))
+    assert admission(measurement) == dict(status='admitted', reason=None)
