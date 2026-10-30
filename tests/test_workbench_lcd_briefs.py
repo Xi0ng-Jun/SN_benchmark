@@ -59,3 +59,12 @@ def test_implementer_waits_for_its_cluster_result_in_one_call():
     assert text.index('node cluster-run candidate') < text.index('--wait 1200') < text.index('node run candidate')
     assert '不要写 shell sleep' in text and 'infrastructure_error' in text and '停止' in text
     assert '--wait' not in brief({key: value for key, value in CARD.items() if key != 'contract'})
+
+
+def test_analyst_reads_evidence_in_one_call_and_previews_clusters():
+    text = analyst_brief(TASK, eval_root='/eval', tool='sn-eval', worktree=None,
+                         cwd='/eval', candidates=[('candidate', 'commit', '/sn')])
+    assert '$S evidence --parent <基准候选>' in text and '--failed-only' in text and '--fields' in text
+    assert text.index('$S evidence') < text.index('$S cluster preview --file cluster.json') < text.index(
+        '$S cluster propose --file cluster.json')
+    assert '不要逐题调用 case' in text and 'runs --all' in text and '按需查阅' in text

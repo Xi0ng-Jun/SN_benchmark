@@ -378,7 +378,8 @@ class RoundService:
                 key=self._key(state, 'analyst'), profile=settings['analyst_profile'],
                 scope=record['analyst_scope'], message_stage=record.get('message_stage', 'initial'),
                 start_grace_seconds=settings.get('agent_start_grace_seconds', 300), text=(
-                    f"LCD round: read search evidence for baseline {baseline}. Propose at most {settings['max_clusters']} "
+                    f"LCD round: read search evidence for baseline {baseline} in one call (evidence --parent {baseline}); "
+                    f"preview signatures with cluster preview before cluster propose. Propose at most {settings['max_clusters']} "
                     f"mechanical frozen clusters; draft legal contract cards for the top {settings['b']} unresolved clusters "
                     f"under this baseline. Rank by |C|*(1-q)*max(m,v,pi), pi={settings['pi']}; "
                     "unmeasurable m/v remain null with explicit prior fallback. If clusters exist but cards are missing, "

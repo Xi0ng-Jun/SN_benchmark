@@ -77,7 +77,8 @@ def _lcd_analyst_instructions():
     return """## LCD 机械簇与合同
 长时间执行会在你的 turn 结束后继续。结果就绪但缺少下一步产物时，轮次服务会发送后续消息；请继续完成卡片草案。
 先读 search 证据。本轮基准候选、max_clusters 与 b 由服务器消息指定；最多提 max_clusters 个簇，为排名前 b 的簇各起草一张带 contract 的卡。
-`$S cluster propose --file cluster.json` 写入簇。节点会话自动绑定来源；迭代会话须在 JSON 加 candidate_id，或命令加 --parent <已评测候选>。
+**一次调用读全部 search 证据**：`$S evidence --parent <基准候选>`（节点会话省略 --parent 即读本节点）。输出 JSON lines：首行给出执行顺序和 attempt_columns（列名就是签名字段名），之后每行一题：case_id、question、各 attempt 的列值、官方主分均值 mean、failed（任一 attempt 出错、缺失或低于 success_threshold）。`--failed-only` 只留失败题，`--fields a,b` 只取需要的列。不要逐题调用 case 拼表，也不要用 `runs --all` 加脚本汇总；只在需要 gold、引用或检索块原文时，对少数代表题用 `$S case <run_id> <case_id>`。下方评测文档按需查阅，不要开局通读。
+写簇前先试算：`$S cluster preview --file cluster.json` 与 propose 走同一套校验和扫描，返回成员、q、m、v 及 cluster_id 是否已被占用，不写入、不冻结，可反复调整签名。满意后用 `$S cluster propose --file cluster.json` 写入簇。节点会话自动绑定来源；迭代会话须在 JSON 加 candidate_id，或命令加 --parent <已评测候选>。
 ```json
 {"cluster_id":"retrieval_gap","description":"检索证据缺失机制","signature":{"kind":"range","field":"deterministic.evidence_hit","min":0,"max":0},"missing_signature":{"kind":"range","field":"stage_metrics.gold_evidence_recall.value","min":0,"max":0},"violation_signature":{"kind":"range","field":"deterministic.citation_invalid_count","min":1}}
 ```

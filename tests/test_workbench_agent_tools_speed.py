@@ -62,7 +62,9 @@ def cli(env, monkeypatch, capsys):
         started = time.perf_counter()
         agent_tools.main(list(argv))
         elapsed = time.perf_counter() - started
-        return json.loads(capsys.readouterr().out), len(calls), elapsed
+        text = capsys.readouterr().out
+        out = json.loads(text) if argv[2] != 'evidence' else [json.loads(line) for line in text.splitlines()]
+        return out, len(calls), elapsed
     return run
 
 
@@ -71,7 +73,7 @@ def test_read_commands_discover_executions_once(env, cli):
     base = ['--task', tree['task_id']]
     run_id = env['executions'].records(env['workspace']['id'])[-1]['execution_id'] + '-2'
     for command in (['node', 'list'], ['iteration', 'show'], ['task'], ['iteration', 'ledger'],
-                    ['case', run_id, 'qasper:q']):
+                    ['case', run_id, 'qasper:q'], ['evidence', '--parent', tree['root_candidate_id']]):
         out, scans, elapsed = cli(*base, *command)
         print(command, scans, f'{elapsed:.3f}s', file=sys.__stderr__)
         assert scans <= 1, (command, scans)

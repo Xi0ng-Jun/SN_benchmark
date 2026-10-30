@@ -38,6 +38,7 @@ export EVAL_PYTHON="$EVAL_ROOT/.venv/bin/python"
 | `... runs [--all]` | 分析 | 本任务（或全部已登记）运行：状态、失败阶段、官方分、阶段指标、待读题、run_dir |
 | `... cases RUN [--needs-read] [--status S]` | 分析 | 逐题行 |
 | `... case RUN CASE` | 分析 | 单题完整证据：问题、SN 答案、逐题分、gold、引用、按排名的检索块 |
+| `... evidence --parent <候选> [--failed-only] [--fields a,b]` | 分析 | 一次读出该候选全部 search 题的证据表（JSON lines，列名即簇签名字段；无 gold、无验证／fresh／sealed 题） |
 | `... flips LEFT RIGHT` | 分析 | 同题配对翻转表 |
 | `... hypotheses` | 分析 | 本任务假设卡及核对结果 |
 | `... hypothesis-draft --file card.json` | 分析 | 提交假设卡草稿；交给实现 Agent 的字段若与题面或 gold 重叠会被拒绝；草稿需人在更改页批准 |
@@ -50,6 +51,8 @@ export EVAL_PYTHON="$EVAL_ROOT/.venv/bin/python"
 | `... node freeze <候选> --reason R`、`node run <候选> --reason R [--timeout N]` | 分析、实现（仅自己的 `--candidate`） | **申请**冻结／运行；只登记请求 |
 | `... node adopt <候选> --reason R`（或 `node reject`） | 分析 | **申请**采纳／放弃 |
 | `... iteration create --file it.json --reason R` | 分析 | **申请**新建迭代（title、start_commit、input_id、expected_bundle_id、case_ids、mode） |
+| `... cluster preview --file cluster.json` | 分析 | 按 `cluster propose` 的同一路径试算簇成员与 q、m、v，不写入、不冻结 |
+| `... --role implementer --candidate C cluster result <簇> --wait N` | 实现 | 在一次调用内等待自己的簇结果（每 10 秒重读，状态落定即返回，最多 1800 秒），代替 shell sleep 轮询 |
 | `... requests [--status S]` | 两者 | 请求及其状态、确认人、执行回执 |
 | `... request withdraw <请求> --reason R` | 两者（实现：仅自己候选的请求） | 撤回仍待确认的请求（如误提） |
 | `... docs` | 分析 | 评测文档索引 |

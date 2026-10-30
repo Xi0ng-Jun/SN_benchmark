@@ -15,9 +15,9 @@ import time
 from pathlib import Path
 
 REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create', 'iteration sealed-run')
-ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
+ANALYST_COMMANDS = ('task', 'evidence', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
-                    'request withdraw', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
+                    'request withdraw', 'cluster preview', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
 IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'node cluster-run', 'requests', 'request withdraw', 'cluster list', 'cluster show', 'cluster result')
 GROUPS = ('iteration', 'node', 'proposal', 'request', 'cluster')
 # cluster result --wait: re-read in this process every WAIT_POLL seconds, never longer than WAIT_CAP.
@@ -107,6 +107,9 @@ def main(argv=None):
     parser.add_argument('--needs-read', action='store_true')
     parser.add_argument('--status')
     parser.add_argument('--file')
+    parser.add_argument('--fields', help='evidence: comma-separated columns (default: all but response.answer)')
+    parser.add_argument('--failed-only', action='store_true',
+                        help='evidence: only cases with an attempt that failed (error, missing or below the success threshold)')
     parser.add_argument('--wait', type=int, metavar='SECONDS',
                         help=f'cluster result (implementer): re-read until the state settles or SECONDS pass (max {WAIT_CAP})')
     options = parser.parse_intermixed_args(argv)
@@ -140,6 +143,10 @@ def main(argv=None):
     out = read() if options.wait is None else wait_until_settled(read, options.wait)
     if options.role == 'analyst' and command != 'iteration ledger':
         out = policy.project(out)
+    if command == 'evidence':
+        for line in (out['header'], *out['cases']):
+            sys.stdout.write(json.dumps(line, ensure_ascii=False, separators=(',', ':'), default=str) + '\n')
+        return
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
     sys.stdout.write('\n')
 
@@ -192,14 +199,15 @@ def dispatch(options, repository, views, store, policy):
             out = clusters.show(task_id, a[0], implementer_candidate=own)
         else:
             if not options.file:
-                raise SystemExit('cluster propose needs --file')
+                raise SystemExit(command + ' needs --file')
             card = json.loads(Path(options.file).read_text(encoding='utf-8'))
             source = card.pop('candidate_id', None) or options.node or options.parent
             if not source or (options.node and source != options.node):
-                raise SystemExit('cluster propose needs its source candidate (--node or file candidate_id)')
+                raise SystemExit(command + ' needs its source candidate (--node, --parent or file candidate_id)')
             if service.iteration(service.candidate(source)['iteration_id'])['task_id'] != task_id:
                 raise SystemExit('Cluster source belongs to another task')
-            out = clusters.propose(source, card, actor='agent:analyst')
+            out = (clusters.preview(source, card) if command == 'cluster preview'
+                   else clusters.propose(source, card, actor='agent:analyst'))
     elif command == 'task':
         task = repository.task(task_id)
         runs = json.loads(views.task_runs_context(task_id)[1])
@@ -208,6 +216,8 @@ def dispatch(options, repository, views, store, policy):
         iteration = _iteration_summary(repository, views, task_id, task_run_ids(views, task_id, runs['runs']))
         if iteration is not None:
             out['iteration'] = iteration
+    elif command == 'evidence':
+        out = search_evidence(repository, views, policy, task_id, options)
     elif command == 'runs':
         out = views.list_runs() if options.all else json.loads(views.task_runs_context(task_id)[1])
     elif command == 'cases':
@@ -261,6 +271,42 @@ def dispatch(options, repository, views, store, policy):
             out['findings'] = [dict(kind=f['kind'], source=f['source']) for f in out['findings']]
             out.pop('runs', None)
     return out
+
+
+def search_evidence(repository, views, policy, task_id, options):
+    """Every visible search case of one evaluated candidate in one table: the observations clusters scan.
+
+    The same projection cluster propose reads (no annotations, no gold); rows outside the analyst's
+    search split never enter it, and the analyst projection is applied on top.
+    """
+    from .clusters import evidence, search_observations, source_measurements
+    from .run_views import PRIMARY_METRIC
+    source = options.parent or options.node or options.candidate
+    if not source:
+        raise SystemExit('evidence needs the baseline candidate: --parent <candidate> (a node analyst reads its --node)')
+    service = iteration_service(repository, views)
+    candidate = service.candidate(source)
+    iteration = service.iteration_record(candidate['iteration_id'])
+    if iteration['task_id'] != task_id:
+        raise SystemExit("the candidate belongs to another iteration, not this Task's")
+    protocol = iteration.get('protocol') or {}
+    measurements = source_measurements(candidate)
+    planned = {cid for m in measurements for run in views.execution_runs(m['execution_id']) for cid in run.case_ids}
+    search = {cid for cid in planned if cid not in policy.hidden and (policy.search is None or cid in policy.search)}
+    executions = search_observations(views, measurements, search)
+    primary = PRIMARY_METRIC.get((protocol.get('input') or {}).get('suite')) or next(
+        (k for e in executions for row in e['cases'] for k in row.get('metrics') or {}), None)
+    threshold = protocol.get('success_threshold', .5)
+    columns = [c.strip() for c in options.fields.split(',') if c.strip()] if options.fields else None
+    table = evidence(executions, primary, threshold, columns=columns, failed_only=options.failed_only)
+    header = dict(candidate_id=candidate['id'], metric=primary, success_threshold=threshold,
+                  executions=[e['execution_id'] for e in executions], n_cases=len(table['cases']),
+                  attempt_columns=table['columns'],
+                  note='one line per search case; attempts[i] are the values of attempt_columns for executions[i]; '
+                       'column names are cluster signature fields (contexts = retrieval_context block count); '
+                       'mean is over measured attempts; failed = an attempt errored, is missing or scored below '
+                       'success_threshold' + ('; only failed cases' if options.failed_only else ''))
+    return dict(header=header, cases=table['cases'])
 
 
 def _draft_leak(views, task_id, card):
