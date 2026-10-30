@@ -1,7 +1,5 @@
 """Registered Job intentions plus the explicit opt-in execution adapter."""
 from typing import Annotated, Literal
-from pathlib import Path
-import hashlib
 import json
 
 from fastapi import APIRouter, Query
@@ -13,8 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..model_budget import ModelPricingError
 from ..artifact_store import ArtifactStore
 from .evaluation_jobs import EvaluationJobStore, JobRejected
-from .job_execution import ExecutionRejected, JobExecutionStore
-from .repository import Conflict, UnknownIdentity, uid
+# Re-exported: the spec builder lives beside the store so CLI paths need not load this HTTP module.
+from .job_execution import ExecutionRejected, JobExecutionStore, build_execution_spec  # noqa: F401
+from .repository import Conflict, UnknownIdentity
 
 
 class _Command(BaseModel):
@@ -68,30 +67,6 @@ class _ClosedJobRoute(APIRoute):
                                      'code': 'JOB_READ_REJECTED'},
                                     status_code=409 if isinstance(error, Conflict) else 422)
         return closed
-
-
-def build_execution_spec(store, task_id, job_id, preparation_id, execution_config, *, request_key='', budget=None):
-    """Build argv solely from trusted server configuration and a receipt."""
-    if not isinstance(execution_config, dict):
-        raise ExecutionRejected('Job execution is not configured')
-    from .budgets import validate_model_budget
-    validate_model_budget(budget, execution_config)
-    if execution_config.get('mode') == 'notebook':
-        from .notebook_job import execution_spec
-        return execution_spec(store, task_id, job_id, preparation_id, execution_config,
-                              request_key=request_key, budget=budget)
-    template = execution_config.get('argv')
-    output_root = execution_config.get('output_root')
-    if (type(template) is not list or not template or
-            any(type(value) is not str or not value for value in template) or
-            not isinstance(output_root, str) or not output_root.strip()):
-        raise ExecutionRejected('Job execution is not configured')
-    suffix = hashlib.sha256(request_key.encode('utf-8')).hexdigest()[:16] if request_key else uid()
-    run_dir = str((Path(output_root).resolve() / (job_id + '-' + suffix)).resolve())
-    argv = [value.replace('{run_dir}', run_dir).replace('{job_id}', job_id)
-            .replace('{task_id}', task_id).replace('{preparation_id}', preparation_id)
-            for value in template]
-    return dict(argv=argv, run_dir=run_dir, preparation_id=preparation_id)
 
 
 class JobAPI:

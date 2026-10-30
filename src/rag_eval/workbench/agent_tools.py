@@ -7,6 +7,7 @@ Implementers receive their own cluster projection and ordinal-only run results.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, nullcontext
 import json
 import os
 import sys
@@ -49,7 +50,7 @@ def iteration_service(repository, views, *, initialize=True):
         from .evaluation_plans import PlanDraftStore
         from .plan_inputs import NotebookPlanInputs
         from .evaluation_jobs import EvaluationJobStore
-        from .jobs_api import build_execution_spec
+        from .job_execution import build_execution_spec
         plans = PlanDraftStore(repository, NotebookPlanInputs({k: e['bundle'] for k, e in input_catalog(config).items()}))
         return IterationService(repository, views._worktree_service, plans=plans, jobs=EvaluationJobStore(repository),
             executions=JobExecutionStore(repository), admission=Admission(views),
@@ -60,10 +61,10 @@ def iteration_service(repository, views, *, initialize=True):
                             admission=Admission(views), initialize=initialize)
 
 
-def task_run_ids(views, task_id):
+def task_run_ids(views, task_id, runs=None):
     """Every run of a Task; a summarized whole-benchmark execution expands to its partition runs."""
     ids = []
-    for run in json.loads(views.task_runs_context(task_id)[1])['runs']:
+    for run in runs if runs is not None else json.loads(views.task_runs_context(task_id)[1])['runs']:
         if run.get('kind') == 'execution':
             ids.extend(entry.id for entry in views.execution_runs(run['id']))
         else:
@@ -114,15 +115,37 @@ def main(argv=None):
         parser.error('--integrate only applies to node derive')
     if options.command == 'hypothesis-draft' and options.parent:
         parser.error('a proposal under a candidate is `proposal draft --parent <candidate>`')
-    from .hypotheses import HypothesisStore, leak_check
+    from .hypotheses import HypothesisStore
     repository, views = build(options.state, options.config)
     store = HypothesisStore(repository)
-    task_id, a = options.task, options.args
-    command = options.command
+    task_id, a, command = options.task, options.args, options.command
     from .splits import Policy
     policy = Policy(repository, task_id)
     if command == 'case':
         policy.require_search(a[1])
+    with one_discovery(views, command):
+        out = dispatch(options, repository, views, store, policy)
+    if options.role == 'analyst' and command != 'iteration ledger':
+        out = policy.project(out)
+    json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
+    sys.stdout.write('\n')
+
+
+@contextmanager
+def one_discovery(views, command):
+    """A read command discovers executions once, as one web request does, not once per candidate or attempt.
+
+    Requests stay outside the scope: they may start an execution and read it back.
+    """
+    scope = getattr(views, 'request_scope', None)
+    with scope() if scope is not None and command not in REQUEST_COMMANDS else nullcontext():
+        yield
+
+
+def dispatch(options, repository, views, store, policy):
+    """The command's output before the analyst projection."""
+    task_id, a, command = options.task, options.args, options.command
+    from .hypotheses import leak_check
     if command.startswith('cluster '):
         from .clusters import ClusterStore
         service = iteration_service(repository, views)
@@ -156,7 +179,7 @@ def main(argv=None):
         runs = json.loads(views.task_runs_context(task_id)[1])
         out = dict(task={k: task[k] for k in ('id', 'title', 'goal')}, worktree=runs['worktree'], runs=runs['runs'],
                    hypotheses=[_card_summary(c) for c in store.list(task_id)])
-        iteration = _iteration_summary(repository, views, task_id, task_run_ids(views, task_id))
+        iteration = _iteration_summary(repository, views, task_id, task_run_ids(views, task_id, runs['runs']))
         if iteration is not None:
             out['iteration'] = iteration
     elif command == 'runs':
@@ -211,10 +234,7 @@ def main(argv=None):
         if options.role == 'implementer':
             out['findings'] = [dict(kind=f['kind'], source=f['source']) for f in out['findings']]
             out.pop('runs', None)
-    if options.role == 'analyst' and command != 'iteration ledger':
-        out = policy.project(out)
-    json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
-    sys.stdout.write('\n')
+    return out
 
 
 def _draft_leak(views, task_id, card):

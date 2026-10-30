@@ -228,11 +228,11 @@ class RunViews:
         if getattr(local, 'seen', None) is not None:
             yield
             return
-        local.seen = set()
+        local.seen, local.policies = set(), {}
         try:
             yield
         finally:
-            local.seen = None
+            local.seen = local.policies = None
 
     def once_per_request(self, key) -> bool:
         """True the first time ``key`` is seen in the current request (always outside one)."""
@@ -571,7 +571,13 @@ class RunViews:
         if repository is not None:
             from .splits import Policy
             entry = self._entry(run_id)
-            policy = Policy(repository, entry.task_id)
+            # Splits are frozen with their iteration: one read per request, not one per partition run.
+            policies = getattr(self._request_local, 'policies', None)
+            policy = policies.get(entry.task_id) if policies is not None else None
+            if policy is None:
+                policy = Policy(repository, entry.task_id)
+                if policies is not None:
+                    policies[entry.task_id] = policy
             ids = [case_id] if case_id else entry.case_ids
             if not ids and policy.sealed:
                 ids = [r['case_id'] for r in self._load(run_id)['cases']]

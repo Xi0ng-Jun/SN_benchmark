@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -81,6 +82,30 @@ def _validate_spec(spec):
         raise ExecutionRejected('Verified preparation is required')
     return dict(argv=list(argv), run_dir=str(path), budget=budget,
                 preparation_id=spec['preparation_id'])
+
+
+def build_execution_spec(store, task_id, job_id, preparation_id, execution_config, *, request_key='', budget=None):
+    """Build argv solely from trusted server configuration and a receipt."""
+    if not isinstance(execution_config, dict):
+        raise ExecutionRejected('Job execution is not configured')
+    from .budgets import validate_model_budget
+    validate_model_budget(budget, execution_config)
+    if execution_config.get('mode') == 'notebook':
+        from .notebook_job import execution_spec
+        return execution_spec(store, task_id, job_id, preparation_id, execution_config,
+                              request_key=request_key, budget=budget)
+    template = execution_config.get('argv')
+    output_root = execution_config.get('output_root')
+    if (type(template) is not list or not template or
+            any(type(value) is not str or not value for value in template) or
+            not isinstance(output_root, str) or not output_root.strip()):
+        raise ExecutionRejected('Job execution is not configured')
+    suffix = hashlib.sha256(request_key.encode('utf-8')).hexdigest()[:16] if request_key else uid()
+    run_dir = str((Path(output_root).resolve() / (job_id + '-' + suffix)).resolve())
+    argv = [value.replace('{run_dir}', run_dir).replace('{job_id}', job_id)
+            .replace('{task_id}', task_id).replace('{preparation_id}', preparation_id)
+            for value in template]
+    return dict(argv=argv, run_dir=run_dir, preparation_id=preparation_id)
 
 
 def _closed(record):

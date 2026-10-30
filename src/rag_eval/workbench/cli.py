@@ -215,7 +215,7 @@ def main():
         elif operation == 'show':
             call = lambda: store.get(args.task, args.job)
         elif operation == 'run':
-            from .jobs_api import build_execution_spec
+            from .job_execution import build_execution_spec
             config = load_config(args.config)
             budget = json.loads(args.budget.read_text())
             execution = JobExecutionStore(repository)
