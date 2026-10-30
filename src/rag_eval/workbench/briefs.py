@@ -181,7 +181,10 @@ def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty,
                     f" → `{s} node freeze {candidate_id} --reason '…'`{cluster_steps}"
                     f" → `{s} node run {candidate_id} --attempts {k_base} --reason '…'`。\n"
                     "每步用 requests 确认前一步成功，冻结成功后才能评测。attempts 取冻结协议 k_base。"
-                    "命令登记请求；冻结预算内符合自动执行条件时服务器自动确认执行，其他情况查看 requests 等待确认，禁止绕过预算。\n")
+                    "命令登记请求；冻结预算内符合自动执行条件时服务器自动确认执行，其他情况查看 requests 等待确认，禁止绕过预算。"
+                    "执行由服务器派发，不要自行设置模型凭据或读取服务器进程环境。"
+                    + ("cluster result 的 state：pending 仍在派发或执行；failed 是候选自身执行失败；"
+                       "infrastructure_error 是服务器环境问题，不算你的候选结果，报告后等待。" if cluster_steps else '') + "\n")
     if integration:
         sequence = ("\n这是 integration 合并候选：只合并服务器指定来源、解决同一文件／提示片段冲突，不加新改动；"
                     "无单簇归属，跳过 cluster-run 和 cluster result。\n" + sequence)

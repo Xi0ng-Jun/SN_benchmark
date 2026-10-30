@@ -853,6 +853,9 @@ class IterationService:
         from .budgets import validate_model_budget
         validate_model_budget(budget, self.execution_config)
         task_id, key = iteration['task_id'], 'candidate:' + candidate_id + ':' + request_key
+        if not self._launched(task_id, actor, key):
+            # Before any attempt exists: a refusal is infrastructure, never a failed candidate run.
+            self.preflight(iteration['protocol'])
         # Job receipts include actor. Bind it before preparation so changing actor
         # cannot dispatch twice against one budget reservation.
         command = dict(actor=actor, budget=budget, adopt=adopt, batch_id=batch_id)
@@ -963,6 +966,24 @@ class IterationService:
                                             server_preparation_policy=server_policy,
                                             preparation_policy=frozen_policy, source='iteration_protocol'))
         return self.candidate(candidate_id)
+
+    def preflight(self, protocol=None):
+        """Refuse a launch from a process whose executions would lack declared model credentials."""
+        from . import env_guard
+        from .job_execution import CredentialsUnavailable
+        config = dict(self.execution_config or {}, **((protocol or {}).get('execution') or {}))
+        missing = env_guard.missing(config.get('model_config'))
+        if missing:
+            raise CredentialsUnavailable(missing)
+
+    def _launched(self, task_id, actor, key):
+        receipt = self.jobs.preparation_receipt(task_id, actor=actor, request_key=key)
+        if receipt is None:
+            return False
+        with self.repository.connect() as conn:
+            row = conn.execute('SELECT execution_id FROM candidate_attempts WHERE job_id=?',
+                               (receipt['job_snapshot']['job_id'],)).fetchone()
+        return bool(row and row['execution_id'])
 
     def cluster_run(self, candidate_id, cluster_id, *, budget, actor, request_key):
         """Dispatch parent and child on an independent frozen cluster selection."""

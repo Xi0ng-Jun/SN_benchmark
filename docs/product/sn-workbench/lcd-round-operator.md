@@ -97,4 +97,8 @@ SQLite 暂时锁定、OSError、桥接观测边界异常保留当前阶段并下
 
 服务启动先恢复执行，再启动轮次 worker。新执行附加 `job.execution_process` 启动证据：boot ID、PID、内核 start ticks、session／进程组与 run 绑定；进程间 supervisor 文件锁覆盖派发至终态结算。有可靠存活证明时以 Linux pidfd 接管 watcher，不能证明时写 `state=failed, error_type=execution_lost`，供基础设施重试处理；保留原 attempt 和费用预留。这里沿用旧执行状态格式，不新增 `lost` 状态值。旧执行没有启动证据时不猜测 PID、不误杀进程。
 
+Agent 的 `sn-eval` 是短命进程，环境由 Agent 守护进程给出，通常没有模型凭据。可写服务器运行期间持有状态目录下的 `server-dispatch.lock`；此时 Agent 的预算内运行请求只预留并确认（备注为“dispatched by the workbench server”），由服务器后台线程派发，执行继承服务器的凭据并由服务器监督结算。没有服务器时 CLI 仍自行派发。无论谁派发，服务器每隔数秒对账：持久状态仍为 running、但派发者已退出（supervisor 锁无人持有）的执行，按上面的恢复规则以 pidfd 接管或结算，不必等重启。
+
+派发前按模型服务配置中声明的全部 `api_key_env` 名称预检派发进程将传给执行的环境（含启动快照恢复）。缺失时在创建 attempt 和预留预算之前拒绝：Agent 请求保持 pending／confirmed 并记录 `infrastructure_error`（只有名称，没有值），人工确认返回 422，轮次测量当作暂时错误继续等待；都不产生失败 attempt，不消耗 infra_retry。修复服务器环境并重启后，同一请求继续。实现者的 `cluster result` 增加 `state`／`reason`：pending、admitted、failed、infrastructure_error、not_started，原因是固定短语，不含题目、案例或错误原文。
+
 终态 state.json 只在运行路径、启动来源、文件类型／时间与显式终态一致时用于恢复；无法取得的 exit code 保持 null。取消已持久化但进程尚未停止时，启动恢复和同键取消重试都会完成安全终止，原取消结果不改写。恢复接管要求 Linux `/proc`、pidfd 与同一持久状态库；仅假定可信本地写入者，不把工件文件当作对恶意写入的认证。

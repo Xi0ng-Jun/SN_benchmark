@@ -609,9 +609,52 @@ class ComparisonService:
         if not implementer:
             return record
         rows = {r['case_id']: r for r in record.get('rows', [])}
-        return dict(cluster_id=cluster_id, status=record.get('admission', {}).get('status', 'unavailable'),
+        status = record.get('admission', {}).get('status', 'unavailable')
+        return dict(cluster_id=cluster_id, status=status,
+                    **self._cluster_progress(candidate, parent, scope_id, status),
                     members=[dict(member=f'm{i:02d}', flip=rows.get(cid, {}).get('flip', 'unpaired'))
                              for i, cid in enumerate(cluster['scan']['members'], 1)])
+
+    def _cluster_progress(self, candidate, parent, scope_id, status):
+        """Pending, failed or infrastructure: fixed reasons, never case, execution or error text."""
+        sides = [[a for a in c['attempts'] if a.get('batch_id') == scope_id] for c in (candidate, parent)]
+        attempts = sides[0] + sides[1]
+        if any(a.get('execution_state') == 'running' for a in attempts):
+            return dict(state='pending', reason='execution in progress')
+        with self.repository.connect() as conn:
+            request = conn.execute("SELECT status,result_json FROM action_requests WHERE target_id=? AND "
+                                   "verb='node-cluster-run' ORDER BY created_at DESC, id DESC LIMIT 1",
+                                   (candidate['id'],)).fetchone() if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='action_requests'").fetchone() else None
+        if request is not None and request['status'] in ('pending', 'confirmed'):
+            if (json.loads(request['result_json'] or 'null') or {}).get('infrastructure_error'):
+                return dict(state='infrastructure_error',
+                            reason='not dispatched: the execution environment is misconfigured; not a candidate result')
+            return dict(state='pending', reason='awaiting confirmation' if request['status'] == 'pending'
+                        else 'dispatch in progress')
+        if status == 'admitted':
+            return dict(state='admitted', reason=None)
+        if not attempts:
+            return dict(state='failed', reason='request failed before dispatch') if (
+                request is not None and request['status'] == 'failed') else dict(state='not_started', reason='no cluster run dispatched')
+        if any(not a.get('execution_id') for a in attempts):
+            return dict(state='pending', reason='dispatch in progress')
+        latest = [max(side, key=lambda a: a['attempt']) for side in sides if side]
+        if any(self._infrastructure_failure(a) for a in latest):
+            return dict(state='infrastructure_error',
+                        reason='an execution failed for an infrastructure reason; not a candidate result')
+        return dict(state='failed', reason='execution failed' if any(
+            a.get('execution_state') != 'finished' for a in latest) else 'runs not admitted')
+
+    def _infrastructure_failure(self, attempt):
+        if attempt.get('execution_state') in (None, 'running', 'finished', 'cancelled'):
+            return False
+        read = getattr(self.iterations, '_execution', None)
+        execution = (read(attempt['task_id'], attempt['execution_id']) if read else None) or {}
+        run_state = execution.get('run_state') or {}
+        return (execution.get('error_type') in ('execution_lost', 'finish_failed')
+                or run_state.get('error_type') == 'CredentialsUnavailable'
+                or str(run_state.get('error_message', '')).startswith('Model service credentials'))
 
     def pinned(self, candidate_id, reference_candidate_id):
         """An ad-hoc comparison; computed on request and never stored as a conclusion."""

@@ -57,7 +57,9 @@ def validate_settings(settings):
 
 def transient(error):
     from .bridge_adapter import InvalidBridgeResponse
-    return isinstance(error, (OSError, sqlite3.OperationalError, InvalidBridgeResponse))
+    from .job_execution import CredentialsUnavailable
+    # Missing credentials are the server's configuration: wait, never fail the candidate.
+    return isinstance(error, (OSError, sqlite3.OperationalError, InvalidBridgeResponse, CredentialsUnavailable))
 
 
 def execution_window(settings):

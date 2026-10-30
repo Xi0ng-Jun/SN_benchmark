@@ -18,7 +18,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .action_requests import VERBS, ActionRequestStore, execute
+from .action_requests import RUN_VERBS, VERBS, ActionRequestStore, execute
 from .comparisons import Admission, ComparisonService, summary
 from .hypotheses import HypothesisStore, leak_check
 from .iterations import IterationService
@@ -209,6 +209,9 @@ class IterationAPI:
             return record
         if VERBS[record['verb']][1]:
             self._write()
+        if record['verb'] in RUN_VERBS:
+            # Refused before confirmation: the request stays open for after the server is fixed.
+            self.service.preflight()
         self.requests.claim(request_id, actor=self.actor, note=note)
         try:
             result = execute(self.service, record, workspace_id=self.workspace['id'],

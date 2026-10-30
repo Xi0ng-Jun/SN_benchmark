@@ -38,7 +38,7 @@ from ..artifact_store import ArtifactStore
 from ..artifacts import digest, save_json
 from ..execution_diagnostics import exception_details, sanitize_diagnostic, sensitive_strings
 from ..benchmark_runtime import DEFAULT_PREPARATION_POLICY, validate_preparation_policy
-from .job_execution import ExecutionRejected, validate_execution_budget
+from .job_execution import CredentialsUnavailable, ExecutionRejected, validate_execution_budget
 
 SUMMARY = 'official-summary.json'
 
@@ -366,8 +366,7 @@ def execute(payload):
         presence = env_guard.presence(env_guard.credential_names(frozen_files.get('model_config')))
         save_json(run / 'env-presence.json', presence)
         if presence['missing']:
-            raise ValueError('Model service credentials missing from the execution environment: '
-                             + ', '.join(presence['missing']))
+            raise CredentialsUnavailable(presence['missing'])
         # Verified, byte-compiled and made read-only once; every partition and
         # retry links it into its own run instead of extracting the archive.
         from ..runtime_environment import materialize_shared_sn_source

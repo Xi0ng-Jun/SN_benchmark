@@ -27,6 +27,11 @@ VERBS = {
     'iteration-sealed-run': (True, True),
 }
 IMPLEMENTER_VERBS = frozenset({'node-freeze', 'node-run', 'node-cluster-run'})
+RUN_VERBS = frozenset({'node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run'})
+BUDGET_NOTE = 'Within the frozen iteration budget'
+# A confirmed request with this note is dispatched by the long-lived workbench server.
+HANDOFF_NOTE = BUDGET_NOTE + '; dispatched by the workbench server'
+
 ITERATION_FIELDS = ('title', 'start_commit', 'input_id', 'expected_bundle_id', 'case_ids', 'mode')
 
 
@@ -169,6 +174,17 @@ class ActionRequestStore:
         """Mark confirmed before executing; a confirmed request left by a crash may be executed again."""
         return self._decide(request_id, 'confirmed', actor=actor, note=note, expected=('pending', 'confirmed'))
 
+    def refuse(self, request_id, reason):
+        """Record an infrastructure refusal; the request stays open and nothing was dispatched."""
+        with self.repository.connect(write=True) as conn:
+            row = conn.execute('SELECT * FROM action_requests WHERE id=?', (request_id,)).fetchone()
+            conn.execute("UPDATE action_requests SET result_json=?, updated_at=? WHERE id=? "
+                         "AND status IN ('pending','confirmed')",
+                         (json.dumps(dict(infrastructure_error=reason), ensure_ascii=False), now(), request_id))
+            self.repository._event(conn, row['task_id'], 'action.refused', request_id,
+                                   dict(verb=row['verb'], infrastructure_error=reason))
+            return _record(conn.execute('SELECT * FROM action_requests WHERE id=?', (request_id,)).fetchone())
+
     def finish(self, request_id, *, result=None, error=None):
         with self.repository.connect(write=True) as conn:
             row = conn.execute('SELECT * FROM action_requests WHERE id=?', (request_id,)).fetchone()
@@ -242,8 +258,14 @@ def execute(service, record, *, workspace_id, actor, budget_override=False, huma
     return _candidate_summary(view)
 
 
-def auto_execute(service, record, *, workspace_id):
-    """Reserve a whole request atomically before policy confirmation and dispatch."""
+def auto_execute(service, record, *, workspace_id, handoff=False):
+    """Reserve a whole request atomically before policy confirmation and dispatch.
+
+    ``handoff`` (a short-lived agent CLI while a server owns the state) stops
+    after confirmation: the server dispatches, so executions get its
+    credentials and its supervision. Missing credentials refuse before any
+    reservation and leave the request open, recorded as infrastructure.
+    """
     if (record['status'] != 'pending' and not (record['status'] == 'confirmed' and record.get('decided_by') == 'budget')) or record['verb'] not in (
             'node-run', 'node-cluster-run', 'node-fresh-run', 'node-freeze'):
         return record
@@ -255,6 +277,14 @@ def auto_execute(service, record, *, workspace_id):
         return record
     if service.jobs is None or service.build_spec is None:
         return record
+    requests = ActionRequestStore(service.repository)
+    handoff = handoff and record['verb'] in RUN_VERBS
+    if not handoff and record['verb'] in RUN_VERBS and hasattr(service, 'preflight'):
+        from .job_execution import CredentialsUnavailable
+        try:
+            service.preflight(tree['protocol'])
+        except CredentialsUnavailable as exc:
+            return requests.refuse(record['id'], str(exc))
     from .execution_scopes import dispatch_steps, reserve_dispatch
     steps = dispatch_steps(service, record)
     try:
@@ -265,8 +295,10 @@ def auto_execute(service, record, *, workspace_id):
         return record
     if reserved['status'] != 'reserved':
         return record
-    requests = ActionRequestStore(service.repository)
-    requests.claim(record['id'], actor='budget', note='Within the frozen iteration budget')
+    note = HANDOFF_NOTE if handoff or record.get('decision_note') == HANDOFF_NOTE else BUDGET_NOTE
+    claimed = requests.claim(record['id'], actor='budget', note=note)
+    if handoff:
+        return claimed
     try:
         result = execute(service, record, workspace_id=workspace_id, actor='budget')
     except (Conflict, ValueError) as exc:

@@ -37,6 +37,14 @@ class ExecutionRejected(ValueError):
     """The execution contract or current lifecycle state is invalid."""
 
 
+class CredentialsUnavailable(ExecutionRejected):
+    """Infrastructure, not the candidate: declared model credentials are absent (names only)."""
+
+    def __init__(self, names):
+        self.names = sorted(names)
+        super().__init__('Model service credentials are missing from the execution environment: ' + ', '.join(self.names))
+
+
 def validate_execution_budget(budget, *, max_limit_cny=None):
     """Keep a timeout for every run; cost enforcement is explicitly optional."""
     if type(budget) is not dict:
@@ -153,6 +161,16 @@ class JobExecutionStore:
             except BaseException:
                 self._release_supervisor(record['execution_id'])
                 raise
+
+    def reconcile(self):
+        """Settle running executions whose supervisor is gone, such as a dispatching CLI that exited."""
+        with self.repository.connect() as conn:
+            rows = conn.execute("SELECT object_id FROM history s WHERE kind='job.execution_started' AND NOT EXISTS "
+                                "(SELECT 1 FROM history t WHERE t.object_id=s.object_id AND t.kind IN "
+                                "('job.execution_finished','job.execution_cancelled'))").fetchall()
+        for row in rows:
+            if row['object_id'] not in self._supervisors:
+                self.recover(execution_id=row['object_id'])
 
     def _watch_recovered(self, record, identity, process):
         execution_id = record['execution_id']

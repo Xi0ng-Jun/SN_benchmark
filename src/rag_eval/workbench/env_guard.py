@@ -120,6 +120,14 @@ def credential_names(model_config):
     return sorted(found)
 
 
+def missing(model_config):
+    """Declared credential names an execution dispatched from this process now would not inherit."""
+    if not model_config or not Path(model_config).is_file():
+        return []
+    env, _ = child_env()
+    return [k for k in credential_names(model_config) if not env.get(k)]
+
+
 def presence(required=()):
     """Credential names in this process and its ancestry; written by execution children, never values."""
     chain, pid = [], os.getpid()

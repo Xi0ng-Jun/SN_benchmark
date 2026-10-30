@@ -225,17 +225,23 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
     app.include_router(RoundAPI(iteration_api, round_service, round_manager).router())
     app.state.round_service = round_service
     app.state.round_manager = round_manager
+    from .server_dispatch import ServerDispatch
+    execution_dispatch = ServerDispatch(iteration_api.service, job_api.execution, workspace['id'],
+                                        dispatching=iteration_api.writable)
+    app.state.execution_dispatch = execution_dispatch
 
     @asynccontextmanager
     async def lifespan(app):
         from . import env_guard
         env_guard.install(Path(state_root) / 'env-guard.jsonl')
         job_api.execution.recover()
+        execution_dispatch.start()
         round_manager.start()
         try:
             yield
         finally:
             round_manager.close()
+            execution_dispatch.close()
 
     app.router.lifespan_context = lifespan
 

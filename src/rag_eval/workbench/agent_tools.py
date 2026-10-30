@@ -361,9 +361,16 @@ class IterationTools:
         record = self.requests.request(self.task_id, verb, target, params, reason=options.reason or '',
                                        requested_by=self.actor)
         from .action_requests import auto_execute
-        record = auto_execute(self.service, record, workspace_id=self.service.repository.task(self.task_id)['workspace_id'])
+        from .server_dispatch import serving
+        # This CLI exits right away and has the agent's environment, not the server's: hand runs to the server.
+        record = auto_execute(self.service, record, workspace_id=self.service.repository.task(self.task_id)['workspace_id'],
+                              handoff=serving(self.service.repository.root))
+        refused = (record.get('result') or {}).get('infrastructure_error') if record['status'] in ('pending', 'confirmed') else None
         return dict(request=record, next='Request executed under budget policy' if record['status'] == 'executed'
+                    else 'nothing has run: infrastructure error, not your candidate; the workbench operator must fix '
+                         'the execution environment, then this request can run' if refused
                     else 'nothing has run: a person reviews this request in the workbench' if record['status'] == 'pending'
+                    else 'confirmed within budget; the workbench server dispatches it shortly' if record['status'] == 'confirmed'
                     else 'Inspect the recorded execution outcome')
 
 
