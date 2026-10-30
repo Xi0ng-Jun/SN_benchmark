@@ -360,6 +360,14 @@ def execute(payload):
             target.chmod(0o600)
             frozen_files[key] = str(target)
         save_json(inputs / 'sn-source-ref.json', payload['sn_ref'])
+        # Partitions inherit model credentials from this process. Stop here, with
+        # the missing names, rather than letting every partition fail initializing.
+        from . import env_guard
+        presence = env_guard.presence(env_guard.credential_names(frozen_files.get('model_config')))
+        save_json(run / 'env-presence.json', presence)
+        if presence['missing']:
+            raise ValueError('Model service credentials missing from the execution environment: '
+                             + ', '.join(presence['missing']))
         # Verified, byte-compiled and made read-only once; every partition and
         # retry links it into its own run instead of extracting the archive.
         from ..runtime_environment import materialize_shared_sn_source

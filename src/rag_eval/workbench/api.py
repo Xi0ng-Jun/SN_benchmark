@@ -228,6 +228,8 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
 
     @asynccontextmanager
     async def lifespan(app):
+        from . import env_guard
+        env_guard.install(Path(state_root) / 'env-guard.jsonl')
         job_api.execution.recover()
         round_manager.start()
         try:

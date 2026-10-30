@@ -7,6 +7,7 @@ import threading
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from . import env_guard
 from .loop import TERMINAL
 
 _LOG = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class RoundManager:
     def _run(self):
         while not self.closed.is_set():
             try:
+                env_guard.check()
                 self.service.heartbeat()
                 self.workers = {key: worker for key, worker in self.workers.items() if worker.is_alive()}
                 for record in self.service.list():

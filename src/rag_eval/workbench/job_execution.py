@@ -19,6 +19,7 @@ import threading
 import time
 
 from .evaluation_jobs import _text, _version
+from . import env_guard
 from ..execution_diagnostics import exception_details, sanitize_diagnostic
 from .repository import Conflict, UnknownIdentity, now, uid
 from .execution_recovery import claim_supervisor, completed_state, process_identity, RecoveredProcess
@@ -367,10 +368,11 @@ class JobExecutionStore:
         stderr_path = parent / (run.name + '.stderr.log')
         stdout = stdout_path.open('w', encoding='utf-8')
         stderr = stderr_path.open('w', encoding='utf-8')
+        env, restored = env_guard.child_env()
         try:
             process = subprocess.Popen(record['argv'], cwd=parent, stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr, start_new_session=True,
-                                       close_fds=True, env=os.environ.copy())
+                                       close_fds=True, env=env)
         except BaseException:
             stdout.close(); stderr.close()
             raise
@@ -381,7 +383,8 @@ class JobExecutionStore:
             with self.repository.connect(write=True) as conn:
                 self.repository._event(conn, record['task_id'], 'job.execution_process', record['execution_id'],
                                        dict(execution_id=record['execution_id'], run_dir=record['run_dir'],
-                                            process_identity=identity))
+                                            process_identity=identity,
+                                            **({'restored_env_keys': restored} if restored else {})))
         except BaseException:
             try:
                 os.killpg(process.pid, 15)
@@ -483,8 +486,17 @@ class JobExecutionStore:
                 failures.append(failure)
                 failure['logged'] = self._log_finish_failure(record, failure)
                 if not isinstance(exc, sqlite3.OperationalError):
-                    # Not transient: retrying cannot help. The run directory stays
-                    # the source of truth and the failure is in history when possible.
+                    # Not transient: retrying the same bookkeeping cannot help. The
+                    # run directory stays the source of truth, but the execution must
+                    # still end, or rounds wait on a "running" record forever.
+                    try:
+                        self._finish(record['execution_id'], state='failed', exit_code=None,
+                                     error_type='finish_failed', run_state=dict(
+                                         phase='finish_failed', error_type=failure['error_type'],
+                                         error_message=failure['error_message']),
+                                     finish_failures=failures)
+                    except Exception:
+                        pass
                     return
                 self._sleep(delay)
                 delay = min(delay * 2, self._FINISH_RETRY_CAP)

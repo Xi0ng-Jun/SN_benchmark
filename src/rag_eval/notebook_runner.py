@@ -668,6 +668,12 @@ def execute(*, root, project, bundle_dir, run, mode, partition_id, request_revis
             environment_kwargs.update(dependency_requirements=dependency_requirements,
                                       expected_interpreter=expected_interpreter)
         settings, runtime = configure_environment(project, run, product_track=True, **environment_kwargs)
+        try:
+            from .workbench import env_guard
+            save_json(run / 'env-presence.json', env_guard.presence(
+                env_guard.credential_names(getattr(settings, 'model_services_config', None))))
+        except Exception:
+            pass  # Diagnostics only; the product loader reports missing credentials itself.
         if 'startup_dependencies' in runtime:
             from .runtime_environment import initialize_captured_model_services
             observed_provider, loaded_services = initialize_captured_model_services(
