@@ -175,7 +175,7 @@ def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty,
     integration = card.get('component') == 'integration'
     sequence = ''
     if candidate_id:
-        cluster_steps = (f" → `{s} node cluster-run {candidate_id} --reason '…'` → 读取 `{s} cluster result {cluster_id}`"
+        cluster_steps = (f" → `{s} node cluster-run {candidate_id} --reason '…'` → 等待并读取 `{s} cluster result {cluster_id} --wait 1200`"
                          if cluster_id and not integration else '')
         sequence = (f"\n## LCD 执行顺序\n长时间执行会在你的 turn 结束后继续；结果就绪时服务会发后续消息，请读取结果并继续后续步骤。\n实现 → 只跑与改动相关的 SN 测试（禁止全量套件） → `{s} leak-check`"
                     f" → `{s} node freeze {candidate_id} --reason '…'`{cluster_steps}"
@@ -183,8 +183,12 @@ def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty,
                     "每步用 requests 确认前一步成功，冻结成功后才能评测。attempts 取冻结协议 k_base。"
                     "命令登记请求；冻结预算内符合自动执行条件时服务器自动确认执行，其他情况查看 requests 等待确认，禁止绕过预算。"
                     "执行由服务器派发，不要自行设置模型凭据或读取服务器进程环境。"
-                    + ("cluster result 的 state：pending 仍在派发或执行；failed 是候选自身执行失败；"
-                       "infrastructure_error 是服务器环境问题，不算你的候选结果，报告后等待。" if cluster_steps else '') + "\n")
+                    + ("cluster-run 之后用 `cluster result … --wait 1200` 在一次调用里等待：状态落定立即返回，最多等 1200 秒，"
+                       "返回当前 state 和 waited_seconds；仍是 pending 就再调用一次同样的命令。"
+                       "不要写 shell sleep／轮询循环。"
+                       "cluster result 的 state：pending 仍在派发或执行；failed 是候选自身执行失败；"
+                       "infrastructure_error 是服务器环境问题，不是你的候选的问题：停止，报告后等待，不要重试或改代码。"
+                       if cluster_steps else '') + "\n")
     if integration:
         sequence = ("\n这是 integration 合并候选：只合并服务器指定来源、解决同一文件／提示片段冲突，不加新改动；"
                     "无单簇归属，跳过 cluster-run 和 cluster result。\n" + sequence)

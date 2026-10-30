@@ -11,6 +11,7 @@ from contextlib import contextmanager, nullcontext
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create', 'iteration sealed-run')
@@ -19,6 +20,11 @@ ANALYST_COMMANDS = ('task', 'runs', 'cases', 'case', 'execution-cases', 'flips',
                     'request withdraw', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
 IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'node cluster-run', 'requests', 'request withdraw', 'cluster list', 'cluster show', 'cluster result')
 GROUPS = ('iteration', 'node', 'proposal', 'request', 'cluster')
+# cluster result --wait: re-read in this process every WAIT_POLL seconds, never longer than WAIT_CAP.
+WAIT_POLL, WAIT_CAP = 10, 1800
+# Implementer cluster-result states after which waiting cannot change the answer by itself:
+# a verdict, or nothing dispatched that could still finish.
+WAIT_DONE = ('admitted', 'failed', 'infrastructure_error', 'not_started')
 
 
 def build(state, config_path):
@@ -101,6 +107,8 @@ def main(argv=None):
     parser.add_argument('--needs-read', action='store_true')
     parser.add_argument('--status')
     parser.add_argument('--file')
+    parser.add_argument('--wait', type=int, metavar='SECONDS',
+                        help=f'cluster result (implementer): re-read until the state settles or SECONDS pass (max {WAIT_CAP})')
     options = parser.parse_intermixed_args(argv)
     if options.command in GROUPS and options.args:
         options.command = options.command + ' ' + options.args.pop(0)
@@ -113,6 +121,9 @@ def main(argv=None):
         parser.error('an iteration analyst requests derivations only; freeze, run and decisions belong to a candidate')
     if options.integrate and options.command != 'node derive':
         parser.error('--integrate only applies to node derive')
+    if options.wait is not None and (options.command != 'cluster result' or options.role != 'implementer'
+                                     or options.wait < 0):
+        parser.error('--wait SECONDS (>= 0) only applies to the implementer cluster result')
     if options.command == 'hypothesis-draft' and options.parent:
         parser.error('a proposal under a candidate is `proposal draft --parent <candidate>`')
     from .hypotheses import HypothesisStore
@@ -123,8 +134,10 @@ def main(argv=None):
     policy = Policy(repository, task_id)
     if command == 'case':
         policy.require_search(a[1])
-    with one_discovery(views, command):
-        out = dispatch(options, repository, views, store, policy)
+    def read():
+        with one_discovery(views, command):
+            return dispatch(options, repository, views, store, policy)
+    out = read() if options.wait is None else wait_until_settled(read, options.wait)
     if options.role == 'analyst' and command != 'iteration ledger':
         out = policy.project(out)
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1, default=str)
@@ -140,6 +153,19 @@ def one_discovery(views, command):
     scope = getattr(views, 'request_scope', None)
     with scope() if scope is not None and command not in REQUEST_COMMANDS else nullcontext():
         yield
+
+
+def wait_until_settled(read, seconds, *, clock=None, sleep=None):
+    """Re-read (each read a fresh discovery, so a normal recorded read) until the state settles or time is up."""
+    clock, sleep = clock or time.monotonic, sleep or time.sleep
+    seconds = min(max(seconds, 0), WAIT_CAP)
+    started = clock()
+    while True:
+        out = read()
+        waited = clock() - started
+        if out.get('state') in WAIT_DONE or waited >= seconds:
+            return dict(out, waited_seconds=round(waited))
+        sleep(min(WAIT_POLL, seconds - waited))
 
 
 def dispatch(options, repository, views, store, policy):

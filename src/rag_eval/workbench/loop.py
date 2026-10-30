@@ -543,7 +543,7 @@ class RoundService:
             text = (f"Merge only approved sources {', '.join(candidate['integrated_from'])} into candidate {cid}; "
                     "resolve conflicts without new behavior. " if merge else f"Implement the approved card in candidate {cid}. ")
             text += ("Required LCD order: implementation -> only relevant SN tests -> leak-check -> "
-                     f"node freeze {cid} -> " + ('' if merge else f"node cluster-run {cid} -> read cluster result -> ") +
+                     f"node freeze {cid} -> " + ('' if merge else f"node cluster-run {cid} -> cluster result <cluster> --wait 1200 (no shell sleep loops) -> ") +
                      f"node run {cid} --attempts {state['k_base']}. Requests within the frozen budget execute automatically. "
                      "Use only approved implementer material; never inspect gold or validation cases.")
             agent = self._call(state, 'agent', 'implementer', cid, iteration_id=state['iteration_id'],

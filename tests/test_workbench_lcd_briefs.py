@@ -51,3 +51,11 @@ def test_analyst_has_complete_mechanical_cluster_and_contract_instructions():
                   'metrics.<official_primary_metric>', '写入即冻结', 'predicted_flips',
                   'guards', '不重叠', '|C|·(1−q)·max(m, v, π)', 'null', '|C|·(1−q)·π'):
         assert token in text
+
+
+def test_implementer_waits_for_its_cluster_result_in_one_call():
+    text = brief()
+    assert 'cluster result retrieval_gap --wait 1200' in text
+    assert text.index('node cluster-run candidate') < text.index('--wait 1200') < text.index('node run candidate')
+    assert '不要写 shell sleep' in text and 'infrastructure_error' in text and '停止' in text
+    assert '--wait' not in brief({key: value for key, value in CARD.items() if key != 'contract'})
