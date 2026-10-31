@@ -80,6 +80,18 @@
 - 节点详情按 v2 流程重排：假设 → diff → 筛选(验证池) → 确认(新鲜批次) → 归因标签 → 保护指标。去掉 ρ/τ 展示，改为 Δ 与置信下界。
 - ledger 增加三类证据分区：效用、选择（Δ_val 与 Δ_fresh 并列及缩水量）、机制（三件套 + 标签）。停机原因分类展示。
 
+M4 已做（2026-10-31）：
+- 触发入口 `iteration-sealed-lineage-run`（目标为 iteration 的种子候选，参数 `timeout_seconds`、`limit_cny`、`k`），只能由人工确认后派发到 `SealedService.run_lineage(confirmed=True)`；预算策略永不自动确认。Agent CLI：`sn-eval --task <task> iteration sealed-lineage-run <seed> [--k N] --reason ...`。
+- `sealed_score` 在谱系结果存在时带 `kind='lineage'`、`k`、`nodes`、`alpha`、`m`、`correction` 与 `curve` 数组（每点 `node_index, candidate_id, status, score, se, delta_vs_seed, lower, upper, lower_adj, upper_adj, p_holm, holds_holm`）；曲线未定稿时 `curve` 为 null。
+
+待整合阶段（与 M2 停机分类共同落地，M4 未动以免与 M2 抢同一块代码）：
+- ledger 新增 `evidence` 键，三类分别报告、不相加（方法 §2.4）。暂定结构：
+  - `utility`：`confirmed[]`（每笔 `candidate_id, delta_fresh, se, k_fresh, n_fresh, safeguards[], cost_change`）+ `curve` 引用 `sealed_score.curve`。
+  - `selection`：`confirmations[]`（每个进入确认的候选 `candidate_id, delta_val, delta_fresh, shrinkage = delta_val − delta_fresh`）+ `screened_total` + `screen_counts` / `confirm_counts`（按判定计数，含被拒）。
+  - `mechanism`：`candidates[]`（三件套、探针、`r_p, r_c`、`delta_S, delta_not_S`、`label`）+ `supported_share`（已确认改动中标签为 supported 的比例）。
+  - `context`：划分大小、任务族与 ICC、基础设施失败计数、耗时与成本、预注册参数、`stop_reason`（`no_gain` / `resources_exhausted` / `process_failure`，由 M2 写入）。
+- 旧四个顶层键保留不改名；v1 iteration 的 `evidence` 可为 null。
+
 ## 硬约束
 
 - 本机 WSL 内存约 7.8 GB：**只跑定向测试**，禁止 `pytest` 全量跑测试套件（曾导致 WSL 崩溃）。

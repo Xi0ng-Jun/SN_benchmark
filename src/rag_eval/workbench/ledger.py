@@ -142,11 +142,25 @@ def _cluster_rho(record, members):
     return held / len(members)
 
 
+_CURVE_FIELDS = ('node_index', 'candidate_id', 'status', 'score', 'se', 'delta_vs_seed', 'lower', 'upper',
+                 'lower_adj', 'upper_adj', 'p_holm', 'holds_holm')
+
+
+def _scalars(record, fields):
+    return {key: record[key] for key in fields
+            if key in record and (record[key] is None or type(record[key]) in (str, int, float, bool))}
+
+
 def _sealed_summary(score):
     if score is None:
         return None
-    fields = ('status', 'candidate_id', 'frozen_commit', 'confirmed_by', 'claimed_at', 'metric', 'n', 'mean')
-    return {key: score[key] for key in fields if key in score and (score[key] is None or type(score[key]) in (str, int, float, bool))}
+    summary = _scalars(score, ('status', 'candidate_id', 'frozen_commit', 'confirmed_by', 'claimed_at', 'metric', 'n', 'mean',
+                               'kind', 'k', 'nodes', 'alpha', 'm', 'correction'))
+    if score.get('kind') == 'lineage':
+        # The lineage curve: one aggregate point per node, seed first; never case rows.
+        curve = score.get('curve')
+        summary['curve'] = [_scalars(p, _CURVE_FIELDS) for p in curve if isinstance(p, dict)] if isinstance(curve, list) else None
+    return summary
 
 
 def aggregate_ledger(iteration, comparisons, hypotheses, clusters, *, seed_search_mean=None, sealed_score=None):
@@ -301,6 +315,9 @@ class LedgerService:
             if sealed_score is None and 'iteration_sealed_claims' in tables:
                 row = conn.execute('SELECT score_json FROM iteration_sealed_claims WHERE iteration_id=?', (iteration_id,)).fetchone()
                 sealed_score = json.loads(row['score_json']) if row and row['score_json'] else None
+            if sealed_score is None and 'sealed_lineage_claims' in tables:
+                row = conn.execute('SELECT result_json FROM sealed_lineage_claims WHERE iteration_id=?', (iteration_id,)).fetchone()
+                sealed_score = json.loads(row['result_json']) if row and row['result_json'] else None
         root = next((c for c in tree.get('candidates', []) if c['id'] == tree.get('root_candidate_id')), None)
         search = set(((tree.get('protocol') or {}).get('splits') or {}).get('search', []))
         seed = None

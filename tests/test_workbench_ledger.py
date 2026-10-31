@@ -162,6 +162,38 @@ def test_sealed_summary_does_not_copy_case_or_gold_details():
     assert result['sealed_score'] == dict(status='finished', metric='answer_f1', n=1, mean=.7)
 
 
+def test_sealed_summary_carries_the_lineage_curve_without_case_details():
+    point = dict(node_index=1, candidate_id='c1', frozen_commit='abc', status='measured', score=.6, se=.05,
+                 delta_vs_seed=.1, se_delta=.04, lower=.03, upper=.17, p=.01, p_holm=.02, lower_adj=.01, upper_adj=.19,
+                 holds_holm=True, n=3, se_method='cr1', cases=dict(hidden=1))
+    seed = dict(point, node_index=0, candidate_id='c0', score=.5, delta_vs_seed=0., p_holm=None, holds_holm=None)
+    result = aggregate_ledger(dict(candidates=[]), [], [], [], sealed_score=dict(
+        kind='lineage', status='finished', metric='str_em', n=3, mean=.6, k=2, nodes=2, alpha=.05, m=1,
+        correction='holm-p+bonferroni-interval', candidate_id='c1', curve=[seed, point],
+        progress=dict(slots=4), rows=[dict(case_id='hidden')]))['sealed_score']
+    assert result['kind'] == 'lineage' and result['k'] == 2 and result['m'] == 1 and 'progress' not in result
+    assert [p['node_index'] for p in result['curve']] == [0, 1]
+    assert result['curve'][1] == dict(node_index=1, candidate_id='c1', status='measured', score=.6, se=.05,
+                                      delta_vs_seed=.1, lower=.03, upper=.17, lower_adj=.01, upper_adj=.19,
+                                      p_holm=.02, holds_holm=True)
+    assert 'hidden' not in json.dumps(result)
+    # Before the curve settles the field is present and null; a v1 score has no curve key at all.
+    running = aggregate_ledger(dict(candidates=[]), [], [], [], sealed_score=dict(kind='lineage', status='dispatched', curve=None))
+    assert running['sealed_score']['curve'] is None
+
+
+def test_service_falls_back_to_the_frozen_lineage_result(tmp_path):
+    repo = WorkbenchRepository(tmp_path / 'state')
+    tree, records, cards, clusters = fixture()
+    service = LedgerService(repo, SimpleNamespace(iteration=lambda identity: tree), SimpleNamespace())
+    curve = [dict(node_index=0, candidate_id='seed', score=.5, se=.1, delta_vs_seed=0.)]
+    with repo.connect(write=True) as conn:
+        conn.execute('CREATE TABLE sealed_lineage_claims(iteration_id TEXT, result_json TEXT)')
+        conn.execute('INSERT INTO sealed_lineage_claims VALUES(?,?)',
+                     ('iteration1', json.dumps(dict(kind='lineage', status='finished', curve=curve))))
+    assert service.read('iteration1')['sealed_score']['curve'] == curve
+
+
 def test_contract_subset_cannot_resolve_unmeasured_frozen_members():
     tree, records, cards, clusters = fixture()
     clusters[0]['scan']['members'].append('unmeasured-member')
