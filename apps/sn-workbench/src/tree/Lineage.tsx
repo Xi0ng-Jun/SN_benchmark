@@ -2,7 +2,7 @@ import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { Bot, Check } from 'lucide-react-native';
 import { Button, fmt, hover, useTheme } from '../ui';
-import { Candidate, decisionLabels, DeltaSummary, IterationTree, ProposalRow, rootSide, short, stateLabels } from './contracts';
+import { adoptedUnattributed, Candidate, decisionLabels, DeltaSummary, IterationTree, ProposalRow, rootSide, short, stateLabels } from './contracts';
 import { Delta, Mono } from './parts';
 import { ITERATION_MIN_EVALUATED, iterationBlockedReason, Step } from './next';
 
@@ -158,7 +158,8 @@ export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectPr
             </Pressable>)}
           </View>
           <Text numberOfLines={1} style={{ width: COLS.state, fontSize: 12, color: stateTone(c, theme) }}>
-            {stateLabels[c.state] ?? c.state}{c.decision ? ' · ' + decisionLabels[c.decision.decision] : ''}</Text>
+            {stateLabels[c.state] ?? c.state}{c.decision ? ' · ' + decisionLabels[c.decision.decision] : ''}
+            {adoptedUnattributed(tree, c) && <Text testID={'lineage-unattributed-' + c.id} style={{ color: theme.danger, fontWeight: '600' }}> · 未归因</Text>}</Text>
           <View style={{ width: COLS.metric, alignItems: 'flex-end' }}><Mono size={12}>{fmt(c.primary?.value)}</Mono></View>
           <DeltaCell side={parent} isRoot={isRoot} />
           {!compact && <DeltaCell side={rootSide(c)} isRoot={isRoot} />}

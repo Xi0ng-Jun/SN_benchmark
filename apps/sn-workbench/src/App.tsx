@@ -7,7 +7,7 @@ import { IconButton, ResizeHandle, useShellLayout } from './shell';
 import { WorkspaceConfiguration } from './workspace/WorkspaceConfiguration';
 import { ExecutionCases, RunMaterials } from './runs/RunMaterials';
 import type { RunList } from './runs/contracts';
-import { ActionRequest, Candidate, Iteration, IterationTree, Proposal, short, verbLabels } from './tree/contracts';
+import { ActionRequest, Candidate, Iteration, IterationTree, isV2, Proposal, short, verbLabels } from './tree/contracts';
 import { makeActions, treeLabels } from './tree/actions';
 import { ConfirmDialog, ConfirmSpec, Mono } from './tree/parts';
 import { IterationSidebar, IterationStatus, Todo } from './tree/IterationSidebar';
@@ -261,7 +261,7 @@ export default function App() {
                           picked={picked} onPick={id => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])} onCompare={() => update({ matrix: true })} compact={compact}
                           steps={steps} agents={agentMarks} onOpenAgent={openAgent} iterationAgent={iterationAgent}
                           onIterationAnalyst={() => { setTarget({ role: 'analyst', scope: 'iteration', label: '迭代' }); setDrawer(true); }} />}
-                  {tree && <LedgerPanel iterationId={tree.id} refresh={refresh} />}
+                  {tree && <LedgerPanel iterationId={tree.id} v2={isV2(tree)} refresh={refresh} />}
                   {tree && tree.unassigned_executions.length > 0 && <Copy small muted>{tree.unassigned_executions.length} 次执行未归属任何候选（保留，不计入比较）。</Copy>}
                 </View>
               </ScrollView>

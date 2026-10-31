@@ -80,7 +80,9 @@ export function makeActions(tree: IterationTree, label: (candidateId: string | n
       title: `确认请求：${verbLabels[r.verb] ?? r.verb} ${r.target_id ? label(r.target_id) : ''}`, confirmLabel: '确认并执行',
       lines: [{ label: '发起', value: `${r.requested_by} · ${new Date(r.created_at).toLocaleString('zh-CN', { hour12: false })}` },
         { label: '参数', value: JSON.stringify(r.params) }, { label: '理由', value: r.reason },
-        { label: '执行', value: r.verb === 'iteration-sealed-run' ? '整个研究只此一次：领取后即使失败也不能重试；只公开汇总分数。' : '服务器按上面登记的参数原样执行，回执写回请求' }],
+        { label: '执行', value: r.verb === 'iteration-sealed-run' ? '整个研究只此一次：领取后即使失败也不能重试；只公开汇总分数。'
+          : r.verb === 'iteration-sealed-lineage-run' ? '整个研究只此一次：领取时固定节点集（种子 + 全部已确认节点），每个节点在封存集上测 k 次；中断只补派未派发的槽位，不能重选节点或重测；只公开汇总曲线。'
+          : '服务器按上面登记的参数原样执行，回执写回请求' }],
       note: { label: '备注', required: false },
       run: note => api(`/action-requests/${r.id}/confirm`, { note }),
     }),

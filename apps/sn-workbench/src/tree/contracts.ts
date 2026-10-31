@@ -4,7 +4,20 @@ export type Admission = { status: 'admitted' | 'not_admitted' | 'pending'; reaso
 export type Measurement = { attempt?: number; execution_id: string; task_id: string; execution_state: string | null;
   run_dir: string | null; admission: Admission | null; created_at: string; created_by?: string; job_id?: string };
 export type GateVerdict = { verdict: 'accept' | 'reject' | 'audit' | 'unmeasurable'; rule_id: string; tau: number; eta: number | null; rho: number | null; delta: number | null; reasons: string[] };
-export type Decision = { gate_verdict?: GateVerdict; previous?: Decision | null; decision: 'adopted' | 'rejected' | 'undecided'; note: string; actor: string; at: string };
+// lcd-v2 (gate.screen / gate.confirm): paired raw-score Δ with one-sided bounds; no ρ/τ.
+export type Safeguard = { key: string; direction: 'higher_is_better' | 'lower_is_better'; margin: number;
+  reference: number | null; subject: number | null; change: number | null; breached: boolean | null };
+export type AttributionLabel = 'supported' | 'refuted' | 'insufficient';
+// gate.attribute: a mechanism label recorded for explanation only; no verdict reads it.
+export type Attribution = { label: AttributionLabel; manipulation_rate_parent: number | null; manipulation_rate_candidate: number | null;
+  manipulation_change: number | null; manipulated: boolean | null; delta_slice: number | null; delta_outside: number | null;
+  slice_size: number; outside_size: number; n_min: number };
+export type V2Verdict = { rule_id: 'lcd-v2'; stage: 'screen' | 'confirm'; z: number;
+  verdict: 'pass' | 'fail' | 'holds' | 'does_not_hold' | 'insufficient_evidence' | 'unmeasurable'; reasons: string[];
+  delta: number | null; se: number | null; lower: number | null; upper: number | null; n: number | null; k: number | null;
+  safeguards: Safeguard[]; attribution?: Attribution | null };
+export type Decision = { gate_verdict?: GateVerdict | V2Verdict; screen?: V2Verdict; confirm?: V2Verdict; previous?: Decision | null;
+  decision: 'adopted' | 'rejected' | 'undecided'; note: string; actor: string; at: string };
 export type Counts = { better: number; worse: number; same: number; unpaired: number };
 // One side of a candidate's Δ父 / Δ根 as the tree view projects it.
 export type DeltaSummary = { kind: string; status: string; reason?: string | null; comparison_id?: string | null;
@@ -24,7 +37,7 @@ export type ProposalRow = { id: string; status: string; title: string | null; pa
 export type Iteration = {
   id: string; task_id: string; origin: string; title: string; start_commit: string | null; selection_hash: string | null;
   plan_id: string | null; plan_revision: string | null; root_candidate_id: string | null; created_at: string;
-  protocol: { mode?: string; k_base?: number; gate_rule?: { id: string; tau: number; eta: string }; request_revision?: string; input?: { input_id?: string; bundle_id?: string; suite?: string } } | null;
+  protocol: { mode?: string; k_base?: number; gate_rule?: { id: string; tau?: number; eta?: string; z_screen?: number; z_confirm?: number }; request_revision?: string; input?: { input_id?: string; bundle_id?: string; suite?: string } } | null;
 };
 export type IterationTree = Iteration & { candidates: Candidate[]; proposals: ProposalRow[]; unassigned_executions: string[] };
 
@@ -64,10 +77,27 @@ export const stateLabels: Record<CandidateState, string> = {
 export const decisionLabels: Record<string, string> = { adopted: '已采纳', rejected: '已放弃', undecided: '未决' };
 export const verbLabels: Record<string, string> = {
   'node-derive': '派生', 'node-freeze': '冻结', 'node-run': '运行', 'node-adopt': '采纳', 'node-reject': '放弃', 'iteration-create': '新建迭代',
+  'iteration-sealed-run': '封存集测量（单候选）', 'iteration-sealed-lineage-run': '封存集测量（整条谱系）',
 };
 export const requestStatusLabels: Record<ActionRequest['status'], string> = {
   pending: '待确认', confirmed: '执行中', executed: '已执行', failed: '执行失败', rejected: '已驳回', withdrawn: '已撤回',
 };
+export const v2VerdictLabels: Record<V2Verdict['verdict'], string> = {
+  pass: '通过', fail: '未通过', holds: '收益成立', does_not_hold: '收益不成立', insufficient_evidence: '证据不足', unmeasurable: '不可测',
+};
+export const attributionLabels: Record<AttributionLabel, string> = { supported: '支持', refuted: '反驳', insufficient: '证据不足' };
+export const isV2 = (tree: Iteration) => tree.protocol?.gate_rule?.id === 'lcd-v2';
+const isV2Verdict = (v: GateVerdict | V2Verdict | undefined): v is V2Verdict => !!v && 'stage' in v && v.rule_id === 'lcd-v2';
+// The latest screen and confirm along the decision chain (each gate decision keeps the one it replaced).
+export function v2Stages(decision: Decision | null): { screen?: V2Verdict; confirm?: V2Verdict } {
+  const out: { screen?: V2Verdict; confirm?: V2Verdict } = {};
+  for (let d = decision, hops = 0; d && hops < 64; d = d.previous ?? null, hops++)
+    for (const v of [d.confirm, d.screen, d.gate_verdict]) if (isV2Verdict(v) && !out[v.stage]) out[v.stage] = v;
+  return out;
+}
+// Adopted without a supported mechanism label: the one place a person reviews an unexplained change.
+export const adoptedUnattributed = (tree: Iteration, c: Candidate) =>
+  isV2(tree) && c.decision?.decision === 'adopted' && v2Stages(c.decision).confirm?.attribution?.label !== 'supported';
 export const short = (id: string | null | undefined, n = 8) => id ? id.slice(0, n) : '—';
 export const signed = (value: number | null | undefined, digits = 3) =>
   typeof value === 'number' && Number.isFinite(value) ? (value > 0 ? '+' : value < 0 ? '−' : '±') + Math.abs(value).toFixed(digits) : '—';
