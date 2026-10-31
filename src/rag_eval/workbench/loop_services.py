@@ -251,6 +251,20 @@ class RoundOperations:
         except (ValueError, KeyError):
             return False
 
+    @staticmethod
+    def _parent_mean(scan):
+        """Raw official primary mean over the parent's member attempts; error/missing count 0."""
+        values = []
+        for rows in scan['observations'].values():
+            for row in rows:
+                value = (row.get('metrics') or {}).get(scan['primary'])
+                if row.get('status') in ('error', 'missing'):
+                    value = 0
+                if value is None:
+                    return None
+                values.append(value)
+        return sum(values) / len(values) if values else None
+
     def select(self, iteration_id, baseline_id, *, max_clusters, b, pi):
         tree = self._tree(iteration_id)
         executions = self._search_executions(tree, baseline_id)
@@ -271,6 +285,10 @@ class RoundOperations:
             fallback = ('unmeasurable_attribution_use_pi' if len(missing_attribution) == 2
                         else 'partial_attribution' if missing_attribution else None)
             score = current['n_cases'] * (1 - q) * strength if q is not None else None
+            if rule.get('id') == 'lcd-v2':
+                # Headroom on raw parent scores; no m/v/pi estimate (they stay as disclosure).
+                mean = self._parent_mean(current)
+                score, fallback = (current['n_cases'] * (1 - mean) if mean is not None else None), None
             legal = [r for r in cards if r.get('parent_candidate_id') == baseline_id
                      and r['status'] in ('draft', 'approved') and self._card_legal(tree['task_id'], r, cluster, rule)]
             legal.sort(key=lambda r: (r['created_at'], r['id']))

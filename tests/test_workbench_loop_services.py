@@ -639,3 +639,19 @@ def test_provider_idle_queue_uses_configured_start_grace(adapter, monkeypatch):
     monkeypatch.setattr(store, 'list', aged)
     assert agent(adapter)['status'] == 'running'
     assert agent(adapter, start_grace_seconds=45)['status'] == 'idle'
+
+
+def test_v2_selection_ranks_by_raw_parent_headroom_without_m_v_pi(adapter):
+    f, ops, api = adapter['f'], adapter['ops'], adapter['api']
+    for scores in f['views'].scores.values():
+        if scores.get('qasper:q') == 1:
+            scores['qasper:q'] = .6  # still a success under the 0.5 threshold, but raw .6
+    v1 = ops.select(f['tree']['id'], f['tree']['root_candidate_id'], max_clusters=6, b=2, pi=.3)['ranking'][0]
+    use_v2(api, f['tree']['id'])
+    ranked = ops.select(f['tree']['id'], f['tree']['root_candidate_id'], max_clusters=6, b=2, pi=.3)['ranking'][0]
+    # Parent member attempts: qasper:q scores 0 and .6, qasper:q2 scores 0 twice -> raw mean .15.
+    assert ranked['score'] == pytest.approx(2 * (1 - .15)) and ranked['fallback'] is None
+    assert v1['score'] == pytest.approx(2 * (1 - .25) * max(.3, v1['v'] or 0, v1['m'] or 0))
+    assert ops._parent_mean(dict(primary='f1', observations={'a': [dict(status='error', metrics={})],
+                                                             'b': [dict(status='success', metrics=dict(f1=.5))]})) == .25
+    assert ops._parent_mean(dict(primary='f1', observations={'a': [dict(status='success', metrics={})]})) is None

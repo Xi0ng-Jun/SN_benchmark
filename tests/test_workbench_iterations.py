@@ -606,3 +606,17 @@ def test_iteration_freezes_lcd_v2_rule_with_preregistered_safeguards(env):
             iteration(env, request_key='bad', **bad)
     tree = iteration(env, request_key='v2', gate_rule='lcd-v2', safeguards=safeguards)
     assert tree['protocol']['gate_rule'] == RULE_V2 and tree['protocol']['safeguards'] == safeguards
+
+
+def test_analyst_brief_follows_the_iteration_gate_rule(env):
+    from rag_eval.workbench.briefs import resolve_brief
+    safeguards = [dict(key='answer_language_match', direction='higher_is_better', margin=.05),
+                  dict(key='infrastructure_failure_rate', direction='lower_is_better', margin=.1),
+                  dict(key='cost_per_task', direction='lower_is_better', margin=.5)]
+    tree = iteration(env, gate_rule='lcd-v2', safeguards=safeguards)
+    with env['repo'].connect(write=True) as conn:
+        conn.execute("INSERT INTO task_sessions(id,task_id,agent_id,role,cwd) VALUES('s1',?,'agent-1','analyst','/eval')",
+                     (tree['task_id'],))
+    _, text, _ = resolve_brief(env['repo'], tree['task_id'], 's1', tool='sn-eval')
+    assert 'lcd-v2' in text and 'slice_predicate' in text and 'answer_language_match' in text
+    assert 'predicted_flips 非空' not in text

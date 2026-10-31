@@ -68,3 +68,71 @@ def test_analyst_reads_evidence_in_one_call_and_previews_clusters():
     assert text.index('$S evidence') < text.index('$S cluster preview --file cluster.json') < text.index(
         '$S cluster propose --file cluster.json')
     assert '不要逐题调用 case' in text and 'runs --all' in text and '按需查阅' in text
+
+
+def v2_protocol():
+    from rag_eval.workbench.gate import RULE_V2
+    return dict(gate_rule=dict(RULE_V2), safeguards=[
+        dict(key='answer_language_match', direction='higher_is_better', margin=.05),
+        dict(key='infrastructure_failure_rate', direction='lower_is_better', margin=.1),
+        dict(key='cost_per_task', direction='lower_is_better', margin=.5)])
+
+
+def v2_analyst(**kwargs):
+    return analyst_brief(TASK, eval_root='/eval', tool='sn-eval', worktree=None, cwd='/eval',
+                         candidates=[('candidate', 'commit', '/sn')], protocol=v2_protocol(), **kwargs)
+
+
+def test_v1_protocol_keeps_the_original_contract_and_ranking_text():
+    from rag_eval.workbench.gate import DEFAULT_RULE
+    default = analyst_brief(TASK, eval_root='/eval', tool='sn-eval', worktree=None, cwd='/eval',
+                            candidates=[('candidate', 'commit', '/sn')])
+    assert analyst_brief(TASK, eval_root='/eval', tool='sn-eval', worktree=None, cwd='/eval',
+                         candidates=[('candidate', 'commit', '/sn')], protocol=dict(gate_rule=DEFAULT_RULE)) == default
+
+
+def test_v2_analyst_writes_mechanism_with_the_narrower_trajectory_whitelist():
+    from rag_eval.workbench.gate import TRAJECTORY_FIELDS
+    text = v2_analyst()
+    lcd = text[text.index('## LCD'):text.index('## 提交假设卡草稿')]
+    for token in ('slice_predicate', 'manipulation', 'slice_effect', '"decrease"|"increase"', 'magnitude',
+                  '父版本轨迹', '新鲜批次', '合同不决定采纳', '归因标签', '0.84', '1.65',
+                  'answer_language_match', 'infrastructure_failure_rate', 'cost_per_task', '不要为了好兑现把切片写窄'):
+        assert token in lcd, token
+    allowed = lcd[lcd.index('只能用：'):lcd.index('不能用：')]
+    excluded = lcd[lcd.index('不能用：'):lcd.index('——它们来自')]
+    assert all(field in allowed for field in TRAJECTORY_FIELDS)
+    for field in sorted(FIELDS - TRAJECTORY_FIELDS) + ['metrics.<official_primary_metric>', 'case_id']:
+        assert field in excluded and field not in allowed
+    # No v1 contract requirement and no v1 ranking estimate.
+    assert '"predicted_flips":[' not in text and 'predicted_flips 非空' not in text
+    assert '|C|·(1−q)·max(m, v, π)' not in text and '|C|·(1−q)·π' not in text
+    assert '|C|·(1 − 父版本在簇内的原始主分均值)' in lcd
+    assert '只作披露' in text and '不影响采纳' in text
+
+
+def test_v2_brief_examples_pass_the_real_v2_validators():
+    import json
+    from rag_eval.workbench.gate import RULE_V2, validate_mechanism
+    from rag_eval.workbench.hypotheses import validate_card
+    text = v2_analyst()
+    start = text.index('```json', text.index('格式示例')) + len('```json')
+    card = json.loads(text[start:text.index('```', start)])
+    out = validate_card(card, RULE_V2)
+    assert out['predictions'] == [] and out['contract'] == validate_mechanism(card['contract'])
+    lcd = text[text.index('## LCD'):]
+    start = lcd.index('```json', lcd.index('机制假设 `"contract"`')) + len('```json')
+    example = json.loads(lcd[start:lcd.index('```', start)])
+    assert validate_mechanism(example['contract']) and example['cluster_id'] == 'retrieval_gap'
+
+
+def test_v2_iteration_duties_review_confirmation_and_rebase_not_merges():
+    text = v2_analyst(tree=dict(section='## 迭代'))
+    assert 'rebase 复盘' in text and '归因标签' in text and '合并建议' not in text and '逐题预测兑现' not in text
+
+
+def test_v2_implementer_learns_adoption_is_net_utility_not_contract():
+    text = brief(dict(CARD, cluster_id='retrieval_gap', contract={}), protocol=v2_protocol())
+    assert '是否采纳只看验证池筛选与新鲜批次确认上的整体净效用' in text
+    assert '合同核对' not in text and '只是簇内诊断' in text
+    assert '合同核对' in brief()

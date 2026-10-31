@@ -384,9 +384,9 @@ class RoundService:
                 start_grace_seconds=settings.get('agent_start_grace_seconds', 300), text=(
                     f"LCD round: read search evidence for baseline {baseline} in one call (evidence --parent {baseline}); "
                     f"preview signatures with cluster preview before cluster propose. Propose at most {settings['max_clusters']} "
-                    f"mechanical frozen clusters; draft legal contract cards for the top {settings['b']} unresolved clusters "
-                    f"under this baseline. Rank by |C|*(1-q)*max(m,v,pi), pi={settings['pi']}; "
-                    "unmeasurable m/v remain null with explicit prior fallback. If clusters exist but cards are missing, "
+                    f"mechanical frozen clusters; draft legal lcd-v2 mechanism cards for the top {settings['b']} unresolved clusters "
+                    "under this baseline. Rank by headroom |C|*(1 - parent mean raw primary score in the cluster); "
+                    "no m/v/pi estimate. If clusters exist but cards are missing, "
                     "finish drafting their legal cards now. Follow the attached cluster and contract instructions."))
             record['analyst'] = analyst
             self._save(state)

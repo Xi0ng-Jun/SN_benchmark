@@ -63,19 +63,71 @@ ITERATION_DUTIES = (
     '（4）全树守护——同一批题反复来回翻转（过拟合信号）、采纳路径上相对根下降的题。'
     '结论落到可证伪的假设卡草稿或合并派生申请。')
 
+# lcd-v2: adoption is screen + fresh confirmation; same-round merging is gone.
+ITERATION_DUTIES_V2 = (
+    '跨节点看整棵候选树，单个节点的分析交给绑定该节点的分析 Agent：'
+    '（1）横向比较——兄弟或任意两节点谁好、各自好在哪些题差在哪些题，哪些题所有候选都答错（顽固题）；'
+    '（2）假设复盘——各提议的筛选与确认结果、验证池 Δ 与新鲜批次 Δ 的缩水、归因标签（支持／反驳／证据不足），哪类改动有效、下一步往哪投入；'
+    '（3）rebase 复盘——父节点前进后哪些排队候选 rebase 冲突被丢弃，是否值得在新父节点上重新提出；'
+    '（4）全树守护——同一批题反复来回翻转（过拟合信号）、采纳路径上相对根下降的题、保护指标的漂移。'
+    '结论落到可证伪的假设卡草稿。')
+
 ITERATION_SCOPE_REQUESTS = (
     '作为迭代分析 Agent，你**只申请派生**：从某个已评测候选派生（`--proposal` 指定已批准提议），'
     '或合并派生 `$S node derive <主父候选> --integrate <被并入候选> --method merge|cherry-pick|rewrite --reason \'…\'`'
     '（合并后的候选必须自己重跑，不用分差相加估计）。冻结、运行、采纳／放弃属于具体候选，不要申请。\n\n')
 
 
-def _lcd_analyst_instructions():
+def _rule_id(protocol):
+    return ((protocol or {}).get('gate_rule') or {}).get('id', 'lcd-v1')
+
+
+# A complete lcd-v2 mechanism, parallel to the retrieval_gap cluster example below.
+MECHANISM_EXAMPLE = {
+    'slice_predicate': {'kind': 'range', 'field': 'deterministic.citation_valid_count', 'max': 0},
+    'manipulation': {'direction': 'decrease', 'threshold': 0.3},
+    'slice_effect': {'direction': 'positive', 'magnitude': [0.02, 0.15]},
+}
+
+
+def _mechanism_instructions(protocol):
+    import inspect
+    from .clusters import FIELDS
+    from .gate import TRAJECTORY_FIELDS, attribute
+    rule = protocol['gate_rule']
+    allowed = ', '.join(sorted(TRAJECTORY_FIELDS))
+    excluded = ', '.join(sorted(FIELDS - TRAJECTORY_FIELDS) + ['metrics.<official_primary_metric>', 'case_id'])
+    n_min = inspect.signature(attribute).parameters['n_min'].default
+    guards = '、'.join(s['key'] for s in protocol.get('safeguards') or []) or '预注册保护指标'
+    example = json.dumps(dict(cluster_id='retrieval_gap', contract=MECHANISM_EXAMPLE), ensure_ascii=False)
+    return f"""卡片顶层写 `"cluster_id"`，并增加机制假设 `"contract"`，它**恰好**有三个键（不能带 cluster_id、predicted_flips、guards、tau，那是 lcd-v1 合同）：
+```json
+{example}
+```
+- `slice_predicate`：切片谓词 P，算子与簇签名相同（range／regex／all_of／any_of／not），但在**父版本轨迹**上求值：父版本任一 attempt 命中即入切片，成员由父版本固定，候选的输出不改变成员。归因时切片在**新鲜批次**上重新求值（成员是新鲜批次里父版本命中 P 的题），所以 P 要描述一类行为，而不是圈出 search 里的某几题。字段白名单比簇签名**更窄**，只能用：{allowed}。不能用：{excluded}——它们来自分数、gold 或题目身份；上面簇签名示例里的 deterministic.evidence_hit 就不能进 P。retrieval_context.*.text 仍只支持 regex。
+- `manipulation`：`{{"feature"?: 谓词, "direction": "decrease"|"increase", "threshold": 0–1}}`，预测改动后切片成员上 feature 的命中率至少下降（或上升）threshold。省略 feature 时就用 slice_predicate 本身（上例：改后这些题不再零引用的比例至少 0.3）；feature 也只能用上面的白名单字段。
+- `slice_effect`：`{{"direction": "positive", "magnitude"?: [lo, hi]}}`，预测切片内配对分数差为正；magnitude 可省略，给出时 lo ≤ hi。
+- 起草时严格校验：多余键、类型错、字段越出白名单都判"合同无效"，卡片进不了实现。
+
+**合同不决定采纳。** 采纳只看配对净效用：先在验证池上筛选（Δ − {rule['z_screen']}·SE > 0），通过后在一个从未用过的新鲜批次上确认（Δ − {rule['z_confirm']}·SE > 0），且保护指标（{guards}）不越过预注册边界；Δ 是逐题原始分（不按阈值二值化）的候选减父版本均值，SE 按 paper 聚类。合同只给确认后的改动打归因标签：支持／反驳／证据不足，标签不影响任何判定。
+所以**不要为了好兑现把切片写窄**：切片成员少于 {n_min} 题时标签只能是"证据不足"；切片外变差会抵消切片内的收益，净效用过不了线就不会被采纳。切片应覆盖真正承载这个机制的全部题，让 manipulation 描述可机械测量的行为变化。
+"""
+
+
+def _lcd_analyst_instructions(protocol=None):
     from .clusters import FIELDS
     from .run_views import PRIMARY_METRIC
+    v2 = _rule_id(protocol) == 'lcd-v2'
     primary_fields = ', '.join(f'{suite}: metrics.{metric}' for suite, metric in sorted(PRIMARY_METRIC.items()))
     fields = ', '.join(sorted(FIELDS | {'metrics.<official_primary_metric>', 'retrieval_context.*.text'}))
-    return """## LCD 机械簇与合同
-长时间执行会在你的 turn 结束后继续。结果就绪但缺少下一步产物时，轮次服务会发送后续消息；请继续完成卡片草案。
+    contract = (_mechanism_instructions(protocol) if v2 else """卡片增加 `"contract":{"cluster_id":"retrieval_gap","predicted_flips":["<search 成员标识>"],"guards":[],"tau":0.5}`。predicted_flips 非空且为冻结成员子集，与 guards 不重叠；两列表各自不重复且最多 200 项，tau 可省略或取 [0,1]。顶层 cluster_id 若存在必须与合同一致。标识仅留分析侧，不得复制进 implementer_brief。
+""")
+    ranking = ("""排序按可提升空间 |C|·(1 − 父版本在簇内的原始主分均值)：|C| 是簇的 search 成员数，均值取父版本各 attempt 的官方主分原值（出错或缺失按 0）。不估计 m、v 或先验 π，服务器用同一口径选前 b 个有合法卡的未解决簇。只为未解决簇起草合法卡；card_approval=auto 仍对 title、component、mechanism、implementer_brief、possible_harm、change_scope 做泄漏扫描（题面、gold 8 词片段、注册 case id），并做机制合同校验；manual 等待批准。
+""" if v2 else """排序公式 |C|·(1−q)·max(m, v, π)，π 缺省 0.3；m 或 v 不可测时保留 null，不当作 0；对可测维度与 π 取最大值，两者都不可测时注明退化为 |C|·(1−q)·π 及原因。只为未解决簇起草合法卡；card_approval=auto 仍做泄漏扫描与合同校验，manual 等待批准。
+""")
+    signatures = ("missing_signature 描述缺失，violation_signature 描述违规；lcd-v2 下它们只作描述、不参与排序，可省略。"
+                  if v2 else "missing_signature 描述缺失，violation_signature 描述违规；省略时采用服务默认值，建议显式给出。")
+    return ("## LCD 机械簇与机制假设（lcd-v2）\n" if v2 else "## LCD 机械簇与合同\n") + """长时间执行会在你的 turn 结束后继续。结果就绪但缺少下一步产物时，轮次服务会发送后续消息；请继续完成卡片草案。
 先读 search 证据。本轮基准候选、max_clusters 与 b 由服务器消息指定；最多提 max_clusters 个簇，为排名前 b 的簇各起草一张带 contract 的卡。
 **一次调用读全部 search 证据**：`$S evidence --parent <基准候选>`（节点会话省略 --parent 即读本节点）。输出 JSON lines：首行给出执行顺序和 attempt_columns（列名就是签名字段名），之后每行一题：case_id、question、各 attempt 的列值、官方主分均值 mean、failed（任一 attempt 出错、缺失或低于 success_threshold）。`--failed-only` 只留失败题，`--fields a,b` 只取需要的列。不要逐题调用 case 拼表，也不要用 `runs --all` 加脚本汇总；只在需要 gold、引用或检索块原文时，对少数代表题用 `$S case <run_id> <case_id>`。下方评测文档按需查阅，不要开局通读。
 写簇前先试算：`$S cluster preview --file cluster.json` 与 propose 走同一套校验和扫描，返回成员、q、m、v 及 cluster_id 是否已被占用，不写入、不冻结，可反复调整签名。满意后用 `$S cluster propose --file cluster.json` 写入簇。节点会话自动绑定来源；迭代会话须在 JSON 加 candidate_id，或命令加 --parent <已评测候选>。
@@ -84,21 +136,24 @@ def _lcd_analyst_instructions():
 ```
 JSON 算子：`{"kind":"regex","field":"response.answer","pattern":"表达式"}`；`{"kind":"range","field":"usage.total_tokens","min":0,"max":100}`（至少一个有限数值边界，包含边界）；`{"all_of":[签名,...]}`、`{"any_of":[签名,...]}`、`{"not":签名}`。组合含 1–32 子签名，嵌套最多 8 层；regex 长度 1–512。retrieval_context.*.text 仅支持 regex，任一块匹配即可。
 精确字段白名单：""" + fields + """。metrics.<official_primary_metric> 替换成当前套件实际官方主指标字段，不能用其他 metrics 字段。当前套件对应：""" + primary_fields + """。
-missing_signature 描述缺失，violation_signature 描述违规；省略时采用服务默认值，建议显式给出。签名、归因签名及成员写入即冻结，不得改写；新机制另提新簇。用 `$S cluster list` / `$S cluster show <cluster_id>` 查看。
-卡片增加 `"contract":{"cluster_id":"retrieval_gap","predicted_flips":["<search 成员标识>"],"guards":[],"tau":0.5}`。predicted_flips 非空且为冻结成员子集，与 guards 不重叠；两列表各自不重复且最多 200 项，tau 可省略或取 [0,1]。顶层 cluster_id 若存在必须与合同一致。标识仅留分析侧，不得复制进 implementer_brief。
-排序公式 |C|·(1−q)·max(m, v, π)，π 缺省 0.3；m 或 v 不可测时保留 null，不当作 0；对可测维度与 π 取最大值，两者都不可测时注明退化为 |C|·(1−q)·π 及原因。只为未解决簇起草合法卡；card_approval=auto 仍做泄漏扫描与合同校验，manual 等待批准。
-
-"""
+""" + signatures + """签名、归因签名及成员写入即冻结，不得改写；新机制另提新簇。用 `$S cluster list` / `$S cluster show <cluster_id>` 查看。
+""" + contract + ranking + "\n"
 
 
-def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node=None, tree=None):
+def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node=None, tree=None, protocol=None):
     """``candidates`` are (id, frozen_commit, worktree) rows when the Task backs an iteration.
 
     ``node`` (from ``node_context``) binds the analyst to one evaluated candidate:
     the brief then carries that node, its path from the root, and drafts default
     to it, instead of listing the whole tree. ``tree`` (from ``iteration_context``)
     binds it to the whole iteration: cross-node comparison, review and merging.
+    ``protocol`` is the iteration protocol; its gate rule picks the contract form.
     """
+    v2 = _rule_id(protocol) == 'lcd-v2'
+    example = dict(CARD_EXAMPLE, predictions=[], cluster_id='retrieval_gap', contract=MECHANISM_EXAMPLE,
+                   falsification='零引用回答的比例没有下降，或新鲜批次上净效用不为正') if v2 else CARD_EXAMPLE
+    predictions = ('- predictions 可写 `[]`。lcd-v2 下逐题预测只作披露，任何判定都不读它，写得多或准都不影响采纳；不要为它去挑 case id。'
+                   if v2 else '- predictions 是逐题预测：expect 取 improve / unchanged / not_worse / worse；guard=true 表示守护题（不应变差）。验证时按翻转表逐条核对，不看均分。')
     s = f'{tool} --task {task["id"]}'
     if tree:
         s += ' --scope iteration'
@@ -130,7 +185,7 @@ def analyst_brief(task, *, eval_root, tool, worktree, cwd, candidates=None, node
 {"" if node or tree else "目标：" + (task["goal"] or "（未填写）") + chr(10)}评测仓库：`{eval_root}`。你的工作目录：`{cwd}`{"（这个 Agent 按旧方式建在 SN worktree 里；角色仍是分析，不要修改 SN 代码）" if worktree and cwd == worktree else ""}。
 {target}
 
-你的职责：{ITERATION_DUTIES if tree else ("读节点 " + node["label"] + " 的评测结果和案例证据（与它的父节点对照）" if node else "读评测结果和案例证据") + "，做失败归类，提出可证伪的假设卡草稿。"}你能看 gold；正因为能看 gold，你不写 SN 代码，改码由另一个看不到 gold 的实现 Agent 完成。
+你的职责：{(ITERATION_DUTIES_V2 if v2 else ITERATION_DUTIES) if tree else ("读节点 " + node["label"] + " 的评测结果和案例证据（与它的父节点对照）" if node else "读评测结果和案例证据") + "，做失败归类，提出可证伪的假设卡草稿。"}你能看 gold；正因为能看 gold，你不写 SN 代码，改码由另一个看不到 gold 的实现 Agent 完成。
 
 ## 查询工具（只读、免费，随时可用）
 ```
@@ -146,12 +201,12 @@ $S docs                       # 下方文档索引
 ```
 输出是 JSON。run 目录里还有 outputs.jsonl、planned.jsonl、model-events.jsonl，可直接读。
 
-{_lcd_analyst_instructions() if candidates or node or tree else ""}## 提交假设卡草稿（按批准策略实施）
+{_lcd_analyst_instructions(protocol) if candidates or node or tree else ""}## 提交假设卡草稿（按批准策略实施）
 把卡片写成 JSON 文件，然后 {draft}。格式示例：
 ```json
-{json.dumps(CARD_EXAMPLE, ensure_ascii=False, indent=1)}
+{json.dumps(example, ensure_ascii=False, indent=1)}
 ```
-- predictions 是逐题预测：expect 取 improve / unchanged / not_worse / worse；guard=true 表示守护题（不应变差）。验证时按翻转表逐条核对，不看均分。
+{predictions}
 - implementer_brief 是唯一会交给实现 Agent 的说明：写机制和改法，**不得包含题面、gold、case id、论文内容或分数**，提交前会做泄漏扫描。
 
 {ITERATION_VERBS if candidates or node or tree else ""}{ITERATION_SCOPE_REQUESTS if tree else ""}## 可参考的评测文档
@@ -166,8 +221,11 @@ $S docs                       # 下方文档索引
 '''
 
 
-def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty, candidate_id=None, k_base=2):
+def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty, candidate_id=None, k_base=2, protocol=None):
     s = f'{tool} --task {task["id"]} --role implementer --hypothesis {hypothesis_id}'
+    v2 = _rule_id(protocol) == 'lcd-v2'
+    checks = ('改动仍须通过泄漏扫描；是否采纳只看验证池筛选与新鲜批次确认上的整体净效用。' if v2
+              else '改动仍须通过泄漏扫描与合同核对。')
     if candidate_id:
         s += f' --candidate {candidate_id}'
     from .clusters import referenced_cluster
@@ -189,6 +247,7 @@ def implementer_brief(task, card, *, worktree, tool, hypothesis_id, start_dirty,
                        "不要写 shell sleep／轮询循环。"
                        "cluster result 的 state：pending 仍在派发或执行；failed 是候选自身执行失败；"
                        "infrastructure_error 是服务器环境问题，不是你的候选的问题：停止，报告后等待，不要重试或改代码。"
+                       + ("cluster result 只是簇内诊断，不决定采纳；不要为了簇内翻转牺牲其他题。" if v2 else '')
                        if cluster_steps else '') + "\n")
     if integration:
         sequence = ("\n这是 integration 合并候选：只合并服务器指定来源、解决同一文件／提示片段冲突，不加新改动；"
@@ -214,7 +273,7 @@ worktree 起点已有这些未提交改动，它们属于用户，不要覆盖�
 {dirty}
 
 ## 规则
-- 只使用批准卡片与自己簇的脱敏 search 证据；不得寻找 gold 标注、validation／sealed 逐题或其他簇材料，不得直接读取评测原始文件（`var/`、`docs/failure-ledger.md`、`docs/hypotheses/`、`apps/sn-workbench/test-results/` 等）。改动仍须通过泄漏扫描与合同核对。
+- 只使用批准卡片与自己簇的脱敏 search 证据；不得寻找 gold 标注、validation／sealed 逐题或其他簇材料，不得直接读取评测原始文件（`var/`、`docs/failure-ledger.md`、`docs/hypotheses/`、`apps/sn-workbench/test-results/` 等）。{checks}
 - 不写死任何题面、论文、数据集名或 case id；用合成数据写单元测试，覆盖受益和可能受害两种情况。
 - 遵守本仓库 `AGENTS.md`；只跑与改动相关的 SN 测试，禁止全量套件；不提交 git，不直接启动评测运行。
 - 完成后自查：`{s} leak-check`（只报告是否与考题重叠，不显示考题内容）。
@@ -241,13 +300,14 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
                 'SELECT c.id, c.frozen_commit, w.binding_json FROM iterations i JOIN candidates c '
                 'ON c.iteration_id=i.id LEFT JOIN candidate_worktrees w ON w.candidate_id=c.id '
                 'WHERE i.task_id=? ORDER BY c.created_at', (task_id,))]
-        k_base = 2
+        protocol = None
         candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
-        if candidate_id:
-            row = conn.execute('SELECT i.protocol_json FROM candidates c JOIN iterations i ON i.id=c.iteration_id '
-                               'WHERE c.id=?', (candidate_id,)).fetchone()
-            if row and row['protocol_json']:
-                k_base = (json.loads(row['protocol_json']) or {}).get('k_base', 2)
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone():
+            row = (conn.execute('SELECT i.protocol_json FROM candidates c JOIN iterations i ON i.id=c.iteration_id '
+                                'WHERE c.id=?', (candidate_id,)) if candidate_id else
+                   conn.execute('SELECT protocol_json FROM iterations WHERE task_id=?', (task_id,))).fetchone()
+            protocol = json.loads(row['protocol_json']) if row and row['protocol_json'] else None
+        k_base = (protocol or {}).get('k_base', 2)
         if session['role'] == 'implementer':
             from .hypothesis_worktrees import hypothesis_binding
             from .iterations import candidate_binding
@@ -264,14 +324,15 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
     if session['role'] == 'implementer':
         start = json.loads(bound['start_snapshot_json']) if bound else {}
         text = implementer_brief(task, card, worktree=worktree, tool=tool, hypothesis_id=session['hypothesis_id'],
-                                 start_dirty=[d['path'] for d in start.get('dirty', [])], candidate_id=candidate_id, k_base=k_base)
+                                 start_dirty=[d['path'] for d in start.get('dirty', [])], candidate_id=candidate_id, k_base=k_base,
+                                 protocol=protocol)
         title = '实现 Agent 工作说明 · ' + card['title']
     else:
         node = node_context(repository, run_views, task_id, candidate_id) if candidate_id else None
         scoped = 'scope' in session.keys() and session['scope'] == 'iteration'
         tree = iteration_context(repository, run_views, task_id) if scoped else None
         text = analyst_brief(task, eval_root=str(Path(workspace['location'])), tool=tool, worktree=worktree, cwd=cwd,
-                             candidates=candidates, node=node, tree=tree)
+                             candidates=candidates, node=node, tree=tree, protocol=protocol)
         title = '分析 Agent 工作说明 · ' + task['title'] + (' · 节点 ' + node['label'] if node else ' · 整个迭代' if tree else '')
     refs = {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst'}
     if candidate_id:
