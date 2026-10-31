@@ -29,8 +29,8 @@ def _str(value, name, limit=4000):
     return value
 
 
-def validate_card(card):
-    """Closed card shape; returns a normalized copy."""
+def validate_card(card, rule=None):
+    """Closed card shape; returns a normalized copy. The gate rule picks the contract form."""
     if not isinstance(card, dict) or not set(_REQUIRED) <= set(card) or not set(card) <= set(_REQUIRED + _OPTIONAL):
         raise ValueError('Hypothesis card fields: required ' + ', '.join(_REQUIRED) + '; optional ' + ', '.join(_OPTIONAL))
     out = {key: _str(card[key], key) for key in ('title', 'component', 'mechanism', 'falsification', 'implementer_brief')}
@@ -63,8 +63,12 @@ def validate_card(card):
     if 'cluster_id' in card:
         out['cluster_id'] = _str(card['cluster_id'], 'cluster_id', 64)
     if 'contract' in card:
-        from .gate import validate_contract
-        out['contract'] = validate_contract(card['contract'])
+        from .gate import DEFAULT_RULE, validate_contract, validate_mechanism
+        validators = {'lcd-v1': validate_contract, 'lcd-v2': validate_mechanism}
+        rule_id = (rule or DEFAULT_RULE).get('id')
+        if rule_id not in validators:
+            raise ValueError('Unsupported gate rule')
+        out['contract'] = validators[rule_id](card['contract'])
     from .clusters import referenced_cluster
     referenced_cluster(out)
     return out
@@ -129,14 +133,20 @@ class HypothesisStore:
             return self._get(conn, task_id, hypothesis_id)
 
     def draft(self, task_id, card, *, author, parent_candidate_id=None):
-        card = validate_card(card)
+        with self.repository.connect() as conn:
+            row = (conn.execute('SELECT protocol_json FROM iterations WHERE task_id=?', (task_id,)).fetchone()
+                   if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone() else None)
+        card = validate_card(card, (json.loads(row['protocol_json']) or {}).get('gate_rule') if row and row['protocol_json'] else None)
         author = _text(author, 'author', limit=200)
         from .splits import Policy
         policy = Policy(self.repository, task_id)
-        ids = [p['case_id'] for p in card['predictions']] + [e['case_id'] for e in card['evidence']]
-        ids += card.get('contract', {}).get('predicted_flips', []) + card.get('contract', {}).get('guards', [])
-        for cid in ids:
+        contract_ids = card.get('contract', {}).get('predicted_flips', []) + card.get('contract', {}).get('guards', [])
+        for cid in [p['case_id'] for p in card['predictions']] + [e['case_id'] for e in card['evidence']] + contract_ids:
             policy.refuse_sealed(cid)
+        # Contract ids must be real ids this candidate can see; a projected '[withheld]5' is not one.
+        unseen = [cid for cid in contract_ids if policy.search is not None and cid not in policy.search]
+        if unseen:
+            raise ValueError('contract invalid: case ids outside the visible search split: ' + ', '.join(unseen[:5]))
         from .clusters import ClusterStore, referenced_cluster
         cluster_id = referenced_cluster(card)
         if cluster_id:

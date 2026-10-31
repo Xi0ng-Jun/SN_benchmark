@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import math
 
-from .noise import difference_band
+from .clusters import FIELDS, _matches, validate_signature
+from .noise import difference_band, paired_means
 
 DEFAULT_RULE = dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90')
 
@@ -94,3 +95,155 @@ def judge(comparison, noise, contract, rule):
     else:
         result.update(verdict='reject', reasons=['guard_broken' if result['guard_broken'] else 'contract_or_global_delta_failed'])
     return result
+
+
+# ---------------------------------------------------------------- lcd-v2
+# Adoption is the paired raw-score net utility on independent tasks; the mechanism
+# hypothesis only earns an attribution label. Selected per iteration protocol.
+RULE_V2 = dict(id='lcd-v2', z_screen=.84, z_confirm=1.65, statistic='paired_raw', safeguards='required')
+# Fixed safeguard slots; every other pre-registered key is an anti-gaming metric (at least one).
+SAFEGUARD_SLOTS = ('infrastructure_failure_rate', 'cost_per_task')
+# Parent-trajectory behaviour fields: no case identity, score or gold-derived value.
+TRAJECTORY_FIELDS = (FIELDS | {'retrieval_context.*.text'}) - {'deterministic.evidence_hit',
+    'stage_metrics.gold_evidence_recall.value', 'stage_metrics.context_precision.value',
+    'stage_metrics.citation_precision.value'}
+
+
+def _predicate(value, name):
+    """A closed cluster-signature predicate restricted to behaviour fields."""
+    try:
+        value = validate_signature(value)
+    except ValueError as exc:
+        raise ValueError(f'contract invalid: {name}: {exc}') from exc
+    def fields(s):
+        children = s.get('all_of', s.get('any_of', [s['not']] if 'not' in s else []))
+        return [f for c in children for f in fields(c)] + ([s['field']] if 'field' in s else [])
+    if set(fields(value)) - TRAJECTORY_FIELDS:
+        raise ValueError(f'contract invalid: {name} may only read parent-trajectory behaviour fields')
+    return value
+
+
+def validate_mechanism(value):
+    """Mechanism hypothesis: slice predicate P, manipulation prediction M, slice effect E."""
+    if not isinstance(value, dict) or set(value) != {'slice_predicate', 'manipulation', 'slice_effect'}:
+        raise ValueError('contract invalid: needs exactly slice_predicate, manipulation and slice_effect')
+    out = dict(slice_predicate=_predicate(value['slice_predicate'], 'slice_predicate'))
+    m, e = value['manipulation'], value['slice_effect']
+    if (not isinstance(m, dict) or not {'direction', 'threshold'} <= set(m) <= {'feature', 'direction', 'threshold'}
+            or m['direction'] not in ('decrease', 'increase') or type(m['threshold']) not in (int, float)
+            or not 0 <= m['threshold'] <= 1):
+        raise ValueError('contract invalid: manipulation is {feature?, direction: decrease|increase, threshold in [0, 1]}')
+    # The measured feature defaults to P itself and is stored explicitly.
+    out['manipulation'] = dict(feature=_predicate(m['feature'], 'manipulation.feature') if 'feature' in m
+                               else out['slice_predicate'], direction=m['direction'], threshold=float(m['threshold']))
+    magnitude = e.get('magnitude') if isinstance(e, dict) else None
+    if (not isinstance(e, dict) or not {'direction'} <= set(e) <= {'direction', 'magnitude'} or e['direction'] != 'positive'
+            or magnitude is not None and (type(magnitude) is not list or len(magnitude) != 2
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in magnitude) or magnitude[0] > magnitude[1])):
+        raise ValueError('contract invalid: slice_effect is {direction: positive, magnitude?: [lo, hi] | null}')
+    out['slice_effect'] = dict(direction='positive', magnitude=[float(v) for v in magnitude] if magnitude else None)
+    return out
+
+
+def validate_safeguards(value):
+    """Pre-registered non-inferiority margins {key, direction, margin} in metric units."""
+    if not isinstance(value, list) or any(not isinstance(s, dict) or set(s) != {'key', 'direction', 'margin'}
+            or type(s['key']) is not str or not s['key'].strip()
+            or s['direction'] not in ('higher_is_better', 'lower_is_better')
+            or type(s['margin']) not in (int, float) or not 0 <= s['margin'] < math.inf for s in value):
+        raise ValueError('Safeguards are [{key, direction: higher_is_better|lower_is_better, margin >= 0}]')
+    keys = [s['key'] for s in value]
+    if len(set(keys)) != len(keys) or not set(SAFEGUARD_SLOTS) < set(keys):
+        raise ValueError('Safeguards need ' + ', '.join(SAFEGUARD_SLOTS) + ' and at least one anti-gaming metric')
+    return [dict(s) for s in value]
+
+
+def _v2(comparison, rule, z_key, safeguards):
+    """Shared screen/confirm trace: safeguards, admission, then the paired statistic."""
+    if (not isinstance(rule, dict) or set(rule) != set(RULE_V2)
+            or any(rule[k] != RULE_V2[k] for k in ('id', 'statistic', 'safeguards'))
+            or any(type(rule[k]) not in (int, float) or not 0 < rule[k] < math.inf for k in ('z_screen', 'z_confirm'))):
+        raise ValueError('Unsupported gate rule')
+    specs, sides = validate_safeguards(safeguards), ('reference', 'subject')
+    observed, infra = dict(comparison.get('safeguards') or {}), comparison.get('infrastructure')
+    if 'infrastructure_failure_rate' not in observed and infra and all(
+            infra[s].get('total') and not infra[s].get('unobserved') for s in sides):
+        observed['infrastructure_failure_rate'] = {s: infra[s]['failed'] / infra[s]['total'] for s in sides}
+    rows = [r for r in comparison.get('rows', []) if 'validation' not in comparison or r.get('role') == 'validation']
+    noise = comparison.get('noise') or {}
+    k = min((noise.get(s) or {}).get('k') or 0 for s in sides) or None
+    # Families are the comparison's task families (e.g. papers); without them every task is its own cluster.
+    paired = paired_means({r['case_id']: r.get('left') for r in rows}, {r['case_id']: r.get('right') for r in rows},
+                          z=rule[z_key], families=comparison.get('families'), k=k)
+    result = dict(rule_id=rule['id'], rule=dict(rule), z=rule[z_key], verdict='unmeasurable', reasons=[],
+                  **{key: paired[key] for key in ('delta', 'se', 'lower', 'upper', 'n', 'k')}, safeguards=[],
+                  case_retry=comparison.get('retry_summary'),
+                  evidence=dict(paired=paired, mean=comparison.get('mean'), validation=comparison.get('validation'),
+                                rows=rows, infrastructure=infra, attempts_used=comparison.get('attempts_used'), noise=noise))
+    for spec in specs:
+        value = observed.get(spec['key']) or {}
+        known = all(type(value.get(s)) in (int, float) and math.isfinite(value[s]) for s in sides)
+        change = value['subject'] - value['reference'] if known else None
+        harm = (-change if spec['direction'] == 'higher_is_better' else change) if known else None
+        result['safeguards'].append(dict(spec, reference=value.get('reference'), subject=value.get('subject'),
+                                         change=change, breached=harm > spec['margin'] if known else None))
+        if not known or harm > spec['margin']:
+            result['reasons'].append(('safeguard_breached:' if known else 'safeguard_unobserved:') + spec['key'])
+    if (comparison.get('admission') or {}).get('status') != 'admitted':
+        result['reasons'].append('pair_not_admitted')
+    if (comparison.get('validation') or {}).get('incomplete') or any(r.get('delta') is None for r in rows):
+        result['reasons'].append('incomplete_pairs')
+    if paired['se'] is None:
+        result['reasons'].append('insufficient_paired_cases')
+    return result
+
+
+def screen(comparison, rule, *, safeguards):
+    """Validation pool: the lenient one-sided lower bound must clear zero."""
+    result = _v2(comparison, rule, 'z_screen', safeguards)
+    if not result['reasons']:
+        passed = result['lower'] > 0
+        result.update(verdict='pass' if passed else 'fail', reasons=['lower_bound_above_zero' if passed else 'lower_bound_not_above_zero'])
+    return dict(result, stage='screen')
+
+
+def confirm(comparison, rule, *, safeguards, mechanism=None, n_min=5):
+    """Fresh batch: holds / does_not_hold / insufficient_evidence; attribution is recorded, never used."""
+    result = _v2(comparison, rule, 'z_confirm', safeguards)
+    if not result['reasons']:
+        verdict = 'holds' if result['lower'] > 0 else 'does_not_hold' if result['upper'] <= 0 else 'insufficient_evidence'
+        result.update(verdict=verdict, reasons=[dict(holds='lower_bound_above_zero', does_not_hold='upper_bound_not_above_zero',
+                                                     insufficient_evidence='bounds_straddle_zero')[verdict]])
+    result['attribution'] = attribute(comparison, mechanism, n_min=n_min) if mechanism is not None else None
+    return dict(result, stage='confirm')
+
+
+def attribute(comparison, mechanism, *, n_min=5):
+    """Label the mechanism on parent-fixed slice membership; no verdict reads this."""
+    mechanism = validate_mechanism(mechanism)
+    traces = comparison.get('trajectories') or {}
+    parent, child = traces.get('reference') or {}, traces.get('subject') or {}
+    deltas = {r['case_id']: r['delta'] for r in comparison.get('rows', []) if r.get('delta') is not None
+              and ('validation' not in comparison or r.get('role') == 'validation')}
+    unobserved = sorted(cid for cid in deltas if not parent.get(cid))
+    # Union over parent attempts, as in cluster scans; candidate outputs never re-select members.
+    members = sorted(cid for cid in deltas if any(_matches(mechanism['slice_predicate'], o) for o in parent.get(cid, [])))
+    outside = sorted(set(deltas) - set(members) - set(unobserved))
+    feature, direction = mechanism['manipulation']['feature'], mechanism['manipulation']['direction']
+    def rate(side):
+        hits = [_matches(feature, o) for cid in members for o in side.get(cid, [])]
+        return sum(hits) / len(hits) if hits else None
+    def mean(ids):
+        return sum(deltas[c] for c in ids) / len(ids) if ids else None
+    r_p, r_c, d_s, d_o = rate(parent), rate(child), mean(members), mean(outside)
+    change = None if r_p is None or r_c is None else r_p - r_c if direction == 'decrease' else r_c - r_p
+    manipulated = None if change is None else change > 0 and change >= mechanism['manipulation']['threshold']
+    if unobserved or len(members) < n_min or manipulated is None:
+        label = 'insufficient'
+    elif not manipulated or d_s <= 0 or d_o is not None and len(outside) * d_o > len(members) * d_s:
+        label = 'refuted'
+    else:
+        label = 'supported' if d_o is None or d_s > d_o else 'insufficient'
+    return dict(label=label, manipulation_rate_parent=r_p, manipulation_rate_candidate=r_c, manipulation_change=change,
+                manipulated=manipulated, delta_slice=d_s, delta_outside=d_o, slice_size=len(members),
+                outside_size=len(outside), n_min=n_min, slice=members, unobserved=unobserved, mechanism=mechanism)

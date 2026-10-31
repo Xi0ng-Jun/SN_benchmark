@@ -51,6 +51,10 @@ def icc_from_families(scores_by_family: dict[str, list[float]]) -> float:
         if not scores:
             raise ValueError(f"family {family!r} must contain scores")
         groups.append([_probability(score, "score") for score in scores])
+    return _icc(groups)
+
+
+def _icc(groups: list[list[float]]) -> float:
     n_groups = len(groups)
     n_total = sum(len(group) for group in groups)
     if n_groups < 2 or n_total <= n_groups:
@@ -142,3 +146,50 @@ def summarize_cases(cases):
     icc = icc_from_families(families) if ps else None
     effective = n_eff(len(ps), len(ps) / len(families), icc) if ps else None
     return dict(n=len(ps), icc=icc, n_eff=effective, eta=score_se(ps, effective) if ps else None)
+
+
+def paired_means(reference, subject, *, z, families=None, k=None):
+    """lcd-v2 decision statistic over per-task mean raw scores, never thresholded.
+
+    d_i = subject(i) - reference(i) on tasks both sides measured. SE is the CR1
+    family-cluster sandwich; with singleton families it equals sd(d)/sqrt(n)
+    exactly, so a single family (or none) falls back to that iid form.
+    """
+    z = _finite(z, 'z')
+    deltas = {cid: _probability(subject[cid], 'score') - _probability(reference[cid], 'score')
+              for cid in sorted(reference.keys() & subject.keys())
+              if reference[cid] is not None and subject[cid] is not None}
+    groups = {}
+    for cid, d in deltas.items():
+        groups.setdefault((families or {}).get(cid, cid), []).append(d)
+    n, clustered = len(deltas), 1 < len(groups) < len(deltas)
+    if not clustered:
+        groups = {cid: [d] for cid, d in deltas.items()}
+    g = len(groups)
+    delta = sum(deltas.values()) / n if n else None
+    sd = math.sqrt(sum((d - delta) ** 2 for d in deltas.values()) / (n - 1)) if n > 1 else None
+    se = math.sqrt(sum(sum(d - delta for d in group) ** 2 for group in groups.values()) * g / (g - 1)) / n if g > 1 else None
+    return dict(statistic='paired_raw', se_method='cr1-family' if clustered else 'iid', delta=delta, sd=sd, se=se,
+                n=n, k=k, clusters=g, icc=(_icc(list(groups.values())) if clustered else 0.) if n else None,
+                n_eff=(sd * sd / (se * se) if se else n) if se is not None else None, z=z,
+                lower=delta - z * se if se is not None else None, upper=delta + z * se if se is not None else None,
+                deltas=deltas)
+
+
+def paired_delta(reference_attempts, subject_attempts, *, z, families=None):
+    """Average each side's k attempts per task (rows of case_id, family, value), then pair.
+
+    Families default to the rows' own ``family``; absent scores stay unknown.
+    """
+    means, seen = [], {}
+    for attempts in (reference_attempts, subject_attempts):
+        values = {}
+        for attempt in attempts:
+            for row in attempt['rows']:
+                values.setdefault(row['case_id'], [])
+                seen.setdefault(row['case_id'], row.get('family', row['case_id']))
+                if row.get('value') is not None:
+                    values[row['case_id']].append(_probability(row['value'], 'score'))
+        means.append({cid: sum(v) / len(v) if v else None for cid, v in values.items()})
+    return paired_means(*means, z=z, families=seen if families is None else families,
+                        k=min(len(reference_attempts), len(subject_attempts)))
