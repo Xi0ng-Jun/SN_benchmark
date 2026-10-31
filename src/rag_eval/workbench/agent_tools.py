@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create', 'iteration sealed-run')
+REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create', 'iteration sealed-run', 'iteration sealed-lineage-run')
 ANALYST_COMMANDS = ('task', 'evidence', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
                     'request withdraw', 'cluster preview', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
@@ -100,6 +100,7 @@ def main(argv=None):
     parser.add_argument('--timeout', type=int, help='run request: timeout_seconds (default 3600)')
     parser.add_argument('--attempts', type=int, help='run request: number of attempts (1-4)')
     parser.add_argument('--limit-cny', type=float, help='run request: optional cost guard')
+    parser.add_argument('--k', type=int, help="iteration sealed-lineage-run: repetitions per node (default the protocol's k_sealed, else k_base)")
     parser.add_argument('--rank', choices=('root',), help='node list: flat list ranked by Δ根')
     parser.add_argument('command')
     parser.add_argument('args', nargs='*')
@@ -124,6 +125,8 @@ def main(argv=None):
         parser.error('an iteration analyst requests derivations only; freeze, run and decisions belong to a candidate')
     if options.integrate and options.command != 'node derive':
         parser.error('--integrate only applies to node derive')
+    if options.k is not None and options.command != 'iteration sealed-lineage-run':
+        parser.error('--k only applies to iteration sealed-lineage-run')
     if options.wait is not None and (options.command != 'cluster result' or options.role != 'implementer'
                                      or options.wait < 0):
         parser.error('--wait SECONDS (>= 0) only applies to the implementer cluster result')
@@ -443,7 +446,12 @@ class IterationTools:
                 if len(args) != 2 or candidate_cluster(self.service.repository, self.task_id, target) != args[1]:
                     raise ValueError('cluster-run requires the candidate own cluster')
                 params['cluster_id'] = args[1]
-            if verb in ('node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run'):
+            if verb == 'iteration-sealed-lineage-run':
+                if target != self.service.iteration(self.iteration_id)['root_candidate_id']:
+                    raise SystemExit("sealed-lineage-run names this iteration's seed candidate")
+                if options.k is not None:
+                    params['k'] = options.k
+            if verb in ('node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run', 'iteration-sealed-lineage-run'):
                 if options.attempts is not None and verb == 'node-run':
                     params['attempts'] = options.attempts
                 if options.timeout is not None:

@@ -162,3 +162,14 @@ def test_ledger_cli_preserves_the_aggregate_schema_and_sealed_request_stays_pend
     with pytest.raises(SystemExit):
         sn_eval(t, capsys, '--role', 'implementer', '--candidate', t['root'], 'iteration', 'sealed-run',
                 t['root'], '--reason', 'Forbidden')
+
+
+def test_sealed_lineage_request_names_the_seed_and_stays_pending(t, capsys):
+    request = sn_eval(t, capsys, 'iteration', 'sealed-lineage-run', t['root'], '--k', '2', '--reason', 'R3 end step')['request']
+    assert request['status'] == 'pending' and request['verb'] == 'iteration-sealed-lineage-run'
+    assert request['target_id'] == t['root'] and request['params'] == dict(k=2, timeout_seconds=3600)
+    with pytest.raises(SystemExit):
+        sn_eval(t, capsys, 'node', 'run', t['root'], '--k', '2', '--reason', 'k is lineage only')
+    with pytest.raises(SystemExit):
+        sn_eval(t, capsys, '--role', 'implementer', '--candidate', t['root'], 'iteration', 'sealed-lineage-run',
+                t['root'], '--reason', 'Forbidden')

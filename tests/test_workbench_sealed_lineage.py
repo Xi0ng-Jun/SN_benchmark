@@ -190,3 +190,47 @@ def test_lineage_curve_pairs_cases_clusters_families_and_holm_adjusts():
     # Family clustering widens the interval when changes move together within a paper.
     clustered = lineage_curve(nodes, families={c: c[1] in '012' and 'p1' or 'p2' for c in seed})
     assert clustered['curve'][1]['se_delta'] != b['se_delta'] and clustered['n_families'] == 2
+
+
+def test_lineage_action_needs_a_person_targets_the_seed_and_carries_k(env):
+    from rag_eval.workbench.action_requests import ActionRequestStore, auto_execute, execute
+    tree = registered_tree(env, budget=dict(limit_cny=100, max_runs_per_candidate=10))
+    nodes = chain(env, tree, 1)
+    stop(env, tree, nodes[-1])
+    service, store, workspace = env['service'], ActionRequestStore(env['repo']), env['workspace']['id']
+    for bad in (dict(k=0), dict(k=True), dict(attempts=2), dict(cluster_id='x')):
+        with pytest.raises(ValueError):
+            store.request(tree['task_id'], 'iteration-sealed-lineage-run', nodes[0], bad, reason='r', requested_by='a')
+    wrong = store.request(tree['task_id'], 'iteration-sealed-lineage-run', nodes[-1], {}, reason='r', requested_by='a')
+    with pytest.raises(ValueError, match='seed'):
+        execute(service, wrong, workspace_id=workspace, actor='human', human_confirmed=True)
+    request = store.request(tree['task_id'], 'iteration-sealed-lineage-run', nodes[0], dict(k=1),
+                            reason='R3 end step', requested_by='agent:analyst')
+    assert request['params'] == dict(k=1, timeout_seconds=3600)
+    # Never confirmed by the budget policy, never dispatched without a person.
+    assert auto_execute(service, request, workspace_id=workspace)['status'] == 'pending'
+    with pytest.raises(ValueError, match='human confirmation'):
+        execute(service, request, workspace_id=workspace, actor='human')
+    assert not any(sealed_attempts(env, cid) for cid in nodes)
+    result = execute(service, request, workspace_id=workspace, actor='human', human_confirmed=True)
+    assert result == dict(iteration_id=tree['id'], nodes=2, k=1, status='dispatched')
+    assert [len(sealed_attempts(env, cid)) for cid in nodes] == [1, 1]
+
+
+def test_lineage_action_through_the_http_confirmation(env):
+    from rag_eval.workbench.iterations_api import IterationAPI
+    from rag_eval.workbench.action_requests import ActionRequestStore
+    tree = registered_tree(env)
+    nodes = chain(env, tree, 1)
+    stop(env, tree, nodes[-1])
+    api = object.__new__(IterationAPI)
+    api.workspace, api.actor, api.writable = env['workspace'], 'human', True
+    api.service, api.repository, api.views = env['service'], env['repo'], None
+    api.requests = ActionRequestStore(env['repo'])
+    request = api.requests.request(tree['task_id'], 'iteration-sealed-lineage-run', nodes[0], {},
+                                   reason='R3 end step', requested_by='agent:analyst')
+    result = api.confirm(request['id'])
+    assert result['status'] == 'executed' and result['result']['status'] == 'dispatched'
+    assert api.confirm(request['id']) == result  # a receipt recovery never dispatches again
+    k = tree['protocol']['k_base']
+    assert [len(sealed_attempts(env, cid)) for cid in nodes] == [k, k]

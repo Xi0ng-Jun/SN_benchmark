@@ -25,9 +25,11 @@ VERBS = {
     'node-reject': (True, False),
     'iteration-create': (False, True),
     'iteration-sealed-run': (True, True),
+    # Target is the iteration's seed; the node set is fixed when the claim is taken.
+    'iteration-sealed-lineage-run': (True, True),
 }
 IMPLEMENTER_VERBS = frozenset({'node-freeze', 'node-run', 'node-cluster-run'})
-RUN_VERBS = frozenset({'node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run'})
+RUN_VERBS = frozenset({'node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run', 'iteration-sealed-lineage-run'})
 BUDGET_NOTE = 'Within the frozen iteration budget'
 # A confirmed request with this note is dispatched by the long-lived workbench server.
 HANDOFF_NOTE = BUDGET_NOTE + '; dispatched by the workbench server'
@@ -56,12 +58,13 @@ def normalize(verb, params):
                'node-run': {'timeout_seconds', 'limit_cny', 'attempts'}, 'node-fresh-run': {'timeout_seconds', 'limit_cny'},
                'node-cluster-run': {'timeout_seconds', 'limit_cny', 'cluster_id'},
                'iteration-sealed-run': {'timeout_seconds', 'limit_cny'},
+               'iteration-sealed-lineage-run': {'timeout_seconds', 'limit_cny', 'k'},
                'iteration-create': set(ITERATION_FIELDS) | {'sealed_ref', 'split_seed', 'fresh_batch_count', 'fresh_papers_per_batch', 'budget', 'execution', 'round_settings', 'case_retry'}}[verb]
     if set(params) - allowed:
         raise ValueError('Unexpected action parameters: ' + ', '.join(sorted(set(params) - allowed)))
     if verb == 'node-cluster-run' and (not isinstance(params.get('cluster_id'), str) or not params['cluster_id']):
         raise ValueError('cluster-run needs cluster_id')
-    if verb in ('node-run', 'node-fresh-run', 'node-cluster-run', 'iteration-sealed-run'):
+    if verb in RUN_VERBS:
         attempts = params.get('attempts', 1)
         if type(attempts) is not int or not 1 <= attempts <= 4:
             raise ValueError('attempts must be an integer between 1 and 4')
@@ -71,6 +74,8 @@ def normalize(verb, params):
         limit = params.get('limit_cny')
         if limit is not None and (type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0):
             raise ValueError('limit_cny must be a positive number')
+    if verb == 'iteration-sealed-lineage-run' and 'k' in params and (type(params['k']) is not int or not 1 <= params['k'] <= 8):
+        raise ValueError('k must be an integer between 1 and 8')
     if verb == 'node-derive' and 'integrated_from' in params:
         # A merge derivation names the candidates folded in; the merged node runs on its own.
         items = params['integrated_from']
@@ -220,6 +225,16 @@ def execute(service, record, *, workspace_id, actor, budget_override=False, huma
             budget.update(limit_cny=params['limit_cny'], confirmed=True)
         return SealedService(service.repository, service, None).run(
             target, budget=budget, actor=actor, confirmed=human_confirmed)
+    if verb == 'iteration-sealed-lineage-run':
+        from .sealed import SealedService
+        tree = service.iteration(service.candidate(target)['iteration_id'])
+        if tree['root_candidate_id'] != target:
+            raise ValueError("sealed-lineage-run targets the iteration's seed candidate")
+        budget = dict(timeout_seconds=params['timeout_seconds'])
+        if params.get('limit_cny') is not None:
+            budget.update(limit_cny=params['limit_cny'], confirmed=True)
+        return SealedService(service.repository, service, None).run_lineage(
+            tree['id'], budget=budget, actor=actor, confirmed=human_confirmed, k=params.get('k'))
     if verb == 'node-derive':
         view = service.derive(target, proposal_id=params.get('proposal_id'), note=record['reason'],
                               integrated_from=params.get('integrated_from', ()), actor=actor, request_key=key)
