@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Render an iteration's sealed lineage curve (method v2 end step) as HTML + CSV.
+# Stays in the caller's directory, so the outputs land where they were asked for.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$ROOT/src" exec "${SN_WORKBENCH_PYTHON:-$ROOT/.venv/bin/python}" -m rag_eval.workbench.lcd_curve "$@"
