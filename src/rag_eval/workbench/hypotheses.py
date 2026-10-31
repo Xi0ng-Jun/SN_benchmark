@@ -44,11 +44,15 @@ def validate_card(card, rule=None):
         if not isinstance(item, dict) or not {'run_id', 'case_id'} <= set(item) or not set(item) <= {'run_id', 'case_id', 'note'}:
             raise ValueError('Evidence items are {run_id, case_id, note?}')
         out['evidence'].append({k: _str(item[k], 'evidence.' + k, 1000) for k in item})
+    from .gate import DEFAULT_RULE, validate_contract, validate_mechanism
+    rule_id = (rule or DEFAULT_RULE).get('id')
     predictions = card['predictions']
     # Orchestrated merge cards authorize only integration work, with no invented
     # benchmark prediction. They never enter LCD cluster selection or gate checks.
-    integration_only = (card['component'] == 'integration' and 'contract' not in card and 'cluster_id' not in card)
-    if not isinstance(predictions, list) or (not predictions and not integration_only) or len(predictions) > 200:
+    # Under lcd-v2 no verdict reads per-case predictions: they remain optional disclosure.
+    optional = rule_id == 'lcd-v2' or (card['component'] == 'integration' and 'contract' not in card
+                                       and 'cluster_id' not in card)
+    if not isinstance(predictions, list) or (not predictions and not optional) or len(predictions) > 200:
         raise ValueError('A card needs 1-200 per-case predictions')
     out['predictions'] = []
     for item in predictions:
@@ -63,9 +67,7 @@ def validate_card(card, rule=None):
     if 'cluster_id' in card:
         out['cluster_id'] = _str(card['cluster_id'], 'cluster_id', 64)
     if 'contract' in card:
-        from .gate import DEFAULT_RULE, validate_contract, validate_mechanism
         validators = {'lcd-v1': validate_contract, 'lcd-v2': validate_mechanism}
-        rule_id = (rule or DEFAULT_RULE).get('id')
         if rule_id not in validators:
             raise ValueError('Unsupported gate rule')
         out['contract'] = validators[rule_id](card['contract'])
@@ -191,7 +193,7 @@ class HypothesisStore:
                         actor=actor, at=now(),
                         counts=flips.get('counts'), leak=leak, **check_predictions(record['card']['predictions'], flips))
             if contract:
-                from .gate import judge
+                from .gate import DEFAULT_RULE, judge, screen
                 row = conn.execute('SELECT * FROM candidate_comparisons WHERE id=?', (comparison_id,)).fetchone()
                 if row is None:
                     raise ValueError('A contract check needs a frozen candidate comparison')
@@ -202,14 +204,18 @@ class HypothesisStore:
                     raise ValueError('Comparison does not check this proposal against its parent')
                 comparison = json.loads(row['record'])
                 protocol = json.loads(iteration['protocol_json']) or {}
-                from .gate import DEFAULT_RULE
-                verdict = json.loads(row['verdict_json']) if row['verdict_json'] else judge(
-                    comparison, comparison.get('noise') or {}, contract, protocol.get('gate_rule', DEFAULT_RULE))
+                rule = protocol.get('gate_rule', DEFAULT_RULE)
+                # lcd-v2: this parent comparison is the validation-pool screen; only a
+                # fresh-batch confirm adopts, so a pass stays undecided here.
+                verdict = (json.loads(row['verdict_json']) if row['verdict_json'] else
+                           screen(comparison, rule, safeguards=protocol.get('safeguards')) if rule.get('id') == 'lcd-v2'
+                           else judge(comparison, comparison.get('noise') or {}, contract, rule))
                 if not row['verdict_json']:
                     conn.execute('UPDATE candidate_comparisons SET verdict_json=? WHERE id=?',
                                  (json.dumps(verdict), comparison_id))
                     previous = json.loads(candidate['decision_json']) if candidate['decision_json'] else None
-                    decision = dict(decision={'accept': 'adopted', 'reject': 'rejected'}.get(verdict['verdict'], 'undecided'),
+                    decision = dict(decision={'accept': 'adopted', 'reject': 'rejected', 'fail': 'rejected'}.get(
+                                        verdict['verdict'], 'undecided'),
                                     actor='gate', at=now(), note='', comparison_id=comparison_id,
                                     gate_verdict=verdict, previous=previous)
                     conn.execute('UPDATE candidates SET decision_json=?,updated_at=? WHERE id=?',
@@ -274,8 +280,14 @@ def scan_text(text, material):
     hits = [dict(kind='question', case_id=c) for q, c in questions.items() if q in norm]
     found = {shingles[s] for s in _shingles(text) if s in shingles}
     hits += [dict(kind='gold_or_reference_8gram', case_id=c) for c in sorted(found)]
-    hits += [dict(kind='case_id', case_id=c) for c in sorted(case_ids)
-             if c in text or c.split(':')[-1][:16] in text]
+    # Registered identities only, at identity boundaries: a bare digit run is not
+    # a case id. A distinctive local part (hash-like, 8+ chars) also counts.
+    from .splits import id_pattern
+    names = {c: c for c in case_ids}
+    names.update({c.split(':')[-1]: c for c in case_ids if len(c.split(':')[-1]) >= 8})
+    pattern = id_pattern(names)
+    found = {names[m.group(0)] for m in pattern.finditer(text)} if pattern else set()
+    hits += [dict(kind='case_id', case_id=c) for c in sorted(found)]
     return hits
 
 

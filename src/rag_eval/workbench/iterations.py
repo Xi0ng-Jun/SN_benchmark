@@ -421,7 +421,7 @@ class IterationService:
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
                          split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None,
-                         execution=None, round_settings=None, case_retry=None):
+                         execution=None, round_settings=None, case_retry=None, gate_rule='lcd-v1', safeguards=None):
         """Create the backing Task, freeze its plan, then provision root C0.
 
         Retrying the same request key completes an interrupted creation: each
@@ -438,6 +438,11 @@ class IterationService:
         execution = validate_execution_policy(execution)
         from .loop import validate_settings
         settings = validate_settings(round_settings or {})
+        from .gate import DEFAULT_RULE, RULE_V2, validate_safeguards
+        if gate_rule not in ('lcd-v1', 'lcd-v2') or (safeguards is not None) != (gate_rule == 'lcd-v2'):
+            raise ValueError('gate_rule is lcd-v1, or lcd-v2 with its pre-registered safeguards')
+        frozen_rule = dict(RULE_V2 if gate_rule == 'lcd-v2' else DEFAULT_RULE)
+        safeguards = validate_safeguards(safeguards) if safeguards is not None else None
         if round_settings is not None and not isinstance(round_settings, dict):
             raise ValueError('Round settings must be an object')
         if case_retry is not None and not isinstance(case_retry, dict):
@@ -459,6 +464,8 @@ class IterationService:
             payload['round_settings'] = settings
         if case_retry is not None:
             payload['case_retry'] = case_retry_frozen
+        if gate_rule != 'lcd-v1':
+            payload.update(gate_rule=gate_rule, safeguards=safeguards)
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -507,7 +514,9 @@ class IterationService:
                         scorer='recorded-per-run', k_base=2, success_threshold=.5,
                         splits=dict(search=split['search'], validation=split['validation'],
                                     sealed_ref=ref, sealed=registered['case_ids'], seed=split_seed), fresh_batches=fresh,
-                        gate_rule=dict(id='lcd-v1', tau=.5, eta='rerun_se', band='jeffreys90'))
+                        gate_rule=frozen_rule)
+        if safeguards is not None:
+            protocol['safeguards'] = safeguards
         if budget is not None:
             protocol['budget'] = budget
         protocol['round_settings'] = settings
@@ -1076,8 +1085,8 @@ class IterationService:
         return HypothesisStore(self.repository).draft(task_id, card, author=author,
                                                       parent_candidate_id=parent_candidate_id)
 
-    def decide(self, candidate_id, decision, *, actor, note=''):
-        """A research judgement; it never changes objective scores."""
+    def decide(self, candidate_id, decision, *, actor, note='', confirm=None):
+        """A research judgement; it never changes objective scores. ``confirm``: an lcd-v2 fresh-batch verdict."""
         actor = _text(actor, 'actor', limit=200)
         if decision not in DECISIONS:
             raise ValueError('Decision is ' + '|'.join(DECISIONS))
@@ -1092,6 +1101,8 @@ class IterationService:
             body = dict(decision=decision, note=_text(note, 'note', empty=True, limit=4000), actor=actor, at=now())
             if (previous or {}).get('gate_verdict'):
                 body.update(gate_verdict=previous['gate_verdict'], previous=previous)
+            if confirm is not None:
+                body['confirm'] = confirm
             conn.execute('UPDATE candidates SET decision_json=?,updated_at=? WHERE id=?',
                          (json.dumps(body, ensure_ascii=False), now(), candidate_id))
             self.repository._event(conn, task_id, 'candidate.decided', candidate_id, body)

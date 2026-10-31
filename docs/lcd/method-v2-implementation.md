@@ -63,6 +63,16 @@
 
 测试：`tests/test_workbench_loop.py`、`test_workbench_loop_integration.py` 更新；新增"fresh 不成立 → 父节点不前进"和"fresh 成立 → 父节点前进且下一候选 rebase"两个用例。
 
+M2 已做（2026-10-31）：
+- 轮次只接受 `lcd-v2` 协议（`describe` 拒绝 v1；v1 记录仍可读）。协议创建新增 `gate_rule='lcd-v2'` 与必填 `safeguards`。
+- 候选阶段：`derive → [rebase] → implementation → measure → screen → queued → confirm → done`。同轮全部候选筛选完毕后，按 Δ_val 降序逐个确认；确认成立即推进父节点并把其余 `queued` 候选标 `needs_rebase`、在新父节点下派生（卡片复制到新父节点，源 diff 机械 `git apply`，冲突记 `rebase_conflict`）。
+- 候选终态 `status`：`accepted` / `rejected` / `screen_failed` / `unmeasurable` / `unconfirmed_not_adopted` / `stalled` / `budget_exhausted` / `needs_rebase` / `rebase_conflict`。不再产生 `accepted_unconfirmed` 与 merge。
+- 证据不足时按轮次设置 `confirm_extra_batches`（默认 1）再取一个批次合并分析，仍不足按不成立。
+- 停机：invocation 记录 `stop = {category, reason, detail, no_gain_streak, process_failure_streak}`，同时写入最后一轮的 `stop` 与 `ledger.stop`；`category` ∈ `no_gain` / `resources_exhausted` / `process_failure`（人工停止为 `operator`），`stop_reason` 保留细分原因（如 `fresh_exhausted`、`rounds_exhausted`）。每轮记 `outcome` ∈ `gain` / `no_gain` / `process_failure` / `resources`；连续 2 轮 `no_gain` 或 `process_failure` 停机。
+- 谱系：invocation 的 `lineage[]`（`candidate_id, parent_candidate_id, round, screen_delta, confirm_delta, attribution`）。
+- 候选 decision：screen 写 `gate_verdict`（stage=screen，`fail` 记 rejected，其余 undecided）；confirm 写 `decision.confirm`（holds→adopted，does_not_hold/最终证据不足→rejected，unmeasurable→undecided）。
+- 观测保护指标在比较记录上：`families`、`safeguards`（`answer_language_match`、`cost_per_task` 按父节点归一为 1）、`safeguard_observations`（原始 token 均值与计数）。用过的新鲜批次记入 `iteration_fresh_merges`。
+
 ### M3 封存集曲线（可与 M1 并行）
 
 `src/rag_eval/workbench/sealed.py`

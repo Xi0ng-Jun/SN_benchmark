@@ -121,7 +121,8 @@ def test_cluster_freeze_contract_membership_and_implementer_projection(frozen_cl
         store.propose(f['tree']['root_candidate_id'], f['card'], actor='analyst')
     bad = deepcopy(f['proposal_card'])
     bad['contract']['predicted_flips'] = ['not-a-member']
-    with pytest.raises(ValueError, match='members'):
+    # Visibility is checked first: an id outside the search split is never a member either.
+    with pytest.raises(ValueError, match='visible search split'):
         f['service'].draft_proposal(f['tree']['root_candidate_id'], bad, author='analyst')
     f['views'].scores.clear()
     assert store.get(task, 'c01') == before

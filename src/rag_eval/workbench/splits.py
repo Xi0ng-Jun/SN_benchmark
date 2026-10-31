@@ -3,8 +3,18 @@ from __future__ import annotations
 
 import json
 import random
+import re
 
 from .repository import Conflict, now
+
+# Characters that continue a case identity: 'asqa:1' must not match inside 'asqa:15'.
+_ID_EDGE = r'[\w:\-]'
+
+
+def id_pattern(ids):
+    """Exact registered identities at identity boundaries, longest first; None when empty."""
+    ids = sorted({i for i in ids if i}, key=len, reverse=True)
+    return re.compile(f'(?<!{_ID_EDGE})(?:' + '|'.join(map(re.escape, ids)) + f')(?!{_ID_EDGE})') if ids else None
 
 
 def partition(partitions, selected, *, sealed=(), seed=0, batches=0, papers_per_batch=8):
@@ -61,6 +71,10 @@ def initialize(repository):
         columns = {r['name'] for r in conn.execute('PRAGMA table_info(candidate_attempts)')}
         if columns and 'batch_id' not in columns:
             conn.execute('ALTER TABLE candidate_attempts ADD COLUMN batch_id TEXT')
+        # A side table keeps the batch table's shape for older readers and writers.
+        conn.execute('''CREATE TABLE IF NOT EXISTS iteration_fresh_merges(
+            iteration_id TEXT NOT NULL, batch_id TEXT NOT NULL, merged_at TEXT NOT NULL, decision TEXT,
+            PRIMARY KEY(iteration_id,batch_id))''')
 
 
 def batches(repository, iteration_id, *, completed=False):
@@ -69,6 +83,27 @@ def batches(repository, iteration_id, *, completed=False):
             return []
         return [dict(r) for r in conn.execute('SELECT * FROM iteration_fresh_batches WHERE iteration_id=?' +
             (' AND completed_at IS NOT NULL' if completed else '') + ' ORDER BY used_at,batch_id', (iteration_id,))]
+
+
+def merge_used_batch_into_validation(repository, iteration_id, batch_id, *, task_id=None, decision=None):
+    """Stamp a used, reconciled fresh batch as part of the validation pool (idempotent).
+
+    The pool is every completed batch (``roles``/``batches(completed=True)``), so
+    later screens include it; the stamp records the confirm that consumed it.
+    """
+    initialize(repository)
+    with repository.connect(write=True) as conn:
+        row = conn.execute('SELECT * FROM iteration_fresh_batches WHERE iteration_id=? AND batch_id=?',
+                           (iteration_id, batch_id)).fetchone()
+        if row is None or row['completed_at'] is None:
+            raise Conflict('Only a used and reconciled fresh batch joins the validation pool')
+        if conn.execute('INSERT OR IGNORE INTO iteration_fresh_merges VALUES(?,?,?,?)',
+                        (iteration_id, batch_id, now(), decision)).rowcount and task_id:
+            repository._event(conn, task_id, 'iteration.fresh.merged', row['candidate_id'],
+                              dict(batch_id=batch_id, decision=decision))
+        merged = conn.execute('SELECT merged_at,decision FROM iteration_fresh_merges WHERE iteration_id=? AND batch_id=?',
+                              (iteration_id, batch_id)).fetchone()
+        return dict(row, merged_at=merged['merged_at'], merge_decision=merged['decision'])
 
 
 def claim(repository, iteration, candidate_id, request_key, *, conn=None, expected_batch_id=None):
@@ -114,7 +149,7 @@ def roles(protocol, completed=()):
 class Policy:
     """Project analyst outputs at the delivery boundary, never stored measurements."""
     def __init__(self, repository, task_id):
-        self.search, self.hidden, self.sealed = None, set(), set()
+        self.search, self.hidden, self.sealed, self._hidden_ids = None, set(), set(), None
         with repository.connect() as conn:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone():
                 return
@@ -129,6 +164,7 @@ class Policy:
                     self.hidden.update(split['validation'])
                     self.hidden.update(c for b in protocol.get('fresh_batches', []) for c in b['case_ids'])
         self.hidden |= self.sealed
+        self._hidden_ids = id_pattern(self.hidden)
 
     def require_search(self, case_id):
         if case_id in self.sealed:
@@ -193,9 +229,8 @@ class Policy:
                                 values = [x for x in values if isinstance(x, (int, float))]
                                 out['validation'] = dict(n=len(withheld), mean=sum(values)/len(values) if values else None, eta=None)
                 return out
-            if isinstance(v, str):
-                for cid in sorted(hidden, key=len, reverse=True):
-                    v = v.replace(cid, '[withheld]')
+            if isinstance(v, str) and self._hidden_ids is not None:
+                return self._hidden_ids.sub('[withheld]', v)
             return v
         return visit(value)
 

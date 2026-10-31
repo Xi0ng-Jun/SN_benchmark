@@ -19,26 +19,27 @@ def test_transient_phase_error_keeps_phase_until_recovered(setup):
 
 def test_new_invocation_resets_streak_and_records_history(setup):
     _, ports, _, service = setup
-    ports.verdict = 'reject'
+    ports.verdict = 'fail'
     first = advance(service, service.start('I', actor='human', request_key='first', rounds=5)['id'])
-    assert first['no_accept_streak'] == 2
+    assert first['no_gain_streak'] == 2
     second = service.start('I', actor='human', request_key='second')
-    assert second['no_accept_streak'] == 0
-    assert second['previous_no_accept_streak'] == 2
+    assert second['no_gain_streak'] == 0
+    assert second['previous_no_gain_streak'] == 2
     assert len(advance(service, second['id'])['rounds']) == 1
 
 
-@pytest.mark.parametrize('merge_status', ['withdrawn', 'stalled', 'unmeasurable'])
-def test_fresh_exhaustion_still_merges_and_falls_back_to_largest_delta(setup, merge_status):
+def test_fresh_exhaustion_adopts_nothing_and_never_merges(setup):
     _, ports, _, service = setup
     ports.cards = 2
-    ports.merge_status = merge_status
     ports.fresh_status = {'C0-H0-C': 'exhausted', 'C0-H1-C': 'exhausted'}
-    ports.gate = lambda cid, **_: dict(verdict='accept', delta=.2 if 'H1' in cid else .1)
+    ports.deltas = {'C0-H0-C': .1, 'C0-H1-C': .2}
     result = advance(service, service.start('I', actor='human', request_key='merge')['id'])
-    assert result['rounds'][0]['merge']['phase'] == 'done'
-    assert result['baseline_candidate_id'] == 'C0-H1-C'
-    assert result['rounds'][0]['baseline_selection']['reason'] == 'merge_fallback'
+    assert 'merge' not in result['rounds'][0]
+    assert [c['status'] for c in result['rounds'][0]['candidates']] == ['unconfirmed_not_adopted'] * 2
+    assert result['baseline_candidate_id'] == 'C0'
+    assert result['stop_reason'] == 'fresh_exhausted'
+    # Only the head of the confirmation queue consumed a fresh attempt.
+    assert ports.effects['fresh'] == 1
 
 
 def test_idle_agent_gets_bounded_followup_and_full_deadline_after_execution(setup):

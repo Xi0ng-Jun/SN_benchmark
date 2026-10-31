@@ -77,9 +77,13 @@ def test_fresh_claim_recovery_completion_and_validation_growth(env):
             env['executions']._finish(a['execution_id'], state='finished', exit_code=0, error_type=None,
                                       run_state=dict(phase='finished'))
     comparisons = ComparisonService(env['repo'], service, views)
+    with pytest.raises(Exception, match='reconciled'):
+        splits.merge_used_batch_into_validation(env['repo'], tree['id'], 'f1')
     comparisons.reconcile_fresh(tree['id'], actor='optimizer')
     completed = splits.batches(env['repo'], tree['id'], completed=True)
     assert len(completed) == 1
+    merged = splits.merge_used_batch_into_validation(env['repo'], tree['id'], 'f1', task_id=tree['task_id'], decision='holds')
+    assert merged['merged_at'] and splits.merge_used_batch_into_validation(env['repo'], tree['id'], 'f1') == merged
     record = comparisons.get(completed[0]['comparison_id'])
     assert record['kind'] == 'fresh' and record['mean']['delta'] == 1
     assert record['pool'] == [dict(batch_id='f1', selection_hash=tree['protocol']['fresh_batches'][0]['selection_hash'], n=1)]
@@ -234,3 +238,21 @@ def test_explicit_validation_fill_replaces_failed_measurements_without_deleting_
     attempts.append(dict(batch_id='f1', execution_id='pending', execution_state='running', admission=None))
     IterationService.fill_validation(service, 'candidate', budget=BUDGET, actor='optimizer', request_key='new-request')
     assert len(dispatched) == 2
+
+
+def test_redaction_replaces_whole_hidden_identities_only():
+    # R2d: a hidden 'asqa:1' turned a visible 'asqa:15' into '[withheld]5'.
+    policy = splits.Policy.__new__(splits.Policy)
+    policy.search, policy.sealed, policy.hidden = {'asqa:15', 'asqa:12'}, set(), {'asqa:1', 'asqa:2'}
+    policy._hidden_ids = splits.id_pattern(policy.hidden)
+    out = policy.project(dict(note='see asqa:15, asqa:1 and asqa:2; not asqa:12 or xasqa:1'))
+    assert out['note'] == 'see asqa:15, [withheld] and [withheld]; not asqa:12 or xasqa:1'
+    assert splits.id_pattern([]) is None
+
+
+def test_leak_scan_matches_registered_identities_not_digit_runs():
+    from rag_eval.workbench.hypotheses import scan_text
+    material = ({}, {}, {'alce-asqa:5', 'alce-asqa:12', 'qasper:abcdef1234567890'})
+    assert scan_text('retry 5 times; top_k = 12; ids 512 and alce-asqa:51', material) == []
+    hits = scan_text('special-case alce-asqa:5 and abcdef1234567890', material)
+    assert {h['case_id'] for h in hits} == {'alce-asqa:5', 'qasper:abcdef1234567890'}

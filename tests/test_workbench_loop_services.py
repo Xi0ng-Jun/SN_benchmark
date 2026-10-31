@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from rag_eval.workbench.creation_api import CreationAPI
+from rag_eval.workbench.gate import DEFAULT_RULE, RULE_V2
 from rag_eval.workbench.hypotheses import validate_card
 from rag_eval.workbench.iterations_api import IterationAPI
 from rag_eval.workbench.loop_services import RoundOperations
@@ -57,6 +58,52 @@ def adapter(frozen_cluster):
                 creation_bridge=creation_bridge, message_bridge=message_bridge, reader=reader, selection=selection)
 
 
+SAFEGUARDS = [dict(key='answer_language_match', direction='higher_is_better', margin=.05),
+              dict(key='infrastructure_failure_rate', direction='lower_is_better', margin=.1),
+              dict(key='cost_per_task', direction='lower_is_better', margin=.5)]
+V2_CONTRACT = dict(slice_predicate=dict(kind='regex', field='response.answer', pattern='(?i)wrong'),
+                   manipulation=dict(direction='decrease', threshold=.5), slice_effect=dict(direction='positive'))
+VALIDATION = ['qasper:q2', 'qasper:v1', 'qasper:v2']
+
+
+def use_v2(api, tree_id, **splits):
+    with api.repository.connect(write=True) as conn:
+        protocol = json.loads(conn.execute('SELECT protocol_json FROM iterations WHERE id=?', (tree_id,)).fetchone()[0])
+        protocol.update(gate_rule=dict(RULE_V2), safeguards=SAFEGUARDS)
+        protocol['splits'].update(splits)
+        conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(protocol), tree_id))
+
+
+def v2_child(adapter, *, translated=False):
+    """A v2 protocol, a mechanism card and an evaluated child that improves validation."""
+    f, api = adapter['f'], adapter['api']
+    tree, views, cases = f['tree'], f['views'], ('qasper:q', *VALIDATION)
+    use_v2(api, tree['id'], search=['qasper:q'], validation=VALIDATION)
+    for eid in list(views.scores):
+        views.scores[eid].update({c: 0 for c in VALIDATION})
+        views.partitions[eid] = [cases]
+    card = api.hypotheses.draft(tree['task_id'], dict(f['proposal_card'], predictions=[], contract=V2_CONTRACT),
+                                author='analyst', parent_candidate_id=tree['root_candidate_id'])
+    api.hypotheses.decide(tree['task_id'], card['id'], 'approve', actor='human')
+    child = f['service'].derive(tree['root_candidate_id'], actor='alice', request_key='v2-child', proposal_id=card['id'])
+    Path(child['worktree']['path'], 'backend/app/__init__.py').write_text('VALUE = 3\n')
+    f['service'].freeze(child['id'], actor='alice')
+    own = set()
+    for i in range(2):
+        attempt = f['service'].run(child['id'], budget=BUDGET, actor='alice', request_key=f'v2-run-{i}')
+        eid = attempt['attempts'][-1]['execution_id']
+        views.scores[eid] = {'qasper:q': 1, 'qasper:q2': 1, 'qasper:v1': 1, 'qasper:v2': .5}
+        views.partitions[eid] = [cases]
+        own.add(eid)
+        finish(f['env'], attempt)
+    if translated:
+        original = views.observation
+        views.observation = lambda rid, cid: (dict(original(rid, cid), prediction='中文回答', response=dict(answer='中文回答'))
+                                              if rid.rsplit('-', 1)[0] in own else original(rid, cid))
+    views._binding_read = lambda task_id: ({'files': []}, None)
+    return child['id']
+
+
 def agent(adapter, **changes):
     f = adapter['f']
     args = dict(iteration_id=f['tree']['id'], key='agent-test', profile='pi-flash', text='Analyze search evidence.')
@@ -64,8 +111,14 @@ def agent(adapter, **changes):
     return adapter['ops'].agent('analyst', f['tree']['root_candidate_id'], **args)
 
 
+def test_rounds_refuse_lcd_v1_iterations(adapter):
+    with pytest.raises(ValueError, match='lcd-v2'):
+        adapter['ops'].describe(adapter['f']['tree']['id'])
+
+
 def test_preflight_checks_all_profiles_before_measurement(adapter):
     ops, api, f = adapter['ops'], adapter['api'], adapter['f']
+    use_v2(api, f['tree']['id'])
     info = ops.describe(f['tree']['id'])
     assert info['k_base'] == 2 and info['evaluated_count'] == 1
     assert info['settings']['analyst_profile'] == 'pi-flash'
@@ -158,26 +211,20 @@ def test_partial_attribution_keeps_measurable_dimension(adapter):
     assert ranked['score'] == pytest.approx(ranked['n_cases'] * (1-ranked['q']))
 
 
-def test_integration_card_is_metadata_only_and_not_selectable(adapter):
+def test_card_legality_dispatches_contract_form_on_gate_rule(adapter):
     f, ops = adapter['f'], adapter['ops']
-    child = f['candidate']
-    Path(child['worktree']['path'], 'backend/app/__init__.py').write_text('VALUE = 3\n')
-    f['service'].freeze(child['id'], actor='alice')
-    merged = ops.derive(f['tree']['root_candidate_id'], hypothesis_id=None, key='merge-derive', actor='alice',
-                        integrated_from=[child['id']])
-    again = ops.derive(f['tree']['root_candidate_id'], hypothesis_id=None, key='merge-derive', actor='alice',
-                       integrated_from=[child['id']])
-    assert merged == again
-    card_id = f['service'].candidate(merged)['proposal_id']
-    record = adapter['api'].hypotheses.get(f['tree']['task_id'], card_id)
-    card = record['card']
-    assert card['component'] == 'integration' and card['predictions'] == [] and 'contract' not in card
-    assert f['service'].candidate(child['id'])['frozen_commit'] in card['implementer_brief']
-    assert not ops._card_legal(f['tree']['task_id'], record, f['store'].get(f['tree']['task_id'], 'c01'))
-    for component in ('retrieval', 'integration'):
-        invalid = dict(card, component=component, cluster_id='c01')
-        with pytest.raises(ValueError, match='predictions'):
-            validate_card(invalid)
+    task, cluster = f['tree']['task_id'], f['store'].get(f['tree']['task_id'], 'c01')
+    v1 = dict(card=f['proposal_card'])
+    v2 = dict(card=dict(f['proposal_card'], predictions=[], contract=V2_CONTRACT))
+    assert ops._card_legal(task, v1, cluster, DEFAULT_RULE)
+    assert not ops._card_legal(task, v1, cluster, RULE_V2)
+    # lcd-v2: per-case predictions are optional disclosure; the mechanism is mandatory.
+    assert ops._card_legal(task, v2, cluster, RULE_V2)
+    assert not ops._card_legal(task, v2, cluster, DEFAULT_RULE)
+    bare = {k: v for k, v in v2['card'].items() if k != 'contract'}
+    assert not ops._card_legal(task, dict(card=bare), cluster, RULE_V2)
+    with pytest.raises(ValueError, match='predictions'):
+        validate_card(v2['card'])
 
 
 def test_implementation_waits_for_cluster_result_and_full_confirmed_base_request(adapter):
@@ -206,26 +253,66 @@ def test_implementer_agent_only_receives_sanitized_approved_material(adapter):
     assert f['questions']['a'] not in body
 
 
-def test_merge_derivation_recovers_crash_between_service_and_adapter_receipts(adapter, monkeypatch):
+def frozen_child(f, key, text, path='backend/app/__init__.py'):
+    child = f['service'].derive(f['tree']['root_candidate_id'], actor='alice', request_key=key,
+                                proposal_id=f['proposal']['id'])
+    Path(child['worktree']['path'], path).write_text(text)
+    return f['service'].freeze(child['id'], actor='alice')['id']
+
+
+def test_rebase_refiles_card_under_new_parent_and_applies_source_diff(adapter):
+    f, ops, api = adapter['f'], adapter['ops'], adapter['api']
+    source = frozen_child(f, 'source', 'VALUE = 3\n')
+    parent = frozen_child(f, 'parent', 'OTHER = 1\n', 'backend/app/other.py')
+    cid = ops.derive(parent, hypothesis_id=f['proposal']['id'], key='rebase', actor='alice', rebase_from=source)
+    assert ops.derive(parent, hypothesis_id=f['proposal']['id'], key='rebase', actor='alice', rebase_from=source) == cid
+    candidate = f['service'].candidate(cid)
+    assert candidate['parent_candidate_id'] == parent
+    assert [(i['candidate_id'], i['method']) for i in candidate['integrated_from']] == [(source, 'cherry-pick')]
+    card = api.hypotheses.get(f['tree']['task_id'], candidate['proposal_id'])
+    assert card['parent_candidate_id'] == parent and card['status'] == 'approved'
+    assert card['card']['contract'] == f['proposal']['card']['contract']
+    result = ops.rebase(cid, key='rebase-apply')
+    assert result['status'] == 'applied' and result['source_candidate_id'] == source
+    root = Path(candidate['worktree']['path'])
+    assert (root / 'backend/app/__init__.py').read_text() == 'VALUE = 3\n'
+    assert (root / 'backend/app/other.py').read_text() == 'OTHER = 1\n'
+    assert ops.rebase(cid, key='rebase-apply') == result
+    # A crash after apply but before the receipt is recognized, never applied twice.
+    with api.repository.connect(write=True) as conn:
+        conn.execute('DELETE FROM round_operation_state WHERE key=?', (ops._key('rebase', 'rebase-apply'),))
+    assert ops.rebase(cid, key='rebase-apply')['status'] == 'applied'
+    assert f['service'].freeze(cid, actor='alice')['frozen_commit']
+
+
+def test_rebase_conflict_is_reported_and_worktree_untouched(adapter):
     f, ops = adapter['f'], adapter['ops']
-    child = f['candidate']
-    Path(child['worktree']['path'], 'backend/app/__init__.py').write_text('VALUE = 3\n')
-    f['service'].freeze(child['id'], actor='alice')
+    source = frozen_child(f, 'source', 'VALUE = 3\n')
+    parent = frozen_child(f, 'parent', 'VALUE = 7\n')
+    cid = ops.derive(parent, hypothesis_id=f['proposal']['id'], key='rebase', actor='alice', rebase_from=source)
+    assert ops.rebase(cid, key='conflict')['status'] == 'conflict'
+    root = Path(f['service'].candidate(cid)['worktree']['path'])
+    assert (root / 'backend/app/__init__.py').read_text() == 'VALUE = 7\n'
+
+
+def test_rebase_derivation_recovers_crash_between_service_and_adapter_receipts(adapter, monkeypatch):
+    f, ops = adapter['f'], adapter['ops']
+    source = frozen_child(f, 'source', 'VALUE = 3\n')
     original = ops._save
     def crash(key, value):
-        if key == ops._key('derive', 'crash-merge'):
+        if key == ops._key('derive', 'crash-rebase'):
             raise RuntimeError('crash after service receipt')
         return original(key, value)
     monkeypatch.setattr(ops, '_save', crash)
     with pytest.raises(RuntimeError, match='after service receipt'):
-        ops.derive(f['tree']['root_candidate_id'], hypothesis_id=None, key='crash-merge', actor='alice',
-                   integrated_from=[child['id']])
+        ops.derive(f['tree']['root_candidate_id'], hypothesis_id=f['proposal']['id'], key='crash-rebase',
+                   actor='alice', rebase_from=source)
     count = len(f['service'].iteration(f['tree']['id'])['candidates'])
     monkeypatch.setattr(ops, '_save', original)
-    result = ops.derive(f['tree']['root_candidate_id'], hypothesis_id=None, key='crash-merge', actor='alice',
-                        integrated_from=[child['id']])
+    result = ops.derive(f['tree']['root_candidate_id'], hypothesis_id=f['proposal']['id'], key='crash-rebase',
+                        actor='alice', rebase_from=source)
     assert len(f['service'].iteration(f['tree']['id'])['candidates']) == count
-    assert f['service'].candidate(result)['integrated_from'][0]['candidate_id'] == child['id']
+    assert f['service'].candidate(result)['integrated_from'][0]['candidate_id'] == source
 
 
 def test_agent_recovery_keeps_original_actor_after_server_actor_change(adapter):
@@ -281,23 +368,85 @@ def test_actual_cluster_card_gate_and_fresh_exhaustion_are_persisted(adapter, mo
     assert ops.fresh(cid, key='fresh', actor='alice', infra_retry=1, timeout_seconds=60)['status'] == 'exhausted'
 
 
-@pytest.mark.parametrize('delta,eta,status', [(-.2, .1, 'withdrawn'), (-.1, .1, 'accepted'),
-                                            (None, .1, 'unmeasurable')])
-def test_merge_result_uses_validation_noise_and_replays_decision(adapter, monkeypatch, delta, eta, status):
-    ops, api, cid, baseline = adapter['ops'], adapter['api'], adapter['f']['candidate']['id'], adapter['f']['tree']['root_candidate_id']
-    comparison = dict(admission=dict(status='admitted'), validation=dict(delta=delta, incomplete=False), noise=dict(eta=eta))
-    monkeypatch.setattr(api.comparisons, 'pinned', lambda *args: comparison)
-    decisions = []
-    original = api.service.candidate
-    monkeypatch.setattr(api.service, 'candidate', lambda identity: dict(original(identity), decision=None))
-    monkeypatch.setattr(api.service, 'decide', lambda *args, **kwargs: decisions.append((args, kwargs)))
-    result = ops.merge_result(cid, baseline, key='merge-verdict', actor='alice')
-    assert result['status'] == status
-    monkeypatch.setattr(api.comparisons, 'pinned', lambda *args: pytest.fail('recomputed frozen merge result'))
-    assert ops.merge_result(cid, baseline, key='merge-verdict', actor='alice') == result
-    assert len(decisions) == (0 if status == 'unmeasurable' else 1)
-    if decisions:
-        assert decisions[0][0][1] == ('adopted' if status == 'accepted' else 'rejected')
+@pytest.mark.parametrize('translated', [False, True])
+def test_v2_screen_reads_validation_pool_with_observed_safeguards(adapter, translated):
+    ops, api = adapter['ops'], adapter['api']
+    cid = v2_child(adapter, translated=translated)
+    verdict = ops.screen(cid, key='screen', actor='alice')
+    assert verdict['stage'] == 'screen' and verdict['rule_id'] == 'lcd-v2' and verdict['n'] == 3
+    assert verdict['delta'] == pytest.approx(5 / 6)
+    breached = {s['key']: s['breached'] for s in verdict['safeguards']}
+    assert breached == dict(answer_language_match=translated, infrastructure_failure_rate=False, cost_per_task=False)
+    if translated:
+        assert verdict['verdict'] == 'unmeasurable'
+        assert verdict['reasons'] == ['safeguard_breached:answer_language_match']
+    else:
+        assert verdict['verdict'] == 'pass' and verdict['lower'] > 0
+    decision = api.service.candidate(cid)['decision']
+    assert decision['decision'] == 'undecided' and decision['gate_verdict']['stage'] == 'screen'
+
+
+def fresh_record(batch, deltas):
+    rows = [dict(case_id=f'{batch}:{i}', left=.2, right=.2 + d, delta=d) for i, d in enumerate(deltas)]
+    side = dict(answer_language_match=1., tokens_per_task=10., language_known=len(rows), tokens_known=len(rows))
+    return dict(id='cmp-' + batch, batch_id=batch, kind='fresh', rows=rows, admission=dict(status='admitted'),
+                families={r['case_id']: str(i) for i, r in enumerate(rows)}, noise=dict(reference=dict(k=2), subject=dict(k=2)),
+                infrastructure={s: dict(total=2 * len(rows), failed=0, unobserved=0, attempts=[]) for s in ('reference', 'subject')},
+                safeguards=dict(answer_language_match=dict(reference=1., subject=1.), cost_per_task=dict(reference=1., subject=1.)),
+                safeguard_observations=dict(reference=side, subject=side))
+
+
+def used_batches(api, tree, cid, records, monkeypatch):
+    from rag_eval.workbench.splits import initialize
+    initialize(api.repository)
+    with api.repository.connect(write=True) as conn:
+        for r in records:
+            conn.execute('INSERT INTO iteration_fresh_batches(iteration_id,batch_id,candidate_id,request_key,used_at,'
+                         'completed_at,comparison_id) VALUES(?,?,?,?,?,?,?)',
+                         (tree['id'], r['batch_id'], cid, 'k-' + r['batch_id'], 't', 't', r['id']))
+    by_id = {r['id']: r for r in records}
+    monkeypatch.setattr(api.comparisons, 'get', lambda identity: by_id[identity])
+    observed = lambda answer: dict(response=dict(answer=answer))
+    monkeypatch.setattr(api.comparisons, 'trajectories', lambda record: dict(
+        reference={r['case_id']: [observed('wrong')] for r in record['rows']},
+        subject={r['case_id']: [observed('right')] for r in record['rows']}))
+
+
+def test_v2_confirm_holds_adopts_labels_mechanism_and_merges_batch(adapter, monkeypatch):
+    ops, api, tree = adapter['ops'], adapter['api'], adapter['f']['tree']
+    cid = v2_child(adapter)
+    used_batches(api, tree, cid, [fresh_record('f1', [.3, .2, .4, .3, .25, .35])], monkeypatch)
+    verdict = ops.confirm(cid, batch_ids=['f1'], key='confirm/1', actor='alice')
+    assert verdict['verdict'] == 'holds' and verdict['stage'] == 'confirm' and verdict['batch_ids'] == ['f1']
+    assert verdict['attribution']['label'] == 'supported' and 'evidence' not in verdict
+    decision = api.service.candidate(cid)['decision']
+    assert decision['decision'] == 'adopted' and decision['confirm'] == verdict
+    with api.repository.connect() as conn:
+        assert [tuple(r) for r in conn.execute('SELECT batch_id,decision FROM iteration_fresh_merges')] == [('f1', 'holds')]
+    monkeypatch.setattr(api.comparisons, 'get', lambda identity: pytest.fail('recomputed a frozen confirmation'))
+    assert ops.confirm(cid, batch_ids=['f1'], key='confirm/1', actor='alice') == verdict
+
+
+def test_v2_confirm_pools_preregistered_extra_batch_then_rejects(adapter, monkeypatch):
+    ops, api, tree = adapter['ops'], adapter['api'], adapter['f']['tree']
+    cid = v2_child(adapter)
+    mixed = [.3, -.2, .1, -.1, .2, 0]
+    used_batches(api, tree, cid, [fresh_record('f1', mixed), fresh_record('f2', mixed)], monkeypatch)
+    first = ops.confirm(cid, batch_ids=['f1'], key='confirm/1', actor='alice', final=False)
+    assert first['verdict'] == 'insufficient_evidence' and first['n'] == 6
+    assert api.service.candidate(cid)['decision'] is None
+    pooled = ops.confirm(cid, batch_ids=['f1', 'f2'], key='confirm/2', actor='alice', final=True)
+    assert pooled['verdict'] == 'insufficient_evidence' and pooled['n'] == 12
+    assert pooled['comparison_ids'] == ['cmp-f1', 'cmp-f2'] and pooled['se'] < first['se']
+    assert api.service.candidate(cid)['decision']['decision'] == 'rejected'
+
+
+def test_confirm_refuses_a_batch_used_by_another_candidate(adapter, monkeypatch):
+    ops, api, tree = adapter['ops'], adapter['api'], adapter['f']['tree']
+    cid = v2_child(adapter)
+    used_batches(api, tree, tree['root_candidate_id'], [fresh_record('f1', [.1] * 6)], monkeypatch)
+    with pytest.raises(ValueError, match='not consumed by this candidate'):
+        ops.confirm(cid, batch_ids=['f1'], key='confirm/1', actor='alice')
 
 
 def test_new_pending_request_is_not_budget_exhaustion_and_not_implementation_ready(adapter):

@@ -99,6 +99,9 @@ def test_round_stops_at_case_run_exhaustion(adapter):
     repo, tree = adapter['api'].repository, f['tree']
     tree['protocol']['budget'] = dict(max_case_runs=2, max_runs_per_candidate=10)
     tree['protocol']['case_retry'] = dict(max_retries_per_case=0)
+    from test_workbench_loop_services import SAFEGUARDS
+    from rag_eval.workbench.gate import RULE_V2
+    tree['protocol'].update(gate_rule=dict(RULE_V2), safeguards=SAFEGUARDS)
     with repo.connect(write=True) as conn:
         conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?', (json.dumps(tree['protocol']), tree['id']))
     BudgetLedger(repo).reserve_many(tree, [step(candidate=tree['root_candidate_id'], count=2)], group_key='used')

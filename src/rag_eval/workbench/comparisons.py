@@ -11,6 +11,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 import threading
 import time
@@ -160,6 +161,82 @@ def _hash(body):
 def _mean(values):
     values = [v for v in values if v is not None]
     return sum(values) / len(values) if values else None
+
+
+# lcd-v2 observed safeguards. Language: question and answer in the same script
+# family (CJK or not). Cost: product tokens per task, reported relative to the
+# reference (reference = 1), so a margin of 0.5 bounds the subject at 1.5x.
+SAFEGUARD_OBSERVATIONS = ('answer_language_match', 'cost_per_task')
+_CJK = re.compile('[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]')
+
+
+def _script(text):
+    letters = [c for c in text or '' if c.isalpha()]
+    return None if not letters else 'cjk' if sum(bool(_CJK.match(c)) for c in letters) >= .3 * len(letters) else 'other'
+
+
+def observe_safeguards(trajectories):
+    """Per-side safeguard values over every observed attempt of every task."""
+    detail = {}
+    for side, cases in trajectories.items():
+        observations = [o for attempts in cases.values() for o in attempts]
+        scripts = [(_script(o.get('question')), _script((o.get('response') or {}).get('answer') or o.get('prediction')))
+                   for o in observations]
+        known = [q == a for q, a in scripts if q and a]
+        tokens = [(o.get('usage') or {}).get('total_tokens') for o in observations]
+        tokens = [t for t in tokens if type(t) in (int, float)]
+        detail[side] = dict(observations=len(observations), language_known=len(known),
+                            answer_language_match=sum(known) / len(known) if known else None,
+                            tokens_per_task=sum(tokens) / len(tokens) if tokens else None, tokens_known=len(tokens))
+    ref, sub = (detail.get(s, {}) for s in ('reference', 'subject'))
+    ratio = (sub['tokens_per_task'] / ref['tokens_per_task'] if ref.get('tokens_per_task') and sub.get('tokens_per_task')
+             is not None else None)
+    observed = dict(answer_language_match=dict(reference=ref.get('answer_language_match'),
+                                               subject=sub.get('answer_language_match')),
+                    cost_per_task=dict(reference=1. if ratio is not None else None, subject=ratio))
+    return observed, detail
+
+
+def merge_fresh(records):
+    """One lcd-v2 confirm comparison over several fresh-batch records (disjoint tasks).
+
+    Families stay batch-qualified; admission holds only if every batch was admitted.
+    """
+    if len(records) == 1:
+        return records[0]
+    rows, families, infra, sides = [], {}, {}, ('reference', 'subject')
+    for record in records:
+        batch = record.get('batch_id')
+        rows.extend(record.get('rows', []))
+        families.update({cid: f'{batch}:{f}' for cid, f in (record.get('families') or {}).items()})
+        for side in sides:
+            given = (record.get('infrastructure') or {}).get(side) or {}
+            total = infra.setdefault(side, dict(total=0, failed=0, unobserved=0, attempts=[]))
+            for key in ('total', 'failed', 'unobserved'):
+                total[key] += given.get(key, 0)
+            total['attempts'].extend(given.get('attempts', []))
+    admitted = all((r.get('admission') or {}).get('status') == 'admitted' for r in records)
+    ks = [((r.get('noise') or {}).get(s) or {}).get('k') for r in records for s in sides]
+    observations = [r.get('safeguard_observations') or {} for r in records]
+    def pooled(side, key, weight):
+        values = [(o.get(side) or {}) for o in observations]
+        known = [(v[key], v[weight]) for v in values if v.get(key) is not None and v.get(weight)]
+        return sum(x * w for x, w in known) / sum(w for _, w in known) if len(known) == len(records) else None
+    detail = {side: dict(answer_language_match=pooled(side, 'answer_language_match', 'language_known'),
+                         tokens_per_task=pooled(side, 'tokens_per_task', 'tokens_known')) for side in sides}
+    ref_tokens, sub_tokens = detail['reference']['tokens_per_task'], detail['subject']['tokens_per_task']
+    ratio = sub_tokens / ref_tokens if ref_tokens and sub_tokens is not None else None
+    return dict(kind='fresh', batch_ids=[r.get('batch_id') for r in records], comparison_ids=[r.get('id') for r in records],
+                rows=rows, families=families, infrastructure=infra,
+                admission=dict(status='admitted' if admitted else 'not_admitted',
+                               reason=None if admitted else 'a merged fresh batch was not admitted'),
+                noise={s: dict(k=min(k for k in ks if k is not None) if all(k is not None for k in ks) else None)
+                       for s in sides},
+                safeguards=dict(answer_language_match={s: detail[s]['answer_language_match'] for s in sides},
+                                cost_per_task=dict(reference=1. if ratio is not None else None, subject=ratio)),
+                safeguard_observations=detail,
+                mean=dict(delta=_mean(r.get('delta') for r in rows)),
+                retry_summary={r.get('batch_id'): r.get('retry_summary') for r in records})
 
 
 class ComparisonService:
@@ -444,11 +521,22 @@ class ComparisonService:
                     from .hypotheses import HypothesisStore
                     tree = self._iteration_record(subject['iteration_id'])
                     card = HypothesisStore(self.repository).get(tree['task_id'], subject['proposal_id'])['card']
-                    contract = card.get('contract')
-                    verdict = judge(body, body.get('noise', {}), contract, tree['protocol'].get('gate_rule', DEFAULT_RULE)) if contract else None
+                    contract, rule = card.get('contract'), tree['protocol'].get('gate_rule', DEFAULT_RULE)
+                    if rule.get('id') == 'lcd-v2':
+                        # The slice's own paired Δ; no per-case contract is fulfilled under v2.
+                        from .noise import paired_means
+                        rows = [r for r in body['rows'] if r.get('delta') is not None]
+                        paired = paired_means({r['case_id']: r['left'] for r in rows}, {r['case_id']: r['right'] for r in rows},
+                                              z=rule['z_screen'], families=self._families(body)) if rows else None
+                        verdict = dict(rule_id=rule['id'], **{k: (paired or {}).get(k) for k in
+                                       ('delta', 'se', 'lower', 'upper', 'n', 'z', 'se_method')})
+                    else:
+                        verdict = judge(body, body.get('noise', {}), contract, rule) if contract else None
                     body['cluster'] = dict(cluster_id=scope['cluster_id'], selection_hash=scope['selection_hash'],
-                        rho=verdict['rho'] if verdict else None, tau=verdict['tau'] if verdict else None,
-                        evidence=verdict, note='Local diagnostic only; validation gate decides adoption')
+                        rho=(verdict or {}).get('rho'), tau=(verdict or {}).get('tau'),
+                        delta=(verdict or {}).get('delta'), evidence=verdict,
+                        note='Local diagnostic only; validation gate decides adoption')
+                self._v2_extras(body, protocol, kind)
             return body, reason
         body, reason = self._compute_scope(self.scoped(subject, None), self.scoped(reference, None), kind)
         if body is None:
@@ -512,7 +600,39 @@ class ComparisonService:
         body['mean'] = dict(reference=_mean(r['left'] for r in body['rows']), subject=_mean(r['right'] for r in body['rows']),
                             delta=_mean(r['delta'] for r in body['rows']))
         body['regressed'] = [r['case_id'] for r in body['rows'] if r['delta'] is not None and r['delta'] < 0]
+        self._v2_extras(body, protocol, kind)
         return body, reason
+
+    @staticmethod
+    def _families(body):
+        """Task families (papers) from the frozen per-case noise; batch-qualified once pooled."""
+        cases = ((body.get('noise') or {}).get('reference') or {}).get('cases') or {}
+        return {cid: str(c['family']) for cid, c in cases.items() if c.get('family') is not None}
+
+    def trajectories(self, body, ids=None):
+        """Observed outputs per side, task and admitted attempt; the attribution schema."""
+        out = {}
+        for side in ('reference', 'subject'):
+            cases = out.setdefault(side, {})
+            for attempt in (body.get('attempts_used') or {}).get(side, []):
+                for run in self.views.execution_runs(attempt['execution_id']):
+                    for cid in run.case_ids:
+                        if ids is None or cid in ids:
+                            try:
+                                cases.setdefault(cid, []).append(self.views.observation(run.id, cid))
+                            except (KeyError, ValueError):
+                                continue
+        return out
+
+    def _v2_extras(self, body, protocol, kind):
+        """lcd-v2 needs task families and observed safeguards on the decision rows."""
+        if (protocol.get('gate_rule') or {}).get('id') != 'lcd-v2' or body.get('admission', {}).get('status') != 'admitted':
+            return
+        body['families'] = self._families(body)
+        if kind not in ('parent', 'fresh'):
+            return
+        ids = {r['case_id'] for r in body['rows'] if 'validation' not in body or r.get('role') == 'validation'}
+        body['safeguards'], body['safeguard_observations'] = observe_safeguards(self.trajectories(body, ids))
 
     def _measurement_key(self, candidate):
         attempts = self.admitted(candidate)

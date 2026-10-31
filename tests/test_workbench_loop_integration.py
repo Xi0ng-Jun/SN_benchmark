@@ -19,7 +19,7 @@ from test_workbench_agent_messages import acknowledged
 from test_workbench_clusters import observation
 from test_workbench_comparisons import Views
 from test_workbench_iterations import env, iteration
-from test_workbench_loop_services import ReadBridge
+from test_workbench_loop_services import SAFEGUARDS, V2_CONTRACT, ReadBridge
 from test_workbench_roles_hypotheses import CARD
 
 
@@ -36,9 +36,10 @@ def test_real_round_services_resume_without_duplicate_agents_or_executions(env, 
     views.cases = lambda rid: dict(cases=[dict(case_id=cid, status='success') for cid in views.scores[rid.rsplit('-', 1)[0]]])
     service.admission = Admission(views)
     # This synthetic bundle has only two papers: base is search-only, so the
-    # truthful gate result is unmeasurable and two rounds stop on no acceptance.
+    # truthful screen is unmeasurable and two such rounds stop as a process failure.
     tree = iteration(env, case_ids=['qasper:q', 'qasper:q2'], fresh_batch_count=1,
-                     fresh_papers_per_batch=1, budget=dict(limit_cny=1000, max_runs_per_candidate=30))
+                     fresh_papers_per_batch=1, budget=dict(limit_cny=1000, max_runs_per_candidate=30),
+                     gate_rule='lcd-v2', safeguards=SAFEGUARDS)
     config = dict(task_worktrees=dict(create_candidates=True), job_preparation=service.preparation_config,
                   job_execution=service.execution_config,
                   agent_creation=dict(workspaceId='fixture-evaluator', profiles={
@@ -96,8 +97,7 @@ def test_real_round_services_resume_without_duplicate_agents_or_executions(env, 
                 store.propose(baseline, dict(cluster_id=cluster_id, description='Synthetic retrieval mechanism',
                     signature=dict(kind='range', field='metrics.answer_f1', max=.4)), actor='fake-analyst')
                 api.service.draft_proposal(baseline, dict(CARD, evidence=[], cluster_id=cluster_id,
-                    predictions=[dict(case_id='qasper:q', expect='improve')],
-                    contract=dict(cluster_id=cluster_id, predicted_flips=['qasper:q'], guards=[])), author='fake-analyst')
+                    predictions=[], contract=V2_CONTRACT), author='fake-analyst')
                 drafted.add(number)
             for candidate in current['candidates']:
                 cid = candidate.get('candidate_id')
@@ -125,8 +125,10 @@ def test_real_round_services_resume_without_duplicate_agents_or_executions(env, 
             break
     assert state['status'] == 'completed', state
     assert len(state['rounds']) == round_count
-    assert state['stop_reason'] == ('no_accept' if round_count == 2 else 'rounds_exhausted')
-    assert all(r['candidates'][0]['verdict']['verdict'] == 'unmeasurable' for r in state['rounds'])
+    assert state['stop_reason'] == ('process_failure' if round_count == 2 else 'rounds_exhausted')
+    assert all(r['candidates'][0]['screen']['verdict'] == 'unmeasurable' for r in state['rounds'])
+    assert all(r['outcome'] == 'process_failure' and r['candidates'][0]['status'] == 'unmeasurable' for r in state['rounds'])
+    assert state['baseline_candidate_id'] == tree['root_candidate_id'] and state['lineage'] == []
     assert len(creator.commands) == len(messenger.commands) == round_count * 2
     if round_count == 2:
         analysts = [r for r in creation.store.list(tree['task_id'], actor='alice') if r['role'] == 'analyst']

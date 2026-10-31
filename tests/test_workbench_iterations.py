@@ -592,3 +592,17 @@ def test_explicit_preparation_policy_and_legacy_missing_key(env):
     assert payload(env, root)['preparation_policy'] == 'per-source-metadata-v1'
     with pytest.raises(ValueError, match='Unknown preparation policy'):
         iteration(env, execution=dict(preparation_policy='invalid'), request_key='invalid-policy')
+
+
+def test_iteration_freezes_lcd_v2_rule_with_preregistered_safeguards(env):
+    from rag_eval.workbench.gate import DEFAULT_RULE, RULE_V2
+    safeguards = [dict(key='answer_language_match', direction='higher_is_better', margin=.05),
+                  dict(key='infrastructure_failure_rate', direction='lower_is_better', margin=.1),
+                  dict(key='cost_per_task', direction='lower_is_better', margin=.5)]
+    assert iteration(env)['protocol']['gate_rule'] == DEFAULT_RULE
+    for bad in (dict(gate_rule='lcd-v2'), dict(safeguards=safeguards), dict(gate_rule='lcd-v3', safeguards=safeguards),
+                dict(gate_rule='lcd-v2', safeguards=safeguards[1:])):
+        with pytest.raises(ValueError):
+            iteration(env, request_key='bad', **bad)
+    tree = iteration(env, request_key='v2', gate_rule='lcd-v2', safeguards=safeguards)
+    assert tree['protocol']['gate_rule'] == RULE_V2 and tree['protocol']['safeguards'] == safeguards

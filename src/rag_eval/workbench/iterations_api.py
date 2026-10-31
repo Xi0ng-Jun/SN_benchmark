@@ -48,6 +48,8 @@ class CreateIteration(_Command):
     execution: dict | None = None
     round_settings: dict | None = None
     case_retry: dict | None = None
+    gate_rule: str = Field(default='lcd-v1', pattern='^lcd-v[12]$')
+    safeguards: list[dict] | None = None
 
 
 class Integration(_Command):

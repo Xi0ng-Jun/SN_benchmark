@@ -8,12 +8,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
-import math
+import subprocess
 
 from .clusters import ClusterStore, referenced_cluster, scan
-from .comparisons import ComparisonService
+from .comparisons import ComparisonService, merge_fresh
 from .context import resolve_context
-from .gate import validate_contract
+from .gate import DEFAULT_RULE, confirm
 from .hypotheses import benchmark_material, scan_text, validate_card
 from .ledger import LedgerService
 from .repository import Conflict
@@ -110,6 +110,9 @@ class RoundOperations:
         tree = self._tree(iteration_id)
         self.api._write()
         protocol = tree.get('protocol') or {}
+        if (protocol.get('gate_rule') or DEFAULT_RULE).get('id') != 'lcd-v2':
+            # lcd-v1 iterations stay readable; new rounds adopt only through screen and confirm.
+            raise ValueError('LCD rounds need an lcd-v2 iteration protocol')
         from .loop import validate_settings
         settings = validate_settings(protocol.get('round_settings') or {})
         profiles = {p['id'] for p in self.creations.profiles}
@@ -226,15 +229,19 @@ class RoundOperations:
                     for r in self.api.views.execution_runs(m['execution_id']) for cid in r.case_ids if cid in search])
                 for m in measurements]
 
-    def _card_legal(self, task_id, record, cluster):
+    @staticmethod
+    def _raw_card(card):
+        raw = dict(card)
+        raw['predictions'] = [{k: v for k, v in p.items() if v is not None} for p in raw.get('predictions', [])]
+        return raw
+
+    def _card_legal(self, task_id, record, cluster, rule):
         try:
-            raw = dict(record['card'])
-            raw['predictions'] = [{k: v for k, v in p.items() if v is not None} for p in raw.get('predictions', [])]
-            card = validate_card(raw)
-            contract = validate_contract(card['contract'])
-            if referenced_cluster(card) != cluster['cluster_id']:
+            # The protocol's gate rule picks the contract form (v1 flips, v2 mechanism).
+            card = validate_card(self._raw_card(record['card']), rule)
+            if 'contract' not in card or referenced_cluster(card) != cluster['cluster_id']:
                 return False
-            if not set(contract['predicted_flips']) <= set(cluster['scan']['members']):
+            if rule.get('id') != 'lcd-v2' and not set(card['contract']['predicted_flips']) <= set(cluster['scan']['members']):
                 return False
             from .agent_tools import task_run_ids
             material = benchmark_material(self.api.views, task_run_ids(self.api.views, task_id))
@@ -253,6 +260,7 @@ class RoundOperations:
             ids = [r[0] for r in conn.execute('SELECT cluster_id FROM clusters WHERE iteration_id=? '
                                              'ORDER BY cluster_id', (iteration_id,))]
         cards = self.api.hypotheses.list(tree['task_id'])
+        rule = tree['protocol'].get('gate_rule', DEFAULT_RULE)
         ranking = []
         for cluster_id in ids:
             cluster = self.clusters.get(tree['task_id'], cluster_id)
@@ -264,7 +272,7 @@ class RoundOperations:
                         else 'partial_attribution' if missing_attribution else None)
             score = current['n_cases'] * (1 - q) * strength if q is not None else None
             legal = [r for r in cards if r.get('parent_candidate_id') == baseline_id
-                     and r['status'] in ('draft', 'approved') and self._card_legal(tree['task_id'], r, cluster)]
+                     and r['status'] in ('draft', 'approved') and self._card_legal(tree['task_id'], r, cluster, rule)]
             legal.sort(key=lambda r: (r['created_at'], r['id']))
             ranking.append(dict(cluster_id=cluster_id, n_cases=current['n_cases'], q=q, m=m, v=v, pi=pi,
                                 score=score, fallback=fallback, missing_attribution=missing_attribution,
@@ -281,44 +289,39 @@ class RoundOperations:
         return self.api.hypotheses.get(task_id, hypothesis_id)['status']
 
     def approve(self, hypothesis_id, *, iteration_id, key, actor):
-        task_id = self._tree(iteration_id)['task_id']
+        tree = self._tree(iteration_id)
+        task_id = tree['task_id']
         card = self.api.hypotheses.get(task_id, hypothesis_id)
         if card['status'] == 'draft':
             cluster = self.clusters.get(task_id, referenced_cluster(card['card']))
-            if not self._card_legal(task_id, card, cluster):
+            if not self._card_legal(task_id, card, cluster, tree['protocol'].get('gate_rule', DEFAULT_RULE)):
                 return dict(status='rejected', reason='invalid_contract_or_leak')
             card = self.api.hypotheses.decide(task_id, hypothesis_id, 'approve', actor=actor,
                                              note='LCD round approval: ' + key)
         return dict(status=card['status'])
 
-    def derive(self, baseline_id, *, hypothesis_id, key, actor, integrated_from=None):
+    def derive(self, baseline_id, *, hypothesis_id, key, actor, rebase_from=None):
+        """A child of the current parent; a rebase re-files the approved card under the new parent."""
         self.api._write()
         self.api._scope(candidate_id=baseline_id)
         baseline = self.service.candidate(baseline_id)
         integrated = []
-        for source in integrated_from or []:
-            cid = source if isinstance(source, str) else source['candidate_id']
-            candidate = self.service.candidate(cid)
-            if candidate['iteration_id'] != baseline['iteration_id'] or not candidate.get('frozen_commit'):
-                raise ValueError('Merge sources must be frozen candidates of this iteration')
-            integrated.append(dict(candidate_id=cid, method='merge', note='LCD accepted source'))
-        if integrated:
-            tree = self._tree(baseline['iteration_id'])
-            marker = self._key('integration-card', key)
-            existing = next((r for r in self.api.hypotheses.list(tree['task_id']) if r['author'] == marker), None)
+        if rebase_from:
+            source = self.service.candidate(rebase_from)
+            if source['iteration_id'] != baseline['iteration_id'] or not source.get('frozen_commit'):
+                raise ValueError('A rebase source must be a frozen candidate of this iteration')
+            integrated.append(dict(candidate_id=rebase_from, method='cherry-pick', note='LCD rebase onto new parent'))
+            task_id = self._tree(baseline['iteration_id'])['task_id']
+            marker = self._key('rebase-card', key)
+            existing = next((r for r in self.api.hypotheses.list(task_id) if r['author'] == marker), None)
             if existing is None:
-                sources = [self.service.candidate(i['candidate_id']) for i in integrated]
-                safe_sources = '; '.join(f'{c["id"]}: commit {c["frozen_commit"]}' for c in sources)
-                card = dict(title='合并已接受改动', component='integration', mechanism='合并本轮已接受来源',
-                            implementer_brief='只合并以下来源、解决冲突，不加新改动：' + safe_sources,
-                            predictions=[],
-                            falsification='合并后 validation 超过冻结噪声带退化')
-                existing = self.api.hypotheses.draft(tree['task_id'], card, author=marker,
+                original = self.api.hypotheses.get(task_id, hypothesis_id)
+                existing = self.api.hypotheses.draft(task_id, self._raw_card(original['card']), author=marker,
                                                       parent_candidate_id=baseline_id)
-            hypothesis_id = existing['id']
             if existing['status'] == 'draft':
-                self.api.hypotheses.decide(tree['task_id'], hypothesis_id, 'approve', actor=actor,
-                                           note='Synthetic merge-only card; no benchmark prediction')
+                existing = self.api.hypotheses.decide(task_id, existing['id'], 'approve', actor=actor,
+                    note=f'LCD rebase of approved card {hypothesis_id} onto {baseline_id}; no new prediction')
+            hypothesis_id = existing['id']
         if self._stopped(key):
             raise Conflict('Round was stopped before candidate provisioning')
         receipt_key = self._key('derive', key)
@@ -329,6 +332,41 @@ class RoundOperations:
                                          integrated_from=integrated)
         self._save(receipt_key, {'candidate_id': candidate['id']})
         return candidate['id']
+
+    def rebase(self, candidate_id, *, key, actor=None):
+        """Apply the source's frozen diff to the derived worktree, uncommitted; never force a conflict."""
+        receipt_key = self._key('rebase', key)
+        prior = self._get(receipt_key)
+        if prior is not None:
+            return prior
+        self.api._scope(candidate_id=candidate_id)
+        candidate = self.service.candidate(candidate_id)
+        sources = [i for i in candidate.get('integrated_from') or [] if i.get('method') == 'cherry-pick']
+        if len(sources) != 1:
+            raise ValueError('A rebased candidate names exactly one source')
+        source = self.service.candidate(sources[0]['candidate_id'])
+        tree = candidate.get('worktree') or {}
+        if tree.get('status') != 'ready' or not tree.get('path'):
+            self.service.provision(candidate_id)
+            return dict(status='running', reason='worktree_not_ready')
+        def git(*args, data=None):
+            return subprocess.run(['git', '-C', tree['path'], *args], input=data, capture_output=True, timeout=120)
+        diff = git('diff', '--binary', source['parent_commit'], source['frozen_commit'])
+        if diff.returncode:
+            raise ValueError('Rebase source diff is unavailable')
+        result = dict(source_candidate_id=source['id'], source_commit=source['frozen_commit'],
+                      onto=candidate['parent_commit'], diff_sha256=hashlib.sha256(diff.stdout).hexdigest())
+        if not diff.stdout.strip():
+            result.update(status='empty', reason='rebase source has no change')
+        elif git('status', '--porcelain').stdout.strip() and not git('apply', '--check', '--reverse', '-', data=diff.stdout).returncode:
+            result['status'] = 'applied'  # a crash after apply, before this receipt
+        elif git('apply', '--check', '-', data=diff.stdout).returncode:
+            result.update(status='conflict', reason='rebase source diff conflicts with the new parent')
+        elif git('apply', '-', data=diff.stdout).returncode:
+            raise ValueError('Rebase apply failed after a clean check')
+        else:
+            result['status'] = 'applied'
+        return self._save(receipt_key, result)
 
     def _round_action_ids(self):
         """Read durable measurement ownership, independent of labels/reasons."""
@@ -442,28 +480,54 @@ class RoundOperations:
             verdict = (checked.get('verification') or {}).get('verdict')
         return dict(verdict or dict(verdict='unmeasurable', reasons=['missing_contract_verdict']))
 
-    def merge_result(self, candidate_id, baseline_id, *, key, actor):
-        self.api._scope(candidate_id=candidate_id)
-        self.api._scope(candidate_id=baseline_id)
-        receipt_key = self._key('merge-result', key)
+    def screen(self, candidate_id, *, key, actor):
+        """Validation-pool screen: the frozen lcd-v2 verdict of the current Δ父 record."""
+        verdict = self.gate(candidate_id, key=key, actor=actor)
+        if verdict['verdict'] not in ('pending', 'pass', 'fail', 'unmeasurable'):
+            raise ValueError('Screen verdict outside lcd-v2: ' + str(verdict['verdict']))
+        return verdict
+
+    def confirm(self, candidate_id, *, batch_ids, key, actor, final=True):
+        """Fresh batches decide adoption; pooled when the pre-registered extra batch was used."""
+        from .splits import batches, merge_used_batch_into_validation
+        receipt_key = self._key('confirm', key)
         prior = self._get(receipt_key)
         if prior is not None:
             return prior
-        comparison = self.api.comparisons.pinned(candidate_id, baseline_id)
-        validation = comparison.get('validation') or {}
-        delta = validation.get('delta')
-        eta = (comparison.get('noise') or {}).get('eta')
-        measurable = (comparison.get('admission') or {}).get('status') == 'admitted' and not validation.get('incomplete')
-        measurable = measurable and all(type(v) in (int, float) and math.isfinite(v) for v in (delta, eta))
-        result = dict(status='unmeasurable', delta=delta, eta=eta)
-        if measurable:
-            accepted = delta >= -eta
-            result['status'] = 'accepted' if accepted else 'withdrawn'
-            decision = self.service.candidate(candidate_id).get('decision') or {}
-            note = 'LCD merge result: ' + key
-            if decision.get('note') != note:
-                self.service.decide(candidate_id, 'adopted' if accepted else 'rejected', actor=actor, note=note)
-        return self._save(receipt_key, result)
+        self.api._scope(candidate_id=candidate_id)
+        candidate = self.service.candidate(candidate_id)
+        tree = self._tree(candidate['iteration_id'])
+        protocol = tree['protocol']
+        used = {b['batch_id']: b for b in batches(self.repository, tree['id'])}
+        records = []
+        for batch_id in batch_ids:
+            row = used.get(batch_id)
+            if row is None or row['candidate_id'] != candidate_id:
+                raise ValueError('Confirmation batch was not consumed by this candidate')
+            if not row['comparison_id']:
+                return dict(verdict='pending', reason='fresh_batch_not_reconciled', batch_ids=list(batch_ids))
+            records.append(self.api.comparisons.get(row['comparison_id']))
+        comparison = merge_fresh(records)
+        card = self.api.hypotheses.get(tree['task_id'], candidate['proposal_id'])['card'] if candidate['proposal_id'] else {}
+        mechanism = card.get('contract')
+        if mechanism is not None:
+            # Attribution only: parent-fixed slice membership over observed trajectories.
+            comparison['trajectories'] = {side: {} for side in ('reference', 'subject')}
+            for record in records:
+                for side, cases in self.api.comparisons.trajectories(record).items():
+                    comparison['trajectories'][side].update(cases)
+        verdict = confirm(comparison, protocol['gate_rule'], safeguards=protocol.get('safeguards'), mechanism=mechanism)
+        verdict.pop('evidence', None)
+        verdict.update(batch_ids=list(batch_ids), comparison_ids=[r.get('id') for r in records], final=final)
+        for batch_id in batch_ids:
+            merge_used_batch_into_validation(self.repository, tree['id'], batch_id, task_id=tree['task_id'],
+                                             decision=verdict['verdict'])
+        # Only a holding confirmation adopts; an intermediate insufficient verdict is not a decision.
+        if final or verdict['verdict'] != 'insufficient_evidence':
+            decision = {'holds': 'adopted', 'does_not_hold': 'rejected', 'insufficient_evidence': 'rejected'}.get(
+                verdict['verdict'], 'undecided')
+            self.service.decide(candidate_id, decision, actor=actor, note='LCD confirm: ' + key, confirm=verdict)
+        return self._save(receipt_key, verdict)
 
     def ledger(self, iteration_id):
         self.api._scope(iteration_id=iteration_id)

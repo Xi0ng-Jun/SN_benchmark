@@ -38,6 +38,28 @@ def test_cluster_run_has_own_plan_pairs_and_private_result(frozen_cluster):
     assert len(comparisons.scoped(service.candidate(tree['root_candidate_id']), None)['attempts']) == 2
 
 
+def test_v2_cluster_diagnostic_records_slice_delta_without_contract_flips(frozen_cluster):
+    from rag_eval.workbench.gate import RULE_V2
+    f = frozen_cluster
+    service, candidate, tree = f['service'], f['candidate']['id'], f['tree']
+    with f['env']['repo'].connect(write=True) as conn:
+        conn.execute('UPDATE iterations SET protocol_json=? WHERE id=?',
+                     (json.dumps(dict(tree['protocol'], gate_rule=dict(RULE_V2))), tree['id']))
+    (Path(f['candidate']['worktree']['path']) / 'backend/app/__init__.py').write_text('VALUE = 3\n')
+    service.freeze(candidate, actor='test')
+    service.cluster_run(candidate, 'c01', budget=BUDGET, actor='optimizer', request_key='cluster')
+    for cid, scores in [(tree['root_candidate_id'], {'qasper:q': 0, 'qasper:q2': 0}), (candidate, {'qasper:q': 1, 'qasper:q2': .5})]:
+        for a in [a for a in service.candidate(cid)['attempts'] if a['batch_id'] == 'cluster:c01']:
+            f['views'].scores[a['execution_id']] = scores
+            f['views'].partitions[a['execution_id']] = [tuple(scores)]
+            f['env']['executions']._finish(a['execution_id'], state='finished', exit_code=0,
+                                           error_type=None, run_state={'phase': 'finished'})
+    record = ComparisonService(f['env']['repo'], service, f['views']).for_cluster(candidate, 'c01', actor='test')
+    assert record['cluster']['rho'] is None and record['cluster']['delta'] == .75
+    assert record['cluster']['evidence']['rule_id'] == 'lcd-v2' and record['cluster']['evidence']['n'] == 2
+    assert record['families'] == {'qasper:q': '1', 'qasper:q2': '1'}
+
+
 def test_cluster_run_refuses_unrelated_cluster(frozen_cluster):
     f = frozen_cluster
     with pytest.raises(ValueError, match='own cluster'):
