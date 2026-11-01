@@ -421,8 +421,14 @@ class IterationService:
     def create_iteration(self, workspace_id, *, title, start_commit, input_id, expected_bundle_id,
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
                          split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None,
-                         execution=None, round_settings=None, case_retry=None, gate_rule='lcd-v1', safeguards=None):
+                         execution=None, round_settings=None, case_retry=None, gate_rule='lcd-v1', safeguards=None,
+                         k_base=2, k_sealed=None):
         """Create the backing Task, freeze its plan, then provision root C0.
+
+        ``k_base`` is the frozen rerun count for every paired measurement
+        (validation, screening, fresh confirmation); ``k_sealed`` pins the
+        per-node repetitions of the final sealed lineage curve. Both are
+        pre-registered: they cannot change after creation.
 
         Retrying the same request key completes an interrupted creation: each
         step below has its own derived idempotency key.
@@ -443,6 +449,10 @@ class IterationService:
             raise ValueError('gate_rule is lcd-v1, or lcd-v2 with its pre-registered safeguards')
         frozen_rule = dict(RULE_V2 if gate_rule == 'lcd-v2' else DEFAULT_RULE)
         safeguards = validate_safeguards(safeguards) if safeguards is not None else None
+        if type(k_base) is not int or not 1 <= k_base <= 4:
+            raise ValueError('k_base is an integer between 1 and 4')
+        if k_sealed is not None and (type(k_sealed) is not int or not 1 <= k_sealed <= 8):
+            raise ValueError('k_sealed is null or an integer between 1 and 8')
         if round_settings is not None and not isinstance(round_settings, dict):
             raise ValueError('Round settings must be an object')
         if case_retry is not None and not isinstance(case_retry, dict):
@@ -466,6 +476,11 @@ class IterationService:
             payload['case_retry'] = case_retry_frozen
         if gate_rule != 'lcd-v1':
             payload.update(gate_rule=gate_rule, safeguards=safeguards)
+        # Only non-default values enter the receipt payload so earlier receipts keep matching.
+        if k_base != 2:
+            payload['k_base'] = k_base
+        if k_sealed is not None:
+            payload['k_sealed'] = k_sealed
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -511,12 +526,14 @@ class IterationService:
                         request_revision=content['execution_intent']['request_revision'],
                         reasoning_protocol='reasoning-v1', input=content['input'],
                         bundle_ref=binding['bundle_ref'], index_ref=binding['index_ref'],
-                        scorer='recorded-per-run', k_base=2, success_threshold=.5,
+                        scorer='recorded-per-run', k_base=k_base, success_threshold=.5,
                         splits=dict(search=split['search'], validation=split['validation'],
                                     sealed_ref=ref, sealed=registered['case_ids'], seed=split_seed), fresh_batches=fresh,
                         gate_rule=frozen_rule)
         if safeguards is not None:
             protocol['safeguards'] = safeguards
+        if k_sealed is not None:
+            protocol['k_sealed'] = k_sealed
         if budget is not None:
             protocol['budget'] = budget
         protocol['round_settings'] = settings

@@ -620,3 +620,16 @@ def test_analyst_brief_follows_the_iteration_gate_rule(env):
     _, text, _ = resolve_brief(env['repo'], tree['task_id'], 's1', tool='sn-eval')
     assert 'lcd-v2' in text and 'slice_predicate' in text and 'answer_language_match' in text
     assert 'predicted_flips 非空' not in text
+
+
+def test_rerun_counts_are_pre_registered_at_creation(env):
+    default = iteration(env)
+    assert default['protocol']['k_base'] == 2 and 'k_sealed' not in default['protocol']
+    pinned = iteration(env, request_key='k', k_base=3, k_sealed=2)
+    assert pinned['protocol']['k_base'] == 3 and pinned['protocol']['k_sealed'] == 2
+    assert iteration(env, request_key='k', k_base=3, k_sealed=2)['id'] == pinned['id']
+    with pytest.raises(Conflict):
+        iteration(env, request_key='k', k_base=2, k_sealed=2)
+    for bad in (dict(k_base=0), dict(k_base=5), dict(k_base='2'), dict(k_sealed=0), dict(k_sealed=9), dict(k_sealed=1.0)):
+        with pytest.raises(ValueError):
+            iteration(env, request_key='bad', **bad)

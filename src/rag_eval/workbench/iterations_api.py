@@ -50,6 +50,8 @@ class CreateIteration(_Command):
     case_retry: dict | None = None
     gate_rule: str = Field(default='lcd-v1', pattern='^lcd-v[12]$')
     safeguards: list[dict] | None = None
+    k_base: int = Field(default=2, ge=1, le=4)
+    k_sealed: int | None = Field(default=None, ge=1, le=8)
 
 
 class Integration(_Command):

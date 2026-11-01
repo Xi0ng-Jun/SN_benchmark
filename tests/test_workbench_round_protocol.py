@@ -37,5 +37,5 @@ def test_iteration_action_accepts_pre_registered_gate_rule_and_safeguards():
                   dict(key='cost_per_task', direction='lower_is_better', margin=.5),
                   dict(key='answer_language_match', direction='higher_is_better', margin=.05)]
     params = dict(title='loop', start_commit='a'*40, input_id='x', expected_bundle_id='b'*64,
-                  case_ids=['c1'], mode='chunk', gate_rule='lcd-v2', safeguards=safeguards)
+                  case_ids=['c1'], mode='chunk', gate_rule='lcd-v2', safeguards=safeguards, k_base=3, k_sealed=2)
     assert normalize('iteration-create', params) == params
