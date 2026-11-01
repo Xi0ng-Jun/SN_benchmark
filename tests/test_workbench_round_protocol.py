@@ -29,3 +29,13 @@ def test_iteration_action_accepts_frozen_round_and_execution_options():
                   case_ids=['c1'], mode='chunk', round_settings=dict(card_approval='manual'),
                   execution=dict(preparation_policy='deferred-notebook-metadata-v1'))
     assert normalize('iteration-create', params) == params
+
+
+def test_iteration_action_accepts_pre_registered_gate_rule_and_safeguards():
+    # lcd-v2 iterations are created through `sn-eval iteration create --file`, which goes through normalize.
+    safeguards = [dict(key='infrastructure_failure_rate', direction='lower_is_better', margin=.1),
+                  dict(key='cost_per_task', direction='lower_is_better', margin=.5),
+                  dict(key='answer_language_match', direction='higher_is_better', margin=.05)]
+    params = dict(title='loop', start_commit='a'*40, input_id='x', expected_bundle_id='b'*64,
+                  case_ids=['c1'], mode='chunk', gate_rule='lcd-v2', safeguards=safeguards)
+    assert normalize('iteration-create', params) == params
