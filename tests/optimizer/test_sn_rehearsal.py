@@ -16,6 +16,7 @@ RoundOperations, i.e. the same SNAdapter wiring the server uses.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import threading
@@ -29,6 +30,7 @@ import pytest
 import test_workbench_plan_inputs
 from rag_eval.optimizer import cli, ledger_io, run_view, sn_adapter
 from rag_eval.workbench import agent_tools, auto_runs
+from rag_eval.workbench.context import resolve_context
 from rag_eval.workbench.creation_api import CreationAPI
 from rag_eval.workbench.iterations_api import IterationAPI
 from rag_eval.workbench.loop_services import RoundOperations
@@ -98,6 +100,7 @@ class SynthViews(Views):
     def __init__(self, runs_root):
         super().__init__()
         self.runs_root = Path(runs_root)
+        self.tokens = {}          # execution -> product tokens per task (cost_per_task safeguard)
 
     def execution_runs(self, execution_id):
         return [SimpleNamespace(id=f'{execution_id}-{i}', suite='qasper', mode='chunk', case_ids=tuple(cases),
@@ -108,7 +111,8 @@ class SynthViews(Views):
         return run_id.rsplit('-', 1)[0]
 
     def observation(self, run_id, case_id):
-        return observation(case_id, self.scores[self._eid(run_id)][case_id])
+        eid = self._eid(run_id)
+        return dict(observation(case_id, self.scores[eid][case_id]), usage=dict(total_tokens=self.tokens.get(eid, 100)))
 
     def cases(self, run_id):
         eid, index = self._eid(run_id), int(run_id.rsplit('-', 1)[1])
@@ -202,6 +206,7 @@ class Rig:
         self.errors: list[str] = []
         self.finished: set[str] = set()
         self.handled = 0
+        self.evidence_read: list[tuple[str, str]] = []
         self.titles: dict[str, list[str]] = {}
         self._stop = threading.Event()
         self._thread = None
@@ -269,6 +274,11 @@ class Rig:
             parent = re.search(r'proposal draft --parent (\S+) ', text)
             implement = re.search(r'Implement the approved card \(hypothesis (\S+)\) in candidate (\S+),', text)
             if parent:
+                named = re.search(r'Your evidence is the file (\S+) \(sha256 ([0-9a-f]{64})\)', text)
+                assert named, 'the analyst message names no evidence file'
+                data = Path(named.group(1)).read_bytes()      # the analyst reads its only input
+                assert hashlib.sha256(data).hexdigest() == named.group(2)
+                self.evidence_read.append((named.group(1), named.group(2)))
                 self._analyst(parent.group(1))
             elif implement:
                 self._implementer(implement.group(2))
@@ -364,6 +374,10 @@ class Rig:
                                                                for c in part))
                     (run / 'state.json').write_text(json.dumps(dict(phase='finished')))
                 self.views.scores[eid] = {c: self.score(candidate['id'], c) for c in ids}
+                cost = 1.0
+                for title in self.chain(candidate['id']):
+                    cost *= self.effects[title].get('cost', 1.0)
+                self.views.tokens[eid] = round(100 * cost)
                 self.views.partitions[eid] = parts
                 self.env['executions']._finish(eid, state='finished', exit_code=0, error_type=None, run_state=dict(
                     phase='finished', cost_observation=dict(currency='CNY', complete=True, total_cny=.01)))
@@ -458,6 +472,22 @@ def test_improvement_is_certified_on_fresh_and_measured_once_on_sealed(rig, caps
         analysts = rig.intents('analyst')
         assert [(i.get('candidate_id'), i.get('scope')) for i in analysts] == [(rig.tree['root_candidate_id'], None)]
         rig.assert_no_duplicate_measurements()
+        # Safeguards: the iteration's pre-registered v2 safeguards, v2's rule, on every paired decision.
+        assert st['safeguards'] == dict(source='iteration_protocol', specs=SAFEGUARDS)
+        end = conf[0]['safeguards_end']
+        assert end['ok'] and end['source'] == 'iteration_protocol' and end['reasons'] == []
+        assert {c['key']: (c['reference'], c['subject'], c['breached']) for c in end['checks']} == {
+            'answer_language_match': (1.0, 1.0, False), 'infrastructure_failure_rate': (0.0, 0.0, False),
+            'cost_per_task': (1.0, 1.0, False)}
+        assert cards['Retry empty retrievals']['safeguards']['ok']
+        ledger = json.loads((rig.run_dir / ledger_io.LEDGER_FILE).read_text())
+        assert ledger['utility']['certified_milestones'][0]['safeguards_end'] == end
+        assert ledger['context']['safeguards'] == st['safeguards']
+        assert view['segments'][0]['confirmation']['safeguards_end'] == end and view['safeguards'] == st['safeguards']
+        # Implementers got the v3 implementer brief.
+        implementer_bodies = [json.loads(c['text']) for c in rig.messenger.commands if 'Implement the approved' in c['text']]
+        assert implementer_bodies and all(b['context'][0]['title'].startswith('Method-v3 implementer brief')
+                                          and len(b['context'][0]['text']) <= 2000 for b in implementer_bodies)
 
         budget = rig.tmp / 'budget.json'
         budget.write_text(json.dumps(dict(timeout_seconds=600)))
@@ -498,6 +528,24 @@ def test_validation_gain_that_fails_on_fresh_is_rolled_back(rig, capsys):
 # ---------------------------------------------------------------------------
 # (c) an empty implementation and a smoke failure are recorded; the third card refills
 # ---------------------------------------------------------------------------
+
+def test_a_gain_that_breaches_cost_per_task_is_unmeasurable_at_screening(rig, capsys):
+    rig.analyst_cards = [card('Rerank with a bigger model')]
+    rig.effects = {'Rerank with a bigger model': dict(val=.2, fresh=.2, fix_empty=True, cost=2.0)}
+    with rig:
+        assert rig.run() == 0, capsys.readouterr()
+        cards, rounds = records(rig)
+        rec = cards['Rerank with a bigger model']
+        assert rec['verdict'] == 'unmeasurable' and rec['delta_val'] == pytest.approx(.2)
+        check = rec['safeguards']
+        assert not check['ok'] and check['reasons'] == ['safeguard_breached:cost_per_task']
+        cost = next(c for c in check['checks'] if c['key'] == 'cost_per_task')
+        assert (cost['reference'], cost['subject'], cost['breached']) == (1.0, 2.0, True)
+        assert rounds[0]['screen_passed'] == 0 and [n['state'] for n in rig.state()['lineage']] == ['certified']
+        assert not batches(rig.repo, rig.tree['id'])                     # no milestone, no fresh batch
+        view = run_view.read_run(rig.run_dir)
+        assert view['rounds'][0]['attempts'][0]['safeguards'] == check
+
 
 def test_empty_change_and_smoke_failure_are_recorded_and_refilled(rig, capsys):
     rig.analyst_cards = [card('Nothing to change'), card('Rerank without effect'),
@@ -633,6 +681,11 @@ def test_retry_failed_after_a_baseline_process_failure_measures_again(rig, capsy
         root = next(c for c in rig.candidates() if c['id'] == rig.tree['root_candidate_id'])
         base = [a for a in root['attempts'] if a.get('batch_id') is None]
         assert [a['execution_state'] for a in base] == ['failed'] * 4 + ['finished'] * 2
+        # v2's safeguard rule: the root's failed executions published no per-case results, so its
+        # infrastructure failure rate is unobserved and every screen against it is unmeasurable.
+        cards, _ = records(rig)
+        assert cards['Plain prompt tweak']['verdict'] == 'unmeasurable'
+        assert cards['Plain prompt tweak']['safeguards']['reasons'] == ['safeguard_unobserved:infrastructure_failure_rate']
 
 
 def test_kill_while_the_analyst_drafts_keeps_its_cards_on_rerun(rig, capsys):
@@ -650,6 +703,9 @@ def test_kill_while_the_analyst_drafts_keeps_its_cards_on_rerun(rig, capsys):
         cards, rounds = records(rig)
         assert rounds[0]['cards_generated'] == 2
         assert set(cards) == {'Overfit retrieval cache', 'Plain prompt tweak'}
+        # The rerun named the same evidence file to the same (replayed) Agent; it was not rewritten.
+        [(path, digest)] = set(rig.evidence_read)
+        assert hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest
         assert len(rig.intents('analyst')) == 1 and len(rig.messenger.commands) == 1 + 2
         rig.assert_no_duplicate_measurements()
 
@@ -669,19 +725,36 @@ def test_analyse_only_dispatches_one_node_analyst_and_binds_nothing(rig, capsys,
         out = capsys.readouterr().out
         assert code == 0, out
         assert 'cards: 2' in out and 'predicate: yes (decrease) fields: trace.n_empty_retrievals' in out
-        # Regression: 12000 chars of server-sized evidence exceed v2's 8 KiB message text (zh) or,
-        # with the analyst's brief attached, the 16384-unit body (en). The budget shrinks to fit.
+        # The evidence is a file in the run directory, named (path + sha256) by a short message.
         [sent] = rig.messenger.commands
         body = json.loads(sent['text'])
-        assert len(body['message'].encode('utf-8')) <= 8192 and len(sent['text']) <= 16384
-        assert body['context'][0]['reference']['kind'] == 'brief'
-        stats = dict(re.findall(r'(\w+)=(\S+)', out.split('last_analysis: ')[1].splitlines()[0]))
-        assert int(stats['budget']) < 12000 and int(stats['shown']) >= 1
-        evidence = (rig.run_dir / cli.EVIDENCE_FILE).read_text()
+        path, digest = re.search(r'analyst evidence: (\S+) sha256 ([0-9a-f]{64})', out).groups()
+        assert Path(path).parent == (rig.run_dir / cli.EVIDENCE_DIR).resolve() and Path(path).is_file()
+        data = Path(path).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == digest and rig.evidence_read == [(path, digest)]
+        assert path in body['message'] and digest in body['message']
+        assert len(body['message'].encode('utf-8')) < 2000 and len(sent['text']) < 6000
+        evidence = data.decode('utf-8')
         assert '[failure]' in evidence and 'qasper:' not in evidence and 'GOLD' not in evidence
+        stats = dict(re.findall(r'(\w+)=(\S+)', out.split('last_analysis: ')[1].splitlines()[0]))
+        assert int(stats['budget']) == 12000 and int(stats['shown']) + int(stats['omitted']) == int(stats['with_view'])
+        if language == 'zh':
+            assert len(data) > 8192                    # more than v2's message text cap would allow
+        # v3 Agents get the short v3 brief; a manual Agent of the same task keeps the workbench brief.
+        [brief] = body['context']
+        assert brief['reference']['kind'] == 'brief' and brief['title'].startswith('Method-v3 analyst brief')
+        assert len(brief['text']) <= 2500 and 'proposal draft --parent' in brief['text']
+        assert 'node run' not in brief['text'] and 'iteration ledger' not in brief['text']
+        manual = rig.creation.store.prepare(rig.task_id, 'pi-flash', actor='alice', request_key='manual-analyst',
+                                            role='analyst', candidate_id=rig.tree['root_candidate_id'])
+        manual = rig.creation.store.attempt(rig.task_id, manual['id'], actor='alice', bridge=rig.creator)
+        v2_brief = resolve_context(rig.repo, rig.task_id, dict(kind='brief', session_id=manual['session_id']),
+                                   run_views=rig.views)
+        assert v2_brief['title'].startswith('分析 Agent 工作说明') and 'Method-v3' not in v2_brief['text']
         assert auto_runs.binding(rig.repo, rig.tree['id']) is None
         root = rig.tree['root_candidate_id']
-        assert [(i.get('candidate_id'), i.get('scope')) for i in rig.intents('analyst')] == [(root, None)]
+        assert [(i.get('candidate_id'), i.get('scope'), i.get('brief')) for i in rig.intents('analyst')] == [
+            (root, None, 'method-v3'), (root, None, None)]           # v3's node analyst, then the manual one
         assert [c['id'] for c in rig.candidates()] == [root]          # nothing derived
         assert not batches(rig.repo, rig.tree['id'])                   # no fresh batch touched
         rig.assert_no_duplicate_measurements()

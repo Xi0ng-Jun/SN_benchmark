@@ -48,7 +48,8 @@ FAILURE_HALTS = ("process_failure", "budget_exhausted")
 CLI_RUN_FILE = "cli-run.json"
 PROTOCOL_COPY_FILE = "protocol.json"
 SMOKE_FILE = "smoke-sample.json"
-EVIDENCE_FILE = "analyse-only-evidence.txt"
+MESSAGE_FILE = "analyse-only-message.txt"   # the analyst message analyse-only sent (or tried to)
+EVIDENCE_DIR = "analyst-evidence"            # evidence files the analyst messages name
 SEALED_CURVE_FILE = "sealed-curve.json"
 SMOKE_RULE = "first smoke_sample_size search ids ordered by sha256(case_id) hex digest"
 
@@ -163,9 +164,10 @@ def load_protocol(path: str | Path) -> Protocol:
             raise UsageError(f"{key} must be >= 1")
     if cfg_values.get("analyst_cards") is not None and cfg_values["analyst_cards"] < 1:
         raise UsageError("analyst_cards must be >= 1 or null")
+    from .sn_adapter import MAX_ANALYST_VIEW_BUDGET
     budget = data.get("analyst_view_budget", ADAPTER_DEFAULTS["analyst_view_budget"])
-    if not 0 < budget <= 15000:
-        raise UsageError("analyst_view_budget must be in (0, 15000] characters")
+    if not 0 < budget <= MAX_ANALYST_VIEW_BUDGET:
+        raise UsageError(f"analyst_view_budget must be in (0, {MAX_ANALYST_VIEW_BUDGET}] characters")
     config = ProtocolConfig(n_smoke_sample=data["smoke_sample_size"], **cfg_values)
     settings = {k: data.get(k, v) for k, v in ADAPTER_DEFAULTS.items()}
     resolved = dict(dataclasses.asdict(config), max_rounds=data["max_rounds"],
@@ -364,6 +366,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     _print_feasibility(protocol, parts, search, validation, fresh, smoke, resumed=st is not None)
     state_dir.mkdir(parents=True, exist_ok=True)
+    adapter.set_evidence_dir(state_dir / EVIDENCE_DIR)
     try:
         with run_view.hold_run_lock(state_dir):
             return _run_locked(args, protocol, services, adapter, state_dir, identity, identity_path,
@@ -438,6 +441,7 @@ def cmd_analyse_only(args: argparse.Namespace) -> int:
     state_dir = Path(args.state_dir)
     services = _services(args, settings)
     adapter = services.adapter
+    adapter.set_evidence_dir(state_dir / EVIDENCE_DIR)
     parts = adapter.partitions()
     root = adapter.version_for(services.root_candidate_id)
     search_eval = adapter.evaluate(root, list(parts["search"]), parts["k_base"], purpose="diagnose")
@@ -453,9 +457,12 @@ def cmd_analyse_only(args: argparse.Namespace) -> int:
         text = getattr(adapter, "last_analyst_text", None)
         if text is not None:
             state_dir.mkdir(parents=True, exist_ok=True)
-            ledger_io.atomic_text(state_dir / EVIDENCE_FILE, text)
-            print(f"analyst message: {state_dir / EVIDENCE_FILE} ({len(text)} chars)")
-    stats = getattr(adapter, "last_analysis", {}) or {}
+            ledger_io.atomic_text(state_dir / MESSAGE_FILE, text)
+            print(f"analyst message: {state_dir / MESSAGE_FILE} ({len(text)} chars)")
+        stats = getattr(adapter, "last_analysis", {}) or {}
+        if stats.get("evidence_path"):
+            print(f"analyst evidence: {stats['evidence_path']} sha256 {stats.get('evidence_sha256')}"
+                  + (" (existing file kept)" if stats.get("evidence_reused") else ""))
     print("last_analysis: " + " ".join(
         f"{k}={stats.get(k)}" for k in ("selected", "with_view", "shown", "omitted", "evidence_chars",
                                          "budget", "message_bytes")))

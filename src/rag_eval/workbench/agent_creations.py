@@ -12,6 +12,9 @@ import uuid
 
 from .repository import Conflict, _text, now, uid
 
+# Brief selector of Agents created by an automatic method-v3 run (briefs.resolve_brief).
+BRIEF_V3 = 'method-v3'
+
 
 def _opaque(value, name, limit=200):
     _text(value, name, limit=limit)
@@ -114,7 +117,7 @@ class AgentCreationStore:
         return validate_create_command(command)
 
     def prepare(self, task_id, profile_id, *, actor, request_key, title=None, role=None, hypothesis_id=None,
-                candidate_id=None, scope=None):
+                candidate_id=None, scope=None, brief=None):
         task_id = _opaque(task_id, 'task identity')
         profile_id = _opaque(profile_id, 'creation profile')
         actor = _opaque(actor, 'actor')
@@ -130,6 +133,9 @@ class AgentCreationStore:
             raise ValueError('Only an analyst or implementer Agent is created for a candidate')
         if scope not in (None, 'iteration') or (scope and (role != 'analyst' or candidate_id is not None)):
             raise ValueError('Only an analyst without a candidate is created for the whole iteration')
+        # 'method-v3': an Agent of an automatic method-v3 run gets the short v3 brief.
+        if brief not in (None, BRIEF_V3) or (brief and role not in ('analyst', 'implementer')):
+            raise ValueError('Only an analyst or implementer Agent takes the method-v3 brief')
         payload = {'profile_id': profile_id, 'title': title}
         if role is not None:
             payload.update(role=role, hypothesis_id=hypothesis_id)
@@ -137,6 +143,8 @@ class AgentCreationStore:
             payload['candidate_id'] = candidate_id
         if scope is not None:
             payload['scope'] = scope
+        if brief is not None:
+            payload['brief'] = brief
         # Read before the write transaction: evaluated states come from run admission.
         evaluated = self.evaluated_count(task_id) if scope and callable(self.evaluated_count) else None
         state = (self.candidate_state(candidate_id)

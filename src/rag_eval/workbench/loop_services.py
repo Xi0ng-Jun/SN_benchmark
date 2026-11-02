@@ -148,7 +148,13 @@ class RoundOperations:
         return self.measurements.segment(start_id, end_id, batch_id, **kwargs)
 
     def agent(self, role, candidate_id, *, iteration_id, key, profile, text, scope=None, hypothesis_id=None,
-              message_stage='initial', start_grace_seconds=300):
+              message_stage='initial', start_grace_seconds=300, brief=None):
+        """Create (once) and message (once per stage) the Agent for *key*; report its state.
+
+        ``brief`` selects the brief v2 attaches to the Agent's messages: None for
+        the workbench brief, ``'method-v3'`` for the short v3 brief of an Agent
+        created by an automatic method-v3 run (recorded with the creation intent).
+        """
         actor = self._agent_actor(key)
         tree = self._tree(iteration_id)
         task_id = tree['task_id']
@@ -163,7 +169,7 @@ class RoundOperations:
                       if i['request_key'] == creation_key), None)
         intent = prior or self.creations.store.prepare(task_id, profile, actor=actor,
                     request_key=creation_key, role=stored_role, candidate_id=None if scope == 'iteration' else candidate_id,
-                    hypothesis_id=hypothesis_id, scope=scope)
+                    hypothesis_id=hypothesis_id, scope=scope, **({'brief': brief} if brief else {}))
         if intent['status'] == 'prepared':
             if self._stopped(key):
                 return dict(status='failed', reason='operator_stop')

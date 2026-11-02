@@ -38,6 +38,10 @@ class FakeSN(MockAdapter):
 
     safeguard_specs = [dict(key="infrastructure_failure_rate", direction="lower_is_better", margin=0.1)]
 
+    def set_evidence_dir(self, directory):
+        self.calls.append("set_evidence_dir")
+        self.evidence_dir = Path(directory)
+
     def version_for(self, candidate_id):
         self.calls.append("version_for")
         assert candidate_id == "root"
@@ -155,7 +159,7 @@ def test_unknown_subcommand_and_missing_args_exit_2(tmp_path, services, capsys):
     (dict(k_smoke=2), "k_smoke"),
     (dict(smoke_sample_size=0), "smoke_sample_size"),
     (dict(analyst_profile=""), "non-empty string"),
-    (dict(analyst_view_budget=20000), "analyst_view_budget"),
+    (dict(analyst_view_budget=60001), "analyst_view_budget"),
 ])
 def test_protocol_file_is_strict(tmp_path, services, capsys, overrides, message):
     adapter = services(FakeSN([]))
@@ -320,13 +324,14 @@ def test_unexpected_error_exit_1(tmp_path, services, capsys):
 def test_analyse_only_dispatches_analyst_once_and_touches_nothing_else(tmp_path, services, capsys):
     adapter = services(AnalystOnlySN([], base_scores={"t0": 0.0, "t1": 0.2}))
     assert cli.main(["analyse-only", *common(tmp_path)]) == 0
-    assert adapter.calls == ["partitions", "version_for", "evaluate:diagnose", "analyse"]
+    assert adapter.calls == ["set_evidence_dir", "partitions", "version_for", "evaluate:diagnose", "analyse"]
+    assert adapter.evidence_dir == tmp_path / "run" / cli.EVIDENCE_DIR
     a = adapter.analyse_args
     assert a["round_id"] == 0 and a["history"] == [] and a["parent"] == adapter.seed
     assert a["roles"]["t0"] == "failure" and a["roles"]["t1"] == "failure"
     assert a["n_cards"] == cli.default_analysis_config().b_cards
-    evidence = tmp_path / "run" / "analyse-only-evidence.txt"
-    assert evidence.read_text() == adapter.last_analyst_text
+    message = tmp_path / "run" / cli.MESSAGE_FILE
+    assert message.read_text() == adapter.last_analyst_text
     assert not (tmp_path / "run" / "state.json").exists()
     out = capsys.readouterr().out
     assert "selected=" in out and "evidence_chars=33" in out and "cards: 2" in out
@@ -352,7 +357,7 @@ def test_analyse_only_writes_evidence_even_if_dispatch_fails(tmp_path, services)
             raise TimeoutError("analyst agent did not finish")
     services(Failing([], base_scores={"t0": 0.0}))
     assert cli.main(["analyse-only", *common(tmp_path)]) == 1
-    assert (tmp_path / "run" / "analyse-only-evidence.txt").exists()
+    assert (tmp_path / "run" / cli.MESSAGE_FILE).exists()
 
 
 # ---------------------------------------------------------------------------

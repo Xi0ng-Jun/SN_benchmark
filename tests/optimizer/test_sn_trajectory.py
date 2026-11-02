@@ -200,18 +200,20 @@ def test_analyse_sends_views_and_binds_cards_to_request_and_parent(tmp_path):
     hyps = _FakeHypotheses()
     ops = _FakeRoundOps(hyps)
     adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "parent_candidate_id": "P", "run_id": "R"},
-                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        evidence_dir=tmp_path / "evidence")
     cards = adapter.analyse(_stubs(run, ["a", "b", "ok"]), 4,
                             case_roles={"a": "failure", "b": "failure", "ok": "control"}, round_id=3)
     assert ops.keys == ["v3/R/analyse/3/P"]  # deterministic: run, round, parent
     assert cards[0].ref == "new1"
     assert [c.failure_mode_desc for c in cards] == ["empty retrieval"]
     assert cards[0].predicate.boolean_expression["field"] == "trace.n_empty_retrievals"
-    text = ops.texts[0]
-    assert "[failure]" in text and "[control]" in text and "GOLD-SECRET" not in text
-    assert "\"a\"" not in text  # opaque refs, not task ids
-    assert len(text) <= 16384
-    assert adapter.last_analysis["shown"] == 3
+    text, evidence = ops.texts[0], _evidence(adapter)
+    assert "[failure]" in evidence and "[control]" in evidence and "GOLD-SECRET" not in evidence
+    assert "\"a\"" not in evidence  # opaque refs, not task ids
+    assert adapter.last_analysis["evidence_path"] in text and adapter.last_analysis["evidence_sha256"] in text
+    assert "### c1" in evidence and "### c1" not in text                                 # views are in the file
+    assert adapter.last_analysis["shown"] == 3 and ops.calls[0][2]["brief"] == "method-v3"
 
 
 def test_analyse_renders_history_labels_only_within_budget(tmp_path):
@@ -220,14 +222,14 @@ def test_analyse_renders_history_labels_only_within_budget(tmp_path):
     ops = _FakeRoundOps(hyps)
     adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "parent_candidate_id": "P", "run_id": "R"},
                         round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
-                        analyst_view_budget=4000)
+                        analyst_view_budget=4000, evidence_dir=tmp_path / "evidence")
     history = [dict(title=f"old idea {i}", label="screen_fail") for i in range(60)]
     history += [dict(title="leaky", label="score=0.71", delta=0.3),          # not a §2.3 label
                 dict(title="adopted idea", label="rejected", attribution="supported",
                      attribution_possibly_biased=True, delta_val=0.12)]
     adapter.analyse(_stubs(run, ["a", "ok"]), 2, case_roles={"a": "failure", "ok": "control"},
                     round_id=1, history=history)
-    text = ops.texts[0]
+    text = _evidence(adapter)
     assert "- adopted idea -> rejected; attribution: supported (possibly biased)" in text
     assert "leaky" not in text and "0.71" not in text and "0.12" not in text and "0.3" not in text
     assert "old idea 59 -> screen_fail" in text and "- old idea 0 ->" not in text   # oldest trimmed
@@ -243,9 +245,10 @@ def test_analyse_without_history_has_no_history_section(tmp_path):
     hyps = _FakeHypotheses()
     ops = _FakeRoundOps(hyps)
     adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"},
-                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        evidence_dir=tmp_path / "evidence")
     adapter.analyse(_stubs(run, ["a"]), 1, round_id=1, history=[])
-    assert "already tried" not in ops.texts[0] and adapter.last_analysis["history_chars"] == 0
+    assert "already tried" not in _evidence(adapter) and adapter.last_analysis["history_chars"] == 0
 
 
 def test_analyst_is_a_node_analyst_of_the_rounds_parent(tmp_path):
@@ -254,7 +257,8 @@ def test_analyst_is_a_node_analyst_of_the_rounds_parent(tmp_path):
     hyps = _FakeHypotheses()
     ops = _FakeRoundOps(hyps)
     adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R"},
-                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        evidence_dir=tmp_path / "evidence")
     adapter.analyse(_stubs(run, ["a"]), 1, round_id=1, history=[],
                     parent=Version("c0hash", metadata={"candidate_id": "P"}))
     role, candidate_id, kw = ops.calls[0]
@@ -275,17 +279,22 @@ def test_analyse_rerun_finds_cards_drafted_before_the_restart(tmp_path):
     hyps = _FakeHypotheses()
     ops = _FakeRoundOps(hyps)
     config = {"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"}
-    first = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+    first = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        evidence_dir=tmp_path / "evidence")
     first.analyse(_stubs(run, ["a"]), 3, round_id=1, history=[])     # the process dies after this
-    replay = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+    replay = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        evidence_dir=tmp_path / "evidence")
     cards = replay.analyse(_stubs(run, ["a"]), 3, round_id=1, history=[])
     assert [c.ref for c in cards] == ["new1"]           # not the older card, nor the re-filed copy
     assert len(ops.creations.store.intents) == 1
+    assert first.last_analysis["evidence_sha256"] == replay.last_analysis["evidence_sha256"]
+    assert replay.last_analysis["evidence_reused"] and not first.last_analysis["evidence_reused"]
 
 
-def test_view_budget_must_fit_message_cap():
+def test_view_budget_is_bounded():
+    assert SNAdapter({}, analyst_view_budget=60000)._analyst_view_budget == 60000
     with pytest.raises(ValueError):
-        SNAdapter({}, analyst_view_budget=20000)
+        SNAdapter({}, analyst_view_budget=60001)
 
 
 # -- loop case selection ---------------------------------------------------
@@ -301,32 +310,49 @@ def test_select_analysis_cases_is_fixed_rule():
     assert set(traj) == set(roles)
 
 
-def test_analyst_message_fits_v2_text_and_body_limits(tmp_path):
-    """Regression (rehearsal): v2 caps message text at 8 KiB UTF-8 and text + brief at 16384 UTF-16 units."""
-    from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected
+
+def _evidence(adapter):
+    from pathlib import Path
+    return Path(adapter.last_analysis["evidence_path"]).read_text(encoding="utf-8")
+
+
+def test_evidence_file_carries_large_evidence_and_the_message_stays_small(tmp_path):
+    """User decision: views go in a file in the run directory; v2 message caps no longer bound them."""
+    import hashlib
+    from pathlib import Path
+    from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES
     rows = [_row(f"k{i}", spans=SPANS, answer="论文报告的结果如下。" * 40) for i in range(12)]
     run = _write_run(tmp_path, rows)
     hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"},
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        analyst_view_budget=60000, evidence_dir=tmp_path / "evidence")
+    adapter.analyse(_stubs(run, [r["case_id"] for r in rows]), 2, round_id=4, history=[])
+    info = adapter.last_analysis
+    path = Path(info["evidence_path"])
+    assert path == (tmp_path / "evidence" / "round-4-P.md").resolve() and path.is_absolute()
+    data = path.read_bytes()
+    assert hashlib.sha256(data).hexdigest() == info["evidence_sha256"]
+    assert len(data) > 2 * MAX_MESSAGE_BYTES and info["shown"] == 12 and info["omitted"] == 0
+    assert data.decode().startswith("# method-v3 analyst evidence\nformat: sn-v3-analyst-evidence-v1\nround: 4\n")
+    assert info["message_bytes"] < 2000 and ops.texts[0] == adapter.last_analyst_text
+    assert not list(path.parent.glob(".*.tmp"))          # atomic write left no temporary file
+    # A replay renders the same bytes; an existing file is never rewritten.
+    path.write_bytes(data + b"edited")
+    again = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"},
+                      round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                      analyst_view_budget=60000, evidence_dir=tmp_path / "evidence")
+    again.analyse(_stubs(run, [r["case_id"] for r in rows]), 2, round_id=4, history=[])
+    assert path.read_bytes() == data + b"edited" and again.last_analysis["evidence_reused"]
+    assert again.last_analysis["evidence_sha256"] == hashlib.sha256(data + b"edited").hexdigest()
 
-    class BriefOps(_FakeRoundOps):
-        brief = 9000      # characters v2 attaches as the Agent's brief
 
-        def agent(self, role, candidate_id, **kw):
-            if len(kw["text"]) + self.brief > 16384:
-                self.rejected = getattr(self, "rejected", 0) + 1
-                raise MessageInputRejected("Message body exceeds the bridge UTF-8 or UTF-16 budget")
-            return super().agent(role, candidate_id, **kw)
-
-    ops = BriefOps(hyps)
+def test_analyse_needs_an_evidence_directory(tmp_path):
+    hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
     adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"},
                         round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
-    cards = adapter.analyse(_stubs(run, [r["case_id"] for r in rows]), 2, round_id=1, history=[])
-    sent = ops.texts[-1]
-    assert len(sent.encode("utf-8")) <= MAX_MESSAGE_BYTES and len(sent) + ops.brief <= 16384
-    assert sent == adapter.last_analyst_text and [c.ref for c in cards] == ["new1"]
-    info = adapter.last_analysis
-    assert info["budget"] < 12000 and 1 <= info["shown"] < 12 and info["omitted"] == 12 - info["shown"]
-
-    ops.brief = 16384    # not even one case fits: refuse instead of sending an empty analysis
-    with pytest.raises((RuntimeError, MessageInputRejected)):
-        adapter.analyse(_stubs(run, [r["case_id"] for r in rows]), 2, round_id=2, history=[])
+    with pytest.raises(RuntimeError, match="evidence directory"):
+        adapter.analyse({}, 1, round_id=1, history=[])
+    assert ops.texts == []

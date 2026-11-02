@@ -136,3 +136,34 @@ def test_v2_implementer_learns_adoption_is_net_utility_not_contract():
     assert '是否采纳只看验证池筛选与新鲜批次确认上的整体净效用' in text
     assert '合同核对' not in text and '只是簇内诊断' in text
     assert '合同核对' in brief()
+
+
+def test_method_v3_briefs_are_short_and_name_exactly_the_auto_run_commands():
+    import re
+    from rag_eval.workbench import auto_runs
+    from rag_eval.workbench.briefs import (V3_ANALYST_COMMANDS, V3_IMPLEMENTER_COMMANDS, v3_analyst_brief,
+                                           v3_implementer_brief)
+    tool = '/srv/benchmark-deepeval/scripts/sn-eval --state /srv/benchmark-deepeval/var/sn-workbench-server/state'
+    task = dict(id='9f0c1e2d3b4a49e8a7f6e5d4c3b2a190', title='SN iteration 2026-11 · method-v3')
+    analyst = v3_analyst_brief(task, tool=tool, candidate_id='c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0')
+    implementer = v3_implementer_brief(task, tool=tool, hypothesis_id='h' * 32, candidate_id='c' * 32,
+                                       worktree='/srv/worktrees/sn-cand-' + 'c' * 32)
+    assert len(analyst) <= 2200 and len(implementer) <= 2000
+    named = lambda text: set(re.findall(r'`\$S ([a-z-]+(?: draft)?)', text))  # noqa: E731
+    assert named(analyst) == set(V3_ANALYST_COMMANDS) == auto_runs.ANALYST_ALLOWED
+    assert named(implementer) == set(V3_IMPLEMENTER_COMMANDS) == auto_runs.IMPLEMENTER_ALLOWED
+    assert '--node c0c0' in analyst and 'proposal draft --parent c0c0' in analyst and 'evidence file' in analyst
+    assert 'uncommitted' in implementer and 'freeze' in implementer
+
+
+def test_only_v3_analysts_and_implementers_take_the_v3_brief(tmp_path):
+    import pytest
+    from test_workbench_agent_creations import setup
+    _, task, _, store = setup(tmp_path)
+    with pytest.raises(ValueError, match='method-v3 brief'):
+        store.prepare(task['id'], 'allowed', actor='alice', request_key='k1', brief='method-v3')
+    with pytest.raises(ValueError, match='method-v3 brief'):
+        store.prepare(task['id'], 'allowed', actor='alice', request_key='k2', role='analyst', brief='other')
+    intent = store.prepare(task['id'], 'allowed', actor='alice', request_key='k3', role='analyst', brief='method-v3')
+    assert intent['brief'] == 'method-v3'
+    assert 'brief' not in store.prepare(task['id'], 'allowed', actor='alice', request_key='k4', role='analyst')

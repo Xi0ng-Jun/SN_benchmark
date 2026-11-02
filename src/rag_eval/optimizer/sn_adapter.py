@@ -127,6 +127,7 @@ class SNAdapter(SystemAdapter):
         eval_timeout: float = 7200.0,
         infra_retry: int = 1,
         execution_timeout_seconds: int = 7200,
+        evidence_dir=None,
     ) -> None:
         self._config = config
         self._repository = repository
@@ -147,13 +148,15 @@ class SNAdapter(SystemAdapter):
         self._eval_timeout = eval_timeout
         self._infra_retry = infra_retry
         self._execution_timeout_seconds = execution_timeout_seconds
-        # Upper bound on the analyst's history + evidence characters. v2 caps the
-        # message text at 8 KiB UTF-8 and the sent body (text + the Agent's brief)
-        # at 16384 UTF-16 units, so analyse() shrinks the effective budget to fit
-        # (last_analysis['budget']); with Chinese SN rows that is well below this.
-        if not 0 < analyst_view_budget <= 15000:
-            raise ValueError("analyst_view_budget must be in (0, 15000] characters")
+        # Characters of history + diagnostic views in the analyst's evidence file
+        # (analyse). The file, not the message, carries them: v2's message caps
+        # (8 KiB text, 16384 UTF-16 units with the brief) do not limit evidence.
+        if not 0 < analyst_view_budget <= MAX_ANALYST_VIEW_BUDGET:
+            raise ValueError(f"analyst_view_budget must be in (0, {MAX_ANALYST_VIEW_BUDGET}] characters")
         self._analyst_view_budget = analyst_view_budget
+        self.evidence_dir = None
+        if evidence_dir is not None:
+            self.set_evidence_dir(evidence_dir)
         self.last_analysis: dict = {}
         # Full text of the last analyst message (instructions + history + evidence),
         # set before dispatch so a failed dispatch can still be inspected.
@@ -174,6 +177,11 @@ class SNAdapter(SystemAdapter):
         # it up. The first call plans AND launches, so later plans see the attempts.
         self._plan_locks: dict[str, threading.Lock] = {}
         self._plan_locks_guard = threading.Lock()
+
+    def set_evidence_dir(self, directory) -> None:
+        """Where analyse() writes the analyst's evidence files (inside the v3 run directory)."""
+        from pathlib import Path
+        self.evidence_dir = Path(directory).resolve()
 
     # ------------------------------------------------------------------
     # v2 candidate plumbing: request keys, actor, versions
@@ -926,8 +934,10 @@ class SNAdapter(SystemAdapter):
         *search_set_trajectories* holds only the cases the loop selected (§2.3:
         selection is the accountant's, by a pre-registered rule). Each case is
         rendered as a diagnostic view under opaque refs (c1, c2, ...) within
-        ``analyst_view_budget`` characters, so the Agent needs no tool calls
-        to gather evidence. Cards are bound to this request and to the parent
+        ``analyst_view_budget`` characters into an evidence file in the run
+        directory (``evidence_dir``/round-<id>-<parent>.md, written once,
+        atomically); the message names its absolute path and sha256, so the
+        Agent needs no other evidence and the audit knows what it read. Cards are bound to this request and to the parent
         candidate: the analyst's drafts (``proposal draft``, author
         ``agent:analyst``) under the parent created after this request's v2
         Agent creation intent was prepared (v2 derive requires the card's
@@ -974,64 +984,78 @@ class SNAdapter(SystemAdapter):
         ordered = sorted(views, key=lambda t: (roles.get(t, "failure") != "failure",
                                                list(search_set_trajectories).index(t)))
         items = [(f"c{i + 1}", roles.get(t, "failure"), views[t]) for i, t in enumerate(ordered)]
-        where = (f"Draft each card under the parent node with `proposal draft --parent {parent_cid} "
-                 f"--file <card.json>`. ")
-        head = (
-            f"Diagnose the parent version's failures on the search cases below and draft up to "
-            f"{n_cards} legal lcd-v2 mechanism cards, one per distinct failure mode. Each card needs "
-            f"title, component, mechanism, implementer_brief, falsification, predictions (may be []), "
-            f"and a contract with slice_predicate, manipulation and slice_effect. A slice_predicate "
-            f"may read behaviour fields and trace.* step features (e.g. trace.n_empty_retrievals, "
-            f"trace.clarification_requested). Cases marked [failure] were selected by a fixed rule; "
-            f"[control] cases are for contrast. {where}Do not request more evidence and do not read "
-            f"files under var/ (run directories hold validation scores); draft the cards now.\n\n"
+        if self.evidence_dir is None:
+            raise RuntimeError("analyse() needs an evidence directory (set_evidence_dir): the analyst reads "
+                               "its evidence from a file in the v3 run directory")
+        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], self._analyst_view_budget // 4)
+        evidence, n_shown, n_omitted = render_views(items, self._analyst_view_budget - len(tried))
+        content = (f"# method-v3 analyst evidence\nformat: {EVIDENCE_FORMAT}\nround: {round_id}\n"
+                   f"parent: {parent_cid}\ncases: {len(items)} with a view of {len(search_set_trajectories)} "
+                   f"selected; {n_shown} shown, {n_omitted} omitted (budget {self._analyst_view_budget} chars)\n\n"
+                   + tried + evidence)
+        path, digest, reused = self._write_evidence(f"round-{round_id}-{parent_cid[:12]}.md", content)
+        analyst_text = (
+            f"Diagnose the parent version's failures and draft up to {n_cards} legal lcd-v2 mechanism cards, "
+            f"one per distinct failure mode. Your evidence is the file {path} (sha256 {digest}). Read it in "
+            f"full: it holds the search cases selected by a fixed rule as c1, c2, ... ([failure] cases, and "
+            f"[control] cases for contrast) and the outcome labels of hypotheses already tried under this "
+            f"parent. It is your only input: do not request more evidence and do not read any other file "
+            f"under var/. Each card needs title, component, mechanism, implementer_brief, falsification, "
+            f"predictions (may be []), and a contract with slice_predicate, manipulation and slice_effect. "
+            f"A slice_predicate may read behaviour fields and trace.* step features (e.g. "
+            f"trace.n_empty_retrievals, trace.clarification_requested). Draft each card under the parent "
+            f"node with `proposal draft --parent {parent_cid} --file <card.json>`; draft the cards now."
         )
-
-        def compose(budget: int) -> tuple[str, dict]:
-            tried, n_hist_shown, n_hist_omitted = _render_history(history or [], budget // 4)
-            evidence, n_shown, n_omitted = render_views(items, budget - len(tried))
-            text = head + tried + evidence
-            return text, dict(selected=len(search_set_trajectories), with_view=len(views),
-                              shown=n_shown, omitted=n_omitted, evidence_chars=len(evidence),
-                              history_shown=n_hist_shown, history_omitted=n_hist_omitted,
-                              history_chars=len(tried), budget=budget,
-                              message_bytes=len(text.encode("utf-8")))
-
+        from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected
+        stats = dict(selected=len(search_set_trajectories), with_view=len(views), shown=n_shown,
+                     omitted=n_omitted, evidence_chars=len(evidence), history_shown=n_hist_shown,
+                     history_omitted=n_hist_omitted, history_chars=len(tried), budget=self._analyst_view_budget,
+                     evidence_path=str(path), evidence_sha256=digest, evidence_reused=reused,
+                     message_bytes=len(analyst_text.encode("utf-8")))
+        self.last_analysis, self.last_analyst_text = stats, analyst_text
+        if stats["message_bytes"] > MAX_MESSAGE_BYTES:
+            raise RuntimeError(f"analyst message is {stats['message_bytes']} bytes, over v2's {MAX_MESSAGE_BYTES}")
         # A node analyst bound to the round's parent (v2 ``agent_creations``: a
         # frozen candidate with a finished run). Not scope="iteration": v2 refuses
         # an iteration analyst until two candidates are evaluated, and in round 1
         # only the root is. Each round's parent gets its own Agent (the key names it).
-        from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected, SessionRemoved
-        budget, rejected = self._analyst_view_budget, 0
-        while True:
-            analyst_text, stats = compose(budget)
-            if stats["message_bytes"] > MAX_MESSAGE_BYTES:     # v2's text cap, known up front
-                budget = _shrink(budget, MAX_MESSAGE_BYTES / stats["message_bytes"])
-                continue
-            if items and not stats["shown"]:
-                raise RuntimeError(
-                    f"not one diagnostic case fits v2's analyst message limits (budget {budget} chars, "
-                    f"{len(items)} selected); analyst not dispatched")
-            self.last_analysis, self.last_analyst_text = stats, analyst_text
-            call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
-                        text=analyst_text)
-            try:
-                self._poll_agent("analyst", parent_cid, call)
-                break
-            except SessionRemoved:
-                raise
-            except MessageInputRejected:
-                # The body (text + the Agent's brief) exceeds v2's UTF-16/UTF-8 budget:
-                # v2 rejects before writing the message intent, so the same key retries.
-                rejected += 1
-                if rejected > 8:
-                    raise
-                budget = _shrink(budget, 0.75)
+        # brief=V3_BRIEF: v2 attaches the short v3 analyst brief, not its own.
+        call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
+                    text=analyst_text, brief=V3_BRIEF)
+        try:
+            self._poll_agent("analyst", parent_cid, call)
+        except MessageInputRejected as exc:
+            raise RuntimeError(f"v2 rejected the analyst message for {analyst_key!r} ({exc}); message "
+                               f"{stats['message_bytes']} bytes plus the v3 brief") from exc
         since = self._analyst_requested_at(task_id, analyst_key)
         fresh = [r for r in self._hypotheses.list(task_id)
                  if r.get("parent_candidate_id") == parent_cid and r.get("status") in ("draft", "approved")
                  and r.get("author") == ANALYST_AUTHOR and _instant(r["created_at"]) >= since]
         return [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
+
+    def _write_evidence(self, name: str, content: str):
+        """Write the evidence file once (atomic); a replay keeps the file a message may already name.
+
+        Returns (absolute path, sha256 of its bytes, reused). The content is a
+        pure function of the round's inputs, so a replay normally finds identical
+        bytes; if they differ the existing file stays authoritative (logged).
+        """
+        import logging
+        from . import ledger_io
+        path = self.evidence_dir / name
+        data = content.encode("utf-8")
+        reused = path.exists()
+        if reused:
+            existing = path.read_bytes()
+            if existing != data:
+                logging.getLogger(__name__).warning(
+                    "evidence file %s exists with different content; keeping it (its sha256 is the one "
+                    "the analyst message names)", path)
+            data = existing
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ledger_io.atomic_text(path, content)
+        return path, hashlib.sha256(data).hexdigest(), reused
 
     def _analyst_requested_at(self, task_id: str, key: str):
         """When v2 prepared the creation intent of the analyst Agent for *key* (durable)."""
@@ -1073,7 +1097,7 @@ class SNAdapter(SystemAdapter):
             f"validation cases."
         )
         call = dict(iteration_id=iteration_id, key=self._request_key("implement", cid),
-                    profile=self._implementer_profile, text=text, hypothesis_id=hypothesis_id)
+                    profile=self._implementer_profile, text=text, hypothesis_id=hypothesis_id, brief=V3_BRIEF)
         self._poll_agent("implementer", cid, call)
         return Diff(
             content=_extract_worktree_diff(workspace),
@@ -1105,12 +1129,11 @@ class SNAdapter(SystemAdapter):
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _shrink(budget: int, factor: float) -> int:
-    smaller = min(int(budget * min(factor, 0.97)), budget - 1)
-    if smaller < 1:
-        raise RuntimeError("the analyst instructions alone exceed v2's message limits")
-    return smaller
-
+# Evidence budget ceiling: the evidence lives in a file, not in the v2 message.
+MAX_ANALYST_VIEW_BUDGET = 60000
+# Marks v2 Agents created by method v3: v2 then attaches the short v3 brief.
+V3_BRIEF = "method-v3"
+EVIDENCE_FORMAT = "sn-v3-analyst-evidence-v1"
 
 # v2 author of a card drafted by an analyst Agent (``sn-eval proposal draft``).
 ANALYST_AUTHOR = "agent:analyst"

@@ -281,6 +281,59 @@ worktree 起点已有这些未提交改动，它们属于用户，不要覆盖�
 '''
 
 
+# ---------------------------------------------------------------- method-v3
+# Agents created by an automatic method-v3 run (creation intent brief='method-v3')
+# get these instead of the workbench briefs: the run coordinator derives, freezes,
+# evaluates and decides, so the workbench verbs above would only be refused
+# (auto_runs.ANALYST_ALLOWED / IMPLEMENTER_ALLOWED list exactly what these allow).
+V3_ANALYST_COMMANDS = ('docs', 'leak-check', 'proposal draft')
+V3_IMPLEMENTER_COMMANDS = ('card', 'leak-check')
+
+
+def v3_analyst_brief(task, *, tool, candidate_id):
+    s = f'{tool} --task {task["id"]} --role analyst --node {candidate_id}'
+    return f'''# Method-v3 analyst · node {candidate_id}
+
+You are the analyst of an automatic method-v3 run on iteration task "{task["title"]}", bound to candidate `{candidate_id}` (the round's parent). Each round's message names one evidence file (absolute path and sha256): diagnostic views of the parent's search cases, as c1, c2, ... marked [failure] or [control], and the outcome labels of hypotheses already tried under this parent. That file is your only input.
+
+Commands (`$S` = `{s}`):
+- `$S docs`: evaluation documents
+- `$S leak-check`: benchmark-text leak scan
+- `$S proposal draft --parent {candidate_id} --file card.json`: save one card under this node (it is leak-scanned and validated)
+Nothing else. Never request runs, freezes, derivations, adoptions or other decisions; the coordinator does all of that.
+
+Card (lcd-v2): JSON with title, component, mechanism, implementer_brief, falsification, predictions (may be []), optional change_scope, and contract = {{slice_predicate, manipulation: {{direction: decrease|increase, threshold in [0, 1]}}, slice_effect: {{direction: positive}}}}. slice_predicate is a closed signature (kind regex or range on one field; all_of / any_of / not) over behaviour fields or trace.* step features such as trace.n_empty_retrievals; never case ids, scores or gold. One card per distinct failure mode.
+
+Rules: you see no gold answers, scores, validation or fresh cases and must not look for them. Do not read files under var/ except the evidence file named in the message; do not open other iterations or run directories; do not edit SN code.
+'''
+
+
+def v3_implementer_brief(task, *, tool, hypothesis_id, candidate_id, worktree):
+    s = f'{tool} --task {task["id"]} --role implementer --hypothesis {hypothesis_id} --candidate {candidate_id}'
+    return f'''# Method-v3 implementer · candidate {candidate_id}
+
+You implement one approved card (hypothesis `{hypothesis_id}`) in candidate `{candidate_id}` of an automatic method-v3 run. Your worktree: `{worktree or "not ready"}`. Edit only files there.
+
+Commands (`$S` = `{s}`):
+- `$S card`: the approved card (what to change and why)
+- `$S leak-check`: benchmark-text leak scan of your change
+Nothing else.
+
+Order: implement the card -> run only the SN tests relevant to your change -> leak-check. Leave your changes uncommitted. Never commit, freeze, run or request evaluations, or request anything else: the coordinator freezes and evaluates the candidate after you finish. Use only the card's implementer material; never look for gold answers, scores, validation or benchmark cases.
+
+When you finish, reply with the files you changed and why, the test commands and their results, and remaining risks.
+'''
+
+
+def _creation_brief(conn, task_id, agent_id):
+    """The brief selector recorded with the Agent's creation intent (None: workbench brief)."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='agent_creation_intents'").fetchone():
+        return None
+    row = conn.execute('SELECT payload FROM agent_creation_intents WHERE task_id=? AND agent_id=? '
+                       'ORDER BY prepared_at LIMIT 1', (task_id, agent_id)).fetchone()
+    return json.loads(row['payload']).get('brief') if row else None
+
+
 def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
     """Snapshot pieces for the `brief` context kind."""
     with repository.connect() as conn:
@@ -292,6 +345,17 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
         bound = (conn.execute('SELECT * FROM task_worktrees WHERE task_id=?', (task_id,)).fetchone()
                  if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_worktrees'").fetchone() else None)
         cwd = repository.session_cwd(conn, session, task)
+        from .agent_creations import BRIEF_V3
+        if _creation_brief(conn, task_id, session['agent_id']) == BRIEF_V3:
+            candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
+            refs = {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst',
+                    'brief': BRIEF_V3, **({'candidate_id': candidate_id} if candidate_id else {})}
+            if session['role'] == 'implementer':
+                return ('Method-v3 implementer brief · ' + str(candidate_id),
+                        v3_implementer_brief(task, tool=tool, hypothesis_id=session['hypothesis_id'],
+                                             candidate_id=candidate_id, worktree=cwd), refs)
+            return ('Method-v3 analyst brief · ' + str(candidate_id),
+                    v3_analyst_brief(task, tool=tool, candidate_id=candidate_id), refs)
         card = None
         candidates = None
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone():

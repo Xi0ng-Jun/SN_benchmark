@@ -14,10 +14,13 @@ from datetime import datetime, timezone
 
 from .repository import Conflict
 
-# What an Agent of an automatic iteration may run. Everything else either reads
-# continuous validation scores (method-v3 §2.3 forbids them) or requests actions.
-ANALYST_ALLOWED = frozenset({'evidence', 'docs', 'leak-check', 'proposal draft'})
-IMPLEMENTER_ALLOWED = frozenset({'card', 'leak-check'})
+# What an Agent of an automatic iteration may run: exactly the commands the v3
+# briefs name (briefs.V3_ANALYST_COMMANDS / V3_IMPLEMENTER_COMMANDS). Everything
+# else reads scores (method-v3 §2.3: the analyst sees none; ``evidence`` prints
+# search scores, the evidence file replaces it) or requests actions.
+from .briefs import V3_ANALYST_COMMANDS, V3_IMPLEMENTER_COMMANDS
+ANALYST_ALLOWED = frozenset(V3_ANALYST_COMMANDS)
+IMPLEMENTER_ALLOWED = frozenset(V3_IMPLEMENTER_COMMANDS)
 
 
 def _has_table(conn):
