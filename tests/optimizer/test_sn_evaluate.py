@@ -467,3 +467,35 @@ def test_key_generation_from_config_and_validation(env):
         SNAdapter(dict(CONFIG, key_generation=-1))
     with pytest.raises(ValueError):
         SNAdapter(dict(CONFIG)).set_key_generation("1")
+
+
+def test_first_calls_touching_one_candidate_do_not_plan_concurrently():
+    """Regression (rehearsal): siblings' smoke keys both topped up the shared parent's smoke scope.
+
+    v2 plans a key's footprint from the attempts existing at its first call and launches in that
+    same call, so first calls that touch one candidate are serialized; polls are not.
+    """
+    import threading
+    import time
+    adapter = SNAdapter({}, eval_poll_interval=0)
+    active, overlaps, lock = set(), [], threading.Lock()
+
+    def slow(name, touched):
+        def call():
+            with lock:
+                overlaps.extend((name, other) for other, t in active if set(t) & set(touched))
+                active.add((name, touched))
+            time.sleep(0.05)
+            with lock:
+                active.discard((name, touched))
+            return {"status": "complete"}
+        return call
+
+    jobs = [("a", ("cand1", "root")), ("b", ("cand2", "root")), ("c", ("cand3", "other"))]
+    threads = [threading.Thread(target=adapter._await, args=({n: ("k-" + n, slow(n, t))}, {n: t}))
+               for n, t in jobs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlaps == []

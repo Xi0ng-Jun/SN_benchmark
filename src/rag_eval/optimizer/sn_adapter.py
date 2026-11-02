@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import threading
 import time
 from typing import Any, Optional
 
@@ -158,6 +159,13 @@ class SNAdapter(SystemAdapter):
         # Admitted-execution score cache: execution_id -> {case: (value, stub)}.
         self._score_cache: dict[str, dict] = {}
         self._SCORE_CACHE_SIZE = 512
+        # Per-candidate locks held around the FIRST call of a v2 measurement key
+        # (see _await): v2 plans a footprint from the attempts that exist when
+        # the key is first called, so concurrent first calls touching one
+        # candidate (two siblings' smoke on their shared parent) would both top
+        # it up. The first call plans AND launches, so later plans see the attempts.
+        self._plan_locks: dict[str, threading.Lock] = {}
+        self._plan_locks_guard = threading.Lock()
 
     # ------------------------------------------------------------------
     # v2 candidate plumbing: request keys, actor, versions
@@ -365,20 +373,40 @@ class SNAdapter(SystemAdapter):
         return dict(actor=self._actor(), infra_retry=self._infra_retry,
                     timeout_seconds=self._execution_timeout_seconds)
 
-    def _await(self, calls: dict[str, tuple[str, Any]]) -> None:
+    def _first_call(self, candidate_ids: tuple, call):
+        """Run the planning (first) call of a key while holding every touched candidate's lock."""
+        with self._plan_locks_guard:
+            locks = [self._plan_locks.setdefault(c, threading.Lock())
+                     for c in sorted({c for c in candidate_ids if c})]
+        for lock in locks:          # sorted order: no deadlock between two callers
+            lock.acquire()
+        try:
+            return call()
+        finally:
+            for lock in reversed(locks):
+                lock.release()
+
+    def _await(self, calls: dict[str, tuple[str, Any]], touches: Optional[dict[str, tuple]] = None) -> None:
         """Re-issue each keyed v2 call until all report ``complete``.
 
-        *calls*: label -> (request key, zero-argument callable). v2 statuses:
+        *calls*: label -> (request key, zero-argument callable). *touches*:
+        label -> candidate ids whose attempts the key's v2 plan may add; the
+        first call of the label holds their locks (``_first_call``). v2 statuses:
         running -> poll again; complete -> done; budget_exhausted ->
         BudgetExhausted (the frozen footprint waits for human confirmation);
         failed / exhausted / stopped / anything else, or the poll deadline ->
         EvaluationUnavailable. Missing measurements are never evidence.
         """
         pending = dict(calls)
+        planned: set[str] = set()
         deadline = time.monotonic() + self._eval_timeout
         while True:
             for label, (key, call) in list(pending.items()):
-                result = call() or {}
+                if label in planned:
+                    result = call() or {}
+                else:
+                    planned.add(label)
+                    result = self._first_call(tuple((touches or {}).get(label, ())), call) or {}
                 status = result.get("status")
                 if status == "complete":
                     del pending[label]
@@ -420,11 +448,13 @@ class SNAdapter(SystemAdapter):
         kwargs = self._v2_run_kwargs()
         while True:
             n = len(self._used_batches(completed=True))
-            calls = {}
+            calls, touches = {}, {}
             for cid in dict.fromkeys(candidate_ids):
                 key = self._request_key("measure", cid, n, *self._generation())
                 calls[f"measure {cid}"] = (key, lambda cid=cid, key=key: ops.measure(cid, key=key, **kwargs))
-            self._await(calls)
+                # A child's measure also tops up its parent on completed fresh batches.
+                touches[f"measure {cid}"] = (cid, ops.service.candidate(cid).get("parent_candidate_id"))
+            self._await(calls, touches)
             if len(self._used_batches(completed=True)) == n:
                 return
 
@@ -564,7 +594,8 @@ class SNAdapter(SystemAdapter):
                 raise ValueError(f"smoke compares a candidate with its parent ({parent!r}), not {rcid!r}")
             key = self._request_key("smoke", vcid, scope_id, *self._generation())
             kwargs = self._v2_run_kwargs()
-            self._await({f"smoke {vcid}": (key, lambda: ops.smoke(vcid, task_ids, key=key, **kwargs))})
+            self._await({f"smoke {vcid}": (key, lambda: ops.smoke(vcid, task_ids, key=key, **kwargs))},
+                        {f"smoke {vcid}": (vcid, rcid)})
             scopes = {t: scope_id for t in task_ids}
             return self._read(vcid, scopes), self._read(rcid, scopes)
         if purpose == "confirm":
@@ -582,8 +613,9 @@ class SNAdapter(SystemAdapter):
                 raise ValueError(f"fresh batch {batch_id!r} is already used")
             key = self._request_key("segment", rcid, vcid, batch_id)
             kwargs = self._v2_run_kwargs()
-            self._await({f"segment {rcid}->{vcid} on {batch_id}": (
-                key, lambda: ops.segment(start_id=rcid, end_id=vcid, batch_id=batch_id, key=key, **kwargs))})
+            label = f"segment {rcid}->{vcid} on {batch_id}"
+            self._await({label: (key, lambda: ops.segment(start_id=rcid, end_id=vcid, batch_id=batch_id,
+                                                          key=key, **kwargs))}, {label: (rcid, vcid)})
             scopes = {t: batch_id for t in task_ids}
             return self._read(vcid, scopes), self._read(rcid, scopes)
         raise ValueError(f"SN evaluate_pair() serves smoke/screen/confirm, not {purpose!r}")
