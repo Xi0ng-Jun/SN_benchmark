@@ -255,8 +255,6 @@ def test_alpha_warning_familywise_error_accumulates():
 
 def test_alpha_warning_rejects_fewer_than_one_confirmation():
     with pytest.raises(ValueError):
-        alpha_warning(0)
-    with pytest.raises(ValueError):
         alpha_warning(-1)
 
 

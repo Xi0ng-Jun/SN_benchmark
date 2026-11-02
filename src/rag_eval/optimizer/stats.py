@@ -169,9 +169,17 @@ def alpha_warning(n_confirmations: int, alpha: float = 0.05) -> dict:
     """§7 α-accumulation note.
 
     Returns per_test_alpha and familywise_error = 1-(1-alpha)^n_confirmations.
+    n_confirmations=0 is valid (no confirmations run yet): familywise_error=0.
     """
-    if n_confirmations < 1:
-        raise ValueError("n_confirmations must be >= 1")
+    if n_confirmations < 0:
+        raise ValueError("n_confirmations must be >= 0")
+    if n_confirmations == 0:
+        return dict(
+            per_test_alpha=alpha,
+            n_confirmations=0,
+            familywise_error=0.0,
+            bonferroni_alpha=None,
+        )
     return dict(
         per_test_alpha=alpha,
         n_confirmations=n_confirmations,
