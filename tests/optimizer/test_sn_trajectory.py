@@ -300,3 +300,33 @@ def test_select_analysis_cases_is_fixed_rule():
     assert sum(r == "control" for r in roles.values()) == 1
     assert set(traj) == set(roles)
 
+
+def test_analyst_message_fits_v2_text_and_body_limits(tmp_path):
+    """Regression (rehearsal): v2 caps message text at 8 KiB UTF-8 and text + brief at 16384 UTF-16 units."""
+    from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected
+    rows = [_row(f"k{i}", spans=SPANS, answer="论文报告的结果如下。" * 40) for i in range(12)]
+    run = _write_run(tmp_path, rows)
+    hyps = _FakeHypotheses()
+
+    class BriefOps(_FakeRoundOps):
+        brief = 9000      # characters v2 attaches as the Agent's brief
+
+        def agent(self, role, candidate_id, **kw):
+            if len(kw["text"]) + self.brief > 16384:
+                self.rejected = getattr(self, "rejected", 0) + 1
+                raise MessageInputRejected("Message body exceeds the bridge UTF-8 or UTF-16 budget")
+            return super().agent(role, candidate_id, **kw)
+
+    ops = BriefOps(hyps)
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"},
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+    cards = adapter.analyse(_stubs(run, [r["case_id"] for r in rows]), 2, round_id=1, history=[])
+    sent = ops.texts[-1]
+    assert len(sent.encode("utf-8")) <= MAX_MESSAGE_BYTES and len(sent) + ops.brief <= 16384
+    assert sent == adapter.last_analyst_text and [c.ref for c in cards] == ["new1"]
+    info = adapter.last_analysis
+    assert info["budget"] < 12000 and 1 <= info["shown"] < 12 and info["omitted"] == 12 - info["shown"]
+
+    ops.brief = 16384    # not even one case fits: refuse instead of sending an empty analysis
+    with pytest.raises((RuntimeError, MessageInputRejected)):
+        adapter.analyse(_stubs(run, [r["case_id"] for r in rows]), 2, round_id=2, history=[])

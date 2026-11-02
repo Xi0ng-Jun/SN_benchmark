@@ -40,7 +40,7 @@ JSON 对象，未知键直接拒绝。首次 `run` 把文件 sha256、原文副�
 | `mde`, `sigma_d`, `ladder_c`, `K_max`, `T`, `n_fresh` | 是 | `ProtocolConfig` 必填字段 |
 | `max_rounds`, `smoke_sample_size` | 是 | 轮数上限；冒烟样本量（规则：搜索集 id 按 sha256(case_id) 排序取前 N，存 `smoke-sample.json`） |
 | 其余 `ProtocolConfig` 字段 | 否 | `z_screen`, `z_confirm`, `b_cards`, `k_screen`（必须等于迭代的 `k_base`，否则启动前拒绝）, `safeguard_bounds`, `max_confirmations`, `predicate_coverage_floor`, `analyst_failure_threshold`, `analyst_max_failures`, `analyst_n_controls`, `analyst_cards`, `max_consecutive_run_failures`, `attribution_n_min`; `k_smoke` 只能是 1；不接受 `n_smoke_sample`（用 `smoke_sample_size`） |
-| 适配器设置 | 否 | `analyst_profile`, `implementer_profile`（默认 `pi-flash`）, `agent_poll_interval`(30), `agent_timeout`(5400), `worktree_timeout`(600), `analyst_view_budget`(12000, ≤15000), `eval_poll_interval`(30), `eval_timeout`(7200), `infra_retry`(1), `execution_timeout_seconds`(7200) |
+| 适配器设置 | 否 | `analyst_profile`, `implementer_profile`（默认 `pi-flash`）, `agent_poll_interval`(30), `agent_timeout`(5400), `worktree_timeout`(600), `analyst_view_budget`(12000, ≤15000；上限，实际预算再压到 v2 消息限制内：正文 ≤8 KiB UTF-8，正文+分析 Agent 工作说明 ≤16384 UTF-16 单位), `eval_poll_interval`(30), `eval_timeout`(7200), `infra_retry`(1), `execution_timeout_seconds`(7200) |
 
 ## 第 1 级：只测 analyse()
 
@@ -53,7 +53,7 @@ $V3 analyse-only $COMMON --run-id $RUN --state-dir var/method-v3/$RUN --n-cards 
 做什么：评测根候选在搜索集上（purpose=diagnose，k=k_base；v2 measure 同时覆盖搜索集 ∪ 验证池，已有足量尝试则只读回执）→ 固定规则选案例 → 派发一次分析 Agent（round_id=0）→ 读回卡片。不派生、不实现、不冻结，不碰新鲜批次和封存集。可加 `--protocol FILE` 用预注册的分析者设置。
 
 检查：
-- `last_analysis:` 行：`selected`、`with_view`（有视图的案例数，应接近 selected）、`shown`/`omitted`（字符预算内展示了几个）、`evidence_chars`（≤ analyst_view_budget）。
+- `last_analysis:` 行：`selected`、`with_view`（有视图的案例数，应接近 selected）、`shown`/`omitted`（字符预算内展示了几个）、`evidence_chars`、`budget`（实际字符预算，≤ analyst_view_budget，按 v2 消息限制压缩）、`message_bytes`（≤ 8192）。中文 SN 行下通常只能展示几个案例。
 - `var/method-v3/$RUN/analyse-only-evidence.txt`：发给分析者的全文。确认没有 gold/参考答案、分数、验证集或新鲜批次题目；案例用 c1、c2… 不透明编号。
 - `cards: N` 及每张卡：标题、`predicate: yes/none`、谓词读取的字段名（应是行为字段或 `trace.*`）。
 

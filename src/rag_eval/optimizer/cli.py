@@ -441,7 +441,8 @@ def cmd_analyse_only(args: argparse.Namespace) -> int:
             print(f"analyst message: {state_dir / EVIDENCE_FILE} ({len(text)} chars)")
     stats = getattr(adapter, "last_analysis", {}) or {}
     print("last_analysis: " + " ".join(
-        f"{k}={stats.get(k)}" for k in ("selected", "with_view", "shown", "omitted", "evidence_chars")))
+        f"{k}={stats.get(k)}" for k in ("selected", "with_view", "shown", "omitted", "evidence_chars",
+                                         "budget", "message_bytes")))
     print(f"cards: {len(cards)}")
     from .sn_adapter import _signature_fields
     for i, card in enumerate(cards, 1):

@@ -147,8 +147,10 @@ class SNAdapter(SystemAdapter):
         self._eval_timeout = eval_timeout
         self._infra_retry = infra_retry
         self._execution_timeout_seconds = execution_timeout_seconds
-        # Message text is capped at 16384 chars by the v2 message bridge; the
-        # instructions take ~1K, so diagnostic views get the rest minus headroom.
+        # Upper bound on the analyst's history + evidence characters. v2 caps the
+        # message text at 8 KiB UTF-8 and the sent body (text + the Agent's brief)
+        # at 16384 UTF-16 units, so analyse() shrinks the effective budget to fit
+        # (last_analysis['budget']); with Chinese SN rows that is well below this.
         if not 0 < analyst_view_budget <= 15000:
             raise ValueError("analyst_view_budget must be in (0, 15000] characters")
         self._analyst_view_budget = analyst_view_budget
@@ -911,15 +913,9 @@ class SNAdapter(SystemAdapter):
         ordered = sorted(views, key=lambda t: (roles.get(t, "failure") != "failure",
                                                list(search_set_trajectories).index(t)))
         items = [(f"c{i + 1}", roles.get(t, "failure"), views[t]) for i, t in enumerate(ordered)]
-        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], self._analyst_view_budget // 4)
-        evidence, n_shown, n_omitted = render_views(items, self._analyst_view_budget - len(tried))
-        self.last_analysis = dict(selected=len(search_set_trajectories), with_view=len(views),
-                                  shown=n_shown, omitted=n_omitted, evidence_chars=len(evidence),
-                                  history_shown=n_hist_shown, history_omitted=n_hist_omitted,
-                                  history_chars=len(tried))
         where = (f"Draft each card under the parent node with `proposal draft --parent {parent_cid} "
                  f"--file <card.json>`. ")
-        analyst_text = (
+        head = (
             f"Diagnose the parent version's failures on the search cases below and draft up to "
             f"{n_cards} legal lcd-v2 mechanism cards, one per distinct failure mode. Each card needs "
             f"title, component, mechanism, implementer_brief, falsification, predictions (may be []), "
@@ -928,17 +924,48 @@ class SNAdapter(SystemAdapter):
             f"trace.clarification_requested). Cases marked [failure] were selected by a fixed rule; "
             f"[control] cases are for contrast. {where}Do not request more evidence and do not read "
             f"files under var/ (run directories hold validation scores); draft the cards now.\n\n"
-            + tried
-            + evidence
         )
-        self.last_analyst_text = analyst_text
+
+        def compose(budget: int) -> tuple[str, dict]:
+            tried, n_hist_shown, n_hist_omitted = _render_history(history or [], budget // 4)
+            evidence, n_shown, n_omitted = render_views(items, budget - len(tried))
+            text = head + tried + evidence
+            return text, dict(selected=len(search_set_trajectories), with_view=len(views),
+                              shown=n_shown, omitted=n_omitted, evidence_chars=len(evidence),
+                              history_shown=n_hist_shown, history_omitted=n_hist_omitted,
+                              history_chars=len(tried), budget=budget,
+                              message_bytes=len(text.encode("utf-8")))
+
         # A node analyst bound to the round's parent (v2 ``agent_creations``: a
         # frozen candidate with a finished run). Not scope="iteration": v2 refuses
         # an iteration analyst until two candidates are evaluated, and in round 1
         # only the root is. Each round's parent gets its own Agent (the key names it).
-        call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
-                    text=analyst_text)
-        self._poll_agent("analyst", parent_cid, call)
+        from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected, SessionRemoved
+        budget, rejected = self._analyst_view_budget, 0
+        while True:
+            analyst_text, stats = compose(budget)
+            if stats["message_bytes"] > MAX_MESSAGE_BYTES:     # v2's text cap, known up front
+                budget = _shrink(budget, MAX_MESSAGE_BYTES / stats["message_bytes"])
+                continue
+            if items and not stats["shown"]:
+                raise RuntimeError(
+                    f"not one diagnostic case fits v2's analyst message limits (budget {budget} chars, "
+                    f"{len(items)} selected); analyst not dispatched")
+            self.last_analysis, self.last_analyst_text = stats, analyst_text
+            call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
+                        text=analyst_text)
+            try:
+                self._poll_agent("analyst", parent_cid, call)
+                break
+            except SessionRemoved:
+                raise
+            except MessageInputRejected:
+                # The body (text + the Agent's brief) exceeds v2's UTF-16/UTF-8 budget:
+                # v2 rejects before writing the message intent, so the same key retries.
+                rejected += 1
+                if rejected > 8:
+                    raise
+                budget = _shrink(budget, 0.75)
         since = self._analyst_requested_at(task_id, analyst_key)
         fresh = [r for r in self._hypotheses.list(task_id)
                  if r.get("parent_candidate_id") == parent_cid and r.get("status") in ("draft", "approved")
@@ -1016,6 +1043,13 @@ class SNAdapter(SystemAdapter):
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _shrink(budget: int, factor: float) -> int:
+    smaller = min(int(budget * min(factor, 0.97)), budget - 1)
+    if smaller < 1:
+        raise RuntimeError("the analyst instructions alone exceed v2's message limits")
+    return smaller
+
 
 # v2 author of a card drafted by an analyst Agent (``sn-eval proposal draft``).
 ANALYST_AUTHOR = "agent:analyst"
