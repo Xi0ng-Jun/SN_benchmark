@@ -243,7 +243,7 @@ class SNAdapter(SystemAdapter):
         task_ids: list[str],
         k: int,
         *,
-        reference_version: Optional[Version] = None,
+        purpose: str = "screen",
     ) -> EvalResult:
         """Collect k admitted run-batches for *version* from the v2 run_views.
 

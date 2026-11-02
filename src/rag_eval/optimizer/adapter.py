@@ -68,6 +68,9 @@ class SmokeResult:
     verdict: str                             # 'pass' | 'fail' | 'unchecked'
 
 
+PURPOSES = ("baseline", "diagnose", "screen", "smoke", "confirm", "sealed")
+
+
 class SystemAdapter(abc.ABC):
     """Four-capability interface the method-core package depends on (§2.6).
 
@@ -85,13 +88,46 @@ class SystemAdapter(abc.ABC):
         task_ids: list[str],
         k: int,
         *,
-        reference_version: Optional[Version] = None,
+        purpose: str = "screen",
     ) -> EvalResult:
-        """Run version on task_ids k times each.
+        """Scores (and trajectory stubs) of one version on task_ids, k runs each.
 
-        When reference_version is supplied, run both interleaved for better
-        paired-difference estimates.
+        *purpose* (one of PURPOSES) tells the adapter which partition is meant,
+        so it never has to guess from the id set: 'baseline' / 'diagnose' /
+        'screen' read the search set or validation pool. Fresh batches and
+        smoke samples are only evaluated in pairs (``evaluate_pair``).
+        An adapter may run fewer new attempts when earlier ones already exist
+        (top-up semantics); it must raise rather than silently change k.
         """
+
+    def evaluate_pair(
+        self,
+        version: Version,
+        reference: Version,
+        task_ids: list[str],
+        k: int,
+        *,
+        purpose: str,
+    ) -> tuple[EvalResult, EvalResult]:
+        """(version, reference) on the same task_ids, k runs each, for paired d_i.
+
+        purpose: 'smoke' (candidate vs parent on the smoke sample, k=1),
+        'screen' (candidate vs parent on the validation pool), 'confirm'
+        (segment end vs last certified node on one fresh batch; consumes it).
+        Default: two independent ``evaluate`` calls, adequate for systems
+        without paired dispatch. Adapters whose runtime pairs runs override.
+        """
+        return (self.evaluate(version, task_ids, k, purpose=purpose),
+                self.evaluate(reference, task_ids, k, purpose=purpose))
+
+    def rebase(self, candidate: Version, new_parent: Version) -> Optional[Version]:
+        """Re-apply *candidate*'s change onto *new_parent* (§2.2 A precondition).
+
+        Returns the rebased, frozen Version, or None when unsupported or on
+        conflict — the loop then discards the candidate and refills from the
+        card queue.
+        """
+        return None
 
     @abc.abstractmethod
     def features(

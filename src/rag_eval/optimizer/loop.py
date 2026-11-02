@@ -159,7 +159,7 @@ def _run_smoke(
     if card.predicate is None:
         # Generic smoke: candidate must run on the smoke sample.
         try:
-            cand_eval = adapter.evaluate(candidate, smoke_task_ids, k=1)
+            cand_eval, _ = adapter.evaluate_pair(candidate, parent, smoke_task_ids, 1, purpose='smoke')
         except Exception as exc:  # infra failure during smoke
             log.warning("generic smoke infra failure: %s", exc)
             return SmokeResult(
@@ -180,8 +180,7 @@ def _run_smoke(
             verdict='pass' if ran else 'fail',
         )
     # Predicate present: behavioral smoke.
-    parent_eval = adapter.evaluate(parent, smoke_task_ids, k=1)
-    cand_eval = adapter.evaluate(candidate, smoke_task_ids, k=1)
+    cand_eval, parent_eval = adapter.evaluate_pair(candidate, parent, smoke_task_ids, 1, purpose='smoke')
     before = [v for v in adapter.features(parent_eval.trajectories, card.predicate).values() if v is not None]
     after = [v for v in adapter.features(cand_eval.trajectories, card.predicate).values() if v is not None]
     if not before or not after:
@@ -288,7 +287,7 @@ def run_optimization(
     milestone.current_provisional_id = seed.content_hash
 
     # Measure seed on validation pool to set best_score.
-    seed_eval = adapter.evaluate(seed, val_pool_ids, config.k_screen)
+    seed_eval = adapter.evaluate(seed, val_pool_ids, config.k_screen, purpose='baseline')
     milestone.best_score = _mean_score(seed_eval)
     milestone.segment_start_best = milestone.best_score
 
@@ -324,7 +323,8 @@ def run_optimization(
 
         # --- 1. Diagnosis: analyst reads search-set failures ---
         # Build trajectories dict for the analyst: search-set failures only.
-        parent_eval_search = adapter.evaluate(parent_v, search_set_ids, config.k_smoke)
+        # Search-set runs share k with screening (one SN measure covers search ∪ validation).
+        parent_eval_search = adapter.evaluate(parent_v, search_set_ids, config.k_screen, purpose='diagnose')
         selected, roles = select_analysis_cases(parent_eval_search, config)
         cards = adapter.analyse(selected, config.b_cards, case_roles=roles,
                                 parent=parent_v, round_id=round_id)
@@ -377,14 +377,14 @@ def run_optimization(
         # --- 3. Screen each candidate against current best (Ladder gate) ---
         # Cache the parent eval on the validation pool; reuse for all candidates
         # this round per §2.2 A: "父节点在当前验证池上的结果可缓存复用".
-        parent_eval_val = adapter.evaluate(parent_v, val_pool_ids, config.k_screen)
+        parent_eval_val = adapter.evaluate(parent_v, val_pool_ids, config.k_screen, purpose='screen')
         parent_val_scores = _score_list(parent_eval_val, val_pool_ids)
 
         certified_best = milestone.best_score
         confirmed_this_round = None
         for rec in candidates:
-            ev = adapter.evaluate(rec.candidate, val_pool_ids, config.k_screen,
-                                   reference_version=rec.parent)
+            ev, _ = adapter.evaluate_pair(rec.candidate, rec.parent, val_pool_ids, config.k_screen,
+                                          purpose='screen')
             rec.eval_result = ev
             d = paired_differences(
                 _score_list(ev, val_pool_ids),
@@ -476,8 +476,8 @@ def _milestone_confirm(
 
     start_v = versions[start_node.version_hash]
     end_v = versions[end_node.version_hash]
-    start_eval = adapter.evaluate(start_v, fresh_ids, config.k_screen)
-    end_eval = adapter.evaluate(end_v, fresh_ids, config.k_screen, reference_version=start_v)
+    end_eval, start_eval = adapter.evaluate_pair(end_v, start_v, fresh_ids, config.k_screen,
+                                                 purpose='confirm')
     d = paired_differences(
         _score_list(end_eval, fresh_ids),
         _score_list(start_eval, fresh_ids),

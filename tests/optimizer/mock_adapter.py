@@ -94,12 +94,10 @@ class MockAdapter(SystemAdapter):
         task_ids: list[str],
         k: int,
         *,
-        reference_version: Optional[Version] = None,
+        purpose: str = "screen",
     ) -> EvalResult:
         self.evaluate_calls += 1
         self.received.append(("evaluate", version))
-        if reference_version is not None:
-            self.received.append(("evaluate.reference", reference_version))
         scores = {tid: self._scores.get(version.content_hash, {}).get(tid, 0.0)
                   for tid in task_ids}
         smoke_pass = (version.metadata or {}).get("smoke_pass", True)
