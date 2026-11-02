@@ -80,6 +80,9 @@ class ProtocolConfig:
     # K_c: cards requested from the analyst per round (§2.1 step 1). Cards
     # beyond b_cards are the refill queue (§2.1 补位). None → b_cards.
     analyst_cards: Optional[int] = None
+    # §2.5 流程故障: consecutive candidates whose smoke run itself failed
+    # (crash / not admitted) before the loop halts as a process failure.
+    max_consecutive_run_failures: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +114,7 @@ class CandidateRecord:
     reason: Optional[str] = None
     rebased_from: Optional[str] = None
     screen_evaluations: int = 0
+    n_unpaired: int = 0                 # pool tasks dropped: unscored on either side
     delta_val: Optional[float] = None
     se_val: Optional[float] = None
     screen_verdict: Optional[str] = None
@@ -198,6 +202,24 @@ class HaltTracker:
         if self.confirmations_used >= max_confirmations:
             return 'max_confirmations'
         return None
+
+
+RUN_FAILURE = 'smoke_run_failed'
+
+
+def _paired(a: EvalResult, b: EvalResult, task_ids: list[str]) -> tuple[list[float], list[float], int]:
+    """Scores of tasks scored on both sides, plus how many were dropped.
+
+    A missing score is not computable, never 0 (§2.3): unscored tasks leave
+    the paired difference instead of entering it as zeros.
+    """
+    xs, ys = [], []
+    for tid in task_ids:
+        x, y = a.per_task_scores.get(tid), b.per_task_scores.get(tid)
+        if x is not None and y is not None:
+            xs.append(x)
+            ys.append(y)
+    return xs, ys, len(task_ids) - len(xs)
 
 
 def _failure_halt_reason(exc: EvaluationUnavailable) -> str:
@@ -335,8 +357,14 @@ def _smoke_and_screen(adapter: SystemAdapter, config: ProtocolConfig, rec: Candi
     t0 = time.monotonic()
     try:
         rec.smoke = _run_smoke(adapter, rec.candidate, rec.parent, rec.card, smoke_ids)
-    except EvaluationUnavailable:
+    except BudgetExhausted:
         raise
+    except EvaluationUnavailable as exc:
+        # The smoke run itself failed (candidate crash or run not admitted):
+        # generic smoke exists to catch exactly this, so it is this card's
+        # smoke failure, not a loop halt. Repeats halt via the run-failure count.
+        rec.timings['smoke_s'] = rec.timings.get('smoke_s', 0.0) + time.monotonic() - t0
+        return _stop(rec, 'smoke_fail', f"{RUN_FAILURE}: {exc}")
     except Exception as exc:
         rec.timings['smoke_s'] = rec.timings.get('smoke_s', 0.0) + time.monotonic() - t0
         return _stop(rec, 'error', f"smoke: {type(exc).__name__}: {exc}")
@@ -454,6 +482,7 @@ class _Run:
         # Validation-pool results of parents, per (version hash, pool size).
         # The pool only grows, so its size identifies it.
         self.val_cache: dict[tuple[str, int], EvalResult] = {}
+        self.run_failures = 0  # consecutive smoke-run failures (§2.5 流程故障)
         self.milestone = MilestoneState(
             cumulative_delta_val=0.0,
             best_score=float('-inf'),
@@ -601,6 +630,14 @@ class _Run:
                         log.error("evaluation unavailable while deciding: %s", exc)
                         failure = _failure_halt_reason(exc)
                         continue
+                    if (rec.reason or '').startswith(RUN_FAILURE):
+                        self.run_failures += 1
+                        if self.run_failures >= self.config.max_consecutive_run_failures:
+                            log.error("%d consecutive smoke-run failures; halting", self.run_failures)
+                            failure = 'process_failure'
+                            continue
+                    elif rec.smoke is not None:
+                        self.run_failures = 0
                     if action == 'rebase':
                         fut = pool_ex.submit(_rebase_and_measure, self.adapter, self.config, rec,
                                              self.pointer(), self.smoke_ids, list(self.pool))
@@ -636,7 +673,11 @@ class _Run:
 
         cand_ev, ref_ev = rec.eval_result, rec.ref_result
         self.val_cache.setdefault((pointer.content_hash, len(self.pool)), ref_ev)
-        d = paired_differences(_score_list(cand_ev, self.pool), _score_list(ref_ev, self.pool))
+        xs, ys, rec.n_unpaired = _paired(cand_ev, ref_ev, self.pool)
+        if len(xs) < 2:
+            self._record(round_res, rec, 'unmeasurable', 'fewer than 2 tasks scored on both sides')
+            return 'refill'
+        d = paired_differences(xs, ys)
         rec.delta_val = mean_delta(d)
         rec.se_val = paired_se(d)
         score = _mean_score(cand_ev)
@@ -691,10 +732,10 @@ class _Run:
         if (verdict == 'error' and rec.delta_val is None and rec.eval_result is not None
                 and rec.ref_result is not None and rec.pool_size):
             # Measured but undecided (halted): keep Δ for selection accounting.
-            pool = self.pool[:rec.pool_size]
-            d = paired_differences(_score_list(rec.eval_result, pool),
-                                   _score_list(rec.ref_result, pool))
-            rec.delta_val, rec.se_val = mean_delta(d), paired_se(d)
+            xs, ys, rec.n_unpaired = _paired(rec.eval_result, rec.ref_result, self.pool[:rec.pool_size])
+            if len(xs) >= 2:
+                d = paired_differences(xs, ys)
+                rec.delta_val, rec.se_val = mean_delta(d), paired_se(d)
         round_res.candidates.append(dict(
             card_ref=rec.card.ref or rec.card.failure_mode_desc[:60],
             card_index=rec.card_index,
@@ -711,6 +752,7 @@ class _Run:
             ladder_m=self.m,
             val_pool_size=rec.pool_size or None,
             screen_evaluations=rec.screen_evaluations,
+            n_unpaired=rec.n_unpaired,
             timings=dict(rec.timings),
         ))
 
@@ -731,11 +773,16 @@ class _Run:
         end_eval, start_eval = self.adapter.evaluate_pair(end_v, start_v, fresh_ids,
                                                           cfg.k_screen, purpose='confirm')
         self.halt.fresh_batches_remaining -= 1
-        d = paired_differences(_score_list(end_eval, fresh_ids), _score_list(start_eval, fresh_ids))
-        delta_fresh = mean_delta(d)
-        se_fresh = paired_se(d)
-        verdict = confirm_decision(delta_fresh, se_fresh, cfg.z_confirm,
-                                   _safeguards_ok(end_eval, cfg.safeguard_bounds))
+        xs, ys, n_unpaired = _paired(end_eval, start_eval, fresh_ids)
+        if len(xs) < 2:
+            delta_fresh = se_fresh = None
+            verdict = 'unmeasurable'  # consumed and folded in like every outcome
+        else:
+            d = paired_differences(xs, ys)
+            delta_fresh = mean_delta(d)
+            se_fresh = paired_se(d)
+            verdict = confirm_decision(delta_fresh, se_fresh, cfg.z_confirm,
+                                       _safeguards_ok(end_eval, cfg.safeguard_bounds))
 
         if verdict == 'confirmed':
             self.lineage.certify(end_v.content_hash, fresh_result={
@@ -766,6 +813,7 @@ class _Run:
             delta_fresh=delta_fresh,
             se_fresh=se_fresh,
             n_fresh=len(fresh_ids),
+            n_unpaired=n_unpaired,
             fresh_batch_index=batch_index,
             segment_start=start_v.content_hash,
             segment_end=end_v.content_hash,
@@ -808,5 +856,3 @@ def _mean_score(ev: EvalResult) -> float:
     return sum(scores) / len(scores) if scores else 0.0
 
 
-def _score_list(ev: EvalResult, task_ids: list[str]) -> list[float]:
-    return [ev.per_task_scores.get(tid, 0.0) for tid in task_ids]

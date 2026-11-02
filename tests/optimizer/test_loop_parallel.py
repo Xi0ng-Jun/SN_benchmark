@@ -242,12 +242,48 @@ def test_budget_exhausted_halts():
     assert {c["verdict"] for c in result.rounds[0].candidates} == {"error"}
 
 
-def test_evaluation_unavailable_in_worker_is_process_failure():
+def test_one_smoke_run_failure_is_that_cards_smoke_fail():
+    # Generic smoke exists to catch candidates that crash the run: one such
+    # failure discards the card, it does not halt the loop.
     adapter = MockAdapter([{"cards": [_card("a")]}], n_tasks=12,
+                          fail_on={"smoke": EvaluationUnavailable("candidate crashed")})
+    result = _run(adapter, _config(), max_rounds=1)
+    assert result.halt_reason != "process_failure"
+    rec = result.rounds[0].candidates[0]
+    assert rec["verdict"] == "smoke_fail" and rec["reason"].startswith("smoke_run_failed")
+
+
+def test_consecutive_smoke_run_failures_halt_as_process_failure():
+    cards = [_card(n) for n in "abc"]
+    adapter = MockAdapter([{"cards": cards}], n_tasks=12,
                           fail_on={"smoke": EvaluationUnavailable("runner down")})
+    result = _run(adapter, _config(b_cards=1, analyst_cards=3, max_consecutive_run_failures=3),
+                  max_rounds=3)
+    assert result.halt_reason == "process_failure"
+    assert [c["verdict"] for c in result.rounds[0].candidates] == ["smoke_fail"] * 3
+
+
+def test_budget_exhausted_in_smoke_still_halts():
+    adapter = MockAdapter([{"cards": [_card("a")]}], n_tasks=12,
+                          fail_on={"smoke": BudgetExhausted("budget")})
+    assert _run(adapter, _config(), max_rounds=3).halt_reason == "budget_exhausted"
+
+
+def test_screen_run_failure_in_worker_is_process_failure():
+    adapter = MockAdapter([{"cards": [_card("a")]}], n_tasks=12)
+    adapter.fail_on["screen"] = EvaluationUnavailable("runner down")
     result = _run(adapter, _config(), max_rounds=3)
     assert result.halt_reason == "process_failure"
     assert result.rounds[0].candidates[0]["verdict"] == "error"
+
+
+def test_unscored_tasks_leave_the_paired_difference():
+    from rag_eval.optimizer.loop import _paired
+    from rag_eval.optimizer.adapter import EvalResult
+    a = EvalResult({"t1": 0.5, "t2": 1.0, "t3": 0.0}, {}, {}, {})
+    b = EvalResult({"t1": 0.5, "t3": 0.5}, {}, {}, {})
+    xs, ys, dropped = _paired(a, b, ["t1", "t2", "t3", "t4"])
+    assert (xs, ys, dropped) == ([0.5, 0.0], [0.5, 0.5], 2)  # t2/t4 not zeros
 
 
 def test_evaluation_unavailable_in_confirmation_is_process_failure():
