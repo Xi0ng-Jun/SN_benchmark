@@ -4,8 +4,14 @@ import { date } from '../contracts';
 // One pre-registered safeguard on one pair (SN: the iteration's v2 safeguards, v2's rule).
 export type SafeguardRow = { key: string; direction?: 'higher_is_better' | 'lower_is_better'; margin: number;
   reference?: number | null; subject: number | null; change?: number | null; breached: boolean | null };
-export type SafeguardCheck = { source: string; ok: boolean; reasons: string[]; checks: SafeguardRow[] };
-export type SafeguardsInForce = { source: string; specs?: { key: string; direction: string; margin: number }[]; bounds?: Record<string, number> };
+// v3 infrastructure count: an attempt that died before publishing per-case results counts its planned cases as failed.
+export type InfraAttempt = { execution_id: string; scope: string | null; state: string; total: number; failed: number;
+  unobserved: boolean; counted_from_plan: boolean; reason?: string };
+export type InfraSide = { total: number; failed: number; unobserved: number; attempts: InfraAttempt[] };
+export type SafeguardCheck = { source: string; ok: boolean; reasons: string[]; checks: SafeguardRow[];
+  infrastructure?: { subject: InfraSide; reference: InfraSide } };
+export type SafeguardsInForce = { source: string; specs?: { key: string; direction: string; margin: number }[]; bounds?: Record<string, number>;
+  infrastructure_rule?: string };
 export type AttemptVerdict = 'screen_pass' | 'screen_fail' | 'smoke_fail' | 'unmeasurable' | 'stale_parent' | 'error';
 export type AutoAttempt = {
   key: string; round_id: number; card_index: number; card_ref: string | null; title: string | null; verdict: AttemptVerdict; reason: string | null;

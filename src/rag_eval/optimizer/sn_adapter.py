@@ -560,7 +560,8 @@ class SNAdapter(SystemAdapter):
         if bounds:
             raise ValueError("on SN the safeguards are the iteration protocol's pre-registered v2 safeguards; "
                              "ProtocolConfig.safeguard_bounds must be empty (one source per quantity)")
-        return dict(source="iteration_protocol", specs=list(self._protocol().get("safeguards") or []))
+        return dict(source="iteration_protocol", specs=list(self._protocol().get("safeguards") or []),
+                    infrastructure_rule=V3_INFRASTRUCTURE_RULE)
 
     def safeguards(self, candidate: EvalResult, reference: EvalResult, bounds: dict) -> dict:
         """v2 lcd-v2 safeguards of one pair, computed exactly as a v2 comparison does.
@@ -569,9 +570,9 @@ class SNAdapter(SystemAdapter):
         ``comparisons.observe_safeguards`` over the run observations of the
         admitted attempts behind both results (answer_language_match, and
         cost_per_task as the subject/reference token ratio); infrastructure
-        failure rate from ``ComparisonService._infrastructure`` over every
-        terminal execution of each side on the pair's scopes. Rule:
-        ``gate.safeguard_checks`` (breached or unobserved blocks the verdict).
+        failure rate over every terminal execution of each side on the pair's
+        scopes, by ``_infrastructure`` (v3 rule, see V3_INFRASTRUCTURE_RULE).
+        Rule: ``gate.safeguard_checks`` (breached or unobserved blocks the verdict).
         """
         from rag_eval.workbench.comparisons import ComparisonService, observe_safeguards
         from rag_eval.workbench.gate import safeguard_checks
@@ -595,21 +596,57 @@ class SNAdapter(SystemAdapter):
                         continue
             trajectories[side] = cases
             node = ops.service.candidate(cid)
-            total = dict(total=0, failed=0, unobserved=0, attempts=[])
-            for scope in sorted(set(result.context["scopes"].values()), key=lambda x: (x is not None, x or "")):
-                part = comparisons._infrastructure(ComparisonService.scoped(node, scope))
-                for key in ("total", "failed", "unobserved"):
-                    total[key] += part[key]
-                total["attempts"] += part["attempts"]
-            infra[side] = total
+            rows = [row for scope in sorted(set(result.context["scopes"].values()),
+                                            key=lambda x: (x is not None, x or ""))
+                    for row in self._infrastructure(comparisons, node, scope)]
+            infra[side] = dict(total=sum(r["total"] for r in rows), failed=sum(r["failed"] for r in rows),
+                               unobserved=sum(r["unobserved"] for r in rows), attempts=rows)
         observed, detail = observe_safeguards(trajectories)
         rows, reasons = safeguard_checks(observed, infra, specs)
         return dict(source="iteration_protocol", ok=not reasons, reasons=reasons, checks=rows,
                     observations={side: {k: detail.get(side, {}).get(k) for k in
                                          ("observations", "language_known", "tokens_per_task", "tokens_known")}
                                   for side, _ in sides},
-                    infrastructure={side: {k: infra[side][k] for k in ("total", "failed", "unobserved")}
-                                    for side, _ in sides})
+                    infrastructure={side: dict(infra[side]) for side, _ in sides})
+
+    def _infrastructure(self, comparisons, node: dict, scope) -> list[dict]:
+        """Per terminal attempt of *node* on *scope*: v2's counts, with the v3 rule for dead attempts.
+
+        v2 ``ComparisonService._infrastructure`` counts error/missing cases over
+        every terminal execution and marks one that published no per-case
+        result as unobserved (which makes the safeguard unobserved). v3
+        (V3_INFRASTRUCTURE_RULE) counts such an attempt as all of its planned
+        cases failed, the planned count read from the attempt's job plan
+        snapshot; without that durable fact it stays unobserved, with a reason.
+        v2's function and its v2 semantics are untouched.
+        """
+        from rag_eval.workbench.comparisons import ComparisonService
+        scoped = ComparisonService.scoped(node, scope)
+        measurements = {m["execution_id"]: m for m in ComparisonService.terminal(scoped)}
+        _, task_id = self._require_ids()
+        out = []
+        for r in comparisons._infrastructure(scoped)["attempts"]:
+            row = dict(execution_id=r["execution_id"], scope=scope, state=r["execution_state"],
+                       total=r["total"], failed=r["failed"], unobserved=False, counted_from_plan=False)
+            if r["unobserved"]:
+                planned = self._planned_case_count(task_id, measurements.get(r["execution_id"]))
+                if planned:
+                    row.update(total=planned, failed=planned, counted_from_plan=True)
+                else:
+                    row.update(unobserved=True, reason="no published per-case result and no job plan snapshot")
+            out.append(row)
+        return out
+
+    def _planned_case_count(self, task_id: str, measurement: Optional[dict]) -> Optional[int]:
+        """Cases the attempt's frozen job plan scheduled (None when that record is unavailable)."""
+        job_id = (measurement or {}).get("job_id")
+        if not job_id:
+            return None
+        try:
+            job = self._round_ops.service.jobs.get(task_id, job_id)
+            return len(job["plan_snapshot"]["content"]["selection"]["case_ids"]) or None
+        except (KeyError, LookupError, TypeError, ValueError):
+            return None
 
     def evaluate(
         self,
@@ -1134,6 +1171,11 @@ MAX_ANALYST_VIEW_BUDGET = 60000
 # Marks v2 Agents created by method v3: v2 then attaches the short v3 brief.
 V3_BRIEF = "method-v3"
 EVIDENCE_FORMAT = "sn-v3-analyst-evidence-v1"
+# User decision (differs from v2, where such an attempt is unobserved and blocks the verdict).
+V3_INFRASTRUCTURE_RULE = (
+    "infrastructure_failure_rate = failed / total over every terminal attempt of a side on the pair's scopes; "
+    "an attempt that died before publishing per-case results counts all cases its job plan scheduled as "
+    "failed (v3 only; v2 treats it as unobserved)")
 
 # v2 author of a card drafted by an analyst Agent (``sn-eval proposal draft``).
 ANALYST_AUTHOR = "agent:analyst"

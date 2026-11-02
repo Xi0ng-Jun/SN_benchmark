@@ -473,7 +473,8 @@ def test_improvement_is_certified_on_fresh_and_measured_once_on_sealed(rig, caps
         assert [(i.get('candidate_id'), i.get('scope')) for i in analysts] == [(rig.tree['root_candidate_id'], None)]
         rig.assert_no_duplicate_measurements()
         # Safeguards: the iteration's pre-registered v2 safeguards, v2's rule, on every paired decision.
-        assert st['safeguards'] == dict(source='iteration_protocol', specs=SAFEGUARDS)
+        assert st['safeguards'] == dict(source='iteration_protocol', specs=SAFEGUARDS,
+                                        infrastructure_rule=sn_adapter.V3_INFRASTRUCTURE_RULE)
         end = conf[0]['safeguards_end']
         assert end['ok'] and end['source'] == 'iteration_protocol' and end['reasons'] == []
         assert {c['key']: (c['reference'], c['subject'], c['breached']) for c in end['checks']} == {
@@ -681,11 +682,46 @@ def test_retry_failed_after_a_baseline_process_failure_measures_again(rig, capsy
         root = next(c for c in rig.candidates() if c['id'] == rig.tree['root_candidate_id'])
         base = [a for a in root['attempts'] if a.get('batch_id') is None]
         assert [a['execution_state'] for a in base] == ['failed'] * 4 + ['finished'] * 2
-        # v2's safeguard rule: the root's failed executions published no per-case results, so its
-        # infrastructure failure rate is unobserved and every screen against it is unmeasurable.
+        # v3 rule (user decision; v2 would call it unobserved -> unmeasurable): the root's four dead
+        # attempts count every case their plan scheduled as failed, so the screen decides normally.
         cards, _ = records(rig)
-        assert cards['Plain prompt tweak']['verdict'] == 'unmeasurable'
-        assert cards['Plain prompt tweak']['safeguards']['reasons'] == ['safeguard_unobserved:infrastructure_failure_rate']
+        check = cards['Plain prompt tweak']['safeguards']
+        assert cards['Plain prompt tweak']['verdict'] == 'screen_fail' and check['ok']
+        planned = len(rig.protocol['splits']['search']) + len(rig.protocol['splits']['validation'])
+        ref = check['infrastructure']['reference']
+        dead = [a for a in ref['attempts'] if a['counted_from_plan']]
+        assert len(dead) == 4 and all(a['total'] == a['failed'] == planned and a['state'] == 'failed' for a in dead)
+        assert (ref['total'], ref['failed'], ref['unobserved']) == (6 * planned, 4 * planned, 0)
+        rate = next(c for c in check['checks'] if c['key'] == 'infrastructure_failure_rate')
+        assert rate['reference'] == pytest.approx(4 / 6) and rate['subject'] == 0.0 and rate['breached'] is False
+        ledger = json.loads((rig.run_dir / ledger_io.LEDGER_FILE).read_text())
+        assert ledger['selection']['screened_candidates'][0]['safeguards'] == check
+        assert 'v2 treats it as unobserved' in ledger['context']['safeguards']['infrastructure_rule']
+
+
+def test_a_candidate_whose_own_attempt_died_breaches_infrastructure_failure_rate(rig, capsys):
+    rig.analyst_cards = [card('Retry empty retrievals')]
+    rig.effects = {'Retry empty retrievals': dict(GOOD)}
+    died = set()
+
+    def first_screen_attempt_dies(cid, attempt):
+        if rig.chain(cid) == ['Retry empty retrievals'] and attempt.get('batch_id') is None and not died:
+            died.add(attempt['execution_id'])
+        return attempt['execution_id'] in died
+    rig.fail = first_screen_attempt_dies
+    with rig:
+        assert rig.run() == 0, capsys.readouterr()
+        cards, rounds = records(rig)
+        rec = cards['Retry empty retrievals']
+        check = rec['safeguards']
+        planned = len(rig.protocol['splits']['search']) + len(rig.protocol['splits']['validation'])
+        sub = check['infrastructure']['subject']
+        assert [a['execution_id'] for a in sub['attempts'] if a['counted_from_plan']] == sorted(died)
+        assert (sub['total'], sub['failed']) == (3 * planned, planned)       # v2 retried the dead slot once
+        rate = next(c for c in check['checks'] if c['key'] == 'infrastructure_failure_rate')
+        assert rate['subject'] == pytest.approx(1 / 3) and rate['reference'] == 0.0 and rate['breached']
+        assert rec['verdict'] == 'unmeasurable' and check['reasons'] == ['safeguard_breached:infrastructure_failure_rate']
+        assert rounds[0]['screen_passed'] == 0 and not batches(rig.repo, rig.tree['id'])
 
 
 def test_kill_while_the_analyst_drafts_keeps_its_cards_on_rerun(rig, capsys):

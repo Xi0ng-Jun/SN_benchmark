@@ -109,7 +109,7 @@ $V3 sealed $COMMON --state-dir var/method-v3/$RUN --budget sealed-budget.json --
 
 不加 `--confirm` 时打印将评测的节点数、node_set_hash 和每个节点；人确认后再加 `--confirm`。`--k` 默认用迭代的 `k_sealed`。评测中断后同一条命令只续跑/轮询，不重复认领。
 
-检查：`halt reason`（分类停机原因）；`ledger.json` 三部分（每次筛选的 `safeguards`、每次确认的 `safeguards_end`：迭代协议的保护指标按 v2 规则判定，越界或未观测到都判不可测）；`status` 中确认节点、指针、验证池大小、m、已用新鲜批次；`sealed-curve.json` 的 `status: finished`、每个节点的 `state/style`、`delta_vs_seed`、校正后区间。
+检查：`halt reason`（分类停机原因）；`ledger.json` 三部分（每次筛选的 `safeguards`、每次确认的 `safeguards_end`：迭代协议的保护指标按 v2 规则判定，越界或未观测到都判不可测。基础设施失败率是 v3 规则，与 v2 不同：某侧在该范围内所有已结束的 attempt 中，未发布逐题结果就死掉的 attempt 按其作业计划的题数全部计为失败（记录里 `counted_from_plan: true`），所以父节点的死 attempt 会放宽边界、候选自己的死 attempt 会抬高它的失败率；只有连计划都读不到时才按 v2 记为未观测）；`status` 中确认节点、指针、验证池大小、m、已用新鲜批次；`sealed-curve.json` 的 `status: finished`、每个节点的 `state/style`、`delta_vs_seed`、校正后区间。
 
 汇报：`status` 输出；`ledger.json`；`rounds.jsonl`；`sealed-curve.json`；总耗时与每轮耗时；所有退出码。
 

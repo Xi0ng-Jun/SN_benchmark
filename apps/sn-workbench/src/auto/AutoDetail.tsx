@@ -72,6 +72,12 @@ function SafeguardRows({ check }: { check: SafeguardCheck }) {
     {check.checks.map(row => <KeyValue key={row.key} label={row.key}>
       <Number_ value={`${num(row.reference ?? null)} → ${num(row.subject)}（容差 ${row.margin}）${row.breached === null ? ' 未观测' : row.breached ? ' 越界' : ''}`} />
     </KeyValue>)}
+    {(['subject', 'reference'] as const).map(side => {
+      const dead = check.infrastructure?.[side]?.attempts.filter(a => a.counted_from_plan) ?? [];
+      return dead.length > 0 && <Copy key={side} small muted>
+        {side === 'subject' ? '候选' : '参照'}有 {dead.length} 次运行未发布逐题结果，按计划题数全部计为失败（{dead.reduce((n, a) => n + a.failed, 0)} 题）。
+      </Copy>;
+    })}
     {!check.ok && <Copy small muted>{check.reasons.join('，')}：判定为不可测。</Copy>}
   </>;
 }

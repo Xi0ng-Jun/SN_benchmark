@@ -503,3 +503,36 @@ def test_first_calls_touching_one_candidate_do_not_plan_concurrently():
     for t in threads:
         t.join()
     assert overlaps == []
+
+
+def test_v3_infrastructure_counts_a_dead_attempt_by_its_plan_and_keeps_v2_untouched():
+    """User decision: a terminal attempt with no published per-case result = all planned cases failed.
+
+    The planned count comes from the attempt's job plan snapshot; without it the attempt stays
+    unobserved (v2's rule) with a reason. v2's own ComparisonService._infrastructure is unchanged.
+    """
+    attempts = [dict(attempt=1, execution_id="ok", job_id="j-ok", execution_state="finished", batch_id=None),
+                dict(attempt=2, execution_id="dead", job_id="j-dead", execution_state="failed", batch_id=None),
+                dict(attempt=3, execution_id="lost", job_id="j-lost", execution_state="failed", batch_id=None)]
+    v2_rows = [dict(execution_id="ok", total=5, failed=1, unobserved=False, execution_state="finished"),
+               dict(execution_id="dead", total=0, failed=0, unobserved=True, execution_state="failed"),
+               dict(execution_id="lost", total=0, failed=0, unobserved=True, execution_state="failed")]
+
+    class Comparisons:
+        def _infrastructure(self, candidate):
+            assert [a["execution_id"] for a in candidate["attempts"]] == ["ok", "dead", "lost"]
+            return dict(total=5, failed=1, unobserved=2, attempts=[dict(r) for r in v2_rows])
+
+    class Jobs:
+        def get(self, task_id, job_id):
+            if job_id == "j-lost":
+                raise KeyError(job_id)
+            return dict(plan_snapshot=dict(content=dict(selection=dict(case_ids=["a", "b", "c", "d"]))))
+
+    ops = SimpleNamespace(service=SimpleNamespace(jobs=Jobs()))
+    adapter = SNAdapter(CONFIG, round_operations=ops)
+    rows = adapter._infrastructure(Comparisons(), dict(id="cand1", attempts=attempts, links=[]), None)
+    assert [(r["execution_id"], r["total"], r["failed"], r["counted_from_plan"], r["unobserved"]) for r in rows] == [
+        ("ok", 5, 1, False, False), ("dead", 4, 4, True, False), ("lost", 0, 0, False, True)]
+    assert "job plan snapshot" in rows[2]["reason"] and rows[1]["state"] == "failed"
+    assert v2_rows[1]["unobserved"] is True                       # v2's record is not rewritten
