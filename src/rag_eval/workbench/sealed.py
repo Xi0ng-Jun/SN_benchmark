@@ -36,6 +36,14 @@ def initialize(repository):
             iteration_id TEXT NOT NULL, node_index INTEGER NOT NULL, repetition INTEGER NOT NULL,
             candidate_id TEXT NOT NULL, execution_id TEXT,
             PRIMARY KEY(iteration_id, node_index, repetition))''')
+        # Explicit node sets (method v3) persist their hash; v2 claims leave it NULL.
+        if 'node_set_hash' not in {r[1] for r in conn.execute('PRAGMA table_info(sealed_lineage_claims)')}:
+            conn.execute('ALTER TABLE sealed_lineage_claims ADD COLUMN node_set_hash TEXT')
+
+
+def node_set_hash(candidate_ids):
+    """Order-sensitive digest of an explicit sealed node set (seed first)."""
+    return hashlib.sha256(json.dumps(list(candidate_ids)).encode()).hexdigest()
 
 
 def authorize(repository, iteration_id, candidate_id, capability):
@@ -72,6 +80,16 @@ def _stopped_baseline(conn, iteration_id):
                           for r, record in zip(rows, records)):
         return None
     return records[-1].get('baseline_candidate_id')
+
+
+def _rounds_unsettled(conn, iteration_id):
+    """True while a v2 round invocation of this iteration may still move a parent."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='iteration_round_invocations'").fetchone():
+        return False
+    from .loop import TERMINAL
+    return any(r['stop_actor'] is None and json.loads(r['record'])['status'] not in TERMINAL
+               for r in conn.execute('SELECT record,stop_actor FROM iteration_round_invocations WHERE iteration_id=?',
+                                     (iteration_id,)))
 
 
 def _holm(pvalues):
@@ -207,7 +225,24 @@ class SealedService:
             raise ValueError('sealed lineage does not reach the seed')
         return chain[::-1]
 
-    def run_lineage(self, iteration_id, *, budget, actor, confirmed=False, k=None):
+    def _explicit_nodes(self, tree, candidate_ids):
+        """A caller-fixed node set (method v3: seed + every lineage node, rolled back included)."""
+        if (not isinstance(candidate_ids, (list, tuple)) or not candidate_ids or len(candidate_ids) > 10000
+                or any(not isinstance(c, str) or not c for c in candidate_ids)):
+            raise ValueError('sealed lineage nodes must be a non-empty list of candidate ids')
+        if len(set(candidate_ids)) != len(candidate_ids):
+            raise ValueError('sealed lineage nodes must not repeat a candidate')
+        if candidate_ids[0] != tree['root_candidate_id']:
+            raise ValueError("sealed lineage nodes must start with the iteration's seed")
+        nodes = []
+        for cid in candidate_ids:
+            candidate = self.iterations.candidate(cid)
+            if candidate['iteration_id'] != tree['id'] or candidate['status'] != 'frozen':
+                raise ValueError('sealed lineage needs frozen nodes of this iteration')
+            nodes.append(dict(candidate_id=cid, frozen_commit=candidate['frozen_commit']))
+        return nodes
+
+    def run_lineage(self, iteration_id, *, budget, actor, confirmed=False, k=None, nodes=None):
         """Claim the sealed study once for the whole lineage, then dispatch every slot.
 
         The node set is fixed at claim time: seed + every confirmed parent of a
@@ -216,6 +251,12 @@ class SealedService:
         dispatch interrupted by an error resumes only slots that never got an
         execution, under the same deterministic keys, so no measured slot can
         be repeated and no node set can be re-chosen.
+
+        ``nodes`` (method v3) fixes the node set explicitly instead: an ordered
+        list of frozen candidate ids of this iteration, seed first, no repeats.
+        Its hash is persisted with the claim and a resume must name the same
+        set. It skips the v2 stopped-baseline walk (v3 runs no v2 round
+        invocations) but still refuses while a v2 round of the iteration runs.
         """
         if confirmed is not True:
             raise ValueError('sealed-run requires explicit human confirmation')
@@ -232,23 +273,37 @@ class SealedService:
         if type(k) is not int or k < 1:
             raise ValueError('k_sealed must be a positive integer')
         ids = registration['case_ids']
+        explicit = None if nodes is None else self._explicit_nodes(tree, nodes)
+        digest = None if explicit is None else node_set_hash([n['candidate_id'] for n in explicit])
         with self.repository.connect(write=True) as conn:
             claim = conn.execute('SELECT * FROM sealed_lineage_claims WHERE iteration_id=?', (tree['id'],)).fetchone()
             if claim is None:
                 if _claimed(conn, tree['id'], study):
                     raise Conflict('sealed study was already claimed; no second call is allowed')
-                baseline = _stopped_baseline(conn, tree['id'])
-                if baseline is None:
-                    raise ValueError('sealed lineage needs a stopped optimisation; every version must be frozen first')
-                nodes = self._lineage_nodes(tree, baseline)
-                conn.execute('INSERT INTO sealed_lineage_claims VALUES(?,?,?,?,?,?,?,?,?,?)',
-                             (tree['id'], study, ref, json.dumps(ids), json.dumps(nodes), k, actor, now(), 'dispatching', None))
+                if explicit is not None:
+                    if _rounds_unsettled(conn, tree['id']):
+                        raise ValueError('sealed lineage needs a stopped optimisation; every version must be frozen first')
+                    nodes = explicit
+                else:
+                    baseline = _stopped_baseline(conn, tree['id'])
+                    if baseline is None:
+                        raise ValueError('sealed lineage needs a stopped optimisation; every version must be frozen first')
+                    nodes = self._lineage_nodes(tree, baseline)
+                conn.execute('INSERT INTO sealed_lineage_claims(iteration_id,study_key,sealed_ref,case_ids_json,'
+                             'nodes_json,k,confirmed_by,claimed_at,status,result_json,node_set_hash) '
+                             'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                             (tree['id'], study, ref, json.dumps(ids), json.dumps(nodes), k, actor, now(), 'dispatching',
+                              None, digest))
                 conn.executemany('INSERT INTO sealed_lineage_slots VALUES(?,?,?,?,?)',
                                  [(tree['id'], i, r, n['candidate_id'], None) for i, n in enumerate(nodes) for r in range(k)])
-                self.repository._event(conn, tree['task_id'], 'iteration.sealed.lineage_claimed', tree['id'],
-                                       dict(nodes=nodes, k=k, actor=actor, study_key=study))
+                event = dict(nodes=nodes, k=k, actor=actor, study_key=study)
+                if digest is not None:
+                    event['node_set_hash'] = digest
+                self.repository._event(conn, tree['task_id'], 'iteration.sealed.lineage_claimed', tree['id'], event)
             elif claim['status'] != 'dispatching' or claim['study_key'] != study:
                 raise Conflict('sealed study was already claimed; no second call is allowed')
+            elif digest is not None and claim['node_set_hash'] != digest:
+                raise Conflict('sealed lineage was claimed for a different node set')
             else:
                 k = claim['k']
         p = self.iterations.plans.save(task_id=tree['task_id'], input_id=protocol['input']['input_id'],
@@ -298,6 +353,8 @@ class SealedService:
                       claimed_at=claim['claimed_at'], k=claim['k'], nodes=len(nodes),
                       candidate_id=last['candidate_id'], frozen_commit=last['frozen_commit'],
                       metric=None, n=None, mean=None, curve=None)
+        if claim.get('node_set_hash'):
+            result['node_set_hash'] = claim['node_set_hash']
         task_id = self.iterations.iteration_record(iteration_id)['task_id']
         executions = [self.iterations._execution(task_id, s['execution_id']) for s in slots]
         result['progress'] = dict(slots=len(slots), dispatched=sum(s['execution_id'] is not None for s in slots),

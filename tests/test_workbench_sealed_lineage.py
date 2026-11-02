@@ -234,3 +234,103 @@ def test_lineage_action_through_the_http_confirmation(env):
     assert api.confirm(request['id']) == result  # a receipt recovery never dispatches again
     k = tree['protocol']['k_base']
     assert [len(sealed_attempts(env, cid)) for cid in nodes] == [k, k]
+
+
+# --- Explicit node sets (method v3 end step: seed + every lineage node) ---
+
+def frozen_child(env, parent, tag):
+    service = env['service']
+    child = service.derive(parent, note=tag, actor='loop', request_key=tag)
+    Path(child['worktree']['path'], 'backend/app/__init__.py').write_text(f'VALUE = {tag!r}\n')
+    return service.freeze(child['id'], actor='loop')['id']
+
+
+def v3_lineage(env, tree):
+    """seed -> a (certified) -> b (rolled back, off the parent chain) ; a -> c (provisional)."""
+    seed = tree['root_candidate_id']
+    a = frozen_child(env, seed, 'v3-a')
+    b = frozen_child(env, a, 'v3-b')
+    c = frozen_child(env, a, 'v3-c')
+    return [seed, a, b, c]
+
+
+def test_explicit_nodes_measure_rolled_back_nodes_without_v2_rounds(env):
+    from rag_eval.workbench.sealed import SealedService, node_set_hash
+    tree = registered_tree(env)
+    nodes = v3_lineage(env, tree)
+    sealed = SealedService(env['repo'], env['service'], None)
+    with pytest.raises(ValueError, match='human confirmation'):
+        sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', nodes=nodes)
+    # Without nodes the v2 rule still needs a stopped v2 optimisation.
+    with pytest.raises(ValueError, match='stopped optimisation'):
+        sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True)
+    result = sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True, k=None, nodes=nodes)
+    k = tree['protocol']['k_base']
+    assert result == dict(iteration_id=tree['id'], nodes=4, k=k, status='dispatched')
+    assert [len(sealed_attempts(env, cid)) for cid in nodes] == [k] * 4
+    progress = sealed.lineage(tree['id'])
+    assert progress['node_set_hash'] == node_set_hash(nodes) and progress['confirmed_by'] == 'human'
+    with env['repo'].connect() as conn:
+        claim = conn.execute('SELECT * FROM sealed_lineage_claims WHERE iteration_id=?', (tree['id'],)).fetchone()
+    assert claim['node_set_hash'] == node_set_hash(nodes)
+    assert [n['candidate_id'] for n in json.loads(claim['nodes_json'])] == nodes
+    # Spent: neither the same set, another set, nor the v2 path may run again.
+    for again in (nodes, nodes[:2], None):
+        with pytest.raises(Conflict, match='already claimed'):
+            sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True, nodes=again)
+
+
+def test_explicit_nodes_are_validated_before_claiming(env):
+    from rag_eval.workbench.sealed import SealedService
+    tree = registered_tree(env)
+    nodes = v3_lineage(env, tree)
+    other = registered_tree(env, request_key='other-tree')
+    unfrozen = env['service'].derive(nodes[1], note='open', actor='loop', request_key='open')['id']
+    sealed = SealedService(env['repo'], env['service'], None)
+    bad = {'start with': nodes[1:], 'repeat': nodes + [nodes[1]], 'non-empty': [],
+           'frozen nodes of this iteration': nodes + [unfrozen]}
+    for message, given in bad.items():
+        with pytest.raises(ValueError, match=message):
+            sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True, nodes=given)
+    with pytest.raises(ValueError, match='frozen nodes of this iteration'):
+        sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True,
+                           nodes=nodes + [other['root_candidate_id']])
+    assert sealed.lineage(tree['id']) is None
+    # A running v2 round of the same iteration still blocks the claim.
+    stop(env, tree, nodes[1], status='running')
+    with pytest.raises(ValueError, match='stopped optimisation'):
+        sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True, nodes=nodes)
+    assert sealed.lineage(tree['id']) is None
+
+
+def test_explicit_resume_must_name_the_same_node_set(env, monkeypatch):
+    from rag_eval.workbench.sealed import SealedService
+    tree = registered_tree(env)
+    nodes = v3_lineage(env, tree)
+    service = env['service']
+    sealed = SealedService(env['repo'], service, None)
+    real, calls = service.run, []
+
+    def flaky(*args, **kwargs):
+        calls.append(kwargs['request_key'])
+        if len(calls) == 2:
+            raise OSError('synthetic dispatch failure')
+        return real(*args, **kwargs)
+    monkeypatch.setattr(service, 'run', flaky)
+    with pytest.raises(OSError):
+        sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True, nodes=nodes)
+    with pytest.raises(Conflict, match='different node set'):
+        sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True, nodes=nodes[:3])
+    sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True, nodes=nodes)
+    k = tree['protocol']['k_base']
+    assert [len(sealed_attempts(env, cid)) for cid in nodes] == [k] * 4
+
+
+def test_v2_lineage_claims_carry_no_node_set_hash(env):
+    from rag_eval.workbench.sealed import SealedService
+    tree = registered_tree(env)
+    nodes = chain(env, tree, 1)
+    stop(env, tree, nodes[-1])
+    sealed = SealedService(env['repo'], env['service'], None)
+    sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True)
+    assert 'node_set_hash' not in sealed.lineage(tree['id'])
