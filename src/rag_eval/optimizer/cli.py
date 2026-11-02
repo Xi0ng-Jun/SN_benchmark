@@ -517,11 +517,15 @@ def cmd_sealed(args: argparse.Namespace) -> int:
     state_dir = Path(args.state_dir)
     st = _state(state_dir)
     identity_path = state_dir / CLI_RUN_FILE
+    # Adapter settings (poll cadence, eval timeout, ...) are the run's pre-registered ones.
+    settings = dict(ADAPTER_DEFAULTS)
     if identity_path.exists():
         ident = _read_json(identity_path, "run identity")
         if ident.get("iteration_id") != args.iteration:
             raise UsageError(f"--iteration {args.iteration!r} differs from the run's {ident.get('iteration_id')!r}")
         args.run_id = args.run_id or ident.get("run_id")
+        resolved = ident.get("protocol_resolved") or {}
+        settings = {k: resolved.get(k, v) for k, v in ADAPTER_DEFAULTS.items()}
     halt = st.get("halt_reason")
     if not halt:
         raise UsageError("the run has not halted; the sealed end step runs once, after the run halts")
@@ -542,7 +546,7 @@ def cmd_sealed(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("not confirmed: nothing claimed. The sealed split is evaluated once; rerun with --confirm.")
         return EXIT_USAGE
-    services = _services(args, dict(ADAPTER_DEFAULTS))
+    services = _services(args, settings)
     try:
         curve = evaluate_lineage_sealed(services.adapter, lineage, versions, confirmed=True,
                                         budget=budget, k=args.k, actor=args.actor)

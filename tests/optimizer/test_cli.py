@@ -421,6 +421,8 @@ def test_sealed_with_confirm_writes_curve(tmp_path, services, sealed_calls, caps
     assert cli.main(sealed_args(tmp_path, "--confirm", "--k", "3")) == 0
     assert sealed_calls == [dict(confirmed=True, budget=dict(timeout_seconds=3600), k=3, actor="operator",
                                  nodes=[adapter.seed.content_hash])]
+    # The sealed step polls with the run's pre-registered adapter settings, not the defaults.
+    assert services.built[-1]["settings"]["eval_poll_interval"] == 0.0
     curve = json.loads((tmp_path / "run" / "sealed-curve.json").read_text())
     assert curve["status"] == "finished"
     args = sealed_args(tmp_path, "--confirm")
