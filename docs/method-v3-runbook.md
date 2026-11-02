@@ -80,7 +80,7 @@ $V3 status --state-dir var/method-v3/$RUN
 - 结束 `halt reason: max_rounds`，`rounds: 1`，`certified nodes: 1`（只有种子）；`fresh batches used: 0/…`（里程碑没触发）。
 - `var/method-v3/$RUN/rounds.jsonl` 每张卡的 `verdict`、`timings`（`implement_s`、`smoke_s`、`total_s`）：两张卡的实现时间应重叠（并行生效），整轮耗时约等于最慢的一张，而不是相加。
 - 中途杀掉进程再用同一条命令续跑：应不重新派发分析，已决定的卡跳过，未完成的卡回放（v2 回执，不重复评测）。
-- 停在 `process_failure`（退出码 3）：修好原因后同一命令加 `--retry-failed`（key_generation +1）。
+- 停在 `process_failure`（退出码 3）：修好原因后同一命令加 `--retry-failed`（key_generation +1：measure/smoke 换新键，且每个失败槽位多给 `infra_retry` 次 v2 基础设施重试；v2 在任何键下都把失败 attempt 算作已占用槽位，只能沿重试链重跑）。新鲜批次 segment 不换键，已认领批次上的失败 segment 无法靠重试恢复。
 
 汇报：`status` 输出；`rounds.jsonl`；每张卡的 timings；总耗时；任何异常 traceback。
 

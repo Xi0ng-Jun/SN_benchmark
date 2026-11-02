@@ -458,6 +458,10 @@ def test_key_generation_suffixes_measure_and_smoke_but_not_segment(env):
     assert keys["measure"] == "v3/R1/measure/cand1/0/g2"
     assert keys["smoke"] == "v3/R1/smoke/cand1/" + smoke_scope_id(PROTOCOL, ["s1"]) + "/g2"
     assert keys["segment"] == "v3/R1/segment/root/cand1/F1"      # a claimed batch is never re-keyed
+    # Regression (rehearsal): v2 re-runs a failed slot only via its bounded infra-retry chain,
+    # under any key; a retry generation grants infra_retry more (segment keeps its frozen request).
+    retries = {c[0]: c[2]["infra_retry"] for c in ops.calls}
+    assert retries == {"measure": 3, "smoke": 3, "segment": 1}
 
 
 def test_key_generation_from_config_and_validation(env):

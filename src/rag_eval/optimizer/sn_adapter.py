@@ -100,6 +100,12 @@ class SNAdapter(SystemAdapter):
                                 persists the generation in state.json and sets it
                                 through ``set_key_generation`` (the config value is
                                 only the default for a new run).
+                                A new key alone re-runs nothing: v2 counts a failed
+                                attempt as a consumed slot under every key and re-runs
+                                it only through its bounded infra-retry chain. So the
+                                generation-g measure and smoke keys carry
+                                ``infra_retry * (g + 1)``: each operator retry grants
+                                every failed slot ``infra_retry`` more v2 retries.
     """
 
     def __init__(
@@ -367,10 +373,13 @@ class SNAdapter(SystemAdapter):
             )
         return {t: allowed[t] for t in task_ids}
 
-    def _v2_run_kwargs(self) -> dict:
+    def _v2_run_kwargs(self, *, generational: bool = True) -> dict:
         # These values are part of v2's frozen request: v2 refuses a replayed key
-        # whose actor/infra_retry/timeout differ, so they must stay constant per run.
-        return dict(actor=self._actor(), infra_retry=self._infra_retry,
+        # whose actor/infra_retry/timeout differ, so they must stay constant per key.
+        # Generation-keyed requests (measure, smoke) get infra_retry * (g + 1);
+        # segment keys never change, so they keep the pre-registered value.
+        g = self.key_generation if generational else 0
+        return dict(actor=self._actor(), infra_retry=self._infra_retry * (g + 1),
                     timeout_seconds=self._execution_timeout_seconds)
 
     def _first_call(self, candidate_ids: tuple, call):
@@ -612,7 +621,7 @@ class SNAdapter(SystemAdapter):
                                           and segment_start(ops.repository, claim["request_key"]) == rcid):
                 raise ValueError(f"fresh batch {batch_id!r} is already used")
             key = self._request_key("segment", rcid, vcid, batch_id)
-            kwargs = self._v2_run_kwargs()
+            kwargs = self._v2_run_kwargs(generational=False)
             label = f"segment {rcid}->{vcid} on {batch_id}"
             self._await({label: (key, lambda: ops.segment(start_id=rcid, end_id=vcid, batch_id=batch_id,
                                                           key=key, **kwargs))}, {label: (rcid, vcid)})
