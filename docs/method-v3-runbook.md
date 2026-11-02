@@ -26,7 +26,7 @@ COMMON="--config $CFG --state $STATE --iteration $IT --actor $ACTOR"
 
 ```bash
 $PY -m rag_eval.workbench.cli --state $STATE iteration-show --config $CFG --iteration $IT \
-  | $PY -c 'import json,sys; p=json.load(sys.stdin)["protocol"]; print({k: p.get(k) for k in ("k_base","k_sealed")}, {k: len(v) for k,v in p["splits"].items()}, [len(b["case_ids"]) for b in p.get("fresh_batches",[])])'
+  | $PY -c 'import json,sys; p=json.load(sys.stdin)["protocol"]; print({k: p.get(k) for k in ("k_base","k_sealed")}, {k: len(p["splits"][k]) for k in ("search","validation","sealed")}, [len(b["case_ids"]) for b in p.get("fresh_batches",[])])'
 ```
 
 退出码：0 成功；2 参数/协议/目录校验失败（什么都没跑或在任何派发前拒绝）；3 运行停在 `process_failure` 或 `budget_exhausted`；1 意外错误（附 traceback）。
