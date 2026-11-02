@@ -180,6 +180,40 @@ def test_analyse_sends_views_and_binds_cards_to_request_and_parent(tmp_path):
     assert adapter.last_analysis["shown"] == 3
 
 
+def test_analyse_renders_history_labels_only_within_budget(tmp_path):
+    run = _write_run(tmp_path, [_row("a", spans=SPANS), _row("ok")])
+    hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "parent_candidate_id": "P", "run_id": "R"},
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        analyst_view_budget=4000)
+    history = [dict(title=f"old idea {i}", label="screen_fail") for i in range(60)]
+    history += [dict(title="leaky", label="score=0.71", delta=0.3),          # not a §2.3 label
+                dict(title="adopted idea", label="rejected", attribution="supported",
+                     attribution_possibly_biased=True, delta_val=0.12)]
+    adapter.analyse(_stubs(run, ["a", "ok"]), 2, case_roles={"a": "failure", "ok": "control"},
+                    round_id=1, history=history)
+    text = ops.texts[0]
+    assert "- adopted idea -> rejected; attribution: supported (possibly biased)" in text
+    assert "leaky" not in text and "0.71" not in text and "0.12" not in text and "0.3" not in text
+    assert "old idea 59 -> screen_fail" in text and "- old idea 0 ->" not in text   # oldest trimmed
+    assert "older entr(ies) omitted" in text
+    info = adapter.last_analysis
+    assert info["history_chars"] <= 1000 and info["history_omitted"] > 0
+    assert info["history_chars"] + info["evidence_chars"] <= 4000
+    assert info["shown"] == 2
+
+
+def test_analyse_without_history_has_no_history_section(tmp_path):
+    run = _write_run(tmp_path, [_row("a")])
+    hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R"},
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+    adapter.analyse(_stubs(run, ["a"]), 1, round_id=1, history=[])
+    assert "already tried" not in ops.texts[0] and adapter.last_analysis["history_chars"] == 0
+
+
 def test_view_budget_must_fit_message_cap():
     with pytest.raises(ValueError):
         SNAdapter({}, analyst_view_budget=20000)

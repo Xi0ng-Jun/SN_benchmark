@@ -444,3 +444,26 @@ def test_rebase_derives_applies_and_freezes(env, outcome):
         assert result.metadata["candidate_id"] == "cand2" and result.metadata["parent_candidate_id"] == "newp"
     else:
         assert result is None and env.service.freezes == []
+
+
+# -- key generation (operator retry after a failed v2 result) -------------------
+
+def test_key_generation_suffixes_measure_and_smoke_but_not_segment(env):
+    adapter, ops = env.build()
+    adapter.set_key_generation(2)
+    adapter.evaluate(V_CAND, ["v1"], 2, purpose="screen")
+    adapter.evaluate_pair(V_CAND, V_ROOT, ["s1"], 1, purpose="smoke")
+    adapter.evaluate_pair(V_CAND, V_ROOT, ["f1a", "f1b"], 2, purpose="confirm")
+    keys = {c[0]: c[2]["key"] for c in ops.calls}
+    assert keys["measure"] == "v3/R1/measure/cand1/0/g2"
+    assert keys["smoke"] == "v3/R1/smoke/cand1/" + smoke_scope_id(PROTOCOL, ["s1"]) + "/g2"
+    assert keys["segment"] == "v3/R1/segment/root/cand1/F1"      # a claimed batch is never re-keyed
+
+
+def test_key_generation_from_config_and_validation(env):
+    assert SNAdapter(dict(CONFIG, key_generation=3)).key_generation == 3
+    assert SNAdapter(dict(CONFIG)).key_generation == 0
+    with pytest.raises(ValueError):
+        SNAdapter(dict(CONFIG, key_generation=-1))
+    with pytest.raises(ValueError):
+        SNAdapter(dict(CONFIG)).set_key_generation("1")

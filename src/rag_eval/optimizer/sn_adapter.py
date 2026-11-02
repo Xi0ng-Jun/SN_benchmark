@@ -88,6 +88,17 @@ class SNAdapter(SystemAdapter):
                                 replays v2 receipts instead of dispatching again
         actor                 — the v2 actor recorded on approvals/derives/freezes,
                                 and on every evaluation request
+        key_generation        — optional non-negative int (default 0). v2 replays
+                                a stored ``failed`` measurement result forever for
+                                the same key, so an operator-requested retry after
+                                a process-failure halt needs new keys. A generation
+                                g > 0 appends ``/g{g}`` to measure and smoke keys
+                                only; segment keys never change (a claimed fresh
+                                batch must not be claimed again), nor do agent,
+                                derive, approve or rebase keys. ``run_optimization``
+                                persists the generation in state.json and sets it
+                                through ``set_key_generation`` (the config value is
+                                only the default for a new run).
     """
 
     def __init__(
@@ -135,6 +146,7 @@ class SNAdapter(SystemAdapter):
             raise ValueError("analyst_view_budget must be in (0, 15000] characters")
         self._analyst_view_budget = analyst_view_budget
         self.last_analysis: dict = {}
+        self.set_key_generation(config.get("key_generation", 0))
 
         # Trajectory cache: (run_dir_str, case_id) → DiagnosticTrajectory dict.
         # Bounded to the most recent _TRAJ_CACHE_SIZE entries to cap memory use.
@@ -163,6 +175,11 @@ class SNAdapter(SystemAdapter):
         if len(key) > 200:
             key = key[:135] + "/" + hashlib.sha256(key.encode()).hexdigest()
         return key
+
+    def _generation(self) -> tuple[str, ...]:
+        """Key suffix for measure/smoke keys: () for generation 0, ('g{n}',) otherwise."""
+        g = self.key_generation
+        return (f"g{g}",) if g else ()
 
     def _actor(self) -> str:
         actor = self._config.get("actor")
@@ -386,7 +403,8 @@ class SNAdapter(SystemAdapter):
     def _measure(self, candidate_ids: list[str]) -> None:
         """v2 ``measure`` each candidate on search ∪ validation ∪ completed fresh batches.
 
-        Key ``v3/{run_id}/measure/{cid}/{n}`` with n = completed fresh batches.
+        Key ``v3/{run_id}/measure/{cid}/{n}[/g{generation}]`` with n = completed
+        fresh batches (generation suffix only when key_generation > 0).
         v2 ``RoundMeasurements._plan`` freezes the measure footprint at the
         first call of a key, with the completed fresh batches known AT THAT
         TIME; replays never re-plan. Once another batch is folded into the
@@ -401,7 +419,7 @@ class SNAdapter(SystemAdapter):
             n = len(self._used_batches(completed=True))
             calls = {}
             for cid in dict.fromkeys(candidate_ids):
-                key = self._request_key("measure", cid, n)
+                key = self._request_key("measure", cid, n, *self._generation())
                 calls[f"measure {cid}"] = (key, lambda cid=cid, key=key: ops.measure(cid, key=key, **kwargs))
             self._await(calls)
             if len(self._used_batches(completed=True)) == n:
@@ -541,7 +559,7 @@ class SNAdapter(SystemAdapter):
             parent = ops.service.candidate(vcid).get("parent_candidate_id")
             if parent != rcid:
                 raise ValueError(f"smoke compares a candidate with its parent ({parent!r}), not {rcid!r}")
-            key = self._request_key("smoke", vcid, scope_id)
+            key = self._request_key("smoke", vcid, scope_id, *self._generation())
             kwargs = self._v2_run_kwargs()
             self._await({f"smoke {vcid}": (key, lambda: ops.smoke(vcid, task_ids, key=key, **kwargs))})
             scopes = {t: scope_id for t in task_ids}
@@ -794,6 +812,7 @@ class SNAdapter(SystemAdapter):
         case_roles: Optional[dict[str, str]] = None,
         parent: Optional[Version] = None,
         round_id: Optional[int] = None,
+        history: Optional[list[dict]] = None,
     ) -> list[Card]:
         """Dispatch an analyst agent on accountant-selected search cases; return its new Cards.
 
@@ -804,6 +823,18 @@ class SNAdapter(SystemAdapter):
         to gather evidence. Cards are bound to this request and to the parent
         candidate: only hypotheses created after dispatch and drafted under the
         parent are returned (v2 derive requires the card's parent to match).
+        A replay of the same key after a restart would therefore return no
+        cards; ``run_optimization(state_dir=...)`` persists the round's Cards
+        right after this call and never calls analyse again for that round.
+        (A crash between the agent finishing and that write is the remaining
+        window.)
+
+        *history* (§2.3): hypotheses already processed under this parent, as
+        ``{title, label[, attribution, attribution_possibly_biased]}``. It is
+        rendered as a short labels-only section ahead of the evidence and
+        counts against ``analyst_view_budget`` (at most a quarter of it; the
+        oldest entries are trimmed first). Entries whose label is not in the
+        §2.3 vocabulary are dropped, so no score can reach the prompt.
 
         The request key is ``v3/{run_id}/analyse/{round_id}/{parent_cid}``:
         round ids grow monotonically within a run and are restored with the
@@ -829,9 +860,12 @@ class SNAdapter(SystemAdapter):
         ordered = sorted(views, key=lambda t: (roles.get(t, "failure") != "failure",
                                                list(search_set_trajectories).index(t)))
         items = [(f"c{i + 1}", roles.get(t, "failure"), views[t]) for i, t in enumerate(ordered)]
-        evidence, n_shown, n_omitted = render_views(items, self._analyst_view_budget)
+        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], self._analyst_view_budget // 4)
+        evidence, n_shown, n_omitted = render_views(items, self._analyst_view_budget - len(tried))
         self.last_analysis = dict(selected=len(search_set_trajectories), with_view=len(views),
-                                  shown=n_shown, omitted=n_omitted, evidence_chars=len(evidence))
+                                  shown=n_shown, omitted=n_omitted, evidence_chars=len(evidence),
+                                  history_shown=n_hist_shown, history_omitted=n_hist_omitted,
+                                  history_chars=len(tried))
         where = (f"Draft each card under the parent node with `proposal draft --parent {parent_cid} "
                  f"--file <card.json>`. " if parent_cid else "")
         analyst_text = (
@@ -843,6 +877,7 @@ class SNAdapter(SystemAdapter):
             f"trace.clarification_requested). Cases marked [failure] were selected by a fixed rule; "
             f"[control] cases are for contrast. {where}Do not request more evidence; draft the "
             f"cards now.\n\n"
+            + tried
             + evidence
         )
         before = {r["id"] for r in self._hypotheses.list(task_id)}
@@ -914,6 +949,45 @@ class SNAdapter(SystemAdapter):
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+_HISTORY_LABELS = ("smoke_fail", "screen_fail", "provisional_adopted", "confirmed",
+                   "rejected", "insufficient", "unmeasurable")
+_ATTRIBUTION_LABELS = ("supported", "refuted", "insufficient", "unattributed")
+_HISTORY_TITLE_CHARS = 160
+
+
+def _render_history(history: list[dict], budget_chars: int) -> tuple[str, int, int]:
+    """Labels-only section of hypotheses already tried under this parent (§2.3).
+
+    Returns (text, n_shown, n_omitted). Only whitelisted labels pass; titles
+    are collapsed to one line and capped. When the section exceeds
+    *budget_chars* the oldest entries are dropped first; "" if none fit.
+    """
+    lines = []
+    for entry in history:
+        label = entry.get("label") if isinstance(entry, dict) else None
+        if label not in _HISTORY_LABELS:
+            continue
+        title = " ".join(str(entry.get("title") or "(untitled)").split())[:_HISTORY_TITLE_CHARS]
+        line = f"- {title} -> {label}"
+        attribution = entry.get("attribution")
+        if attribution in _ATTRIBUTION_LABELS:
+            line += f"; attribution: {attribution}"
+            if entry.get("attribution_possibly_biased"):
+                line += " (possibly biased)"
+        lines.append(line + "\n")
+    total = len(lines)
+
+    def section(kept: list[str]) -> str:
+        note = f"[{total - len(kept)} older entr(ies) omitted]\n" if len(kept) < total else ""
+        return ("Hypotheses already tried under this parent (outcome labels only, oldest first; "
+                "do not re-propose these unchanged):\n" + note + "".join(kept) + "\n")
+
+    while lines and len(section(lines)) > budget_chars:
+        lines.pop(0)   # oldest first
+    if not lines:
+        return "", 0, total
+    return section(lines), len(lines), total - len(lines)
 
 def _signature_fields(signature: dict) -> set[str]:
     """Fields a v2 signature reads (all_of / any_of / not / leaf)."""
