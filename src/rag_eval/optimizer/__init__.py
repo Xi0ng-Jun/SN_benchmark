@@ -9,7 +9,7 @@ Version, Card, Diff, EvalResult, SmokeResult  : data objects
 Lineage, NodeState, MilestoneState            : lineage state
 """
 
-from .adapter import Card, Diff, EvalResult, Predicate, SmokeResult, Version, SystemAdapter
+from .adapter import BudgetExhausted, EvaluationUnavailable, Card, Diff, EvalResult, Predicate, SmokeResult, Version, SystemAdapter
 from .ledger import Lineage, MilestoneState, NodeState
 from .loop import ProtocolConfig, LoopResult, RoundResult, run_optimization
 from .stats import (
@@ -26,7 +26,7 @@ from .stats import (
 
 __all__ = [
     # adapter
-    "Card", "Diff", "EvalResult", "Predicate", "SmokeResult", "Version", "SystemAdapter",
+    "BudgetExhausted", "EvaluationUnavailable", "Card", "Diff", "EvalResult", "Predicate", "SmokeResult", "Version", "SystemAdapter",
     # ledger
     "Lineage", "MilestoneState", "NodeState",
     # loop

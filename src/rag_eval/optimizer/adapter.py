@@ -71,6 +71,18 @@ class SmokeResult:
 PURPOSES = ("baseline", "diagnose", "screen", "smoke", "confirm", "sealed")
 
 
+class EvaluationUnavailable(RuntimeError):
+    """An evaluation could not produce results (infrastructure, timeout, refusal).
+
+    The loop stops with a process-failure reason rather than treating the
+    candidate as rejected: missing measurements are not evidence (§2.5).
+    """
+
+
+class BudgetExhausted(EvaluationUnavailable):
+    """The frozen run budget does not admit the requested evaluation."""
+
+
 class SystemAdapter(abc.ABC):
     """Four-capability interface the method-core package depends on (§2.6).
 
