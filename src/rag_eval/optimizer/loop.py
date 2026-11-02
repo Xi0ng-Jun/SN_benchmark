@@ -1,17 +1,36 @@
 """Main v3 optimization loop orchestration.
 
 Implements the §2.2 A→B state machine, §1 Ladder-gated screening,
-milestone confirmation, rollback, and §2.5 halt conditions from
-method-v3.md.  All SN-specific logic is behind SystemAdapter.
+milestone confirmation, rollback, validation-pool growth, and §2.5 halt
+conditions from method-v3.md.  All SN-specific logic is behind SystemAdapter.
+
+Concurrency (binding plan §2.6): per-card work — workspace, implement,
+materialize, smoke, screening measurement, and any rebase + re-measurement —
+runs in a thread pool of ``b_cards`` workers.  Every decision (Ladder gate,
+provisional adoption, milestone confirmation, state transitions) is taken on
+the main thread, one finished candidate at a time, in completion order.
+Workers never touch loop state; they get immutable snapshots (parent version,
+validation-pool ids) and return a CandidateRecord.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .adapter import Card, Diff, EvalResult, SmokeResult, SystemAdapter, Version
+from .adapter import (
+    BudgetExhausted,
+    Card,
+    Diff,
+    EvalResult,
+    EvaluationUnavailable,
+    SmokeResult,
+    SystemAdapter,
+    Version,
+)
 from .ledger import Lineage, MilestoneState, NodeState
 from .stats import (
     alpha_warning,
@@ -45,7 +64,7 @@ class ProtocolConfig:
     n_fresh: int                   # tasks per fresh batch
     z_screen: float = 0.84         # one-sided z for screening
     z_confirm: float = 1.65        # one-sided z for confirmation
-    b_cards: int = 4               # analyst cards per round
+    b_cards: int = 4               # parallel implementers (candidates in flight) per round
     k_screen: int = 3              # eval repetitions per task at screening
     k_smoke: int = 1               # eval repetitions for smoke sample
     n_smoke_sample: int = 5        # search-set tasks sampled for smoke check
@@ -58,43 +77,82 @@ class ProtocolConfig:
     analyst_failure_threshold: float = 0.5
     analyst_max_failures: int = 12
     analyst_n_controls: int = 3
+    # K_c: cards requested from the analyst per round (§2.1 step 1). Cards
+    # beyond b_cards are the refill queue (§2.1 补位). None → b_cards.
+    analyst_cards: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
 # Per-round book-keeping
 # ---------------------------------------------------------------------------
 
+# Candidate verdicts recorded in RoundResult.candidates (stable vocabulary).
+CANDIDATE_VERDICTS = ("smoke_fail", "screen_fail", "screen_pass", "unmeasurable",
+                      "stale_parent", "error")
+
+
 @dataclass
 class CandidateRecord:
-    """One candidate being tracked through the screen→confirm pipeline."""
-    candidate: Version
-    parent: Version            # version this candidate was built against
-    diff: Diff
+    """One card tracked through implement → smoke → screen (→ rebase → ...).
+
+    Filled by a worker thread; read by the main thread only after the
+    worker's future has completed.
+    """
     card: Card
-    smoke: SmokeResult
-    eval_result: Optional[EvalResult] = None
+    card_index: int
+    parent: Version                     # version this candidate is built against
+    candidate: Optional[Version] = None
+    diff: Optional[Diff] = None
+    smoke: Optional[SmokeResult] = None
+    eval_result: Optional[EvalResult] = None   # candidate on the validation pool
+    ref_result: Optional[EvalResult] = None    # parent on the same pool (paired)
+    pool_size: int = 0                  # validation-pool size the measurement used
+    stage: str = "measured"             # 'measured' | 'error' | 'smoke_fail' | 'stale_parent'
+    reason: Optional[str] = None
+    rebased_from: Optional[str] = None
+    screen_evaluations: int = 0
     delta_val: Optional[float] = None
     se_val: Optional[float] = None
     screen_verdict: Optional[str] = None
+    timings: dict = field(default_factory=dict)
+    started_at: float = 0.0
+    finished_at: float = 0.0
 
 
 @dataclass
 class RoundResult:
-    """Summary of one optimization round."""
+    """Summary of one optimization round.
+
+    Field names are stable (§2.4 integrity rule): W5 persists them.
+    """
     round_id: int
     cards_generated: int
     smoke_passed: int
     screen_passed: int
     milestone_triggered: bool
-    confirmation_verdict: Optional[str]   # 'confirmed' | 'rejected' | 'insufficient' | None
+    confirmation_verdict: Optional[str]   # last of `confirmations`, or None
     rolled_back: bool
     halt_reason: Optional[str]
+    # One dict per card that entered the pipeline, in decision order. Keys:
+    # card_ref, card_index, verdict (CANDIDATE_VERDICTS), reason, parent,
+    # candidate, rebased_from, smoke_verdict, delta_val, se_val, score_val,
+    # best_before, ladder_m, val_pool_size, screen_evaluations, timings.
+    candidates: list = field(default_factory=list)
+    # One dict per milestone confirmation this round. Keys: verdict,
+    # delta_fresh, se_fresh, n_fresh, fresh_batch_index, segment_start,
+    # segment_end, val_pool_size, ladder_m, best_score.
+    confirmations: list = field(default_factory=list)
+    val_pool_size: int = 0                # at end of round
+    ladder_m: float = 0.0                 # m in force at end of round
+    best_score: float = 0.0               # best at end of round
 
 
 @dataclass
 class LoopResult:
     """Full result returned after the loop terminates."""
-    halt_reason: str      # 'fresh_exhausted' | 'no_improvement' | 'no_candidates' | 'max_confirmations'
+    # 'fresh_exhausted' | 'no_improvement' | 'no_candidates' | 'max_confirmations'
+    # | 'max_rounds' | 'budget_exhausted' | 'process_failure'
+    halt_reason: str
     lineage: Lineage
     rounds: list[RoundResult]
     alpha_note: dict      # from alpha_warning()
@@ -111,17 +169,24 @@ class HaltTracker:
         self.fresh_batches_remaining: int = 0
         self.confirmations_used: int = 0
 
-    def record_round(self, screen_passed: int, confirmation_verdict: Optional[str]) -> None:
+    def record_round(self, screen_passed: int, confirmation_verdict: Optional[str] = None) -> None:
         if screen_passed == 0:
             self.consecutive_no_screen_pass += 1
         else:
             self.consecutive_no_screen_pass = 0
-        if confirmation_verdict == 'rejected':
+        if confirmation_verdict is not None:
+            self.record_confirmation(confirmation_verdict)
+
+    def record_confirmation(self, verdict: str) -> None:
+        if verdict == 'rejected':
             self.consecutive_rejected_confirmations += 1
-        elif confirmation_verdict in ('confirmed', 'insufficient'):
+        elif verdict in ('confirmed', 'insufficient'):
             self.consecutive_rejected_confirmations = 0
-        if confirmation_verdict in ('confirmed', 'rejected', 'insufficient'):
+        if verdict in ('confirmed', 'rejected', 'insufficient'):
             self.confirmations_used += 1
+
+    def can_confirm(self, max_confirmations: int) -> bool:
+        return self.fresh_batches_remaining > 0 and self.confirmations_used < max_confirmations
 
     def halt_reason(self, max_confirmations: int) -> Optional[str]:
         if self.fresh_batches_remaining <= 0:
@@ -133,6 +198,10 @@ class HaltTracker:
         if self.confirmations_used >= max_confirmations:
             return 'max_confirmations'
         return None
+
+
+def _failure_halt_reason(exc: EvaluationUnavailable) -> str:
+    return 'budget_exhausted' if isinstance(exc, BudgetExhausted) else 'process_failure'
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +224,17 @@ def _run_smoke(
     must produce non-empty trajectories on every smoke task (i.e. it runs
     without infrastructure failure). Verdict is 'unchecked' for the
     behavioral dimension but the candidate is still discarded on infra fail.
+
+    EvaluationUnavailable (incl. BudgetExhausted) propagates: a missing
+    measurement is a process failure, not evidence against the candidate.
     """
     if card.predicate is None:
         # Generic smoke: candidate must run on the smoke sample.
         try:
             cand_eval, _ = adapter.evaluate_pair(candidate, parent, smoke_task_ids, 1, purpose='smoke')
-        except Exception as exc:  # infra failure during smoke
+        except EvaluationUnavailable:
+            raise
+        except Exception as exc:  # candidate-induced failure during smoke
             log.warning("generic smoke infra failure: %s", exc)
             return SmokeResult(
                 candidate_version=candidate.content_hash,
@@ -222,6 +296,99 @@ def _safeguards_ok(eval_result: EvalResult, bounds: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Worker-side pipeline (runs in the thread pool; touches no loop state)
+# ---------------------------------------------------------------------------
+
+def _stop(rec: CandidateRecord, stage: str, reason: Optional[str] = None) -> CandidateRecord:
+    rec.stage = stage
+    rec.reason = reason
+    rec.finished_at = time.monotonic()
+    rec.timings['total_s'] = rec.finished_at - rec.started_at
+    return rec
+
+
+def _build_and_measure(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord,
+                       smoke_ids: list[str], pool: list[str]) -> CandidateRecord:
+    """workspace → implement → materialize → smoke → screening measurement."""
+    rec.started_at = time.monotonic()
+    t0 = rec.started_at
+    for step in ('workspace', 'implement', 'materialize'):
+        try:
+            if step == 'workspace':
+                ws = adapter.workspace(rec.parent, rec.card)
+            elif step == 'implement':
+                rec.diff = adapter.implement(rec.card, ws)
+            else:
+                rec.candidate = adapter.materialize(rec.diff, rec.parent)
+        except EvaluationUnavailable:
+            raise
+        except Exception as exc:  # per-card failure: skip card, refill
+            log.warning("%s failed on card %r: %s", step, rec.card.failure_mode_desc[:40], exc)
+            rec.timings['implement_s'] = time.monotonic() - t0
+            return _stop(rec, 'error', f"{step}: {type(exc).__name__}: {exc}")
+    rec.timings['implement_s'] = time.monotonic() - t0
+    return _smoke_and_screen(adapter, config, rec, smoke_ids, pool)
+
+
+def _smoke_and_screen(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord,
+                      smoke_ids: list[str], pool: list[str]) -> CandidateRecord:
+    t0 = time.monotonic()
+    try:
+        rec.smoke = _run_smoke(adapter, rec.candidate, rec.parent, rec.card, smoke_ids)
+    except EvaluationUnavailable:
+        raise
+    except Exception as exc:
+        rec.timings['smoke_s'] = rec.timings.get('smoke_s', 0.0) + time.monotonic() - t0
+        return _stop(rec, 'error', f"smoke: {type(exc).__name__}: {exc}")
+    rec.timings['smoke_s'] = rec.timings.get('smoke_s', 0.0) + time.monotonic() - t0
+    if rec.smoke.verdict == 'fail':
+        return _stop(rec, 'smoke_fail')
+    return _screen(adapter, config, rec, pool)
+
+
+def _screen(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord,
+            pool: list[str]) -> CandidateRecord:
+    """Paired candidate-vs-parent measurement on the validation pool (§2.2 A)."""
+    if not rec.started_at:
+        rec.started_at = time.monotonic()
+    t0 = time.monotonic()
+    try:
+        rec.eval_result, rec.ref_result = adapter.evaluate_pair(
+            rec.candidate, rec.parent, pool, config.k_screen, purpose='screen')
+    except EvaluationUnavailable:
+        raise
+    except Exception as exc:
+        rec.timings['screen_s'] = rec.timings.get('screen_s', 0.0) + time.monotonic() - t0
+        return _stop(rec, 'error', f"screen: {type(exc).__name__}: {exc}")
+    rec.timings['screen_s'] = rec.timings.get('screen_s', 0.0) + time.monotonic() - t0
+    rec.pool_size = len(pool)
+    rec.screen_evaluations += 1
+    return _stop(rec, 'measured')
+
+
+def _rebase_and_measure(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord,
+                        new_parent: Version, smoke_ids: list[str],
+                        pool: list[str]) -> CandidateRecord:
+    """§2.2 A precondition: re-apply onto the current parent, re-smoke, re-screen."""
+    t0 = time.monotonic()
+    reason = None
+    try:
+        rebased = adapter.rebase(rec.candidate, new_parent)
+    except EvaluationUnavailable:
+        raise
+    except Exception as exc:
+        rebased, reason = None, f"rebase: {type(exc).__name__}: {exc}"
+    rec.timings['rebase_s'] = rec.timings.get('rebase_s', 0.0) + time.monotonic() - t0
+    if rebased is None:
+        return _stop(rec, 'stale_parent', reason or f"parent moved to {new_parent.content_hash}")
+    rec.rebased_from = rec.candidate.content_hash
+    rec.candidate = rebased
+    rec.parent = new_parent
+    rec.eval_result = rec.ref_result = None
+    return _smoke_and_screen(adapter, config, rec, smoke_ids, pool)
+
+
+# ---------------------------------------------------------------------------
 # Main optimization loop
 # ---------------------------------------------------------------------------
 
@@ -240,7 +407,8 @@ def run_optimization(
     Parameters
     ----------
     adapter : SystemAdapter
-        SN-specific four-capability adapter.
+        SN-specific four-capability adapter. Must be thread-safe: per-card
+        work for up to ``config.b_cards`` candidates runs concurrently.
     seed : Version
         Starting parent version (the harness baseline).
     config : ProtocolConfig
@@ -248,8 +416,9 @@ def run_optimization(
     search_set_ids : list[str]
         Search-set task ids (analyst reads failures here).
     val_pool_ids : list[str]
-        Validation pool task ids (used for screening; grows as fresh batches
-        are folded in).
+        Initial validation pool task ids (used for screening). The loop works
+        on a copy that grows as fresh batches are folded in; the caller's
+        list is not mutated.
     fresh_batch_ids : list[list[str]]
         Ordered list of fresh batches; each consumed once on confirmation.
     smoke_sample_ids : list[str]
@@ -261,247 +430,349 @@ def run_optimization(
     -------
     LoopResult
     """
-    lineage = Lineage()
-    # Real Version objects by content hash: adapters need their metadata (SN:
-    # candidate_id), which the lineage's hash-only nodes do not carry.
-    versions: dict[str, Version] = {seed.content_hash: seed}
-    milestone = MilestoneState(
-        cumulative_delta_val=0.0,
-        best_score=float('-inf'),
-        last_certified_id=None,
-        current_provisional_id=None,
-        segment_start_best=float('-inf'),
-    )
-    # Seed node: certified by definition (it is the baseline).
-    lineage.add_provisional(
-        version_hash=seed.content_hash,
-        parent_hash=None,
-        diff_ref=None,
-        card_ref=None,
-        predicate_ref=None,
-        agent_cost=0.0,
-    )
-    seed_node = lineage.current_parent()
-    lineage.certify(seed.content_hash, fresh_result={})
-    milestone.last_certified_id = seed.content_hash
-    milestone.current_provisional_id = seed.content_hash
+    return _Run(adapter, seed, config, search_set_ids, val_pool_ids, fresh_batch_ids,
+                smoke_sample_ids).run(max_rounds)
 
-    # Measure seed on validation pool to set best_score.
-    seed_eval = adapter.evaluate(seed, val_pool_ids, config.k_screen, purpose='baseline')
-    milestone.best_score = _mean_score(seed_eval)
-    milestone.segment_start_best = milestone.best_score
 
-    # Ladder threshold m, constant within a run (K and n_val fixed).
-    m = ladder_m(config.sigma_d, config.K_max, len(val_pool_ids), config.ladder_c)
+class _Run:
+    """Loop state; every method runs on the main thread."""
 
-    halt = HaltTracker()
-    halt.fresh_batches_remaining = len(fresh_batch_ids)
-
-    rounds: list[RoundResult] = []
-    round_id = 0
-
-    while round_id < max_rounds:
-        reason = halt.halt_reason(config.max_confirmations)
-        if reason is not None:
-            return LoopResult(reason, lineage, rounds, alpha_warning(halt.confirmations_used))
-
-        round_id += 1
-        round_res = RoundResult(
-            round_id=round_id,
-            cards_generated=0,
-            smoke_passed=0,
-            screen_passed=0,
-            milestone_triggered=False,
-            confirmation_verdict=None,
-            rolled_back=False,
-            halt_reason=None,
+    def __init__(self, adapter: SystemAdapter, seed: Version, config: ProtocolConfig,
+                 search_set_ids: list[str], val_pool_ids: list[str],
+                 fresh_batch_ids: list[list[str]], smoke_sample_ids: list[str]) -> None:
+        self.adapter = adapter
+        self.seed = seed
+        self.config = config
+        self.search_set_ids = list(search_set_ids)
+        self.pool: list[str] = list(val_pool_ids)
+        self.fresh_batch_ids = fresh_batch_ids
+        self.smoke_ids = list(smoke_sample_ids)
+        self.lineage = Lineage()
+        # Real Version objects by content hash: adapters need their metadata (SN:
+        # candidate_id), which the lineage's hash-only nodes do not carry.
+        self.versions: dict[str, Version] = {seed.content_hash: seed}
+        # Validation-pool results of parents, per (version hash, pool size).
+        # The pool only grows, so its size identifies it.
+        self.val_cache: dict[tuple[str, int], EvalResult] = {}
+        self.milestone = MilestoneState(
+            cumulative_delta_val=0.0,
+            best_score=float('-inf'),
+            last_certified_id=None,
+            current_provisional_id=None,
+            segment_start_best=float('-inf'),
         )
+        self.halt = HaltTracker()
+        self.halt.fresh_batches_remaining = len(fresh_batch_ids)
+        self.m = ladder_m(config.sigma_d, config.K_max, len(self.pool), config.ladder_c)
+        self.rounds: list[RoundResult] = []
 
-        parent = lineage.current_parent()
-        parent_version = parent.version_hash
-        parent_v = versions[parent_version]
+    # -- state helpers ------------------------------------------------------
 
+    def pointer(self) -> Version:
+        """The current parent pointer (latest non-rolled-back lineage node)."""
+        return self.versions[self.lineage.current_parent().version_hash]
+
+    def val_eval(self, version: Version, purpose: str = 'screen') -> EvalResult:
+        key = (version.content_hash, len(self.pool))
+        if key not in self.val_cache:
+            self.val_cache[key] = self.adapter.evaluate(version, list(self.pool),
+                                                        self.config.k_screen, purpose=purpose)
+        return self.val_cache[key]
+
+    def _result(self, reason: str) -> LoopResult:
+        return LoopResult(reason, self.lineage, self.rounds,
+                          alpha_warning(self.halt.confirmations_used))
+
+    # -- top level ----------------------------------------------------------
+
+    def run(self, max_rounds: int) -> LoopResult:
+        seed = self.seed
+        # Seed node: certified by definition (it is the baseline).
+        self.lineage.add_provisional(version_hash=seed.content_hash, parent_hash=None,
+                                     diff_ref=None, card_ref=None, predicate_ref=None,
+                                     agent_cost=0.0)
+        self.lineage.certify(seed.content_hash, fresh_result={})
+        self.milestone.last_certified_id = seed.content_hash
+        self.milestone.current_provisional_id = seed.content_hash
+        try:
+            seed_eval = self.val_eval(seed, purpose='baseline')
+        except EvaluationUnavailable as exc:
+            log.error("baseline evaluation unavailable: %s", exc)
+            return self._result(_failure_halt_reason(exc))
+        self.milestone.best_score = _mean_score(seed_eval)
+        self.milestone.segment_start_best = self.milestone.best_score
+
+        round_id = 0
+        while round_id < max_rounds:
+            reason = self.halt.halt_reason(self.config.max_confirmations)
+            if reason is not None:
+                return self._result(reason)
+            round_id += 1
+            round_res = RoundResult(round_id=round_id, cards_generated=0, smoke_passed=0,
+                                    screen_passed=0, milestone_triggered=False,
+                                    confirmation_verdict=None, rolled_back=False,
+                                    halt_reason=None)
+            self.rounds.append(round_res)
+            try:
+                failure = self._round(round_res)
+            except EvaluationUnavailable as exc:
+                log.error("evaluation unavailable in round %d: %s", round_id, exc)
+                failure = _failure_halt_reason(exc)
+            round_res.val_pool_size = len(self.pool)
+            round_res.ladder_m = self.m
+            round_res.best_score = self.milestone.best_score
+            if failure is not None:
+                round_res.halt_reason = failure
+                return self._result(failure)
+            self.halt.record_round(round_res.screen_passed)
+
+        return self._result(self.halt.halt_reason(self.config.max_confirmations) or 'max_rounds')
+
+    def _round(self, round_res: RoundResult) -> Optional[str]:
+        """One round; returns a failure halt reason or None."""
+        parent_v = self.pointer()
         # --- 1. Diagnosis: analyst reads search-set failures ---
-        # Build trajectories dict for the analyst: search-set failures only.
         # Search-set runs share k with screening (one SN measure covers search ∪ validation).
-        parent_eval_search = adapter.evaluate(parent_v, search_set_ids, config.k_screen, purpose='diagnose')
-        selected, roles = select_analysis_cases(parent_eval_search, config)
-        cards = adapter.analyse(selected, config.b_cards, case_roles=roles,
-                                parent=parent_v, round_id=round_id)
+        parent_eval_search = self.adapter.evaluate(parent_v, self.search_set_ids,
+                                                   self.config.k_screen, purpose='diagnose')
+        selected, roles = select_analysis_cases(parent_eval_search, self.config)
+        n_cards = self.config.analyst_cards or self.config.b_cards
+        cards = self.adapter.analyse(selected, n_cards, case_roles=roles,
+                                     parent=parent_v, round_id=round_res.round_id)
         round_res.cards_generated = len(cards)
         if not cards:
-            halt.record_round(screen_passed=0, confirmation_verdict=None)
-            rounds.append(round_res)
-            continue
+            return None
+        # --- 2–5. Parallel candidates, sequential decisions ---
+        return self._pipeline(cards, round_res)
 
-        # --- 2. Implement + smoke, filling back up to b_cards that reach screen ---
-        candidates: list[CandidateRecord] = []
-        card_idx = 0
-        while len(candidates) < config.b_cards and card_idx < len(cards):
-            card = cards[card_idx]
-            card_idx += 1
-            try:
-                ws = adapter.workspace(parent_v, card)
-            except Exception as exc:  # approval/derive/worktree failure: skip card
-                log.warning("workspace failed on card %r: %s", card.failure_mode_desc[:40], exc)
-                continue
-            try:
-                diff = adapter.implement(card, ws)
-            except Exception as exc:  # implementer failure: skip card
-                log.warning("implementer failed on card %r: %s", card.failure_mode_desc[:40], exc)
-                continue
-            try:
-                cand_version = adapter.materialize(diff, parent_v)
-            except Exception as exc:  # materialize failure: skip card
-                log.warning("materialize failed: %s", exc)
-                continue
-            versions[cand_version.content_hash] = cand_version
-            smoke = _run_smoke(adapter, cand_version, parent_v, card, smoke_sample_ids)
-            if smoke.verdict == 'fail':
-                # Cheap discard; do not count toward screen-eligible count.
-                continue
-            candidates.append(CandidateRecord(
-                candidate=cand_version,
-                parent=parent_v,
-                diff=diff,
-                card=card,
-                smoke=smoke,
-            ))
+    # -- parallel candidate pipeline ---------------------------------------
+
+    def _pipeline(self, cards: list[Card], round_res: RoundResult) -> Optional[str]:
+        """Implement/smoke/screen up to b cards concurrently; decide in completion order.
+
+        Refill (§2.1 补位): every non-adopted outcome frees a slot for the next
+        unused card, built on the parent pointer at submission time. After a
+        milestone this round no new card is submitted; candidates already in
+        flight finish and go through the parent-hash rule (rebase/re-screen).
+        On EvaluationUnavailable nothing new is submitted and in-flight workers
+        are drained (recorded, not decided) before the round returns.
+        """
+        b = max(1, self.config.b_cards)
+        queue = list(enumerate(cards))
+        pending: dict[Future, CandidateRecord] = {}
+        stop_new = False
+        failure: Optional[str] = None
+
+        with ThreadPoolExecutor(max_workers=b, thread_name_prefix='v3-cand') as pool_ex:
+            def submit_next_card() -> None:
+                idx, card = queue.pop(0)
+                rec = CandidateRecord(card=card, card_index=idx, parent=self.pointer())
+                fut = pool_ex.submit(_build_and_measure, self.adapter, self.config, rec,
+                                     self.smoke_ids, list(self.pool))
+                pending[fut] = rec
+
+            while queue and len(pending) < b:
+                submit_next_card()
+
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                finished: list[CandidateRecord] = []
+                for fut in done:
+                    rec = pending.pop(fut)
+                    exc = fut.exception()
+                    if exc is None:
+                        finished.append(rec)
+                        continue
+                    if not isinstance(exc, EvaluationUnavailable):
+                        raise exc
+                    log.error("evaluation unavailable for card %r: %s",
+                              rec.card.failure_mode_desc[:40], exc)
+                    failure = failure or _failure_halt_reason(exc)
+                    self._record(round_res, rec, 'error', f"{type(exc).__name__}: {exc}")
+                # Several may finish between two wake-ups: keep completion order.
+                finished.sort(key=lambda r: r.finished_at)
+                for rec in finished:
+                    if failure is not None:
+                        self._record(round_res, rec, 'error', f"halted: {failure}")
+                        continue
+                    try:
+                        action = self._decide(rec, round_res)
+                    except EvaluationUnavailable as exc:  # milestone / re-measurement
+                        log.error("evaluation unavailable while deciding: %s", exc)
+                        failure = _failure_halt_reason(exc)
+                        continue
+                    if action == 'rebase':
+                        fut = pool_ex.submit(_rebase_and_measure, self.adapter, self.config, rec,
+                                             self.pointer(), self.smoke_ids, list(self.pool))
+                        pending[fut] = rec
+                    elif action == 'rescreen':
+                        fut = pool_ex.submit(_screen, self.adapter, self.config, rec,
+                                             list(self.pool))
+                        pending[fut] = rec
+                    elif action == 'milestone':
+                        stop_new = True
+                    elif action == 'refill' and not stop_new and queue and len(pending) < b:
+                        submit_next_card()
+        return failure
+
+    def _decide(self, rec: CandidateRecord, round_res: RoundResult) -> str:
+        """Apply the §2.2 A decision to one finished candidate.
+
+        Returns 'refill' (discarded), 'adopted', 'milestone' (adopted and a
+        confirmation ran), 'rebase' or 'rescreen' (measurement not decidable
+        against the current parent pointer / validation pool).
+        """
+        if rec.stage != 'measured':
+            self._record(round_res, rec, rec.stage, rec.reason)
+            return 'refill'
+        self.versions[rec.candidate.content_hash] = rec.candidate
+        pointer = self.pointer()
+        if rec.parent.content_hash != pointer.content_hash:
+            return 'rebase'
+        if rec.pool_size != len(self.pool):
+            # Same parent, but a confirmation grew the pool since the
+            # measurement: best and m now refer to the enlarged pool.
+            return 'rescreen'
+
+        cand_ev, ref_ev = rec.eval_result, rec.ref_result
+        self.val_cache.setdefault((pointer.content_hash, len(self.pool)), ref_ev)
+        d = paired_differences(_score_list(cand_ev, self.pool), _score_list(ref_ev, self.pool))
+        rec.delta_val = mean_delta(d)
+        rec.se_val = paired_se(d)
+        score = _mean_score(cand_ev)
+        best_before = self.milestone.best_score
+        rec.screen_verdict = screen_decision(
+            rec.delta_val, rec.se_val, self.config.z_screen,
+            best_before, score, self.m, _safeguards_ok(cand_ev, self.config.safeguard_bounds),
+        )
+        self._record(round_res, rec, rec.screen_verdict, None,
+                     score_val=score, best_before=best_before)
+        if rec.screen_verdict != 'screen_pass':
+            return 'refill'
+
+        # --- Provisional adoption: parent pointer advances, best climbs ---
+        round_res.screen_passed += 1
+        cand = rec.candidate
+        self.lineage.add_provisional(
+            version_hash=cand.content_hash,
+            parent_hash=pointer.content_hash,
+            diff_ref=rec.diff.content[:60] if rec.diff else None,
+            card_ref=rec.card.failure_mode_desc[:60],
+            predicate_ref=(rec.card.predicate.boolean_expression if rec.card.predicate else None),
+            agent_cost=sum(cand_ev.costs.values()),
+        )
+        self.val_cache[(cand.content_hash, len(self.pool))] = cand_ev
+        self.milestone.current_provisional_id = cand.content_hash
+        self.milestone.cumulative_delta_val += rec.delta_val
+        self.milestone.best_score = score
+
+        # --- Milestone trigger (§2.2 B) ---
+        if self.milestone.cumulative_delta_val < self.config.T:
+            return 'adopted'
+        if not self.halt.can_confirm(self.config.max_confirmations):
+            # No fresh batch / confirmation budget left: the segment stays
+            # provisional and the loop halts at the next round boundary.
+            log.warning("milestone triggered but no confirmation available; segment stays provisional")
+            return 'adopted'
+        round_res.milestone_triggered = True
+        conf = self._milestone_confirm()
+        round_res.confirmations.append(conf)
+        round_res.confirmation_verdict = conf['verdict']
+        if conf['verdict'] != 'confirmed':
+            round_res.rolled_back = True
+        self.halt.record_confirmation(conf['verdict'])
+        return 'milestone'
+
+    def _record(self, round_res: RoundResult, rec: CandidateRecord, verdict: str,
+                reason: Optional[str], *, score_val: Optional[float] = None,
+                best_before: Optional[float] = None) -> None:
+        if rec.smoke is not None and rec.smoke.verdict != 'fail' and verdict != 'smoke_fail':
             round_res.smoke_passed += 1
+        if (verdict == 'error' and rec.delta_val is None and rec.eval_result is not None
+                and rec.ref_result is not None and rec.pool_size):
+            # Measured but undecided (halted): keep Δ for selection accounting.
+            pool = self.pool[:rec.pool_size]
+            d = paired_differences(_score_list(rec.eval_result, pool),
+                                   _score_list(rec.ref_result, pool))
+            rec.delta_val, rec.se_val = mean_delta(d), paired_se(d)
+        round_res.candidates.append(dict(
+            card_ref=rec.card.ref or rec.card.failure_mode_desc[:60],
+            card_index=rec.card_index,
+            verdict=verdict,
+            reason=reason,
+            parent=rec.parent.content_hash,
+            candidate=rec.candidate.content_hash if rec.candidate else None,
+            rebased_from=rec.rebased_from,
+            smoke_verdict=rec.smoke.verdict if rec.smoke else None,
+            delta_val=rec.delta_val,
+            se_val=rec.se_val,
+            score_val=score_val,
+            best_before=best_before,
+            ladder_m=self.m,
+            val_pool_size=rec.pool_size or None,
+            screen_evaluations=rec.screen_evaluations,
+            timings=dict(rec.timings),
+        ))
 
-        if not candidates:
-            halt.record_round(screen_passed=0, confirmation_verdict=None)
-            rounds.append(round_res)
-            continue
+    # -- milestone confirmation ---------------------------------------------
 
-        # --- 3. Screen each candidate against current best (Ladder gate) ---
-        # Cache the parent eval on the validation pool; reuse for all candidates
-        # this round per §2.2 A: "父节点在当前验证池上的结果可缓存复用".
-        parent_eval_val = adapter.evaluate(parent_v, val_pool_ids, config.k_screen, purpose='screen')
-        parent_val_scores = _score_list(parent_eval_val, val_pool_ids)
+    def _milestone_confirm(self) -> dict:
+        """Fresh-batch confirmation of segment end vs segment start (§2.2 B).
 
-        certified_best = milestone.best_score
-        confirmed_this_round = None
-        for rec in candidates:
-            ev, _ = adapter.evaluate_pair(rec.candidate, rec.parent, val_pool_ids, config.k_screen,
-                                          purpose='screen')
-            rec.eval_result = ev
-            d = paired_differences(
-                _score_list(ev, val_pool_ids),
-                parent_val_scores,
-            )
-            rec.delta_val = mean_delta(d)
-            rec.se_val = paired_se(d)
-            ok = _safeguards_ok(ev, config.safeguard_bounds)
-            rec.screen_verdict = screen_decision(
-                rec.delta_val, rec.se_val, config.z_screen,
-                certified_best, _mean_score(ev), m, ok,
-            )
-            if rec.screen_verdict == 'screen_pass':
-                round_res.screen_passed += 1
-                # Tentative advance: provisional node.
-                lineage.add_provisional(
-                    version_hash=rec.candidate.content_hash,
-                    parent_hash=parent_version,
-                    diff_ref=rec.diff.content[:60],
-                    card_ref=rec.card.failure_mode_desc[:60],
-                    predicate_ref=(rec.card.predicate.boolean_expression
-                                    if rec.card.predicate else None),
-                    agent_cost=sum(ev.costs.values()),
-                )
-                milestone.current_provisional_id = rec.candidate.content_hash
-                milestone.cumulative_delta_val += rec.delta_val
-                # Advance best for subsequent candidates this round (Ladder keeps climbing).
-                certified_best = max(certified_best, _mean_score(ev))
-                # --- 4. Milestone trigger check ---
-                if milestone.cumulative_delta_val >= config.T:
-                    round_res.milestone_triggered = True
-                    verdict = _milestone_confirm(
-                        adapter, lineage, milestone, config, fresh_batch_ids, halt, versions,
-                    )
-                    round_res.confirmation_verdict = verdict
-                    if verdict == 'confirmed':
-                        # Segment certified; reset cumulative and continue from new best.
-                        milestone.cumulative_delta_val = 0.0
-                    elif verdict in ('rejected', 'insufficient', 'unmeasurable'):
-                        # §2.2 state-transition table: all three outcomes roll back.
-                        # 'insufficient' does NOT keep state (that would allow sequential
-                        # α inflation by re-triggering on the same provisional segment).
-                        round_res.rolled_back = True
-                        milestone.cumulative_delta_val = 0.0
-                        milestone.best_score = milestone.segment_start_best
-                        milestone.current_provisional_id = milestone.last_certified_id
-                        break  # restart diagnosis next round
-                    # 'confirmed': continue inner candidates loop if any remain.
-                    break  # one milestone per round, by design
-                # Not at milestone yet: continue to next candidate.
-        # End of candidates loop.
+        Applies the state-transition table, then folds the batch into the
+        validation pool (every outcome), recomputes m, and re-measures the
+        post-transition parent pointer on the enlarged pool to reset best.
+        """
+        cfg, ms = self.config, self.milestone
+        batch_index = len(self.fresh_batch_ids) - self.halt.fresh_batches_remaining
+        fresh_ids = list(self.fresh_batch_ids[batch_index])
+        start_v = self.versions[ms.last_certified_id]
+        end_v = self.versions[ms.current_provisional_id]
+        end_eval, start_eval = self.adapter.evaluate_pair(end_v, start_v, fresh_ids,
+                                                          cfg.k_screen, purpose='confirm')
+        self.halt.fresh_batches_remaining -= 1
+        d = paired_differences(_score_list(end_eval, fresh_ids), _score_list(start_eval, fresh_ids))
+        delta_fresh = mean_delta(d)
+        se_fresh = paired_se(d)
+        verdict = confirm_decision(delta_fresh, se_fresh, cfg.z_confirm,
+                                   _safeguards_ok(end_eval, cfg.safeguard_bounds))
 
-        halt.record_round(round_res.screen_passed, round_res.confirmation_verdict)
-        rounds.append(round_res)
+        if verdict == 'confirmed':
+            self.lineage.certify(end_v.content_hash, fresh_result={
+                'delta_fresh': delta_fresh, 'se_fresh': se_fresh, 'fresh_ids': fresh_ids,
+            })
+            ms.last_certified_id = end_v.content_hash
+            new_pointer = end_v
+        else:
+            # rejected / insufficient / unmeasurable: the whole provisional
+            # segment is discarded; the pointer returns to the last certified node.
+            for node in self.lineage.provisional_segment(ms.last_certified_id):
+                self.lineage.rollback(node.version_hash)
+            new_pointer = start_v
+        ms.current_provisional_id = new_pointer.content_hash
+        ms.cumulative_delta_val = 0.0
+        ms.n_confirmations += 1
 
-    return LoopResult(
-        halt.halt_reason(config.max_confirmations) or 'max_rounds',
-        lineage, rounds, alpha_warning(halt.confirmations_used),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Milestone confirmation
-# ---------------------------------------------------------------------------
-
-def _milestone_confirm(
-    adapter: SystemAdapter,
-    lineage: Lineage,
-    milestone: MilestoneState,
-    config: ProtocolConfig,
-    fresh_batch_ids: list[list[str]],
-    halt: HaltTracker,
-    versions: dict[str, Version],
-) -> str:
-    """Run a fresh-batch confirmation between segment start and segment end.
-
-    Consumes one fresh batch.  On 'confirmed' or 'insufficient' the batch is
-    folded into the validation pool (caller updates val_pool_ids).  On
-    'rejected' the segment is rolled back to the last certified node.
-    """
-    if halt.fresh_batches_remaining <= 0:
-        log.warning("milestone triggered but no fresh batch left; treating as insufficient")
-        return 'insufficient'
-    fresh_ids = fresh_batch_ids[len(fresh_batch_ids) - halt.fresh_batches_remaining]
-    halt.fresh_batches_remaining -= 1
-
-    start_node = lineage._get(milestone.last_certified_id)  # noqa: SLF001 (internal)
-    end_node = lineage._get(milestone.current_provisional_id)  # noqa: SLF001
-
-    start_v = versions[start_node.version_hash]
-    end_v = versions[end_node.version_hash]
-    end_eval, start_eval = adapter.evaluate_pair(end_v, start_v, fresh_ids, config.k_screen,
-                                                 purpose='confirm')
-    d = paired_differences(
-        _score_list(end_eval, fresh_ids),
-        _score_list(start_eval, fresh_ids),
-    )
-    delta_fresh = mean_delta(d)
-    se_fresh = paired_se(d)
-    ok = _safeguards_ok(end_eval, config.safeguard_bounds)
-    verdict = confirm_decision(delta_fresh, se_fresh, config.z_confirm, ok)
-
-    if verdict == 'confirmed':
-        lineage.certify(end_node.version_hash, fresh_result={
-            'delta_fresh': delta_fresh, 'se_fresh': se_fresh,
-            'fresh_ids': fresh_ids,
-        })
-        milestone.last_certified_id = end_node.version_hash
-        milestone.segment_start_best = _mean_score(end_eval)
-        milestone.best_score = max(milestone.best_score, _mean_score(end_eval))
-    else:
-        # §2.2 state-transition table: rejected, insufficient, and unmeasurable
-        # all roll back the provisional segment to the last certified node.
-        # best is restored to segment_start_best by the caller.
-        for node in lineage.provisional_segment(milestone.last_certified_id):
-            lineage.rollback(node.version_hash)
-    return verdict
+        # Fold F_i into the validation pool (all outcomes), then recompute m
+        # and best on the enlarged pool. On rollback the reference is the last
+        # certified node measured on the enlarged pool, not the old best.
+        known = set(self.pool)
+        self.pool.extend(t for t in fresh_ids if t not in known)
+        self.m = ladder_m(cfg.sigma_d, cfg.K_max, len(self.pool), cfg.ladder_c)
+        ms.best_score = _mean_score(self.val_eval(new_pointer))
+        ms.segment_start_best = ms.best_score
+        return dict(
+            verdict=verdict,
+            delta_fresh=delta_fresh,
+            se_fresh=se_fresh,
+            n_fresh=len(fresh_ids),
+            fresh_batch_index=batch_index,
+            segment_start=start_v.content_hash,
+            segment_end=end_v.content_hash,
+            val_pool_size=len(self.pool),
+            ladder_m=self.m,
+            best_score=ms.best_score,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -539,5 +810,3 @@ def _mean_score(ev: EvalResult) -> float:
 
 def _score_list(ev: EvalResult, task_ids: list[str]) -> list[float]:
     return [ev.per_task_scores.get(tid, 0.0) for tid in task_ids]
-
-
