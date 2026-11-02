@@ -350,6 +350,13 @@ def run_optimization(
             continue
 
         # --- 3. Screen each candidate against current best (Ladder gate) ---
+        # Cache the parent eval on the validation pool; reuse for all candidates
+        # this round per §2.2 A: "父节点在当前验证池上的结果可缓存复用".
+        parent_eval_val = adapter.evaluate(
+            Version(parent_version, metadata={}), val_pool_ids, config.k_screen,
+        )
+        parent_val_scores = _score_list(parent_eval_val, val_pool_ids)
+
         certified_best = milestone.best_score
         confirmed_this_round = None
         for rec in candidates:
@@ -358,8 +365,7 @@ def run_optimization(
             rec.eval_result = ev
             d = paired_differences(
                 _score_list(ev, val_pool_ids),
-                _score_list(adapter.evaluate(rec.parent, val_pool_ids, config.k_screen),
-                            val_pool_ids),
+                parent_val_scores,
             )
             rec.delta_val = mean_delta(d)
             rec.se_val = paired_se(d)
