@@ -377,14 +377,16 @@ def run_optimization(
                     if verdict == 'confirmed':
                         # Segment certified; reset cumulative and continue from new best.
                         milestone.cumulative_delta_val = 0.0
-                    elif verdict == 'rejected':
-                        # Rollback: drop provisional segment, restore best.
+                    elif verdict in ('rejected', 'insufficient', 'unmeasurable'):
+                        # §2.2 state-transition table: all three outcomes roll back.
+                        # 'insufficient' does NOT keep state (that would allow sequential
+                        # α inflation by re-triggering on the same provisional segment).
                         round_res.rolled_back = True
                         milestone.cumulative_delta_val = 0.0
                         milestone.best_score = milestone.segment_start_best
                         milestone.current_provisional_id = milestone.last_certified_id
                         break  # restart diagnosis next round
-                    # 'insufficient' keeps state; next milestone trigger reuses.
+                    # 'confirmed': continue inner candidates loop if any remain.
                     break  # one milestone per round, by design
                 # Not at milestone yet: continue to next candidate.
         # End of candidates loop.
@@ -447,11 +449,12 @@ def _milestone_confirm(
         milestone.last_certified_id = end_node.version_hash
         milestone.segment_start_best = _mean_score(end_eval)
         milestone.best_score = max(milestone.best_score, _mean_score(end_eval))
-    elif verdict == 'rejected':
-        # Roll back every provisional node after last_certified_id.
+    else:
+        # §2.2 state-transition table: rejected, insufficient, and unmeasurable
+        # all roll back the provisional segment to the last certified node.
+        # best is restored to segment_start_best by the caller.
         for node in lineage.provisional_segment(milestone.last_certified_id):
             lineage.rollback(node.version_hash)
-    # 'insufficient': no state change; reset α-accumulation counter per §7.
     return verdict
 
 
