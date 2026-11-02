@@ -149,6 +149,7 @@ class _FakeRoundOps:
 
     def agent(self, role, candidate_id, **kw):
         self.texts.append(kw["text"])
+        self.keys = getattr(self, "keys", []) + [kw["key"]]
         self.hypotheses.records += [
             {"id": "new1", "status": "draft", "parent_candidate_id": "P",
              "card": {"title": "empty retrieval", "implementer_brief": "fix retrieval",
@@ -164,10 +165,12 @@ def test_analyse_sends_views_and_binds_cards_to_request_and_parent(tmp_path):
     run = _write_run(tmp_path, [_row("a", spans=SPANS), _row("b", clarify=True), _row("ok")])
     hyps = _FakeHypotheses()
     ops = _FakeRoundOps(hyps)
-    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "parent_candidate_id": "P"},
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "parent_candidate_id": "P", "run_id": "R"},
                         round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
     cards = adapter.analyse(_stubs(run, ["a", "b", "ok"]), 4,
-                            case_roles={"a": "failure", "b": "failure", "ok": "control"})
+                            case_roles={"a": "failure", "b": "failure", "ok": "control"}, round_id=3)
+    assert ops.keys == ["v3/R/analyse/3/P"]  # deterministic: run, round, parent
+    assert cards[0].ref == "new1"
     assert [c.failure_mode_desc for c in cards] == ["empty retrieval"]
     assert cards[0].predicate.boolean_expression["field"] == "trace.n_empty_retrievals"
     text = ops.texts[0]

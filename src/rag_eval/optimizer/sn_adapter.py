@@ -13,11 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import subprocess
-import tempfile
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -54,23 +51,8 @@ def _v2_card_to_v3_card(v2_record: dict) -> Card:
         failure_mode_desc=failure_mode_desc,
         change_hypothesis=change_hypothesis,
         predicate=predicate,
+        ref=v2_record.get("id"),
     )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _dir_hash(directory: Path) -> str:
-    """Stable sha256 over sorted (relative-posix-path, file-bytes) pairs."""
-    h = hashlib.sha256()
-    for path in sorted(directory.rglob("*")):
-        if path.is_file():
-            h.update(path.relative_to(directory).as_posix().encode())
-            h.update(b"\x00")
-            h.update(path.read_bytes())
-            h.update(b"\x00")
-    return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +72,21 @@ class SNAdapter(SystemAdapter):
         ``RunViews`` (``rag_eval.workbench.run_views``).
     iterations:
         ``IterationStore`` (``rag_eval.workbench.iterations``).
-    hypothesis_worktrees:
-        ``HypothesisWorktreeService`` (``rag_eval.workbench.hypothesis_worktrees``).
-        Optional; ``workspace()`` raises ``RuntimeError`` when absent.
+    round_operations:
+        v2 ``RoundOperations`` (``rag_eval.workbench.loop_services``); its
+        ``.service`` is the ``IterationService`` that owns candidates.
 
-    Version.metadata contract (round-tripped through all calls):
-        content_hash : str   — sha256 of the materialised workspace tree
-        task_id      : str   — SN task the version belongs to
-        execution_id : str   — v2 execution_id of the latest admitted run batch
+    A v3 Version is a v2 iteration-tree candidate (binding plan §2.1):
+        content_hash = the candidate's ``frozen_commit``
+        metadata     = candidate_id, parent_candidate_id, hypothesis_id,
+                       parent_commit, task_id
+
+    Config keys used for agent dispatch and candidate creation:
+        iteration_id, task_id — the v2 iteration and its task
+        run_id                — v3 run identity; every v2 request key derives
+                                from it (no uuid), so rerunning the same command
+                                replays v2 receipts instead of dispatching again
+        actor                 — the v2 actor recorded on approvals/derives/freezes
     """
 
     def __init__(
@@ -107,20 +96,19 @@ class SNAdapter(SystemAdapter):
         repository=None,
         run_views=None,
         iterations=None,
-        hypothesis_worktrees=None,
         round_operations=None,
         hypotheses=None,
         analyst_profile: str = "pi-flash",
         implementer_profile: str = "pi-flash",
         agent_poll_interval: float = 5.0,
         agent_timeout: float = 600.0,
+        worktree_timeout: float = 600.0,
         analyst_view_budget: int = 12000,
     ) -> None:
         self._config = config
         self._repository = repository
         self._run_views = run_views
         self._iterations = iterations
-        self._hypothesis_worktrees = hypothesis_worktrees
         # Services required for agent dispatch (analyse + implement).
         self._round_ops = round_operations
         self._hypotheses = hypotheses
@@ -128,6 +116,7 @@ class SNAdapter(SystemAdapter):
         self._implementer_profile = implementer_profile
         self._agent_poll_interval = agent_poll_interval
         self._agent_timeout = agent_timeout
+        self._worktree_timeout = worktree_timeout
         # Message text is capped at 16384 chars by the v2 message bridge; the
         # instructions take ~1K, so diagnostic views get the rest minus headroom.
         if not 0 < analyst_view_budget <= 15000:
@@ -135,78 +124,114 @@ class SNAdapter(SystemAdapter):
         self._analyst_view_budget = analyst_view_budget
         self.last_analysis: dict = {}
 
-        workspace_cfg = config.get("workspace", {})
-        self._workspace_root = Path(
-            workspace_cfg.get("location", tempfile.gettempdir())
-        )
         # Trajectory cache: (run_dir_str, case_id) → DiagnosticTrajectory dict.
         # Bounded to the most recent _TRAJ_CACHE_SIZE entries to cap memory use.
         self._traj_cache: dict[tuple[str, str], dict] = {}
         self._TRAJ_CACHE_SIZE = 2000
 
     # ------------------------------------------------------------------
-    # 1. materialize
+    # v2 candidate plumbing: request keys, actor, versions
+    # ------------------------------------------------------------------
+
+    def _request_key(self, *parts: Any) -> str:
+        """Deterministic v2 request key ``v3/{run_id}/...`` (binding plan §2.5).
+
+        v2 replays the stored receipt for a repeated key, so rerunning the same
+        run after a crash observes earlier dispatches instead of repeating them.
+        v2 caps request keys at 200 characters; longer keys keep a readable
+        prefix plus a digest of the full key.
+        """
+        run_id = self._config.get("run_id")
+        if not run_id:
+            raise ValueError("config must contain 'run_id' to derive v2 request keys")
+        key = "/".join(["v3", str(run_id), *(str(p) for p in parts)])
+        if len(key) > 200:
+            key = key[:135] + "/" + hashlib.sha256(key.encode()).hexdigest()
+        return key
+
+    def _actor(self) -> str:
+        actor = self._config.get("actor")
+        if not actor:
+            raise ValueError("config must contain 'actor' for v2 approvals, derives and freezes")
+        return actor
+
+    def _require_round_ops(self, what: str):
+        if self._round_ops is None:
+            raise RuntimeError(
+                f"{what}() requires round_operations service; "
+                "inject via SNAdapter.__init__ keyword arguments."
+            )
+        return self._round_ops
+
+    def _require_ids(self) -> tuple[str, str]:
+        iteration_id = self._config.get("iteration_id")
+        task_id = self._config.get("task_id")
+        if not iteration_id or not task_id:
+            raise ValueError(
+                "config must contain 'iteration_id' and 'task_id' to dispatch agents."
+            )
+        return iteration_id, task_id
+
+    @staticmethod
+    def candidate_id(version: Version) -> str:
+        """The v2 candidate a Version stands for."""
+        cid = (version.metadata or {}).get("candidate_id")
+        if not cid:
+            raise ValueError(
+                f"Version {version.content_hash!r} carries no candidate_id; build SN "
+                "versions with version_for() or materialize()."
+            )
+        return cid
+
+    def _version(self, candidate: dict) -> Version:
+        if candidate.get("status") != "frozen" or not candidate.get("frozen_commit"):
+            raise ValueError(
+                f"Candidate {candidate.get('id')!r} is not frozen "
+                f"(status={candidate.get('status')!r})"
+            )
+        return Version(
+            content_hash=candidate["frozen_commit"],
+            metadata=dict(
+                candidate_id=candidate["id"],
+                parent_candidate_id=candidate.get("parent_candidate_id"),
+                hypothesis_id=candidate.get("proposal_id"),
+                parent_commit=candidate.get("parent_commit"),
+                task_id=self._config.get("task_id", ""),
+            ),
+        )
+
+    def version_for(self, candidate_id: str) -> Version:
+        """Version of an existing frozen candidate (e.g. the iteration root as seed)."""
+        ops = self._require_round_ops("version_for")
+        return self._version(ops.service.candidate(candidate_id))
+
+    # ------------------------------------------------------------------
+    # 1. materialize — the coordinator freezes the candidate
     # ------------------------------------------------------------------
 
     def materialize(self, diff: Diff, parent: Version) -> Version:
-        """Apply *diff* on top of *parent*; return a new frozen Version.
+        """Freeze the candidate the implementer edited; return its Version.
 
-        Strategy: copy the parent snapshot directory, write diff.content to a
-        temp file, apply with ``patch -p1``, hash the result tree.  The patched
-        tree is kept under ``{workspace_root}/v3-snapshots/{new_hash[:16]}/``.
-
-        If *diff.content* is empty the parent's tree is re-used as-is (identity
-        materialisation, useful for baseline seeding).
+        v2 ``IterationService.freeze`` commits the worktree as the coordinator
+        and records ``frozen_commit``. A candidate already frozen (rerun after
+        a crash) is read back instead: v2 refuses to freeze it twice. A clean
+        worktree is refused by v2 ("no changes to freeze") and propagates, so
+        the loop skips the card.
         """
-        parent_dir = self._snapshot_dir(parent)
-        if not parent_dir.exists():
-            raise FileNotFoundError(
-                f"Parent snapshot directory not found: {parent_dir}"
+        ops = self._require_round_ops("materialize")
+        cid = (diff.metadata or {}).get("candidate_id")
+        if not cid:
+            raise ValueError("Diff.metadata must carry the candidate_id from workspace()")
+        candidate = ops.service.candidate(cid)
+        parent_cid = (parent.metadata or {}).get("candidate_id")
+        if parent_cid and candidate.get("parent_candidate_id") != parent_cid:
+            raise ValueError(
+                f"Candidate {cid!r} is not a child of {parent_cid!r} "
+                f"(parent={candidate.get('parent_candidate_id')!r})"
             )
-
-        # Work in a temporary directory so failures leave nothing behind.
-        tmp = Path(tempfile.mkdtemp(prefix="sn_adapter_materialize_"))
-        try:
-            dest = tmp / "tree"
-            shutil.copytree(parent_dir, dest)
-
-            if diff.content.strip():
-                patch_file = tmp / "candidate.patch"
-                patch_file.write_text(diff.content, encoding="utf-8")
-                result = subprocess.run(
-                    ["patch", "-p1", "--input", str(patch_file)],
-                    cwd=str(dest),
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"patch failed (exit {result.returncode}):\n"
-                        + result.stderr
-                    )
-
-            content_hash = _dir_hash(dest)
-            final_dir = self._workspace_root / "v3-snapshots" / content_hash[:16]
-            if not final_dir.exists():
-                shutil.copytree(dest, final_dir)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-
-        meta = dict(parent.metadata)
-        meta["content_hash"] = content_hash
-        # Carry forward task_id; execution_id will be populated by evaluate().
-        meta.setdefault("task_id", "")
-        meta.pop("execution_id", None)
-        return Version(content_hash=content_hash, metadata=meta)
-
-    def _snapshot_dir(self, version: Version) -> Path:
-        """Resolve the local directory for a materialised version."""
-        # Callers may supply an explicit path in metadata; fall back to the
-        # conventional location under workspace_root.
-        explicit = (version.metadata or {}).get("snapshot_dir")
-        if explicit:
-            return Path(explicit)
-        return self._workspace_root / "v3-snapshots" / version.content_hash[:16]
+        if candidate.get("status") != "frozen":
+            candidate = ops.service.freeze(cid, actor=self._actor())
+        return self._version(candidate)
 
     # ------------------------------------------------------------------
     # 2. evaluate
@@ -389,29 +414,55 @@ class SNAdapter(SystemAdapter):
         return {t: e["view"] for t, (_, e) in self._rows_by_task(trajectories).items()}
 
     # ------------------------------------------------------------------
-    # 4. workspace
+    # 4. workspace — approve the card, derive the child candidate
     # ------------------------------------------------------------------
 
-    def workspace(self, version: Version) -> Any:
-        """Return the HypothesisWorktree binding for an implementer.
+    def workspace(self, version: Version, card: Optional[Card] = None) -> dict:
+        """Derive a child candidate of *version* for *card*; return its binding.
 
-        Delegates to ``HypothesisWorktreeService.get(task_id, hypothesis_id)``
-        from ``rag_eval.workbench.hypothesis_worktrees``.  The hypothesis_id is
-        taken from ``version.metadata['hypothesis_id']`` when present, otherwise
-        a new uuid is used (the worktree will need to be created separately).
-
-        NOTE: hypothesis_worktrees.create() / .activate() are asynchronous in
-        v2 (they shell out to Paseo CLI).  If the worktree does not yet exist,
-        callers must create it through the v2 server before calling workspace().
+        v2 sequence: ``RoundOperations.approve`` (draft → approved; legality
+        and leak checks are v2's), ``RoundOperations.derive`` (child at the
+        parent's frozen commit, keyed so a rerun returns the same child), then
+        wait until the child's worktree is ``ready``, nudging
+        ``IterationService.provision`` (which only reconciles after its first
+        dispatch).
         """
-        if self._hypothesis_worktrees is None:
-            raise RuntimeError("hypothesis_worktrees service required for workspace()")
+        ops = self._require_round_ops("workspace")
+        iteration_id, _ = self._require_ids()
+        if card is None or not card.ref:
+            raise ValueError("SN workspace() needs a Card whose ref is the v2 hypothesis id")
+        actor = self._actor()
+        parent_cid = self.candidate_id(version)
+        hypothesis_id = card.ref
+        approval = ops.approve(hypothesis_id, iteration_id=iteration_id,
+                               key=self._request_key("approve", hypothesis_id), actor=actor)
+        if approval.get("status") not in ("approved", "implementing"):
+            raise RuntimeError(
+                f"Card {hypothesis_id!r} was not approved: {approval.get('status')!r} "
+                f"({approval.get('reason', 'no reason given')})"
+            )
+        cid = ops.derive(parent_cid, hypothesis_id=hypothesis_id,
+                         key=self._request_key("derive", parent_cid, hypothesis_id), actor=actor)
+        candidate = self._await_worktree(cid)
+        tree = candidate["worktree"]
+        return dict(candidate_id=cid, parent_candidate_id=parent_cid, hypothesis_id=hypothesis_id,
+                    path=tree["path"], branch=tree.get("branch"),
+                    base_revision=tree.get("base_revision"),
+                    parent_commit=candidate.get("parent_commit"))
 
-        task_id = (version.metadata or {}).get("task_id", "")
-        hypothesis_id = (version.metadata or {}).get("hypothesis_id", str(uuid.uuid4()))
-
-        binding = self._hypothesis_worktrees.get(task_id, hypothesis_id)
-        return binding
+    def _await_worktree(self, candidate_id: str) -> dict:
+        service = self._round_ops.service
+        candidate = service.candidate(candidate_id)
+        deadline = time.monotonic() + self._worktree_timeout
+        while not _worktree_ready(candidate):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Worktree of candidate {candidate_id!r} not ready within "
+                    f"{self._worktree_timeout}s (worktree={candidate.get('worktree')!r})"
+                )
+            time.sleep(self._agent_poll_interval)
+            candidate = service.provision(candidate_id)
+        return candidate
 
     # ------------------------------------------------------------------
     # 5. analyse — dispatch analyst agent, poll until idle, read cards
@@ -423,6 +474,8 @@ class SNAdapter(SystemAdapter):
         n_cards: int,
         *,
         case_roles: Optional[dict[str, str]] = None,
+        parent: Optional[Version] = None,
+        round_id: Optional[int] = None,
     ) -> list[Card]:
         """Dispatch an analyst agent on accountant-selected search cases; return its new Cards.
 
@@ -430,21 +483,28 @@ class SNAdapter(SystemAdapter):
         selection is the accountant's, by a pre-registered rule). Each case is
         rendered as a diagnostic view under opaque refs (c1, c2, ...) within
         ``analyst_view_budget`` characters, so the Agent needs no tool calls
-        to gather evidence. Cards are bound to this request: only hypotheses
-        created after dispatch (and, if configured, under the current parent
-        candidate) are returned.
+        to gather evidence. Cards are bound to this request and to the parent
+        candidate: only hypotheses created after dispatch and drafted under the
+        parent are returned (v2 derive requires the card's parent to match).
+
+        The request key is ``v3/{run_id}/analyse/{round_id}/{parent_cid}``:
+        round ids grow monotonically within a run and are restored with the
+        loop state on resume, so the same round replays the same agent receipt.
+        *parent* / *round_id* default to config ``parent_candidate_id`` /
+        ``round_id``.
         """
         if self._round_ops is None or self._hypotheses is None:
             raise RuntimeError(
                 "analyse() requires round_operations and hypotheses services; "
                 "inject them via SNAdapter.__init__ keyword arguments."
             )
-        iteration_id = self._config.get("iteration_id")
-        task_id = self._config.get("task_id")
-        if not iteration_id or not task_id:
-            raise ValueError(
-                "config must contain 'iteration_id' and 'task_id' to dispatch agents."
-            )
+        iteration_id, task_id = self._require_ids()
+        parent_cid = ((parent.metadata or {}).get("candidate_id") if parent is not None else None) \
+            or self._config.get("parent_candidate_id")
+        round_id = round_id if round_id is not None else self._config.get("round_id")
+        if round_id is None:
+            raise ValueError("analyse() needs round_id (argument or config) for a deterministic key")
+        analyst_key = self._request_key("analyse", round_id, parent_cid or "-")
         from .sn_trajectory import render_views
         roles = case_roles or {}
         views = self.diagnostic_views(search_set_trajectories)
@@ -454,6 +514,8 @@ class SNAdapter(SystemAdapter):
         evidence, n_shown, n_omitted = render_views(items, self._analyst_view_budget)
         self.last_analysis = dict(selected=len(search_set_trajectories), with_view=len(views),
                                   shown=n_shown, omitted=n_omitted, evidence_chars=len(evidence))
+        where = (f"Draft each card under the parent node with `proposal draft --parent {parent_cid} "
+                 f"--file <card.json>`. " if parent_cid else "")
         analyst_text = (
             f"Diagnose the parent version's failures on the search cases below and draft up to "
             f"{n_cards} legal lcd-v2 mechanism cards, one per distinct failure mode. Each card needs "
@@ -461,115 +523,75 @@ class SNAdapter(SystemAdapter):
             f"and a contract with slice_predicate, manipulation and slice_effect. A slice_predicate "
             f"may read behaviour fields and trace.* step features (e.g. trace.n_empty_retrievals, "
             f"trace.clarification_requested). Cases marked [failure] were selected by a fixed rule; "
-            f"[control] cases are for contrast. Do not request more evidence; draft the cards now.\n\n"
+            f"[control] cases are for contrast. {where}Do not request more evidence; draft the "
+            f"cards now.\n\n"
             + evidence
         )
         before = {r["id"] for r in self._hypotheses.list(task_id)}
-        analyst_key = f"v3/analyst/{uuid.uuid4().hex}"
         call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
                     text=analyst_text, scope="iteration")
-        result = self._round_ops.agent("analyst", None, **call)
-        deadline = time.monotonic() + self._agent_timeout
-        while result.get("status") in ("running", "unknown"):
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Analyst agent did not finish within {self._agent_timeout}s "
-                    f"(key={analyst_key!r})"
-                )
-            time.sleep(self._agent_poll_interval)
-            result = self._round_ops.agent("analyst", None, **call)
-        if result.get("status") != "idle":
-            raise RuntimeError(
-                f"Analyst agent ended with status {result.get('status')!r}: "
-                f"{result.get('reason', 'no reason given')}"
-            )
-        parent = self._config.get("parent_candidate_id")
+        self._poll_agent("analyst", None, call)
         fresh = [r for r in self._hypotheses.list(task_id)
                  if r["id"] not in before and r.get("status") in ("draft", "approved")
-                 and (parent is None or r.get("parent_candidate_id") in (None, parent))]
+                 and (parent_cid is None or r.get("parent_candidate_id") == parent_cid)]
         return [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
 
     # ------------------------------------------------------------------
-    # 6. implement — dispatch implementer agent, poll, extract diff
+    # 6. implement — dispatch implementer agent, poll, record the diff
     # ------------------------------------------------------------------
 
     def implement(self, card: Card, workspace: Any) -> Diff:
-        """Dispatch an implementer agent, poll until idle, extract the resulting diff.
+        """Dispatch the implementer on the derived candidate; return its worktree diff.
 
-        *workspace* is the binding returned by self.workspace() — a dict with
-        a 'hypothesis_id' key from HypothesisWorktreeService.
-
-        The implementer is created against the hypothesis for this card.  Once
-        idle we read the worktree diff with ``git diff HEAD`` against the parent
-        snapshot to obtain the unified-diff string.
-
-        Requires self._round_ops to be injected.
+        *workspace* is the binding from workspace(). Per method-v3 §2.1 the
+        implementer only edits and runs relevant tests: it does not commit,
+        freeze, evaluate or request runs. The coordinator freezes in
+        materialize(). ``Diff.content`` is the uncommitted worktree diff, kept
+        as a record; the frozen commit is the version.
         """
-        if self._round_ops is None:
-            raise RuntimeError(
-                "implement() requires round_operations service; "
-                "inject via SNAdapter.__init__ keyword arguments."
-            )
-        iteration_id = self._config.get("iteration_id")
-        task_id = self._config.get("task_id")
-        if not iteration_id or not task_id:
-            raise ValueError(
-                "config must contain 'iteration_id' and 'task_id' to dispatch agents."
-            )
-        # workspace is from HypothesisWorktreeService.get() — dict with hypothesis_id.
-        hypothesis_id: Optional[str] = None
-        if isinstance(workspace, dict):
-            hypothesis_id = workspace.get("hypothesis_id") or workspace.get("binding", {}) and workspace["binding"].get("hypothesis_id")
-        if not hypothesis_id:
-            raise ValueError(
-                f"workspace does not contain a hypothesis_id: {workspace!r}"
-            )
-        implementer_key = f"v3/implementer/{hypothesis_id}"
-        implementer_text = (
-            f"Implement the approved card for candidate (hypothesis {hypothesis_id}). "
-            f"Required order: implementation → relevant SN tests → node freeze → "
-            f"node run. Use only approved implementer material."
+        ops = self._require_round_ops("implement")
+        iteration_id, _ = self._require_ids()
+        if not isinstance(workspace, dict) or not workspace.get("candidate_id"):
+            raise ValueError(f"workspace does not contain a candidate_id: {workspace!r}")
+        cid = workspace["candidate_id"]
+        hypothesis_id = workspace.get("hypothesis_id") or card.ref
+        text = (
+            f"Implement the approved card (hypothesis {hypothesis_id}) in candidate {cid}, "
+            f"editing only that candidate's worktree. Required order: implementation -> only "
+            f"relevant SN tests -> leak-check. Leave your changes uncommitted. Do not commit, "
+            f"do not freeze the candidate, and do not run or request any evaluation (no node, "
+            f"cluster or fresh runs): the coordinator freezes and evaluates the candidate after "
+            f"you finish. Use only approved implementer material; never inspect gold or "
+            f"validation cases."
         )
-        result = self._round_ops.agent(
-            "implementer",
-            None,
-            iteration_id=iteration_id,
-            key=implementer_key,
-            profile=self._implementer_profile,
-            text=implementer_text,
-            hypothesis_id=hypothesis_id,
+        call = dict(iteration_id=iteration_id, key=self._request_key("implement", cid),
+                    profile=self._implementer_profile, text=text, hypothesis_id=hypothesis_id)
+        self._poll_agent("implementer", cid, call)
+        return Diff(
+            content=_extract_worktree_diff(workspace),
+            test_refs=(),
+            metadata=dict(candidate_id=cid, hypothesis_id=hypothesis_id,
+                          parent_candidate_id=workspace.get("parent_candidate_id")),
         )
-        # Poll until idle/done.
+
+    def _poll_agent(self, role: str, candidate_id: Optional[str], call: dict) -> dict:
+        """Call ``RoundOperations.agent`` with one key until the agent is idle."""
+        result = self._round_ops.agent(role, candidate_id, **call)
         deadline = time.monotonic() + self._agent_timeout
         while result.get("status") in ("running", "unknown"):
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    f"Implementer agent did not finish within {self._agent_timeout}s "
-                    f"(hypothesis={hypothesis_id!r})"
+                    f"{role} agent did not finish within {self._agent_timeout}s "
+                    f"(key={call['key']!r})"
                 )
             time.sleep(self._agent_poll_interval)
-            result = self._round_ops.agent(
-                "implementer",
-                None,
-                iteration_id=iteration_id,
-                key=implementer_key,
-                profile=self._implementer_profile,
-                text=implementer_text,
-                hypothesis_id=hypothesis_id,
-            )
+            result = self._round_ops.agent(role, candidate_id, **call)
         if result.get("status") != "idle":
             raise RuntimeError(
-                f"Implementer agent ended with status {result.get('status')!r}: "
+                f"{role} agent ended with status {result.get('status')!r}: "
                 f"{result.get('reason', 'no reason given')}"
             )
-        # Extract diff from the worktree.
-        diff_content = _extract_worktree_diff(workspace)
-        return Diff(
-            content=diff_content,
-            test_refs=(),
-            metadata={"hypothesis_id": hypothesis_id},
-        )
-
+        return result
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -592,43 +614,41 @@ def _lookup(observation: dict, field: str) -> Any:
     return value
 
 
+def _worktree_ready(candidate: dict) -> bool:
+    tree = candidate.get("worktree") or {}
+    return tree.get("status") == "ready" and bool(tree.get("path"))
+
+
 def _extract_worktree_diff(workspace: Any) -> str:
-    """Extract the uncommitted diff from a v2 hypothesis worktree binding.
+    """Uncommitted changes in the candidate worktree, as a unified diff.
 
-    *workspace* is the dict returned by HypothesisWorktreeService.get():
-        {
-            "binding": {
-                "path": "/abs/path/to/worktree",
-                "branch": "...",
-                "base_revision": "<sha>",
-                ...
-            },
-            ...
-        }
-
-    Runs ``git diff HEAD`` in the worktree directory.  Returns the unified-diff
-    string, or an empty string if the worktree is clean or path unavailable.
+    *workspace* is the binding from SNAdapter.workspace() (``path`` key).
+    Tracked changes come from ``git diff HEAD``; untracked, non-ignored files
+    are appended as new-file diffs (read-only: the index is not touched).
+    Returns "" when the path is unavailable or git fails.
     """
-    if not isinstance(workspace, dict):
-        return ""
-    binding = workspace.get("binding") or {}
-    worktree_path = binding.get("path") or (workspace.get("path") if isinstance(workspace, dict) else None)
-    if not worktree_path:
-        return ""
-    try:
-        result = subprocess.run(
-            ["git", "diff", "HEAD"],
-            cwd=str(worktree_path),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            return result.stdout
-        return ""
-    except (OSError, subprocess.TimeoutExpired):
+    path = workspace.get("path") if isinstance(workspace, dict) else None
+    if not path:
         return ""
 
+    def git(*args: str) -> Optional[subprocess.CompletedProcess]:
+        try:
+            return subprocess.run(["git", "-C", str(path), *args], capture_output=True,
+                                  text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+    tracked = git("diff", "HEAD")
+    if tracked is None or tracked.returncode != 0:
+        return ""
+    parts = [tracked.stdout]
+    untracked = git("ls-files", "--others", "--exclude-standard", "-z")
+    for name in (untracked.stdout.split("\0") if untracked and untracked.returncode == 0 else []):
+        if name:
+            added = git("diff", "--no-index", "--", "/dev/null", name)
+            if added is not None and added.returncode in (0, 1):  # 1 = files differ
+                parts.append(added.stdout)
+    return "".join(parts)
 
 def _load_scores(run) -> dict[str, float] | None:
     """Load per-case raw scores from a v2 run record.

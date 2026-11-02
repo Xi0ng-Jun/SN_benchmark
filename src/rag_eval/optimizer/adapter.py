@@ -36,6 +36,7 @@ class Card:
     failure_mode_desc: str
     change_hypothesis: str
     predicate: Optional[Predicate] = None
+    ref: Optional[str] = None          # target-system card id (SN: v2 hypothesis id)
 
 
 @dataclass(frozen=True)
@@ -106,8 +107,12 @@ class SystemAdapter(abc.ABC):
         """
 
     @abc.abstractmethod
-    def workspace(self, version: Version) -> Any:
-        """Return an isolated workspace handle for an implementer agent."""
+    def workspace(self, version: Version, card: Optional[Card] = None) -> Any:
+        """Return an isolated workspace handle, derived from *version*, for implementing *card*.
+
+        Systems whose versions are tree nodes (SN) create the child node here;
+        the handle then identifies it for implement() and materialize().
+        """
 
     @abc.abstractmethod
     def analyse(
@@ -116,11 +121,15 @@ class SystemAdapter(abc.ABC):
         n_cards: int,
         *,
         case_roles: Optional[dict[str, str]] = None,
+        parent: Optional[Version] = None,
+        round_id: Optional[int] = None,
     ) -> list[Card]:
         """Run the analyst agent on search-set trajectories only (§2.3 isolation).
 
         The loop passes only accountant-selected cases; *case_roles* labels each
-        'failure' or 'control'. No scores are passed.
+        'failure' or 'control'. No scores are passed. *parent* is the version
+        being diagnosed and *round_id* the loop round; adapters use them to bind
+        cards to the parent and to derive restart-stable request keys.
 
         Returns up to n_cards Cards.
         """

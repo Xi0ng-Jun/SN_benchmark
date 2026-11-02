@@ -263,6 +263,9 @@ def run_optimization(
     LoopResult
     """
     lineage = Lineage()
+    # Real Version objects by content hash: adapters need their metadata (SN:
+    # candidate_id), which the lineage's hash-only nodes do not carry.
+    versions: dict[str, Version] = {seed.content_hash: seed}
     milestone = MilestoneState(
         cumulative_delta_val=0.0,
         best_score=float('-inf'),
@@ -317,14 +320,14 @@ def run_optimization(
 
         parent = lineage.current_parent()
         parent_version = parent.version_hash
+        parent_v = versions[parent_version]
 
         # --- 1. Diagnosis: analyst reads search-set failures ---
         # Build trajectories dict for the analyst: search-set failures only.
-        parent_eval_search = adapter.evaluate(
-            Version(parent_version, metadata={}), search_set_ids, config.k_smoke,
-        )
+        parent_eval_search = adapter.evaluate(parent_v, search_set_ids, config.k_smoke)
         selected, roles = select_analysis_cases(parent_eval_search, config)
-        cards = adapter.analyse(selected, config.b_cards, case_roles=roles)
+        cards = adapter.analyse(selected, config.b_cards, case_roles=roles,
+                                parent=parent_v, round_id=round_id)
         round_res.cards_generated = len(cards)
         if not cards:
             halt.record_round(screen_passed=0, confirmation_verdict=None)
@@ -337,25 +340,29 @@ def run_optimization(
         while len(candidates) < config.b_cards and card_idx < len(cards):
             card = cards[card_idx]
             card_idx += 1
-            ws = adapter.workspace(Version(parent_version, metadata={}))
+            try:
+                ws = adapter.workspace(parent_v, card)
+            except Exception as exc:  # approval/derive/worktree failure: skip card
+                log.warning("workspace failed on card %r: %s", card.failure_mode_desc[:40], exc)
+                continue
             try:
                 diff = adapter.implement(card, ws)
             except Exception as exc:  # implementer failure: skip card
                 log.warning("implementer failed on card %r: %s", card.failure_mode_desc[:40], exc)
                 continue
             try:
-                cand_version = adapter.materialize(diff, Version(parent_version, metadata={}))
+                cand_version = adapter.materialize(diff, parent_v)
             except Exception as exc:  # materialize failure: skip card
                 log.warning("materialize failed: %s", exc)
                 continue
-            smoke = _run_smoke(adapter, cand_version, Version(parent_version, metadata={}),
-                               card, smoke_sample_ids)
+            versions[cand_version.content_hash] = cand_version
+            smoke = _run_smoke(adapter, cand_version, parent_v, card, smoke_sample_ids)
             if smoke.verdict == 'fail':
                 # Cheap discard; do not count toward screen-eligible count.
                 continue
             candidates.append(CandidateRecord(
                 candidate=cand_version,
-                parent=Version(parent_version, metadata={}),
+                parent=parent_v,
                 diff=diff,
                 card=card,
                 smoke=smoke,
@@ -370,9 +377,7 @@ def run_optimization(
         # --- 3. Screen each candidate against current best (Ladder gate) ---
         # Cache the parent eval on the validation pool; reuse for all candidates
         # this round per §2.2 A: "父节点在当前验证池上的结果可缓存复用".
-        parent_eval_val = adapter.evaluate(
-            Version(parent_version, metadata={}), val_pool_ids, config.k_screen,
-        )
+        parent_eval_val = adapter.evaluate(parent_v, val_pool_ids, config.k_screen)
         parent_val_scores = _score_list(parent_eval_val, val_pool_ids)
 
         certified_best = milestone.best_score
@@ -412,7 +417,7 @@ def run_optimization(
                 if milestone.cumulative_delta_val >= config.T:
                     round_res.milestone_triggered = True
                     verdict = _milestone_confirm(
-                        adapter, lineage, milestone, config, fresh_batch_ids, halt,
+                        adapter, lineage, milestone, config, fresh_batch_ids, halt, versions,
                     )
                     round_res.confirmation_verdict = verdict
                     if verdict == 'confirmed':
@@ -452,6 +457,7 @@ def _milestone_confirm(
     config: ProtocolConfig,
     fresh_batch_ids: list[list[str]],
     halt: HaltTracker,
+    versions: dict[str, Version],
 ) -> str:
     """Run a fresh-batch confirmation between segment start and segment end.
 
@@ -468,11 +474,10 @@ def _milestone_confirm(
     start_node = lineage._get(milestone.last_certified_id)  # noqa: SLF001 (internal)
     end_node = lineage._get(milestone.current_provisional_id)  # noqa: SLF001
 
-    start_eval = adapter.evaluate(Version(start_node.version_hash, metadata={}),
-                                  fresh_ids, config.k_screen)
-    end_eval = adapter.evaluate(Version(end_node.version_hash, metadata={}),
-                                fresh_ids, config.k_screen,
-                                reference_version=Version(start_node.version_hash, metadata={}))
+    start_v = versions[start_node.version_hash]
+    end_v = versions[end_node.version_hash]
+    start_eval = adapter.evaluate(start_v, fresh_ids, config.k_screen)
+    end_eval = adapter.evaluate(end_v, fresh_ids, config.k_screen, reference_version=start_v)
     d = paired_differences(
         _score_list(end_eval, fresh_ids),
         _score_list(start_eval, fresh_ids),

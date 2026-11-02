@@ -49,12 +49,15 @@ class MockAdapter(SystemAdapter):
         self.implement_calls = 0
         self.evaluate_calls = 0
         self.materialize_calls = 0
+        # (method, Version) for every Version the loop hands to the adapter.
+        self.received: list[tuple[str, Version]] = []
 
     # -- helpers -------------------------------------------------------
 
     @property
     def seed(self) -> Version:
-        return Version(content_hash=self._seed_hash, metadata={"task_id": "mock"})
+        return Version(content_hash=self._seed_hash,
+                       metadata={"task_id": "mock", "candidate_id": self._seed_hash})
 
     def _round_script(self, round_id: int) -> dict:
         # round_id is 1-based in the loop; script is 0-indexed.
@@ -67,6 +70,7 @@ class MockAdapter(SystemAdapter):
 
     def materialize(self, diff: Diff, parent: Version) -> Version:
         self.materialize_calls += 1
+        self.received.append(("materialize", parent))
         new_hash = f"{parent.content_hash}+m{self.materialize_calls}"
         parent_scores = self._scores[parent.content_hash]
         # Bake deltas into scores ONCE here, so evaluate() can stay stateless.
@@ -80,6 +84,8 @@ class MockAdapter(SystemAdapter):
         meta = dict(parent.metadata)
         meta["deltas"] = {}
         meta["smoke_pass"] = smoke_pass
+        meta["candidate_id"] = new_hash
+        meta["parent_candidate_id"] = parent.metadata.get("candidate_id")
         return Version(content_hash=new_hash, metadata=meta)
 
     def evaluate(
@@ -91,6 +97,9 @@ class MockAdapter(SystemAdapter):
         reference_version: Optional[Version] = None,
     ) -> EvalResult:
         self.evaluate_calls += 1
+        self.received.append(("evaluate", version))
+        if reference_version is not None:
+            self.received.append(("evaluate.reference", reference_version))
         scores = {tid: self._scores.get(version.content_hash, {}).get(tid, 0.0)
                   for tid in task_ids}
         smoke_pass = (version.metadata or {}).get("smoke_pass", True)
@@ -117,7 +126,8 @@ class MockAdapter(SystemAdapter):
         # Toy: predicate activation = first trajectory's "ok" flag inverted.
         return {tid: not traj[0].get("ok", True) for tid, traj in trajectories.items()}
 
-    def workspace(self, version: Version) -> Any:
+    def workspace(self, version: Version, card: Optional[Card] = None) -> Any:
+        self.received.append(("workspace", version))
         return f"mock_workspace:{version.content_hash}"
 
     def analyse(
@@ -126,8 +136,12 @@ class MockAdapter(SystemAdapter):
         n_cards: int,
         *,
         case_roles: Optional[dict[str, str]] = None,
+        parent: Optional[Version] = None,
+        round_id: Optional[int] = None,
     ) -> list[Card]:
         self.analyse_calls += 1
+        if parent is not None:
+            self.received.append(("analyse", parent))
         # Use the call count to pick the script entry; analyse is called
         # once per round at the start.
         round_id = self.analyse_calls
