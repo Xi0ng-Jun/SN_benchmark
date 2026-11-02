@@ -146,6 +146,9 @@ class SNAdapter(SystemAdapter):
             raise ValueError("analyst_view_budget must be in (0, 15000] characters")
         self._analyst_view_budget = analyst_view_budget
         self.last_analysis: dict = {}
+        # Full text of the last analyst message (instructions + history + evidence),
+        # set before dispatch so a failed dispatch can still be inspected.
+        self.last_analyst_text: Optional[str] = None
         self.set_key_generation(config.get("key_generation", 0))
 
         # Trajectory cache: (run_dir_str, case_id) → DiagnosticTrajectory dict.
@@ -880,6 +883,7 @@ class SNAdapter(SystemAdapter):
             + tried
             + evidence
         )
+        self.last_analyst_text = analyst_text
         before = {r["id"] for r in self._hypotheses.list(task_id)}
         call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
                     text=analyst_text, scope="iteration")
