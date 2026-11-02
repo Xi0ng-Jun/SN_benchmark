@@ -865,13 +865,14 @@ class SNAdapter(SystemAdapter):
         rendered as a diagnostic view under opaque refs (c1, c2, ...) within
         ``analyst_view_budget`` characters, so the Agent needs no tool calls
         to gather evidence. Cards are bound to this request and to the parent
-        candidate: only hypotheses created after dispatch and drafted under the
-        parent are returned (v2 derive requires the card's parent to match).
-        A replay of the same key after a restart would therefore return no
-        cards; ``run_optimization(state_dir=...)`` persists the round's Cards
-        right after this call and never calls analyse again for that round.
-        (A crash between the agent finishing and that write is the remaining
-        window.)
+        candidate: the analyst's drafts (``proposal draft``, author
+        ``agent:analyst``) under the parent created after this request's v2
+        Agent creation intent was prepared (v2 derive requires the card's
+        parent to match). The intent is durable and keyed, so a rerun after a
+        kill while the Agent was still drafting replays the same Agent and
+        still finds every card it drafted, before or after the restart.
+        ``run_optimization(state_dir=...)`` persists the round's Cards right
+        after this call and never calls analyse again for that round.
 
         *history* (§2.3): hypotheses already processed under this parent, as
         ``{title, label[, attribution, attribution_possibly_biased]}``. It is
@@ -931,7 +932,6 @@ class SNAdapter(SystemAdapter):
             + evidence
         )
         self.last_analyst_text = analyst_text
-        before = {r["id"] for r in self._hypotheses.list(task_id)}
         # A node analyst bound to the round's parent (v2 ``agent_creations``: a
         # frozen candidate with a finished run). Not scope="iteration": v2 refuses
         # an iteration analyst until two candidates are evaluated, and in round 1
@@ -939,10 +939,22 @@ class SNAdapter(SystemAdapter):
         call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
                     text=analyst_text)
         self._poll_agent("analyst", parent_cid, call)
+        since = self._analyst_requested_at(task_id, analyst_key)
         fresh = [r for r in self._hypotheses.list(task_id)
-                 if r["id"] not in before and r.get("status") in ("draft", "approved")
-                 and r.get("parent_candidate_id") == parent_cid]
+                 if r.get("parent_candidate_id") == parent_cid and r.get("status") in ("draft", "approved")
+                 and r.get("author") == ANALYST_AUTHOR and _instant(r["created_at"]) >= since]
         return [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
+
+    def _analyst_requested_at(self, task_id: str, key: str):
+        """When v2 prepared the creation intent of the analyst Agent for *key* (durable)."""
+        ops = self._round_ops
+        creation_key = ops._key("agent-create", key)
+        actor = ops._agent_actor(key)
+        intent = next((i for i in ops.creations.store.list(task_id, actor=actor)
+                       if i["request_key"] == creation_key), None)
+        if intent is None:
+            raise RuntimeError(f"analyst Agent creation intent for {key!r} not found after dispatch")
+        return _instant(intent["prepared_at"])
 
     # ------------------------------------------------------------------
     # 6. implement — dispatch implementer agent, poll, record the diff
@@ -1004,6 +1016,16 @@ class SNAdapter(SystemAdapter):
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+# v2 author of a card drafted by an analyst Agent (``sn-eval proposal draft``).
+ANALYST_AUTHOR = "agent:analyst"
+
+
+def _instant(stamp: str):
+    from datetime import datetime, timezone
+    value = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
 
 _HISTORY_LABELS = ("smoke_fail", "screen_fail", "provisional_adopted", "confirmed",
                    "rejected", "insufficient", "unmeasurable")

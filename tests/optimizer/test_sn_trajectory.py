@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -134,30 +135,62 @@ def test_cache_only_for_finished_runs(tmp_path):
 
 # -- SNAdapter.analyse -----------------------------------------------------
 
+ANALYST = "agent:analyst"
+
+
 class _FakeHypotheses:
     def __init__(self):
-        self.records = [{"id": "old", "status": "draft", "parent_candidate_id": "P",
+        self.records = [{"id": "old", "status": "draft", "parent_candidate_id": "P", "author": ANALYST,
+                         "created_at": "2026-11-01T00:00:00+00:00",
                          "card": {"title": "old card", "implementer_brief": "x"}}]
 
     def list(self, task_id):
         return list(self.records)
 
 
+class _FakeCreations:
+    """v2 AgentCreationStore.list: one intent per creation key, prepared before the Agent drafts."""
+
+    def __init__(self):
+        self.intents = []
+
+    def list(self, task_id, *, actor):
+        return [i for i in self.intents if i["actor"] == actor]
+
+
 class _FakeRoundOps:
     def __init__(self, hypotheses):
         self.hypotheses, self.texts = hypotheses, []
+        self.creations = SimpleNamespace(store=_FakeCreations())
+
+    @staticmethod
+    def _key(kind, key):
+        return kind + ":" + key
+
+    def _agent_actor(self, key):
+        return "alice"
 
     def agent(self, role, candidate_id, **kw):
         self.calls = getattr(self, "calls", []) + [(role, candidate_id, dict(kw))]
         self.texts.append(kw["text"])
         self.keys = getattr(self, "keys", []) + [kw["key"]]
+        intent_key = self._key("agent-create", kw["key"])
+        if any(i["request_key"] == intent_key for i in self.creations.store.intents):
+            return {"status": "idle"}       # v2 replays the receipt: the same Agent, no new message
+        self.creations.store.intents.append(dict(request_key=intent_key, actor="alice",
+                                                 prepared_at="2026-11-02T10:00:00+00:00"))
         self.hypotheses.records += [
-            {"id": "new1", "status": "draft", "parent_candidate_id": "P",
+            {"id": "new1", "status": "draft", "parent_candidate_id": "P", "author": ANALYST,
+             "created_at": "2026-11-02T10:01:00+00:00",
              "card": {"title": "empty retrieval", "implementer_brief": "fix retrieval",
                       "contract": {"slice_predicate": {"kind": "range", "field": "trace.n_empty_retrievals", "min": 1},
                                    "manipulation": {"direction": "decrease", "threshold": 0.5}}}},
-            {"id": "other", "status": "draft", "parent_candidate_id": "OTHER",
+            {"id": "other", "status": "draft", "parent_candidate_id": "OTHER", "author": ANALYST,
+             "created_at": "2026-11-02T10:01:00+00:00",
              "card": {"title": "other parent", "implementer_brief": "y"}},
+            {"id": "refiled", "status": "approved", "parent_candidate_id": "P", "author": "round:rebase-card:x",
+             "created_at": "2026-11-02T10:01:00+00:00",
+             "card": {"title": "a rebased copy", "implementer_brief": "z"}},
         ]
         return {"status": "idle"}
 
@@ -232,6 +265,24 @@ def test_analyst_is_a_node_analyst_of_the_rounds_parent(tmp_path):
     assert len(ops.calls) == 1
 
 
+def test_analyse_rerun_finds_cards_drafted_before_the_restart(tmp_path):
+    """Regression (rehearsal): a kill while the analyst drafted lost its cards on rerun.
+
+    Cards are bound to the durable v2 creation intent of the round's analyst (same key on
+    rerun), not to "created after this call began".
+    """
+    run = _write_run(tmp_path, [_row("a")])
+    hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
+    config = {"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"}
+    first = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+    first.analyse(_stubs(run, ["a"]), 3, round_id=1, history=[])     # the process dies after this
+    replay = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+    cards = replay.analyse(_stubs(run, ["a"]), 3, round_id=1, history=[])
+    assert [c.ref for c in cards] == ["new1"]           # not the older card, nor the re-filed copy
+    assert len(ops.creations.store.intents) == 1
+
+
 def test_view_budget_must_fit_message_cap():
     with pytest.raises(ValueError):
         SNAdapter({}, analyst_view_budget=20000)
@@ -248,3 +299,4 @@ def test_select_analysis_cases_is_fixed_rule():
     assert [t for t, r in roles.items() if r == "failure"] == ["a", "e"]  # worst first, capped
     assert sum(r == "control" for r in roles.values()) == 1
     assert set(traj) == set(roles)
+
