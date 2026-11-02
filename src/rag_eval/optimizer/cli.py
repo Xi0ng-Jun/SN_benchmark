@@ -215,17 +215,24 @@ def build_services(config_path: str | Path, state_root: str | Path, iteration_id
     from rag_eval.workbench import env_guard
     from rag_eval.workbench.api import create_app
     from rag_eval.workbench.configuration import load_config
-    from .sn_adapter import SNAdapter
 
     config = load_config(Path(config_path))
     env_guard.install(Path(state_root) / "env-guard.jsonl")
     app = create_app(str(state_root), config, actor=actor)
-    ops = app.state.round_service.operations
+    return services_from_operations(app.state.round_service.operations, config, iteration_id, actor=actor,
+                                    run_id=run_id, adapter_settings=adapter_settings,
+                                    where=f"workbench state {state_root}")
+
+
+def services_from_operations(ops, config: dict, iteration_id: str, *, actor: str, run_id: Optional[str],
+                             adapter_settings: dict, where: str = "the workbench state") -> Services:
+    """SNAdapter and run identity over an existing v2 ``RoundOperations`` (the app's, or a test's)."""
     from rag_eval.workbench.repository import UnknownIdentity
+    from .sn_adapter import SNAdapter
     try:
         record = ops.service.iteration_record(iteration_id)
     except UnknownIdentity:
-        raise UsageError(f"unknown iteration {iteration_id!r} in workbench state {state_root}") from None
+        raise UsageError(f"unknown iteration {iteration_id!r} in {where}") from None
     if not record.get("root_candidate_id"):
         raise UsageError(f"iteration {iteration_id!r} has no root candidate")
     adapter_config = dict(config, iteration_id=iteration_id, task_id=record["task_id"],
