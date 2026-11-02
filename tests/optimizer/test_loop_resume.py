@@ -375,6 +375,29 @@ def test_attribution_with_predicate_is_marked_possibly_biased():
     assert attr["delta_S"] == pytest.approx(0.06) and attr["delta_notS"] is None
 
 
+class IncreaseFeatureAdapter(FeatureAdapter):
+    """The predicate marks a GOOD behaviour that appears only after the change."""
+
+    def features(self, trajectories, predicate):
+        if predicate is None:
+            return {}
+        return {tid: (None if tid == FRESH[-1] else traj[0]["v"] != self._seed_hash)
+                for tid, traj in trajectories.items() if traj}
+
+
+def test_attribution_increase_prediction_can_be_supported():
+    # Slice = tasks where the start run lacks the predicted behaviour (predicate
+    # False). With the old "predicate True on the parent" slice, S would be empty
+    # (r_p fixed at 1) and an 'increase' prediction could never be supported.
+    pred = Predicate({"field": "trace.n_retrieval_calls", "kind": "range", "min": 2}, "increase")
+    adapter = IncreaseFeatureAdapter([{"cards": [_card("a", pool=0.12, fresh=0.06)], "predicate": pred}],
+                                     n_tasks=12)
+    result = _run(adapter, _config(T=0.10, b_cards=1, attribution_n_min=3), fresh=[FRESH, FRESH])
+    attr = result.rounds[0].confirmations[0]["attribution"]
+    assert attr["r_p"] == 0.0 and attr["r_c"] == 1.0
+    assert attr["slice_size"] == 5 and attr["label"] == "supported"
+
+
 def test_attribution_small_slice_is_insufficient():
     pred = Predicate({"field": "x"}, "decrease")
     adapter = FeatureAdapter([{"cards": [_card("a", pool=0.12, fresh=0.06)], "predicate": pred}],

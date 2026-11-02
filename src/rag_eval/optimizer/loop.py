@@ -1252,9 +1252,11 @@ class _Run:
                      fresh_ids: list[str]) -> dict:
         """§2.2 归因 on F_i for the segment-end card (descriptive; never gates adoption).
 
-        S = fresh tasks where the predicate is True on the segment START's run;
-        r_p over S on that run, r_c over S on the END's run, Δ_S / Δ_¬S from the
-        paired scores. None-valued features are not computable and leave both
+        S = fresh tasks where the segment START's run is NOT yet in the state the
+        prediction aims for: predicate True for a 'decrease' prediction, False
+        for an 'increase' one (otherwise r_p would be 1 by construction and an
+        'increase' could never move). r_p / r_c are the predicate's rate over S
+        on the start / end runs; Δ_S / Δ_¬S come from the paired scores. None-valued features are not computable and leave both
         S and ¬S. The start run that chooses S is the same run whose scores
         enter d_i, so the slice is NOT independent: the label is recorded with
         possibly_biased=True (§2.2: "可能有偏，仅供参考").
@@ -1281,8 +1283,9 @@ class _Run:
             xs, ys, _ = _paired(end_eval, start_eval, ids)
             return (mean_delta(paired_differences(xs, ys)) if xs else None), len(xs)
 
-        S = [t for t in fresh_ids if f_start.get(t) is True]
-        not_S = [t for t in fresh_ids if f_start.get(t) is False]
+        target_absent = pred.predicted_direction != 'increase'  # value marking "not there yet"
+        S = [t for t in fresh_ids if f_start.get(t) is target_absent]
+        not_S = [t for t in fresh_ids if f_start.get(t) is (not target_absent)]
         r_p = rate([f_start.get(t) for t in S])
         r_c = rate([f_end.get(t) for t in S])
         delta_S, n_S = delta(S)
