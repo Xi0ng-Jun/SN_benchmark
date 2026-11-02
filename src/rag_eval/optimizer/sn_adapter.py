@@ -121,8 +121,6 @@ class SNAdapter(SystemAdapter):
         self._iterations = iterations
         self._hypothesis_worktrees = hypothesis_worktrees
         # Services required for agent dispatch (analyse + implement).
-        # round_operations: rag_eval.workbench.loop_services.RoundOperations
-        # hypotheses: rag_eval.workbench.hypotheses.HypothesisStore
         self._round_ops = round_operations
         self._hypotheses = hypotheses
         self._analyst_profile = analyst_profile
@@ -134,6 +132,10 @@ class SNAdapter(SystemAdapter):
         self._workspace_root = Path(
             workspace_cfg.get("location", tempfile.gettempdir())
         )
+        # Trajectory cache: (run_dir_str, case_id) → DiagnosticTrajectory dict.
+        # Bounded to the most recent _TRAJ_CACHE_SIZE entries to cap memory use.
+        self._traj_cache: dict[tuple[str, str], dict] = {}
+        self._TRAJ_CACHE_SIZE = 2000
 
     # ------------------------------------------------------------------
     # 1. materialize
@@ -302,22 +304,31 @@ class SNAdapter(SystemAdapter):
     ) -> dict[str, bool]:
         """Evaluate *predicate* against each task's trajectory list.
 
-        The predicate's ``boolean_expression`` may be a Python callable or any
-        serialisable spec.  Callables are invoked with the trajectory list for
-        that task.  All exceptions are caught and map to ``False``.
+        Returns task_id → bool.  Must return {} when predicate is None.
+
+        Distinct failure cases per §2.3 / committee decision:
+        - Exception during evaluation → result[task_id] = False (predicate
+          evaluates to False, i.e. behavior pattern not detected).  This is the
+          appropriate default for "the predicate could run but the condition
+          was not met or the expression errored".
+        - Missing trajectory data entirely (empty list, or key absent) →
+          result[task_id] = None.  None signals "not computable" and must NOT
+          be treated as False by callers — the slice membership is undefined.
+          Callers should drop None-valued tasks from predicate rate estimates.
         """
         if predicate is None:
             return {}
 
         expr = predicate.boolean_expression
-        result: dict[str, bool] = {}
+        result: dict[str, Optional[bool]] = {}
         for task_id, traj_list in trajectories.items():
+            if not traj_list:
+                result[task_id] = None  # no trajectory data — not computable
+                continue
             try:
                 if callable(expr):
                     value = expr(traj_list)
                 else:
-                    # Serialisable spec: evaluate as a compiled expression in a
-                    # restricted namespace that exposes only the trajectory list.
                     code = compile(str(expr), "<predicate>", "eval")
                     value = eval(code, {"__builtins__": {}}, {"trajectories": traj_list})  # noqa: S307
                 result[task_id] = bool(value)
