@@ -141,27 +141,44 @@ def _run_smoke(
 ) -> SmokeResult:
     """Run the cheap pre-screen behavioral check on n_smoke_sample tasks.
 
-    When no predicate is given, verdict is 'unchecked' (not a failure).
-    When a predicate is given, checks that the feature rate dropped on the
-    smoke sample.
+    With a predicate (§2.1 step 3a): check the feature rate moved in the
+    predicted direction; fail the candidate if it did not.
+
+    Without a predicate (§2.1 step 3b): run a generic smoke — the candidate
+    must produce non-empty trajectories on every smoke task (i.e. it runs
+    without infrastructure failure). Verdict is 'unchecked' for the
+    behavioral dimension but the candidate is still discarded on infra fail.
     """
     if card.predicate is None:
+        # Generic smoke: candidate must run on the smoke sample.
+        try:
+            cand_eval = adapter.evaluate(candidate, smoke_task_ids, k=1)
+        except Exception as exc:  # infra failure during smoke
+            log.warning("generic smoke infra failure: %s", exc)
+            return SmokeResult(
+                candidate_version=candidate.content_hash,
+                card_ref=card.failure_mode_desc[:40],
+                behavioral_check_ran=False,
+                feature_present_before=None,
+                feature_present_after=None,
+                verdict='fail',
+            )
+        ran = all(bool(cand_eval.trajectories.get(tid)) for tid in smoke_task_ids)
         return SmokeResult(
             candidate_version=candidate.content_hash,
             card_ref=card.failure_mode_desc[:40],
             behavioral_check_ran=False,
             feature_present_before=None,
             feature_present_after=None,
-            verdict='unchecked',
+            verdict='pass' if ran else 'fail',
         )
-    # Evaluate both versions on smoke sample
+    # Predicate present: behavioral smoke.
     parent_eval = adapter.evaluate(parent, smoke_task_ids, k=1)
     cand_eval = adapter.evaluate(candidate, smoke_task_ids, k=1)
     before_features = adapter.features(parent_eval.trajectories, card.predicate)
     after_features = adapter.features(cand_eval.trajectories, card.predicate)
     r_before = sum(before_features.values()) / max(1, len(before_features))
     r_after = sum(after_features.values()) / max(1, len(after_features))
-    # Predicate should have a lower activation rate after the fix
     passed = (card.predicate.predicted_direction == 'decrease' and r_after < r_before) or \
              (card.predicate.predicted_direction == 'increase' and r_after > r_before)
     return SmokeResult(
