@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from rag_eval.optimizer.adapter import EvalResult, Predicate
+from rag_eval.optimizer.adapter import EvalResult, Predicate, Version
 from rag_eval.optimizer.loop import ProtocolConfig, select_analysis_cases
 from rag_eval.optimizer.sn_adapter import SNAdapter
 from rag_eval.optimizer.sn_trajectory import (
@@ -148,6 +148,7 @@ class _FakeRoundOps:
         self.hypotheses, self.texts = hypotheses, []
 
     def agent(self, role, candidate_id, **kw):
+        self.calls = getattr(self, "calls", []) + [(role, candidate_id, dict(kw))]
         self.texts.append(kw["text"])
         self.keys = getattr(self, "keys", []) + [kw["key"]]
         self.hypotheses.records += [
@@ -208,10 +209,27 @@ def test_analyse_without_history_has_no_history_section(tmp_path):
     run = _write_run(tmp_path, [_row("a")])
     hyps = _FakeHypotheses()
     ops = _FakeRoundOps(hyps)
-    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R"},
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"},
                         round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
     adapter.analyse(_stubs(run, ["a"]), 1, round_id=1, history=[])
     assert "already tried" not in ops.texts[0] and adapter.last_analysis["history_chars"] == 0
+
+
+def test_analyst_is_a_node_analyst_of_the_rounds_parent(tmp_path):
+    """Regression: scope="iteration" needs two evaluated v2 candidates; round 1 has only C0."""
+    run = _write_run(tmp_path, [_row("a")])
+    hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "run_id": "R"},
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0)
+    adapter.analyse(_stubs(run, ["a"]), 1, round_id=1, history=[],
+                    parent=Version("c0hash", metadata={"candidate_id": "P"}))
+    role, candidate_id, kw = ops.calls[0]
+    assert (role, candidate_id) == ("analyst", "P") and "scope" not in kw
+    assert "proposal draft --parent P " in kw["text"]
+    with pytest.raises(ValueError, match="parent candidate"):
+        adapter.analyse(_stubs(run, ["a"]), 1, round_id=2, history=[])
+    assert len(ops.calls) == 1
 
 
 def test_view_budget_must_fit_message_cap():

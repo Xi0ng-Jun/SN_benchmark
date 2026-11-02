@@ -843,7 +843,9 @@ class SNAdapter(SystemAdapter):
         round ids grow monotonically within a run and are restored with the
         loop state on resume, so the same round replays the same agent receipt.
         *parent* / *round_id* default to config ``parent_candidate_id`` /
-        ``round_id``.
+        ``round_id``; a parent is required: the Agent is a v2 node analyst
+        bound to it (``candidate_id=<parent>``), which v2 allows only for a
+        frozen candidate with a finished run.
         """
         if self._round_ops is None or self._hypotheses is None:
             raise RuntimeError(
@@ -856,7 +858,11 @@ class SNAdapter(SystemAdapter):
         round_id = round_id if round_id is not None else self._config.get("round_id")
         if round_id is None:
             raise ValueError("analyse() needs round_id (argument or config) for a deterministic key")
-        analyst_key = self._request_key("analyse", round_id, parent_cid or "-")
+        if not parent_cid:
+            # v2 binds every analyst of an iteration to a candidate or to the whole
+            # iteration; v3's analyst is a node analyst of the round's parent.
+            raise ValueError("analyse() needs the parent candidate (argument or config) to bind the analyst")
+        analyst_key = self._request_key("analyse", round_id, parent_cid)
         from .sn_trajectory import render_views
         roles = case_roles or {}
         views = self.diagnostic_views(search_set_trajectories)
@@ -870,7 +876,7 @@ class SNAdapter(SystemAdapter):
                                   history_shown=n_hist_shown, history_omitted=n_hist_omitted,
                                   history_chars=len(tried))
         where = (f"Draft each card under the parent node with `proposal draft --parent {parent_cid} "
-                 f"--file <card.json>`. " if parent_cid else "")
+                 f"--file <card.json>`. ")
         analyst_text = (
             f"Diagnose the parent version's failures on the search cases below and draft up to "
             f"{n_cards} legal lcd-v2 mechanism cards, one per distinct failure mode. Each card needs "
@@ -885,12 +891,16 @@ class SNAdapter(SystemAdapter):
         )
         self.last_analyst_text = analyst_text
         before = {r["id"] for r in self._hypotheses.list(task_id)}
+        # A node analyst bound to the round's parent (v2 ``agent_creations``: a
+        # frozen candidate with a finished run). Not scope="iteration": v2 refuses
+        # an iteration analyst until two candidates are evaluated, and in round 1
+        # only the root is. Each round's parent gets its own Agent (the key names it).
         call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
-                    text=analyst_text, scope="iteration")
-        self._poll_agent("analyst", None, call)
+                    text=analyst_text)
+        self._poll_agent("analyst", parent_cid, call)
         fresh = [r for r in self._hypotheses.list(task_id)
                  if r["id"] not in before and r.get("status") in ("draft", "approved")
-                 and (parent_cid is None or r.get("parent_candidate_id") == parent_cid)]
+                 and r.get("parent_candidate_id") == parent_cid]
         return [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
 
     # ------------------------------------------------------------------
