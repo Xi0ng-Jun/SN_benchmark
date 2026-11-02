@@ -215,6 +215,8 @@ class RoundService:
         actor, request_key = _text(actor, 'actor', limit=200), _text(request_key, 'request key', limit=200)
         if type(rounds) is not int or rounds < 1:
             raise ValueError('rounds must be a positive integer')
+        from .auto_runs import refuse_manual
+        refuse_manual(self.repo, iteration_id)
         with self._lock(iteration_id):
             with self.repo.connect() as conn:
                 prior = conn.execute('SELECT * FROM iteration_round_requests WHERE iteration_id=? AND request_key=?',

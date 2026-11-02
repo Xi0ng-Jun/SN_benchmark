@@ -18,6 +18,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import auto_runs
 from .action_requests import RUN_VERBS, VERBS, ActionRequestStore, execute
 from .comparisons import Admission, ComparisonService, summary
 from .hypotheses import HypothesisStore, leak_check
@@ -209,6 +210,7 @@ class IterationAPI:
     def confirm(self, request_id, note=''):
         """A person confirms; the server executes the recorded parameters unchanged."""
         record = self._request(request_id)
+        auto_runs.refuse_manual_task(self.repository, record['task_id'])
         if record['status'] in ('executed', 'failed'):
             return record
         if VERBS[record['verb']][1]:
@@ -262,6 +264,10 @@ class IterationAPI:
             return None
         return self._version(iteration_id or self._iteration_of(candidate_id))
 
+    def _manual(self, candidate_id):
+        """A person's write on a candidate: refused while a machine owns the iteration."""
+        auto_runs.refuse_manual(self.repository, self._iteration_of(candidate_id))
+
     def _iteration_of(self, candidate_id):
         # The bare row: the full candidate view measures (admits) every attempt.
         with self.repository.connect() as conn:
@@ -282,7 +288,11 @@ class IterationAPI:
 
         @router.get('/api/iterations')
         def iteration_list():
-            return service.iterations(self.workspace['id'])
+            from ..optimizer.run_view import run_alive
+            bound = auto_runs.bindings(self.repository)
+            return [dict(row, auto=dict(run_id=bound[row['id']]['run_id'], alive=run_alive(bound[row['id']]['state_dir']))
+                                   if row['id'] in bound else None)
+                    for row in service.iterations(self.workspace['id'])]
 
         @router.get('/api/project/commits')
         def project_commits(q: str | None = None):
@@ -314,6 +324,15 @@ class IterationAPI:
                 return LedgerService(self.repository, service, self.views).read(iteration_id, sealed_score=score)
             return await self.heavy.get(('ledger', iteration_id), read,
                                         prepare=lambda: self._prepare(iteration_id=iteration_id))
+
+        @router.get('/api/iterations/{iteration_id}/auto-run')
+        def iteration_auto_run(iteration_id: str):
+            self._scope(iteration_id=iteration_id)
+            bound = auto_runs.binding(self.repository, iteration_id)
+            if bound is None:
+                raise UnknownIdentity('This iteration has no automatic run')
+            from ..optimizer.run_view import read_run
+            return read_run(bound['state_dir'])
 
         @router.get('/api/candidates/{candidate_id}')
         def node_show(candidate_id: str):
@@ -350,6 +369,7 @@ class IterationAPI:
         @router.post('/api/candidates/{candidate_id}/check')
         def node_check(candidate_id: str, command: Empty):
             # DB-only like proposal_draft: records a verification, touches no external system.
+            self._manual(candidate_id)
             self._scope(candidate_id=candidate_id)
             return self.check(candidate_id)
 
@@ -372,12 +392,14 @@ class IterationAPI:
 
         @router.post('/api/candidates/{candidate_id}/provision')
         def node_provision(candidate_id: str, command: Empty):
+            self._manual(candidate_id)
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.provision(candidate_id)
 
         @router.post('/api/candidates/{candidate_id}/derive')
         def node_derive(candidate_id: str, command: Derive):
+            self._manual(candidate_id)
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.derive(candidate_id, actor=actor, request_key=command.request_key,
@@ -386,12 +408,14 @@ class IterationAPI:
 
         @router.post('/api/candidates/{candidate_id}/freeze')
         def node_freeze(candidate_id: str, command: Empty):
+            self._manual(candidate_id)
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.freeze(candidate_id, actor=actor)
 
         @router.post('/api/candidates/{candidate_id}/run')
         def node_run(candidate_id: str, command: Run):
+            self._manual(candidate_id)
             self._write()
             self._scope(candidate_id=candidate_id)
             if service.iteration(service.candidate(candidate_id)['iteration_id'])['protocol'].get('budget'):
@@ -403,12 +427,14 @@ class IterationAPI:
 
         @router.post('/api/candidates/{candidate_id}/fresh-run')
         def node_fresh_run(candidate_id: str, command: Run):
+            self._manual(candidate_id)
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.fresh_run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key)
 
         @router.post('/api/candidates/{candidate_id}/cluster-run')
         def node_cluster_run(candidate_id: str, command: ClusterRun):
+            self._manual(candidate_id)
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.cluster_run(candidate_id, command.cluster_id, budget=command.budget,
@@ -422,6 +448,7 @@ class IterationAPI:
         @router.post('/api/candidates/{candidate_id}/adopt')
         def node_adopt(candidate_id: str, command: Run):
             """Root only: register the server-configured finished runs as an attempt."""
+            self._manual(candidate_id)
             self._write()
             self._scope(candidate_id=candidate_id)
             return service.run(candidate_id, budget=command.budget, actor=actor, request_key=command.request_key,
@@ -433,12 +460,14 @@ class IterationAPI:
             # recording a decision are DB-only operations that create no
             # external resources (no Paseo workspace, no git commit).
             # _write() gates operations that touch external systems.
+            self._manual(candidate_id)
             self._scope(candidate_id=candidate_id)
             return service.draft_proposal(candidate_id, command.card, author=actor)
 
         @router.post('/api/candidates/{candidate_id}/decision')
         def node_decide(candidate_id: str, command: Decide):
             # Same rationale as proposal_draft: no external side-effect.
+            self._manual(candidate_id)
             self._scope(candidate_id=candidate_id)
             return service.decide(candidate_id, command.decision, actor=actor, note=command.note)
 

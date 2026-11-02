@@ -151,6 +151,8 @@ class CreationAPI:
         @router.post('/api/tasks/{task_id}/agent-creations')
         def create(task_id: str, command: CreationRequest):
             self._task_scope(task_id)
+            from .auto_runs import refuse_manual_task
+            refuse_manual_task(self.repository, task_id)
             intent = self.store.prepare(task_id, actor=self.actor, **command.model_dump())
             # Prior receipts remain available even if configuration/bridge was
             # removed. Prepared is the only state eligible for initial dispatch.

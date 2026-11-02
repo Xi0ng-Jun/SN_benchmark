@@ -878,8 +878,8 @@ class SNAdapter(SystemAdapter):
             f"and a contract with slice_predicate, manipulation and slice_effect. A slice_predicate "
             f"may read behaviour fields and trace.* step features (e.g. trace.n_empty_retrievals, "
             f"trace.clarification_requested). Cases marked [failure] were selected by a fixed rule; "
-            f"[control] cases are for contrast. {where}Do not request more evidence; draft the "
-            f"cards now.\n\n"
+            f"[control] cases are for contrast. {where}Do not request more evidence and do not read "
+            f"files under var/ (run directories hold validation scores); draft the cards now.\n\n"
             + tried
             + evidence
         )

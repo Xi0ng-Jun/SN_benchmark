@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import ledger_io
+from . import ledger_io, run_view
 from .adapter import EvaluationUnavailable, Version
 from .ledger import Lineage, NodeState
 from .loop import ProtocolConfig, run_optimization, select_analysis_cases
@@ -198,6 +198,7 @@ class Services:
     task_id: str
     root_candidate_id: str
     writable: bool            # workbench may create candidates (task_worktrees.create_candidates)
+    repository: Any = None    # workbench repository: binds the run to the iteration
 
 
 def build_services(config_path: str | Path, state_root: str | Path, iteration_id: str, *,
@@ -232,7 +233,8 @@ def build_services(config_path: str | Path, state_root: str | Path, iteration_id
     adapter = SNAdapter(adapter_config, repository=ops.repository, run_views=ops.api.views,
                         round_operations=ops, hypotheses=ops.api.hypotheses, **adapter_settings)
     return Services(adapter=adapter, iteration_id=iteration_id, task_id=record["task_id"],
-                    root_candidate_id=record["root_candidate_id"], writable=bool(ops.api.writable))
+                    root_candidate_id=record["root_candidate_id"], writable=bool(ops.api.writable),
+                    repository=ops.repository)
 
 
 # ---------------------------------------------------------------------------
@@ -347,8 +349,26 @@ def cmd_run(args: argparse.Namespace) -> int:
             raise UsageError("ProtocolConfig differs from the one this run was started with")
 
     _print_feasibility(protocol, parts, search, validation, fresh, smoke, resumed=st is not None)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with run_view.hold_run_lock(state_dir):
+            return _run_locked(args, protocol, services, adapter, state_dir, identity, identity_path,
+                               seed, search, validation, fresh, smoke, key_generation)
+    except run_view.RunLocked as exc:
+        raise UsageError(str(exc)) from None
+
+
+def _run_locked(args, protocol, services, adapter, state_dir, identity, identity_path,
+                seed, search, validation, fresh, smoke, key_generation) -> int:
+    if services.repository is not None:
+        from rag_eval.workbench import auto_runs
+        from rag_eval.workbench.repository import Conflict
+        try:
+            auto_runs.register(services.repository, args.iteration, run_id=args.run_id,
+                               state_dir=str(state_dir.resolve()), actor=args.actor)
+        except Conflict as exc:
+            raise UsageError(str(exc)) from None
     if identity is None:
-        state_dir.mkdir(parents=True, exist_ok=True)
         ledger_io.atomic_write_json(state_dir / SMOKE_FILE, dict(rule=SMOKE_RULE, size=len(smoke), case_ids=smoke))
         (state_dir / PROTOCOL_COPY_FILE).write_bytes(Path(args.protocol).read_bytes())
         ledger_io.atomic_write_json(identity_path, dict(

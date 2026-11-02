@@ -1095,6 +1095,7 @@ class _Run:
             reason=reason,
             parent=rec.parent.content_hash,
             candidate=rec.candidate.content_hash if rec.candidate else None,
+            candidate_id=(rec.candidate.metadata or {}).get("candidate_id") if rec.candidate else None,
             rebased_from=rec.rebased_from,
             smoke_verdict=rec.smoke.verdict if rec.smoke else None,
             delta_val=rec.delta_val,

@@ -116,6 +116,7 @@ class _ClosedMessageRoute(APIRoute):
 
 class MessageAPI:
     def __init__(self, repository, workspace, config, *, actor, bridge):
+        self.repository = repository
         self.actor = _text(actor, opaque=True)
         server_config = copy.deepcopy(config.get('agent_bridge'))
         if bridge is None and server_config is not None:
@@ -149,6 +150,8 @@ class MessageAPI:
 
         @router.post('/api/tasks/{task_id}/agent-messages')
         def send(task_id: str, command: MessageRequest):
+            from .auto_runs import refuse_manual_task
+            refuse_manual_task(self.repository, task_id)
             # This read verifies real Task/workspace/actor scope before config or
             # input preparation. Prior receipts bypass current source resolution.
             prior = next((record for record in self.store.list(task_id, actor=self.actor)

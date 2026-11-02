@@ -136,6 +136,10 @@ def main(argv=None):
     repository, views = build(options.state, options.config)
     store = HypothesisStore(repository)
     task_id, a, command = options.task, options.args, options.command
+    from .auto_runs import agent_refusal
+    refusal = agent_refusal(repository, task_id, options.role, command)
+    if refusal:
+        raise SystemExit(refusal)
     from .splits import Policy
     policy = Policy(repository, task_id)
     if command == 'case':

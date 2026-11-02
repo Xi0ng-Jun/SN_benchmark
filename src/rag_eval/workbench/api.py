@@ -21,6 +21,7 @@ from .result_comparison import compare_task_results
 from .plan_inputs import NotebookPlanInputs
 from .evaluation_plans import PlanDraftStore
 from .context import resolve_context
+from .auto_runs import refuse_manual_task
 from .repository import Conflict, WorkbenchRepository, now
 from .bridge_adapter import AgentBridgeAdapter
 from .sessions import TaskSessionReader
@@ -368,10 +369,12 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
 
     @app.post('/api/tasks/{task_id}/sessions')
     def attach_session(task_id: str, command: AttachSession):
+        refuse_manual_task(repository, task_id)
         return repository.attach_session(task_id, command.agent_id, actor=actor, request_key=command.request_key)
 
     @app.post('/api/tasks/{task_id}/sessions/{session_id}/remove')
     def remove_session(task_id: str, session_id: str):
+        refuse_manual_task(repository, task_id)
         return session_reader.remove(task_id, session_id, actor=actor)
 
     @app.get('/api/tasks/{task_id}/sessions/{session_id}/agent')
@@ -397,26 +400,31 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
 
     @app.post('/api/tasks/{task_id}/hypotheses/{hypothesis_id}/worktree')
     def create_hypothesis_worktree(task_id: str, hypothesis_id: str, command: Command):
+        refuse_manual_task(repository, task_id)
         if not tree_creation_enabled:
             raise ValueError('服务器未开放从假设卡创建 worktree')
         return hypothesis_trees.create(task_id, hypothesis_id, actor=actor)
 
     @app.post('/api/tasks/{task_id}/hypotheses/{hypothesis_id}/worktree/activate')
     def select_hypothesis_worktree(task_id: str, hypothesis_id: str, command: Command):
+        refuse_manual_task(repository, task_id)
         if any(r['task_id'] == task_id and not r['terminal'] for r in job_api.execution.records(workspace['id'])):
             raise Conflict('本任务有未结束的评测，不能切换更改目录')
         return hypothesis_trees.activate(task_id, hypothesis_id, actor=actor)
 
     @app.post('/api/tasks/{task_id}/hypotheses')
     def draft_hypothesis(task_id: str, command: HypothesisDraft):
+        refuse_manual_task(repository, task_id)
         return hypotheses.draft(task_id, command.card, author=actor)
 
     @app.post('/api/tasks/{task_id}/hypotheses/{hypothesis_id}/decision')
     def decide_hypothesis(task_id: str, hypothesis_id: str, command: HypothesisDecision):
+        refuse_manual_task(repository, task_id)
         return hypotheses.decide(task_id, hypothesis_id, command.decision, actor=actor, note=command.note)
 
     @app.post('/api/tasks/{task_id}/hypotheses/{hypothesis_id}/check')
     def check_hypothesis(task_id: str, hypothesis_id: str, command: HypothesisCheck):
+        refuse_manual_task(repository, task_id)
         flips = views.flips(command.baseline_run, command.candidate_run)
         leak = leak_check(views, task_id, task_run_ids(task_id), hypothesis_id=hypothesis_id)
         return hypotheses.record_check(task_id, hypothesis_id, baseline_run=command.baseline_run,
@@ -425,6 +433,7 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
 
     @app.post('/api/tasks/{task_id}/hypotheses/{hypothesis_id}/conclusion')
     def conclude_hypothesis(task_id: str, hypothesis_id: str, command: HypothesisConclusion):
+        refuse_manual_task(repository, task_id)
         return hypotheses.conclude(task_id, hypothesis_id, effect=command.effect, cause=command.cause,
                                    note=command.note, actor=actor)
 

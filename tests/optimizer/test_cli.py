@@ -471,3 +471,50 @@ def test_build_services_uses_the_server_app_wiring(tmp_path, monkeypatch):
     assert adapter._analyst_profile == "opus" and adapter._agent_timeout == 5400.0
     assert built.root_candidate_id == "root-c" and built.writable is True
     assert installed and installed[-1] == state_root / "env-guard.jsonl"
+
+
+# ---------------------------------------------------------------------------
+# The run owns its directory and its iteration
+# ---------------------------------------------------------------------------
+
+def _run_args(tmp_path, protocol, run_id="r1"):
+    return ["run", "--config", "c", "--state", "s", "--iteration", "it1", "--actor", "operator", "--run-id", run_id,
+            "--state-dir", str(tmp_path / "run"), "--protocol", str(protocol)]
+
+
+def test_run_binds_the_iteration_and_holds_its_directory(tmp_path, monkeypatch):
+    from rag_eval.optimizer import run_view
+    from rag_eval.workbench import auto_runs
+    from rag_eval.workbench.repository import WorkbenchRepository
+    repository = WorkbenchRepository(tmp_path / "state")
+    seen = {}
+
+    def fake_build(config_path, state_root, iteration_id, *, actor, run_id, adapter_settings):
+        return cli.Services(adapter=FakeSN(script=[]), iteration_id=iteration_id, task_id="task1",
+                            root_candidate_id="root", writable=True, repository=repository)
+    real = cli.run_optimization
+
+    def spy(*a, **kw):
+        seen["alive"] = run_view.run_alive(kw["state_dir"])
+        return real(*a, **kw)
+    monkeypatch.setattr(cli, "build_services", fake_build)
+    monkeypatch.setattr(cli, "run_optimization", spy)
+    protocol = write_protocol(tmp_path)
+    assert cli.main(_run_args(tmp_path, protocol)) == 0
+    assert seen["alive"] is True
+    assert run_view.run_alive(tmp_path / "run") is False
+    bound = auto_runs.binding(repository, "it1")
+    assert bound["run_id"] == "r1" and bound["state_dir"] == str((tmp_path / "run").resolve())
+    with run_view.hold_run_lock(tmp_path / "run"):
+        assert cli.main(_run_args(tmp_path, protocol)) == 2
+
+
+def test_a_second_run_cannot_take_a_bound_iteration(tmp_path, monkeypatch):
+    from rag_eval.workbench import auto_runs
+    from rag_eval.workbench.repository import WorkbenchRepository
+    repository = WorkbenchRepository(tmp_path / "state")
+    auto_runs.register(repository, "it1", run_id="other", state_dir="/elsewhere", actor="a")
+    monkeypatch.setattr(cli, "build_services", lambda *a, **kw: cli.Services(
+        adapter=FakeSN(script=[]), iteration_id="it1", task_id="task1", root_candidate_id="root", writable=True,
+        repository=repository))
+    assert cli.main(_run_args(tmp_path, write_protocol(tmp_path))) == 2
