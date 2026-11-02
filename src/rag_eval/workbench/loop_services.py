@@ -141,6 +141,12 @@ class RoundOperations:
     def fresh(self, candidate_id, **kwargs):
         return self.measurements.fresh(candidate_id, **kwargs)
 
+    def smoke(self, candidate_id, case_ids, **kwargs):
+        return self.measurements.smoke(candidate_id, case_ids, **kwargs)
+
+    def segment(self, start_id, end_id, batch_id, **kwargs):
+        return self.measurements.segment(start_id, end_id, batch_id, **kwargs)
+
     def agent(self, role, candidate_id, *, iteration_id, key, profile, text, scope=None, hypothesis_id=None,
               message_stage='initial', start_grace_seconds=300):
         actor = self._agent_actor(key)

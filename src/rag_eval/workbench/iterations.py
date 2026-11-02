@@ -891,7 +891,7 @@ class IterationService:
             if prior_command is None:
                 self.repository._receipt(conn, command_scope, request_key, command, dict(bound=True))
         plan_scope = iteration
-        if batch_id is not None and batch_id.startswith(('cluster:', 'sealed:')):
+        if batch_id is not None and batch_id.startswith(('cluster:', 'sealed:', 'smoke:')):
             from .execution_scopes import get
             plan_scope = get(self.repository, iteration['id'], batch_id)
             if adopt:
@@ -902,7 +902,9 @@ class IterationService:
             if adopt or claimed is None:
                 raise ValueError('Fresh runs require a consumed batch')
             owner = self.candidate(claimed['candidate_id'])
-            if not claimed['completed_at'] and candidate_id not in (owner['id'], owner['parent_candidate_id']):
+            from .loop_measurements import segment_start
+            if not claimed['completed_at'] and candidate_id not in (owner['id'], owner['parent_candidate_id']) \
+                    and candidate_id != segment_start(self.repository, claimed['request_key']):
                 raise Conflict('A fresh batch belongs to its claimed candidate and parent until completion')
             plan_scope = next(b for b in iteration['protocol']['fresh_batches'] if b['batch_id'] == batch_id)
         if not str(batch_id or '').startswith('sealed:'):

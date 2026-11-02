@@ -563,3 +563,127 @@ def test_observation_honors_retry_cap_across_invocations(env):
     state.update(original_key='next-observation', actor='bob', infra_retry=1, timeout_seconds=7200, override=False)
     measurements._save(storage, state)
     assert measurements.measure(root, key='next-observation', actor='bob', observe_only=True)['status'] == 'complete'
+
+
+def descendant(env, parent, note):
+    from pathlib import Path
+    candidate = env['service'].derive(parent, actor='alice', request_key=note, note=note)
+    (Path(candidate['worktree']['path']) / 'backend/app/__init__.py').write_text(f'VALUE = {len(note)}\n')
+    return env['service'].freeze(candidate['id'], actor='alice')['id']
+
+
+def test_smoke_rejects_cases_outside_the_search_split(env):
+    import pytest
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1)
+    candidate = child(env, tree, 'smoke-reject')
+    measurements = ports(env)
+    fresh_case = tree['protocol']['fresh_batches'][0]['case_ids'][0]
+    search = tree['protocol']['splits']['search'][0]
+    for case_ids in ([], [fresh_case], [search, fresh_case], [search, search], ['unknown:case']):
+        with pytest.raises(ValueError):
+            measurements.smoke(candidate, case_ids, key='smoke-reject', actor='alice')
+    with pytest.raises(ValueError):
+        measurements.smoke(tree['root_candidate_id'], [search], key='smoke-root', actor='alice')
+    assert env['service'].candidate(candidate)['attempts'] == []
+
+
+def test_smoke_registers_scope_and_runs_one_attempt_per_side(env):
+    import hashlib
+    from rag_eval.workbench.execution_scopes import get
+    tree = iteration(env)
+    root = tree['root_candidate_id']
+    candidate = child(env, tree, 'smoke-run')
+    search = tree['protocol']['splits']['search']
+    scope = 'smoke:' + hashlib.sha256('\n'.join(sorted(search)).encode()).hexdigest()[:16]
+    measurements = ports(env)
+    assert measurements.smoke(candidate, search, key='smoke', actor='alice', infra_retry=0)['status'] == 'running'
+    assert get(env['repo'], tree['id'], scope)['case_ids'] == sorted(search)
+    for cid in (root, candidate):
+        assert [a['batch_id'] for a in env['service'].candidate(cid)['attempts']] == [scope]
+        finish(env, env['service'].candidate(cid))
+    request = measurements.requests.get(measurements._read('round-measure:' + hashlib.sha256(b'smoke').hexdigest())['action_id'])
+    assert request['verb'] == 'node-run'
+    assert ports(env).smoke(candidate, search, key='smoke', actor='alice', infra_retry=0)['status'] == 'complete'
+    # Existing attempts on the same sample count: a new key tops up nothing.
+    assert measurements.smoke(candidate, list(reversed(search)), key='smoke-again', actor='alice',
+                              infra_retry=0)['status'] == 'complete'
+    assert len(env['service'].candidate(candidate)['attempts']) == len(env['service'].candidate(root)['attempts']) == 1
+
+
+def test_segment_rejects_non_descendant_unknown_and_used_batches(env):
+    import pytest
+    from rag_eval.workbench.splits import claim
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1)
+    root = tree['root_candidate_id']
+    first, second = child(env, tree, 'segment-first'), child(env, tree, 'segment-second')
+    batch = tree['protocol']['fresh_batches'][0]['batch_id']
+    measurements = ports(env)
+    for start, end in ((first, second), (first, root), (first, first)):
+        with pytest.raises(ValueError):
+            measurements.segment(start, end, batch, key='segment-bad', actor='alice')
+    with pytest.raises(ValueError):
+        measurements.segment(root, first, 'no-such-batch', key='segment-unknown', actor='alice')
+    claim(env['repo'], tree, second, 'other-owner')
+    with pytest.raises(ValueError):
+        measurements.segment(root, first, batch, key='segment-used', actor='alice')
+    assert env['service'].candidate(first)['attempts'] == []
+
+
+def test_segment_runs_start_and_end_on_the_batch_then_folds_it_into_measure(env, monkeypatch):
+    import hashlib
+    from rag_eval.workbench.comparisons import ComparisonService
+    from rag_eval.workbench.splits import batches
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1)
+    root = tree['root_candidate_id']
+    middle = child(env, tree, 'segment-middle')
+    end = descendant(env, middle, 'segment-end')
+    batch = tree['protocol']['fresh_batches'][0]['batch_id']
+    k = tree['protocol']['k_base']
+    measurements = ports(env)
+    assert measurements.segment(root, end, batch, key='segment', actor='alice', infra_retry=0)['status'] == 'running'
+    claimed = batches(env['repo'], tree['id'])
+    assert [(b['batch_id'], b['candidate_id']) for b in claimed] == [(batch, end)]
+    assert env['service'].candidate(middle)['attempts'] == []
+    for cid in (root, end):
+        assert [a['batch_id'] for a in env['service'].candidate(cid)['attempts']] == [batch] * k
+        finish(env, env['service'].candidate(cid))
+    request = measurements.requests.get(measurements._read('round-measure:' + hashlib.sha256(b'segment').hexdigest())['action_id'])
+    assert request['verb'] == 'node-fresh-run'
+    seen = []
+    def stored(self, subject, reference, kind, actor, store=True):
+        seen.append((subject['id'], reference['id'], kind))
+        return dict(id='segment-comparison')
+    monkeypatch.setattr(ComparisonService, '_stored', stored)
+    monkeypatch.setattr(ComparisonService, 'get', lambda self, _: dict(mean=dict(delta=.1), noise=dict(eta=.2)))
+    result = ports(env).segment(root, end, batch, key='segment', actor='alice', infra_retry=0)
+    assert result['status'] == 'complete' and result['batch_id'] == batch and result['delta'] == .1
+    assert seen == [(end, root, 'fresh')]
+    assert batches(env['repo'], tree['id'], completed=True)[0]['comparison_id'] == 'segment-comparison'
+    # A used batch is never reused, and later measurements fold it in for both sides.
+    import pytest
+    with pytest.raises(ValueError):
+        measurements.segment(root, end, batch, key='segment-twice', actor='alice')
+    later = descendant(env, end, 'segment-later')
+    assert measurements.measure(later, key='later', actor='alice', infra_retry=0)['status'] == 'running'
+    assert sum(a['batch_id'] == batch for a in env['service'].candidate(later)['attempts']) == k
+    assert sum(a['batch_id'] == batch for a in env['service'].candidate(end)['attempts']) == k
+
+
+def test_pending_segment_manual_confirmation_claims_the_named_batch(env):
+    from rag_eval.workbench.splits import batches
+    tree = iteration(env, fresh_batch_count=1, fresh_papers_per_batch=1,
+                     budget=dict(limit_cny=.1, max_runs_per_candidate=20))
+    root = tree['root_candidate_id']
+    end = descendant(env, child(env, tree, 'pending-middle'), 'pending-segment-end')
+    batch = tree['protocol']['fresh_batches'][0]['batch_id']
+    measurements = ports(env)
+    result = measurements.segment(root, end, batch, key='pending-segment', actor='alice')
+    assert result['status'] == 'budget_exhausted'
+    assert batches(env['repo'], tree['id']) == []
+    execute(env['service'], measurements.requests.get(result['action_request_id']), workspace_id=env['workspace']['id'],
+            actor='operator', budget_override=True, human_confirmed=True)
+    assert [(b['batch_id'], b['candidate_id']) for b in batches(env['repo'], tree['id'])] == [(batch, end)]
+    assert ports(env).segment(root, end, batch, key='pending-segment', actor='alice')['status'] == 'running'
+    k = tree['protocol']['k_base']
+    for cid in (root, end):
+        assert [a['batch_id'] for a in env['service'].candidate(cid)['attempts']] == [batch] * k

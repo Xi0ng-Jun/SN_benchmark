@@ -60,6 +60,43 @@ def cluster_plan(service, candidate_id, cluster_id):
     return get(service.repository, iteration['id'], scope_id)
 
 
+def smoke_scope_id(protocol, case_ids):
+    """Content-addressed id of a search-only smoke sample; refuses any other split."""
+    if (not isinstance(case_ids, (list, tuple)) or not case_ids or any(type(c) is not str for c in case_ids)
+            or len(set(case_ids)) != len(case_ids)):
+        raise ValueError('Smoke cases must be a non-empty list of unique case ids')
+    if not set(case_ids) <= set(((protocol or {}).get('splits') or {}).get('search', ())):
+        raise ValueError('Smoke cases must be search cases')
+    import hashlib
+    return 'smoke:' + hashlib.sha256('\n'.join(sorted(case_ids)).encode()).hexdigest()[:16]
+
+
+def smoke_plan(service, iteration, case_ids):
+    """Register (idempotently) the frozen plan of one smoke sample, as cluster_plan does."""
+    from .splits import Policy
+    scope_id = smoke_scope_id(iteration['protocol'], case_ids)
+    task = iteration['task_id']
+    policy = Policy(service.repository, task)
+    for cid in case_ids:
+        policy.require_search(cid)
+    try:
+        return get(service.repository, iteration['id'], scope_id)
+    except UnknownIdentity:
+        pass
+    protocol, members = iteration['protocol'], sorted(case_ids)
+    p = service.plans.save(task_id=task, input_id=protocol['input']['input_id'],
+        expected_bundle_id=protocol['input']['bundle_id'], case_ids=members,
+        title=f'Smoke {scope_id}', mode=protocol['mode'], actor='scope',
+        request_key=scope_id, roles={c: 'search' for c in members})
+    scope = dict(scope_id=scope_id, kind='smoke', case_ids=members,
+                 plan_id=p['plan_id'], plan_revision=p['revision'], plan_content_hash=p['content_hash'],
+                 selection_hash=p['content']['selection']['selection_hash'])
+    with service.repository.connect(write=True) as conn:
+        conn.execute('INSERT OR IGNORE INTO iteration_scopes VALUES(?,?,?,?,?)',
+                     (iteration['id'], scope_id, 'smoke', json.dumps(scope), now()))
+    return get(service.repository, iteration['id'], scope_id)
+
+
 def dispatch_steps(service, record):
     """Freeze an explicit request's entire footprint, including parent top-ups."""
     repository = service.repository

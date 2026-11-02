@@ -457,7 +457,10 @@ class ComparisonService:
             # Read after the readiness fence, even if the caller supplied a
             # snapshot taken before a round's terminal retry publication.
             fresh_subject = self.iterations.candidate(b['candidate_id'])
-            fresh_reference = self.iterations.candidate(fresh_subject['parent_candidate_id'])
+            # A segment claim compares its end against the named ancestor, not the parent.
+            from .loop_measurements import segment_start
+            fresh_reference = self.iterations.candidate(segment_start(self.repository, b['request_key'])
+                                                        or fresh_subject['parent_candidate_id'])
             subject = self.scoped(fresh_subject, b['batch_id'])
             reference = self.scoped(fresh_reference, b['batch_id'])
             k = tree['protocol']['k_base']

@@ -74,6 +74,19 @@ def fresh_abandoned(repository, request_key):
     return bool(state.get('dispatch_failed') or stopped(repository, state['original_key']))
 
 
+def segment_start(repository, request_key):
+    """The ancestor a segment's fresh claim is compared against; None for other claims."""
+    if not request_key.startswith('action:'):
+        return None
+    with repository.connect() as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='round_measurements'").fetchone():
+            return None
+        row = conn.execute("SELECT payload_json FROM round_measurements WHERE "
+                           "json_extract(payload_json,'$.action_id')=?", (request_key[7:],)).fetchone()
+    state = json.loads(row[0]) if row else {}
+    return state.get('start_id') if state.get('kind') == 'segment' else None
+
+
 def execute_round_action(service, record, *, actor, override=False):
     """Manual confirmation uses the durable round footprint and original actor."""
     with service.repository.connect() as conn:
@@ -92,7 +105,7 @@ def execute_round_action(service, record, *, actor, override=False):
     generation = state.get('actions', [state['action_id']]).index(record['id'])
     steps = state['generations'][generation]
     def fresh_claim(conn):
-        if state['kind'] == 'fresh':
+        if state['kind'] in ('fresh', 'segment'):
             claim(service.repository, tree, state['candidate_id'], 'action:' + state['action_id'],
                   conn=conn, expected_batch_id=state['scope_id'])
     reservation = BudgetLedger(service.repository).reserve_many(tree, steps,
@@ -176,6 +189,10 @@ class RoundMeasurements:
     def _eligible(attempt):
         return (attempt.get('admission') or {}).get('status') == 'admitted' or attempt.get('execution_state') == 'running'
 
+    @staticmethod
+    def _k(kind, protocol):
+        return 1 if kind == 'smoke' else protocol['k_base']  # a smoke sample is one attempt per side
+
     def _plan(self, candidate, tree, kind, key):
         protocol = tree['protocol']
         candidates = [candidate['id']]
@@ -197,6 +214,20 @@ class RoundMeasurements:
             scope_id = scope['batch_id']
             scopes = [(scope_id, len(scope['case_ids']))]
             candidates.insert(0, candidate['parent_candidate_id'])
+        elif kind == 'smoke':
+            from .execution_scopes import get
+            scope = get(self.repository, tree['id'], candidate['_round_smoke_scope'])
+            scope_id = scope['scope_id']
+            scopes = [(scope_id, len(scope['case_ids']))]
+            candidates.insert(0, candidate['parent_candidate_id'])
+        elif kind == 'segment':
+            # The caller names the batch; planning (never replay) refuses one already claimed.
+            start_id, scope_id = candidate['_round_segment']
+            if scope_id in {b['batch_id'] for b in batches(self.repository, tree['id'])}:
+                raise ValueError('Segment fresh batch is already used')
+            scope = next(b for b in protocol['fresh_batches'] if b['batch_id'] == scope_id)
+            scopes = [(scope_id, len(scope['case_ids']))]
+            candidates.insert(0, start_id)
         else:
             for batch in batches(self.repository, tree['id'], completed=True):
                 scope = next(b for b in protocol['fresh_batches'] if b['batch_id'] == batch['batch_id'])
@@ -220,7 +251,7 @@ class RoundMeasurements:
                 # Historical failed slots already consumed their initial attempt.
                 # They may receive bounded infra retries below, never a second
                 # independent top-up merely because a new round key is used.
-                missing = 0 if kind == 'cluster' else max(0, protocol['k_base'] - len(existing))
+                missing = 0 if kind == 'cluster' else max(0, self._k(kind, protocol) - len(existing))
                 for index in range(missing):
                     stepkey = 'round-measure:' + hashlib.sha256(f'{key}:{cid}:{scope}:{index}'.encode()).hexdigest()
                     steps.append(dict(candidate_id=cid, request_key=stepkey, batch_id=scope, case_count=count,
@@ -231,7 +262,7 @@ class RoundMeasurements:
     def _reserve(self, tree, state, key, generation, actor, override):
         steps = state['generations'][generation]
         def fresh_claim(conn):
-            if state['kind'] == 'fresh':
+            if state['kind'] in ('fresh', 'segment'):
                 claim(self.repository, tree, state['candidate_id'], 'action:' + state['action_id'], conn=conn,
                       expected_batch_id=state['scope_id'])
         result = BudgetLedger(self.repository).reserve_many(tree, steps,
@@ -325,7 +356,7 @@ class RoundMeasurements:
             scopes.add(None)
         return all(sum((a.get('admission') or {}).get('status') == 'admitted'
                        for a in self.service.candidate(cid)['attempts'] if a.get('batch_id') == scope)
-                   >= tree['protocol']['k_base']
+                   >= self._k(state['kind'], tree['protocol'])
                    for cid in candidates for scope in scopes
                    if any(s['candidate_id'] == cid and s.get('batch_id') == scope for s, _ in observed)
                    or (cid == state['candidate_id'] and scope is None))
@@ -377,17 +408,50 @@ class RoundMeasurements:
         return self._advance('cluster', candidate_id, key=key, actor=actor, override=False,
                              infra_retry=infra_retry, timeout_seconds=timeout_seconds, cluster_id=cluster_id, observe_only=observe_only)
 
-    def _advance(self, kind, candidate_id, *, key, actor, override, infra_retry, timeout_seconds, cluster_id=None, observe_only=False):
+    def smoke(self, candidate_id, case_ids, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+        """Candidate and parent, one attempt each, on a registered search-only sample."""
+        return self._advance('smoke', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
+                             timeout_seconds=timeout_seconds, case_ids=case_ids, observe_only=observe_only)
+
+    def segment(self, start_id, end_id, batch_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+        """End against its ancestor start, k_base each, on a caller-named unused fresh batch."""
+        return self._advance('segment', end_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
+                             timeout_seconds=timeout_seconds, segment=(start_id, batch_id), observe_only=observe_only)
+
+    def _advance(self, kind, candidate_id, *, key, actor, override, infra_retry, timeout_seconds, cluster_id=None,
+                 case_ids=None, segment=None, observe_only=False):
         if type(infra_retry) is not int or infra_retry < 0:
             raise ValueError('infra_retry must be a nonnegative integer')
         candidate = self.service.candidate(candidate_id)
         tree = self.service.iteration(candidate['iteration_id'])
+        extra = {}  # identity of the new kinds' scopes, checked on replay
         if kind == 'cluster':
             from .clusters import candidate_cluster
             if candidate_cluster(self.repository, tree['task_id'], candidate_id) != cluster_id:
                 raise ValueError('A candidate may run only its own cluster')
             candidate['_round_cluster_scope'] = 'cluster:' + cluster_id
+        elif kind == 'smoke':
+            from .execution_scopes import smoke_scope_id
+            if not candidate.get('parent_candidate_id'):
+                raise ValueError('smoke-run requires a child candidate')
+            candidate['_round_smoke_scope'] = extra['scope_id'] = smoke_scope_id(tree['protocol'], case_ids)
+        elif kind == 'segment':
+            start_id, batch_id = segment
+            ancestors, cursor = set(), candidate.get('parent_candidate_id')
+            while cursor and cursor not in ancestors:
+                ancestors.add(cursor)
+                cursor = self.service.candidate(cursor).get('parent_candidate_id')
+            if start_id == candidate_id or start_id not in ancestors or \
+                    self.service.candidate(start_id)['iteration_id'] != tree['id']:
+                raise ValueError('Segment end must be a strict descendant of its start in one iteration')
+            if batch_id not in {b['batch_id'] for b in tree['protocol'].get('fresh_batches', [])}:
+                raise ValueError('Unknown fresh batch')
+            candidate['_round_segment'] = (start_id, batch_id)
+            extra.update(start_id=start_id, scope_id=batch_id)
         self.api._scope(iteration_id=tree['id'])
+        if kind == 'smoke' and not observe_only:
+            from .execution_scopes import smoke_plan
+            smoke_plan(self.service, tree, case_ids)
         storage_key = 'round-measure:' + hashlib.sha256(key.encode()).hexdigest()
         with self._lock(tree['id']):
             self._recover_retry_mappings(tree['id'])
@@ -399,10 +463,11 @@ class RoundMeasurements:
                 if not state.get('exhausted'):
                     self._adopt_prepared_retries(state, tree)
                 state.update(original_key=key, actor=actor, infra_retry=infra_retry, timeout_seconds=timeout_seconds,
-                             override=override, candidate_id=candidate_id, kind=kind)
+                             override=override, candidate_id=candidate_id, kind=kind, **extra)
                 self._save(storage_key, state)
             elif any(state[k] != v for k, v in dict(actor=actor, infra_retry=infra_retry,
-                    timeout_seconds=timeout_seconds, override=override, candidate_id=candidate_id, kind=kind).items()):
+                    timeout_seconds=timeout_seconds, override=override, candidate_id=candidate_id, kind=kind,
+                    **extra).items()):
                 raise Conflict('Round measurement request key changed')
             if state.get('exhausted'):
                 return dict(status='exhausted')
@@ -413,7 +478,10 @@ class RoundMeasurements:
             if len(actions) <= generation:
                 action_id = hashlib.sha256(f'{storage_key}:{generation}'.encode()).hexdigest()[:32]
                 params = dict(timeout_seconds=timeout_seconds)
-                verb = {'fresh': 'node-fresh-run', 'cluster': 'node-cluster-run'}.get(kind, 'node-run')
+                # Existing verbs: confirmation replays the round footprint (execute_round_action);
+                # a segment consumes its batch exactly like a fresh run, a smoke is a plain node run.
+                verb = {'fresh': 'node-fresh-run', 'segment': 'node-fresh-run',
+                        'cluster': 'node-cluster-run'}.get(kind, 'node-run')
                 if kind == 'cluster':
                     params['cluster_id'] = cluster_id
                 with self.repository.connect(write=True) as conn:
@@ -440,7 +508,7 @@ class RoundMeasurements:
             try:
                 admitted = self._reserve(tree, state, storage_key, generation, actor, override)
             except Conflict as error:
-                if kind != 'fresh':
+                if kind not in ('fresh', 'segment'):
                     raise
                 state['result'] = dict(status='failed', reason=str(error))
                 self._save(storage_key, state)
@@ -549,7 +617,7 @@ class RoundMeasurements:
                 return dict(status='running', attempts=len(observed), infra=len(infra), reason='Infrastructure retry planned')
             complete = self._complete(state, tree, observed)
             result = dict(status='complete' if complete else 'failed', attempts=len(observed), infra=len(infra))
-            if kind == 'fresh':
+            if kind in ('fresh', 'segment'):
                 state['ready_to_reconcile'] = True
                 self._save(storage_key, state)
                 comparisons = ComparisonService(self.repository, self.service, self.views)
