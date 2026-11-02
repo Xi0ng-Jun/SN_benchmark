@@ -6,6 +6,7 @@ method-v3.md.  All SN-specific logic is behind SystemAdapter.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
@@ -51,6 +52,12 @@ class ProtocolConfig:
     safeguard_bounds: dict = field(default_factory=dict)  # metric → max_delta
     max_confirmations: int = 10    # §7 α accumulation upper bound
     predicate_coverage_floor: float = 0.60  # §6 min fraction of cards with predicate
+    # §2.3 analyst case selection (accountant-owned, fixed rule): tasks scoring
+    # below the threshold on the parent's search runs, worst first, plus a few
+    # deterministically chosen passing tasks for contrast.
+    analyst_failure_threshold: float = 0.5
+    analyst_max_failures: int = 12
+    analyst_n_controls: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -175,10 +182,20 @@ def _run_smoke(
     # Predicate present: behavioral smoke.
     parent_eval = adapter.evaluate(parent, smoke_task_ids, k=1)
     cand_eval = adapter.evaluate(candidate, smoke_task_ids, k=1)
-    before_features = adapter.features(parent_eval.trajectories, card.predicate)
-    after_features = adapter.features(cand_eval.trajectories, card.predicate)
-    r_before = sum(before_features.values()) / max(1, len(before_features))
-    r_after = sum(after_features.values()) / max(1, len(after_features))
+    before = [v for v in adapter.features(parent_eval.trajectories, card.predicate).values() if v is not None]
+    after = [v for v in adapter.features(cand_eval.trajectories, card.predicate).values() if v is not None]
+    if not before or not after:
+        # Predicate not computable on the smoke sample: behaviour unchecked, not failed.
+        return SmokeResult(
+            candidate_version=candidate.content_hash,
+            card_ref=card.failure_mode_desc[:40],
+            behavioral_check_ran=False,
+            feature_present_before=None,
+            feature_present_after=None,
+            verdict='unchecked',
+        )
+    r_before = sum(before) / len(before)
+    r_after = sum(after) / len(after)
     passed = (card.predicate.predicted_direction == 'decrease' and r_after < r_before) or \
              (card.predicate.predicted_direction == 'increase' and r_after > r_before)
     return SmokeResult(
@@ -306,7 +323,8 @@ def run_optimization(
         parent_eval_search = adapter.evaluate(
             Version(parent_version, metadata={}), search_set_ids, config.k_smoke,
         )
-        cards = adapter.analyse(parent_eval_search.trajectories, config.b_cards)
+        selected, roles = select_analysis_cases(parent_eval_search, config)
+        cards = adapter.analyse(selected, config.b_cards, case_roles=roles)
         round_res.cards_generated = len(cards)
         if not cards:
             halt.record_round(screen_passed=0, confirmation_verdict=None)
@@ -479,6 +497,30 @@ def _milestone_confirm(
         for node in lineage.provisional_segment(milestone.last_certified_id):
             lineage.rollback(node.version_hash)
     return verdict
+
+
+# ---------------------------------------------------------------------------
+# Analyst case selection (§2.3)
+# ---------------------------------------------------------------------------
+
+def select_analysis_cases(
+    search_eval: EvalResult, config: ProtocolConfig,
+) -> tuple[dict[str, list], dict[str, str]]:
+    """Pick the search cases the analyst sees; returns (trajectories, roles).
+
+    Failures: score < analyst_failure_threshold, worst first (ties by task id).
+    Controls: passing tasks ordered by sha256(task_id), so the choice is fixed
+    and does not depend on which candidate is being diagnosed. The analyst
+    receives only these trajectory stubs and a failure/control label, no scores.
+    """
+    scores = search_eval.per_task_scores
+    failures = sorted((t for t, s in scores.items() if s < config.analyst_failure_threshold),
+                      key=lambda t: (scores[t], t))[:config.analyst_max_failures]
+    passing = sorted((t for t, s in scores.items() if s >= config.analyst_failure_threshold),
+                     key=lambda t: hashlib.sha256(t.encode()).hexdigest())[:config.analyst_n_controls]
+    roles = {**{t: 'failure' for t in failures}, **{t: 'control' for t in passing}}
+    trajectories = {t: search_eval.trajectories.get(t, []) for t in roles}
+    return trajectories, roles
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,12 @@ FIELDS = frozenset({'status', 'prediction', 'response.answer', 'response.grounde
     'intent_preview.needs_clarification', 'deterministic.evidence_hit', 'deterministic.citation_valid_count',
     'deterministic.citation_invalid_count', 'stage_metrics.gold_evidence_recall.value',
     'stage_metrics.context_precision.value', 'stage_metrics.citation_precision.value', 'usage.total_tokens'})
+# v3 step-trace scalars (rag_eval.optimizer.sn_trajectory.TRACE_FEATURES). Parent-run
+# behaviour only; absent from v2 run_views observations, where they never match.
+FIELDS = FIELDS | frozenset('trace.' + name for name in (
+    'n_steps', 'n_retrieval_calls', 'n_empty_retrievals', 'n_reflect', 'n_reflect_no_progress',
+    'final_sufficient', 'n_sub_queries', 'synthesis_citations', 'synthesis_anchors', 'kg_unavailable',
+    'clarification_requested', 'intent_confidence', 'n_ambiguities'))
 DEFAULT_MISSING = dict(kind='range', field='stage_metrics.gold_evidence_recall.value', min=0, max=0)
 DEFAULT_VIOLATION = {'any_of': [dict(kind='range', field='deterministic.citation_invalid_count', min=1),
     {'all_of': [dict(kind='regex', field='response.answer', pattern='(?i)unanswerable|not (stated|mentioned)'),

@@ -114,6 +114,7 @@ class SNAdapter(SystemAdapter):
         implementer_profile: str = "pi-flash",
         agent_poll_interval: float = 5.0,
         agent_timeout: float = 600.0,
+        analyst_view_budget: int = 12000,
     ) -> None:
         self._config = config
         self._repository = repository
@@ -127,6 +128,12 @@ class SNAdapter(SystemAdapter):
         self._implementer_profile = implementer_profile
         self._agent_poll_interval = agent_poll_interval
         self._agent_timeout = agent_timeout
+        # Message text is capped at 16384 chars by the v2 message bridge; the
+        # instructions take ~1K, so diagnostic views get the rest minus headroom.
+        if not 0 < analyst_view_budget <= 15000:
+            raise ValueError("analyst_view_budget must be in (0, 15000] characters")
+        self._analyst_view_budget = analyst_view_budget
+        self.last_analysis: dict = {}
 
         workspace_cfg = config.get("workspace", {})
         self._workspace_root = Path(
@@ -301,40 +308,85 @@ class SNAdapter(SystemAdapter):
         self,
         trajectories: dict[str, list[Any]],
         predicate: Optional[Predicate],
-    ) -> dict[str, bool]:
-        """Evaluate *predicate* against each task's trajectory list.
+    ) -> dict[str, Optional[bool]]:
+        """Evaluate *predicate* on each task's latest run observation.
 
-        Returns task_id → bool.  Must return {} when predicate is None.
-
-        Distinct failure cases per §2.3 / committee decision:
-        - Exception during evaluation → result[task_id] = False (predicate
-          evaluates to False, i.e. behavior pattern not detected).  This is the
-          appropriate default for "the predicate could run but the condition
-          was not met or the expression errored".
-        - Missing trajectory data entirely (empty list, or key absent) →
-          result[task_id] = None.  None signals "not computable" and must NOT
-          be treated as False by callers — the slice membership is undefined.
-          Callers should drop None-valued tasks from predicate rate estimates.
+        Observations come from ``sn_trajectory.observation`` on the complete
+        row (never the analyst's truncated display). v2 signature dicts are
+        matched with ``clusters._matches``; callables receive the observation.
+        A task is ``None`` ("not computable") when it has no run row, or when
+        any field the signature reads is unobserved; callers must drop it from
+        rate estimates rather than count it as False.
         """
         if predicate is None:
             return {}
-
         expr = predicate.boolean_expression
+        observations = self._observations(trajectories)
+        fields = _signature_fields(expr) if isinstance(expr, dict) else set()
         result: dict[str, Optional[bool]] = {}
-        for task_id, traj_list in trajectories.items():
-            if not traj_list:
-                result[task_id] = None  # no trajectory data — not computable
+        for task_id in trajectories:
+            obs = observations.get(task_id)
+            if obs is None or any(_lookup(obs, f) is None for f in fields
+                                  if f != "retrieval_context.*.text"):
+                result[task_id] = None
                 continue
             try:
-                if callable(expr):
-                    value = expr(traj_list)
+                if isinstance(expr, dict):
+                    from rag_eval.workbench.clusters import _matches
+                    result[task_id] = bool(_matches(expr, obs))
+                elif callable(expr):
+                    result[task_id] = bool(expr(obs))
                 else:
-                    code = compile(str(expr), "<predicate>", "eval")
-                    value = eval(code, {"__builtins__": {}}, {"trajectories": traj_list})  # noqa: S307
-                result[task_id] = bool(value)
-            except Exception:
-                result[task_id] = False
+                    result[task_id] = None  # free-form strings are not executed
+            except Exception:  # malformed signature or predicate bug
+                result[task_id] = None
         return result
+
+    # ------------------------------------------------------------------
+    # trajectory loading (lazy, batched per run, cached)
+    # ------------------------------------------------------------------
+
+    def _rows_by_task(self, trajectories: dict[str, list[Any]]) -> dict[str, tuple[str, dict]]:
+        """Latest run row per task: one streaming pass per run_dir.
+
+        Returns task_id -> (run_dir, projected entry) where the entry holds the
+        diagnostic view and observation. Only finished runs are cached.
+        """
+        from .sn_trajectory import VIEW_SCHEMA_VERSION, diagnostic_view, observation, read_rows, run_is_final
+        wanted: dict[str, list[str]] = {}
+        latest: dict[str, str] = {}
+        out: dict[str, tuple[str, dict]] = {}
+        for task_id, stubs in trajectories.items():
+            run_dirs = [s.get("run_dir") for s in stubs or [] if isinstance(s, dict) and s.get("run_dir")]
+            if not run_dirs:
+                continue
+            run_dir = run_dirs[-1]
+            latest[task_id] = run_dir
+            hit = self._traj_cache.get((VIEW_SCHEMA_VERSION, run_dir, task_id))
+            if hit is not None:
+                out[task_id] = (run_dir, hit)
+            else:
+                wanted.setdefault(run_dir, []).append(task_id)
+        for run_dir, task_ids in wanted.items():
+            rows = read_rows(run_dir, task_ids)
+            final = run_is_final(run_dir)
+            for task_id in task_ids:
+                if task_id not in rows:
+                    continue
+                entry = {"view": diagnostic_view(rows[task_id]), "observation": observation(rows[task_id])}
+                out[task_id] = (run_dir, entry)
+                if final:
+                    if len(self._traj_cache) >= self._TRAJ_CACHE_SIZE:
+                        self._traj_cache.pop(next(iter(self._traj_cache)))
+                    self._traj_cache[(VIEW_SCHEMA_VERSION, run_dir, task_id)] = entry
+        return out
+
+    def _observations(self, trajectories: dict[str, list[Any]]) -> dict[str, dict]:
+        return {t: e["observation"] for t, (_, e) in self._rows_by_task(trajectories).items()}
+
+    def diagnostic_views(self, trajectories: dict[str, list[Any]]) -> dict[str, dict]:
+        """Analyst-facing views for the given tasks (missing tasks omitted)."""
+        return {t: e["view"] for t, (_, e) in self._rows_by_task(trajectories).items()}
 
     # ------------------------------------------------------------------
     # 4. workspace
@@ -369,19 +421,18 @@ class SNAdapter(SystemAdapter):
         self,
         search_set_trajectories: dict[str, list[Any]],
         n_cards: int,
+        *,
+        case_roles: Optional[dict[str, str]] = None,
     ) -> list[Card]:
-        """Dispatch an analyst agent via v2 RoundOperations; poll until idle; return Cards.
+        """Dispatch an analyst agent on accountant-selected search cases; return its new Cards.
 
-        Requires self._round_ops (RoundOperations) and self._hypotheses
-        (HypothesisStore) to be injected at construction time.
-
-        The analyst agent is created with 'iteration' scope so it has access to
-        the full search-set trajectory brief rather than a single candidate view.
-        Once idle, approved draft cards are read from HypothesisStore and
-        converted to v3 Cards via _v2_card_to_v3_card().
-
-        Cards are filtered to those with status 'draft' or 'approved' that
-        belong to the current parent candidate (iteration scope gives all).
+        *search_set_trajectories* holds only the cases the loop selected (§2.3:
+        selection is the accountant's, by a pre-registered rule). Each case is
+        rendered as a diagnostic view under opaque refs (c1, c2, ...) within
+        ``analyst_view_budget`` characters, so the Agent needs no tool calls
+        to gather evidence. Cards are bound to this request: only hypotheses
+        created after dispatch (and, if configured, under the current parent
+        candidate) are returned.
         """
         if self._round_ops is None or self._hypotheses is None:
             raise RuntimeError(
@@ -394,30 +445,30 @@ class SNAdapter(SystemAdapter):
             raise ValueError(
                 "config must contain 'iteration_id' and 'task_id' to dispatch agents."
             )
-        # Build a unique request key for this analyse call so v2's durable
-        # creation store can de-duplicate retries.
-        analyst_key = f"v3/analyst/{uuid.uuid4().hex}"
-        # Compose the analyst prompt: ask for up to n_cards mechanism cards.
+        from .sn_trajectory import render_views
+        roles = case_roles or {}
+        views = self.diagnostic_views(search_set_trajectories)
+        ordered = sorted(views, key=lambda t: (roles.get(t, "failure") != "failure",
+                                               list(search_set_trajectories).index(t)))
+        items = [(f"c{i + 1}", roles.get(t, "failure"), views[t]) for i, t in enumerate(ordered)]
+        evidence, n_shown, n_omitted = render_views(items, self._analyst_view_budget)
+        self.last_analysis = dict(selected=len(search_set_trajectories), with_view=len(views),
+                                  shown=n_shown, omitted=n_omitted, evidence_chars=len(evidence))
         analyst_text = (
-            f"Analyse search-set failures and draft up to {n_cards} legal lcd-v2 "
-            f"mechanism cards for the top unresolved failure patterns. "
-            f"Each card needs title, component, mechanism, implementer_brief, "
-            f"falsification, predictions (may be empty list under lcd-v2), "
-            f"and a contract with slice_predicate, manipulation, and slice_effect. "
-            f"Focus on cards with mechanically verifiable slice predicates."
+            f"Diagnose the parent version's failures on the search cases below and draft up to "
+            f"{n_cards} legal lcd-v2 mechanism cards, one per distinct failure mode. Each card needs "
+            f"title, component, mechanism, implementer_brief, falsification, predictions (may be []), "
+            f"and a contract with slice_predicate, manipulation and slice_effect. A slice_predicate "
+            f"may read behaviour fields and trace.* step features (e.g. trace.n_empty_retrievals, "
+            f"trace.clarification_requested). Cases marked [failure] were selected by a fixed rule; "
+            f"[control] cases are for contrast. Do not request more evidence; draft the cards now.\n\n"
+            + evidence
         )
-        # Dispatch the analyst agent (non-blocking call that returns immediately
-        # if the agent is already running or created).
-        result = self._round_ops.agent(
-            "analyst",
-            None,                         # candidate_id — None for iteration scope
-            iteration_id=iteration_id,
-            key=analyst_key,
-            profile=self._analyst_profile,
-            text=analyst_text,
-            scope="iteration",
-        )
-        # Poll until the agent goes idle, fails, or timeout is reached.
+        before = {r["id"] for r in self._hypotheses.list(task_id)}
+        analyst_key = f"v3/analyst/{uuid.uuid4().hex}"
+        call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
+                    text=analyst_text, scope="iteration")
+        result = self._round_ops.agent("analyst", None, **call)
         deadline = time.monotonic() + self._agent_timeout
         while result.get("status") in ("running", "unknown"):
             if time.monotonic() >= deadline:
@@ -426,30 +477,17 @@ class SNAdapter(SystemAdapter):
                     f"(key={analyst_key!r})"
                 )
             time.sleep(self._agent_poll_interval)
-            result = self._round_ops.agent(
-                "analyst",
-                None,
-                iteration_id=iteration_id,
-                key=analyst_key,
-                profile=self._analyst_profile,
-                text=analyst_text,
-                scope="iteration",
-            )
+            result = self._round_ops.agent("analyst", None, **call)
         if result.get("status") != "idle":
             raise RuntimeError(
                 f"Analyst agent ended with status {result.get('status')!r}: "
                 f"{result.get('reason', 'no reason given')}"
             )
-        # Read all hypothesis cards for this task, pick the most recent n_cards
-        # that are draft or approved (analyst may have drafted several).
-        all_records = self._hypotheses.list(task_id)
-        eligible = [
-            r for r in all_records
-            if r.get("status") in ("draft", "approved")
-        ]
-        # Sort newest-first (list returns ascending by created_at).
-        eligible = list(reversed(eligible))
-        return [_v2_card_to_v3_card(r) for r in eligible[:n_cards]]
+        parent = self._config.get("parent_candidate_id")
+        fresh = [r for r in self._hypotheses.list(task_id)
+                 if r["id"] not in before and r.get("status") in ("draft", "approved")
+                 and (parent is None or r.get("parent_candidate_id") in (None, parent))]
+        return [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
 
     # ------------------------------------------------------------------
     # 6. implement — dispatch implementer agent, poll, extract diff
@@ -536,6 +574,23 @@ class SNAdapter(SystemAdapter):
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _signature_fields(signature: dict) -> set[str]:
+    """Fields a v2 signature reads (all_of / any_of / not / leaf)."""
+    children = signature.get("all_of") or signature.get("any_of") or (
+        [signature["not"]] if "not" in signature else [])
+    fields = {f for child in children if isinstance(child, dict) for f in _signature_fields(child)}
+    if "field" in signature:
+        fields.add(signature["field"])
+    return fields
+
+
+def _lookup(observation: dict, field: str) -> Any:
+    value: Any = observation
+    for part in field.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value
+
 
 def _extract_worktree_diff(workspace: Any) -> str:
     """Extract the uncommitted diff from a v2 hypothesis worktree binding.

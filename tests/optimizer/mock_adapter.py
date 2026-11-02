@@ -124,6 +124,8 @@ class MockAdapter(SystemAdapter):
         self,
         search_set_trajectories: dict[str, list[Any]],
         n_cards: int,
+        *,
+        case_roles: Optional[dict[str, str]] = None,
     ) -> list[Card]:
         self.analyse_calls += 1
         # Use the call count to pick the script entry; analyse is called

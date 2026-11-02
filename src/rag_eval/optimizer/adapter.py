@@ -97,10 +97,12 @@ class SystemAdapter(abc.ABC):
         self,
         trajectories: dict[str, list[Any]],
         predicate: Optional[Predicate],
-    ) -> dict[str, bool]:
+    ) -> dict[str, Optional[bool]]:
         """Evaluate predicate against each task's trajectories.
 
-        Returns task_id → bool.  Must return {} when predicate is None.
+        Returns task_id → bool, or None when not computable for that task
+        (missing observation); callers drop None from rates.  Must return {}
+        when predicate is None.
         """
 
     @abc.abstractmethod
@@ -112,8 +114,13 @@ class SystemAdapter(abc.ABC):
         self,
         search_set_trajectories: dict[str, list[Any]],
         n_cards: int,
+        *,
+        case_roles: Optional[dict[str, str]] = None,
     ) -> list[Card]:
         """Run the analyst agent on search-set trajectories only (§2.3 isolation).
+
+        The loop passes only accountant-selected cases; *case_roles* labels each
+        'failure' or 'control'. No scores are passed.
 
         Returns up to n_cards Cards.
         """
