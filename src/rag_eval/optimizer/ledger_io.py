@@ -276,6 +276,7 @@ def build_ledger(
             confirmation_verdict=(conf or {}).get("verdict"),
             delta_fresh=d_fresh,
             shrinkage=(d_val - d_fresh) if d_val is not None and d_fresh is not None else None,
+            safeguards=a.get("safeguards"),
         ))
     segment_confirmations = []
     for c in confs:
@@ -285,6 +286,7 @@ def build_ledger(
             segment_end=c.get("segment_end"), segment_steps=c.get("segment_steps"),
             cumulative_delta_val=cum, delta_fresh=d_fresh, se_fresh=c.get("se_fresh"),
             segment_shrinkage=(cum - d_fresh) if cum is not None and d_fresh is not None else None,
+            safeguards_end=c.get("safeguards_end"),
         ))
     adopted = [n for n in lineage if n.get("parent_hash") is not None]
     rolled = [n for n in adopted if n.get("state") == "rolled_back"]

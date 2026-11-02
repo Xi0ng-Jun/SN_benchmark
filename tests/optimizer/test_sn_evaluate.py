@@ -405,7 +405,7 @@ def test_partitions_reads_iteration_protocol(env):
         search=["s1", "s2", "s3"], validation=["v1", "v2"],
         fresh_batches=[dict(batch_id="F1", case_ids=["f1a", "f1b"]),
                        dict(batch_id="F2", case_ids=["f2a", "f2b"])],
-        completed_fresh_batch_ids=["F1"], k_base=2)
+        completed_fresh_batch_ids=["F1"], k_base=2, safeguards=[])
 
 
 # -- rebase ---------------------------------------------------------------------

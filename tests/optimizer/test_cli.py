@@ -33,7 +33,10 @@ class FakeSN(MockAdapter):
         self.calls.append("partitions")
         return dict(search=list(POOL), validation=list(POOL),
                     fresh_batches=[dict(batch_id="f1", case_ids=list(FRESH))],
-                    completed_fresh_batch_ids=list(self.completed), k_base=self.k_base)
+                    completed_fresh_batch_ids=list(self.completed), k_base=self.k_base,
+                    safeguards=list(self.safeguard_specs))
+
+    safeguard_specs = [dict(key="infrastructure_failure_rate", direction="lower_is_better", margin=0.1)]
 
     def version_for(self, candidate_id):
         self.calls.append("version_for")
@@ -215,6 +218,22 @@ def test_k_mismatch_refused_before_any_work(tmp_path, services, capsys):
     assert "k_base=2" in capsys.readouterr().err
     assert adapter.calls == ["partitions"]
     assert not (tmp_path / "run").exists()
+
+
+def test_safeguards_come_only_from_the_iteration_protocol(tmp_path, services, capsys):
+    adapter = services(FakeSN([]))
+    bounds = write_protocol(tmp_path, name="bounds.json", safeguard_bounds={"cost": 0.5})
+    assert run_cli(tmp_path, bounds) == 2
+    assert "safeguard_bounds is not accepted" in capsys.readouterr().err
+    assert services.built == [] and adapter.calls == []
+    adapter.safeguard_specs = []
+    assert run_cli(tmp_path, write_protocol(tmp_path)) == 2
+    assert "no pre-registered safeguards" in capsys.readouterr().err
+    assert adapter.calls == ["partitions"]
+    del adapter.safeguard_specs
+    assert run_cli(tmp_path, write_protocol(tmp_path)) == 0
+    assert "safeguards (iteration protocol): infrastructure_failure_rate lower_is_better margin 0.1" in \
+        capsys.readouterr().out
 
 
 def test_new_run_refuses_iteration_with_used_fresh_batches(tmp_path, services, capsys):

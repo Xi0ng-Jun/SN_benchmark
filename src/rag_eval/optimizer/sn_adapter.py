@@ -339,7 +339,8 @@ class SNAdapter(SystemAdapter):
                     validation=list(splits.get("validation", ())),
                     fresh_batches=fresh,
                     completed_fresh_batch_ids=[b["batch_id"] for b in self._used_batches(completed=True)],
-                    k_base=self._k_base(protocol))
+                    k_base=self._k_base(protocol),
+                    safeguards=list(protocol.get("safeguards") or []))
 
     @staticmethod
     def _check_k(k: Any, expected: int, purpose: str) -> None:
@@ -540,7 +541,67 @@ class SNAdapter(SystemAdapter):
             error_classes={t: None if t in per_task_scores else
                            ("no_admitted_attempt" if not trajectories[t] else "unscored")
                            for t in case_scopes},
+            context=dict(candidate_id=candidate_id, scopes=dict(case_scopes)),
         )
+
+    # ------------------------------------------------------------------
+    # 2a. safeguards — the iteration's pre-registered v2 safeguards, v2's rule
+    # ------------------------------------------------------------------
+
+    def describe_safeguards(self, bounds: dict) -> dict:
+        if bounds:
+            raise ValueError("on SN the safeguards are the iteration protocol's pre-registered v2 safeguards; "
+                             "ProtocolConfig.safeguard_bounds must be empty (one source per quantity)")
+        return dict(source="iteration_protocol", specs=list(self._protocol().get("safeguards") or []))
+
+    def safeguards(self, candidate: EvalResult, reference: EvalResult, bounds: dict) -> dict:
+        """v2 lcd-v2 safeguards of one pair, computed exactly as a v2 comparison does.
+
+        Specs: the iteration protocol's frozen ``safeguards``. Observations:
+        ``comparisons.observe_safeguards`` over the run observations of the
+        admitted attempts behind both results (answer_language_match, and
+        cost_per_task as the subject/reference token ratio); infrastructure
+        failure rate from ``ComparisonService._infrastructure`` over every
+        terminal execution of each side on the pair's scopes. Rule:
+        ``gate.safeguard_checks`` (breached or unobserved blocks the verdict).
+        """
+        from rag_eval.workbench.comparisons import ComparisonService, observe_safeguards
+        from rag_eval.workbench.gate import safeguard_checks
+        specs = self.describe_safeguards(bounds)["specs"]
+        if not specs:
+            # v2 lcd-v2 requires pre-registered safeguards; without them nothing is observed.
+            return dict(source="iteration_protocol", ok=False, reasons=["safeguards_not_preregistered"], checks=[])
+        ops, views = self._require_round_ops("safeguards"), self._views()
+        comparisons = ComparisonService(ops.repository, ops.service, views, initialize=False)
+        trajectories, infra, sides = {}, {}, (("subject", candidate), ("reference", reference))
+        for side, result in sides:
+            cid = (result.context or {}).get("candidate_id")
+            if not cid:
+                raise ValueError("safeguards need SN results from evaluate_pair (context.candidate_id)")
+            cases: dict[str, list] = {}
+            for case_id, stubs in result.trajectories.items():
+                for stub in stubs or []:
+                    try:
+                        cases.setdefault(case_id, []).append(views.observation(stub["run_id"], case_id))
+                    except (KeyError, ValueError):
+                        continue
+            trajectories[side] = cases
+            node = ops.service.candidate(cid)
+            total = dict(total=0, failed=0, unobserved=0, attempts=[])
+            for scope in sorted(set(result.context["scopes"].values()), key=lambda x: (x is not None, x or "")):
+                part = comparisons._infrastructure(ComparisonService.scoped(node, scope))
+                for key in ("total", "failed", "unobserved"):
+                    total[key] += part[key]
+                total["attempts"] += part["attempts"]
+            infra[side] = total
+        observed, detail = observe_safeguards(trajectories)
+        rows, reasons = safeguard_checks(observed, infra, specs)
+        return dict(source="iteration_protocol", ok=not reasons, reasons=reasons, checks=rows,
+                    observations={side: {k: detail.get(side, {}).get(k) for k in
+                                         ("observations", "language_known", "tokens_per_task", "tokens_known")}
+                                  for side, _ in sides},
+                    infrastructure={side: {k: infra[side][k] for k in ("total", "failed", "unobserved")}
+                                    for side, _ in sides})
 
     def evaluate(
         self,

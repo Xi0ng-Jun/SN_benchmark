@@ -78,7 +78,9 @@ class ProtocolConfig:
     k_screen: int = 3              # eval repetitions per task at screening
     k_smoke: int = 1               # eval repetitions for smoke sample
     n_smoke_sample: int = 5        # search-set tasks sampled for smoke check
-    safeguard_bounds: dict = field(default_factory=dict)  # metric → max_delta
+    # metric → max_delta for the default SystemAdapter.safeguards. Systems with their
+    # own pre-registered safeguards (SN: the iteration protocol) require it empty.
+    safeguard_bounds: dict = field(default_factory=dict)
     max_confirmations: int = 10    # §7 α accumulation upper bound
     predicate_coverage_floor: float = 0.60  # §6 min fraction of cards with predicate
     # §2.3 analyst case selection (accountant-owned, fixed rule): tasks scoring
@@ -122,6 +124,7 @@ class CandidateRecord:
     smoke: Optional[SmokeResult] = None
     eval_result: Optional[EvalResult] = None   # candidate on the validation pool
     ref_result: Optional[EvalResult] = None    # parent on the same pool (paired)
+    safeguards: Optional[dict] = None          # SystemAdapter.safeguards of that pair
     pool_size: int = 0                  # validation-pool size the measurement used
     # 'measured' | 'error' | 'smoke_fail' | 'stale_parent' | 'built' (resume:
     # rebuilt by replay without measurement because its parent is stale)
@@ -156,14 +159,16 @@ class RoundResult:
     # One dict per card that entered the pipeline, in decision order. Keys:
     # card_ref, title, card_index, verdict (CANDIDATE_VERDICTS), reason, parent,
     # candidate, candidate_id, rebased_from, smoke_verdict, delta_val, se_val, score_val,
-    # best_before, ladder_m, val_pool_size, screen_evaluations, n_unpaired,
+    # best_before, ladder_m, val_pool_size, screen_evaluations, n_unpaired, safeguards
+    # (SystemAdapter.safeguards of the screen pair, or None when not screened),
     # timings, has_predicate, resumed, halted (True: recorded because the
     # loop halted on a process failure, not a decision on the card).
     candidates: list = field(default_factory=list)
     # One dict per milestone confirmation this round. Keys: verdict,
     # delta_fresh, se_fresh, n_fresh, n_unpaired, k_fresh, fresh_batch_index,
     # segment_start, segment_end, segment_steps, cumulative_delta_val,
-    # safeguards_end, cost_start, cost_end, attribution, val_pool_size,
+    # safeguards_end (SystemAdapter.safeguards of end vs start on the batch),
+    # cost_start, cost_end, attribution, val_pool_size,
     # ladder_m, best_score.
     confirmations: list = field(default_factory=list)
     val_pool_size: int = 0                # at end of round
@@ -326,18 +331,12 @@ def _run_smoke(
     )
 
 
-# ---------------------------------------------------------------------------
-# Safeguard checker
-# ---------------------------------------------------------------------------
-
-def _safeguards_ok(eval_result: EvalResult, bounds: dict) -> bool:
-    """Return True iff no safeguard metric breaches its registered bound."""
-    for metric, max_delta in bounds.items():
-        val = eval_result.safeguard_values.get(metric, 0.0)
-        if val > max_delta:
-            log.warning("safeguard breach: %s=%.4f > %.4f", metric, val, max_delta)
-            return False
-    return True
+def _check_safeguards(adapter: SystemAdapter, candidate: EvalResult, reference: EvalResult,
+                      config: ProtocolConfig) -> dict:
+    check = adapter.safeguards(candidate, reference, config.safeguard_bounds)
+    if not check["ok"]:
+        log.warning("safeguards block the decision: %s", ", ".join(check["reasons"]))
+    return check
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +412,7 @@ def _screen(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord
     try:
         rec.eval_result, rec.ref_result = adapter.evaluate_pair(
             rec.candidate, rec.parent, pool, config.k_screen, purpose='screen')
+        rec.safeguards = _check_safeguards(adapter, rec.eval_result, rec.ref_result, config)
     except EvaluationUnavailable:
         raise
     except Exception as exc:
@@ -442,7 +442,7 @@ def _rebase_and_measure(adapter: SystemAdapter, config: ProtocolConfig, rec: Can
     rec.rebased_from = rec.candidate.content_hash
     rec.candidate = rebased
     rec.parent = new_parent
-    rec.eval_result = rec.ref_result = None
+    rec.eval_result = rec.ref_result = rec.safeguards = None
     return _smoke_and_screen(adapter, config, rec, smoke_ids, pool)
 
 
@@ -577,6 +577,8 @@ class _Run:
         self.key_generation = 0
         self.key_generation_log: list[dict] = []
         self.state_dir = Path(state_dir) if state_dir is not None else None
+        # Safeguards in force (pre-registered; recorded, and a resume must see the same).
+        self.safeguards_in_force = adapter.describe_safeguards(config.safeguard_bounds)
 
         resumed = False
         if self.state_dir is not None and (self.state_dir / ledger_io.STATE_FILE).exists():
@@ -626,6 +628,7 @@ class _Run:
             config_sha256=self.config_sha256,
             seed=self.seed.content_hash,
             partitions=self._partitions(),
+            safeguards=self.safeguards_in_force,
             versions={h: ledger_io.version_metadata(v) for h, v in self.versions.items()},
             version_cards={h: ledger_io.card_to_dict(c) for h, c in self.version_cards.items()},
             lineage=self.lineage.to_records(),
@@ -670,6 +673,9 @@ class _Run:
                 "are read-only (method-v3 §3 step 0)")
         if st.get("seed") != self.seed.content_hash:
             raise ValueError(f"seed {self.seed.content_hash!r} differs from the run's seed {st.get('seed')!r}")
+        recorded = st.get("safeguards")
+        if recorded is not None and recorded != self.safeguards_in_force:
+            raise ValueError(f"safeguards in force {self.safeguards_in_force!r} differ from the run's {recorded!r}")
         if st.get("partitions") != self._partitions():
             raise ValueError("search/validation/fresh/smoke ids differ from the ones this run was "
                              "started with; pass the original partitions to resume")
@@ -736,6 +742,7 @@ class _Run:
             best_score=self.milestone.best_score,
             halt_reason=self.halt_reason,
             alpha_note=alpha_warning(self.halt.confirmations_used),
+            safeguards=self.safeguards_in_force,
             key_generation=self.key_generation,
             key_generation_log=self.key_generation_log,
             timings=dict(started_at=self.started_at, updated_at=_now(), sessions=self.sessions,
@@ -1046,9 +1053,11 @@ class _Run:
         rec.se_val = paired_se(d)
         score = _mean_score(cand_ev)
         best_before = self.milestone.best_score
+        if rec.safeguards is None:
+            rec.safeguards = _check_safeguards(self.adapter, cand_ev, ref_ev, self.config)
         rec.screen_verdict = screen_decision(
             rec.delta_val, rec.se_val, self.config.z_screen,
-            best_before, score, self.m, _safeguards_ok(cand_ev, self.config.safeguard_bounds),
+            best_before, score, self.m, rec.safeguards['ok'],
         )
         self._record(round_res, rec, rec.screen_verdict, None,
                      score_val=score, best_before=best_before)
@@ -1107,6 +1116,7 @@ class _Run:
             val_pool_size=rec.pool_size or None,
             screen_evaluations=rec.screen_evaluations,
             n_unpaired=rec.n_unpaired,
+            safeguards=rec.safeguards,
             timings=dict(rec.timings),
             has_predicate=rec.card.predicate is not None,
             resumed=rec.resumed,
@@ -1183,6 +1193,7 @@ class _Run:
         end_eval, start_eval = self.adapter.evaluate_pair(end_v, start_v, fresh_ids,
                                                           cfg.k_screen, purpose='confirm')
         xs, ys, n_unpaired = _paired(end_eval, start_eval, fresh_ids)
+        safeguards = _check_safeguards(self.adapter, end_eval, start_eval, cfg)
         if len(xs) < 2:
             delta_fresh = se_fresh = None
             verdict = 'unmeasurable'  # consumed and folded in like every outcome
@@ -1190,8 +1201,8 @@ class _Run:
             d = paired_differences(xs, ys)
             delta_fresh = mean_delta(d)
             se_fresh = paired_se(d)
-            verdict = confirm_decision(delta_fresh, se_fresh, cfg.z_confirm,
-                                       _safeguards_ok(end_eval, cfg.safeguard_bounds))
+            # A safeguard breach or an unobserved safeguard: unmeasurable -> rollback (§2.2).
+            verdict = confirm_decision(delta_fresh, se_fresh, cfg.z_confirm, safeguards['ok'])
         attribution = self._attribution(end_v, end_eval, start_eval, fresh_ids)
 
         # Every fallible step is done: apply the transition (no exception
@@ -1241,7 +1252,7 @@ class _Run:
             segment_end=end_v.content_hash,
             segment_steps=len(segment),
             cumulative_delta_val=cumulative,
-            safeguards_end=dict(end_eval.safeguard_values),
+            safeguards_end=safeguards,
             cost_start=sum(start_eval.costs.values()),
             cost_end=sum(end_eval.costs.values()),
             attribution=attribution,

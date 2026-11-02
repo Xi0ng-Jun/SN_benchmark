@@ -37,7 +37,7 @@ _CONFIG_SHOWN = ("mde", "sigma_d", "T", "ladder_c", "K_max", "n_fresh", "z_scree
                  "analyst_cards", "max_consecutive_run_failures")
 _ATTEMPT_COPIED = ("round_id", "card_index", "card_ref", "verdict", "reason", "parent", "candidate", "rebased_from",
                    "smoke_verdict", "delta_val", "se_val", "score_val", "best_before", "ladder_m", "val_pool_size",
-                   "n_unpaired", "screen_evaluations", "timings", "has_predicate", "resumed", "halted")
+                   "n_unpaired", "screen_evaluations", "timings", "has_predicate", "resumed", "halted", "safeguards")
 
 
 class RunLocked(Exception):
@@ -253,8 +253,8 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
                created_at=identity.get("created_at"))
     if state is None:
         return dict(schema_version=VIEW_SCHEMA_VERSION, run=dict(run, status="running" if alive else "not_started", alive=alive),
-                    next_action=None, progress=None, config=None, seed=None, segments=[], open_round=None,
-                    rounds=[], ledger=None, sealed=None)
+                    next_action=None, progress=None, config=None, safeguards=None, seed=None, segments=[],
+                    open_round=None, rounds=[], ledger=None, sealed=None)
 
     config = dict(state.get("config") or {})
     z_screen, z_confirm = config.get("z_screen", 0.84), config.get("z_confirm", 1.65)
@@ -306,6 +306,7 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
         next_action=_next_action(status, halt_reason, sealed),
         progress=progress,
         config={k: config.get(k) for k in _CONFIG_SHOWN if k in config},
+        safeguards=state.get("safeguards"),     # in force: source + pre-registered specs or bounds
         seed=seed,
         segments=segments,
         open_round=_open_round(state, titles=titles, candidate_ids=candidate_ids, z_screen=z_screen, phase=phase),

@@ -1,6 +1,11 @@
 import { date } from '../contracts';
 
 // The projection served by GET /api/iterations/{id}/auto-run (optimizer/run_view.py).
+// One pre-registered safeguard on one pair (SN: the iteration's v2 safeguards, v2's rule).
+export type SafeguardRow = { key: string; direction?: 'higher_is_better' | 'lower_is_better'; margin: number;
+  reference?: number | null; subject: number | null; change?: number | null; breached: boolean | null };
+export type SafeguardCheck = { source: string; ok: boolean; reasons: string[]; checks: SafeguardRow[] };
+export type SafeguardsInForce = { source: string; specs?: { key: string; direction: string; margin: number }[]; bounds?: Record<string, number> };
 export type AttemptVerdict = 'screen_pass' | 'screen_fail' | 'smoke_fail' | 'unmeasurable' | 'stale_parent' | 'error';
 export type AutoAttempt = {
   key: string; round_id: number; card_index: number; card_ref: string | null; title: string | null; verdict: AttemptVerdict; reason: string | null;
@@ -8,6 +13,7 @@ export type AutoAttempt = {
   delta_val: number | null; se_val: number | null; lower_val: number | null; score_val: number | null; best_before: number | null;
   threshold: number | null; ladder_m: number | null; val_pool_size: number | null; n_unpaired: number | null; screen_evaluations: number | null;
   timings: Record<string, number> | null; has_predicate: boolean; resumed: boolean; halted: boolean;
+  safeguards: SafeguardCheck | null;
 };
 export type AutoAttribution = { label: 'supported' | 'refuted' | 'insufficient' | 'unattributed'; possibly_biased?: boolean; reason?: string | null;
   predicted_direction?: string; r_p?: number | null; r_c?: number | null; delta_S?: number | null; delta_notS?: number | null;
@@ -16,7 +22,7 @@ export type ConfirmationVerdict = 'confirmed' | 'rejected' | 'insufficient' | 'u
 export type AutoConfirmation = {
   round_id: number; verdict: ConfirmationVerdict; delta_fresh: number | null; se_fresh: number | null; lower: number | null; upper: number | null;
   n_fresh: number | null; n_unpaired: number | null; k_fresh: number | null; fresh_batch_index: number | null; segment_steps: number | null;
-  cumulative_delta_val: number | null; shrinkage: number | null; safeguards_end: Record<string, number>; cost_start: number | null; cost_end: number | null;
+  cumulative_delta_val: number | null; shrinkage: number | null; safeguards_end: SafeguardCheck | null; cost_start: number | null; cost_end: number | null;
   cost_change: number | null; attribution: AutoAttribution | null; val_pool_size: number | null; ladder_m: number | null; best_score: number | null;
 };
 export type NodeState = 'certified' | 'provisional' | 'rolled_back';
@@ -53,6 +59,7 @@ export type AutoRunView = {
   run: { run_id: string | null; iteration_id: string | null; actor: string | null; protocol_sha256: string | null; created_at: string | null;
     status: RunStatus; alive: boolean; halt_reason?: string | null; started_at?: string | null; updated_at?: string | null };
   next_action: NextAction | null; progress: AutoProgress | null; config: Record<string, unknown> | null;
+  safeguards: SafeguardsInForce | null;
   seed: { version_hash: string; candidate_id: string | null; state: NodeState } | null;
   segments: AutoSegment[]; open_round: AutoOpenRound | null; rounds: AutoRound[]; ledger: AutoLedger | null; sealed: SealedCurve | null;
 };
@@ -88,7 +95,11 @@ export function attemptWhy(a: AutoAttempt): string {
   if (a.verdict === 'smoke_fail') return a.has_predicate ? '行为没有按预测变化' : '候选没有跑通';
   if (a.verdict === 'screen_pass') return a.smoke_verdict === 'pass' && a.has_predicate ? '通过筛选' : '通过筛选（行为未检查）';
   if (a.verdict === 'stale_parent') return '父节点已变，rebase 冲突';
-  if (a.verdict === 'unmeasurable') return '保护指标越界，或可配对的题太少';
+  if (a.verdict === 'unmeasurable') {
+    const reasons = a.safeguards && !a.safeguards.ok ? a.safeguards.reasons : [];
+    if (reasons.length) return reasons.map(r => (r.startsWith('safeguard_breached:') ? '保护指标越界：' : '保护指标未观测到：') + r.slice(r.indexOf(':') + 1)).join('；');
+    return '可配对的题太少';
+  }
   return a.reason ?? '—';
 }
 

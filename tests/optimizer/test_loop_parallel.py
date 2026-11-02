@@ -307,3 +307,41 @@ def test_baseline_unavailable_halts_before_any_round():
                           fail_on={"baseline": BudgetExhausted("no budget")})
     result = _run(adapter, _config())
     assert result.halt_reason == "budget_exhausted" and result.rounds == []
+
+
+# ---------------------------------------------------------------------------
+# Safeguards: every paired decision asks the adapter (SystemAdapter.safeguards)
+# ---------------------------------------------------------------------------
+
+class _Guarded(MockAdapter):
+    """Blocks the safeguards of the pairs listed by purpose, records what it was asked."""
+
+    def __init__(self, *a, block=(), **kw):
+        super().__init__(*a, **kw)
+        self.block, self.asked = set(block), []
+
+    def safeguards(self, candidate, reference, bounds):
+        purpose = "confirm" if set(candidate.per_task_scores) <= set(FRESH) else "screen"
+        self.asked.append(purpose)
+        ok = purpose not in self.block
+        return dict(source="test", ok=ok, reasons=[] if ok else ["safeguard_breached:cost_per_task"],
+                    checks=[dict(key="cost_per_task", margin=0.5, reference=1.0, subject=1.0 if ok else 2.0,
+                                 breached=not ok)])
+
+
+def test_a_blocked_screen_safeguard_is_unmeasurable_and_recorded():
+    adapter = _Guarded([{"cards": [_card("a", pool=0.2, fresh=0.2)]}], block={"screen"})
+    result = _run(adapter, _config(T=0.01))
+    rec = _by_ref(result.rounds[0])["a"]
+    assert rec["verdict"] == "unmeasurable" and rec["safeguards"]["reasons"] == ["safeguard_breached:cost_per_task"]
+    assert adapter.asked == ["screen"] and result.rounds[0].confirmations == []
+
+
+def test_a_blocked_confirmation_safeguard_rolls_back_and_fills_safeguards_end():
+    adapter = _Guarded([{"cards": [_card("a", pool=0.2, fresh=0.2)]}], block={"confirm"})
+    result = _run(adapter, _config(T=0.01))
+    [conf] = result.rounds[0].confirmations
+    assert conf["verdict"] == "unmeasurable" and result.rounds[0].rolled_back
+    assert conf["safeguards_end"]["ok"] is False and conf["safeguards_end"]["checks"][0]["subject"] == 2.0
+    assert _by_ref(result.rounds[0])["a"]["safeguards"]["ok"]
+    assert [n.state for n in result.lineage.all_nodes()] == [NodeState.CERTIFIED, NodeState.ROLLED_BACK]

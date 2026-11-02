@@ -39,7 +39,7 @@ JSON 对象，未知键直接拒绝。首次 `run` 把文件 sha256、原文副�
 |---|---|---|
 | `mde`, `sigma_d`, `ladder_c`, `K_max`, `T`, `n_fresh` | 是 | `ProtocolConfig` 必填字段 |
 | `max_rounds`, `smoke_sample_size` | 是 | 轮数上限；冒烟样本量（规则：搜索集 id 按 sha256(case_id) 排序取前 N，存 `smoke-sample.json`） |
-| 其余 `ProtocolConfig` 字段 | 否 | `z_screen`, `z_confirm`, `b_cards`, `k_screen`（必须等于迭代的 `k_base`，否则启动前拒绝）, `safeguard_bounds`, `max_confirmations`, `predicate_coverage_floor`, `analyst_failure_threshold`, `analyst_max_failures`, `analyst_n_controls`, `analyst_cards`, `max_consecutive_run_failures`, `attribution_n_min`; `k_smoke` 只能是 1；不接受 `n_smoke_sample`（用 `smoke_sample_size`） |
+| 其余 `ProtocolConfig` 字段 | 否 | `z_screen`, `z_confirm`, `b_cards`, `k_screen`（必须等于迭代的 `k_base`，否则启动前拒绝）, `max_confirmations`, `predicate_coverage_floor`, `analyst_failure_threshold`, `analyst_max_failures`, `analyst_n_controls`, `analyst_cards`, `max_consecutive_run_failures`, `attribution_n_min`; `k_smoke` 只能是 1；不接受 `n_smoke_sample`（用 `smoke_sample_size`）；不接受非空 `safeguard_bounds`：保护指标只来自迭代协议里预注册的 v2 `safeguards`（迭代没有就拒绝 `run`） |
 | 适配器设置 | 否 | `analyst_profile`, `implementer_profile`（默认 `pi-flash`）, `agent_poll_interval`(30), `agent_timeout`(5400), `worktree_timeout`(600), `analyst_view_budget`(12000, ≤15000；上限，实际预算再压到 v2 消息限制内：正文 ≤8 KiB UTF-8，正文+分析 Agent 工作说明 ≤16384 UTF-16 单位), `eval_poll_interval`(30), `eval_timeout`(7200), `infra_retry`(1), `execution_timeout_seconds`(7200) |
 
 ## 第 1 级：只测 analyse()
@@ -108,7 +108,7 @@ $V3 sealed $COMMON --state-dir var/method-v3/$RUN --budget sealed-budget.json --
 
 不加 `--confirm` 时打印将评测的节点数、node_set_hash 和每个节点；人确认后再加 `--confirm`。`--k` 默认用迭代的 `k_sealed`。评测中断后同一条命令只续跑/轮询，不重复认领。
 
-检查：`halt reason`（分类停机原因）；`ledger.json` 三部分；`status` 中确认节点、指针、验证池大小、m、已用新鲜批次；`sealed-curve.json` 的 `status: finished`、每个节点的 `state/style`、`delta_vs_seed`、校正后区间。
+检查：`halt reason`（分类停机原因）；`ledger.json` 三部分（每次筛选的 `safeguards`、每次确认的 `safeguards_end`：迭代协议的保护指标按 v2 规则判定，越界或未观测到都判不可测）；`status` 中确认节点、指针、验证池大小、m、已用新鲜批次；`sealed-curve.json` 的 `status: finished`、每个节点的 `state/style`、`delta_vs_seed`、校正后区间。
 
 汇报：`status` 输出；`ledger.json`；`rounds.jsonl`；`sealed-curve.json`；总耗时与每轮耗时；所有退出码。
 

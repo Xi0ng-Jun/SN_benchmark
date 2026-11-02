@@ -319,6 +319,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                              f"(saved halt reason: {st.get('halt_reason')!r})")
         key_generation = int(st.get("key_generation", 0)) + 1
 
+    if protocol.config.safeguard_bounds:
+        raise UsageError("safeguard_bounds is not accepted on SN: the safeguards are the iteration protocol's "
+                         "pre-registered v2 safeguards (one source per quantity)")
+
     # --- services and pre-registration checks against v2 ---
     services = _services(args, protocol.adapter_settings)
     adapter = services.adapter
@@ -329,6 +333,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if protocol.config.k_screen != parts["k_base"]:
         raise UsageError(f"k_screen={protocol.config.k_screen} differs from the iteration's "
                          f"k_base={parts['k_base']} (binding plan §2.2: k comes from the v2 protocol)")
+    if not parts.get("safeguards"):
+        raise UsageError("the iteration protocol has no pre-registered safeguards (an lcd-v2 iteration has "
+                         "them); method-v3 §1 requires them for every paired decision")
     search, validation = list(parts["search"]), list(parts["validation"])
     fresh = [list(b["case_ids"]) for b in parts["fresh_batches"]]
     if st is None:
@@ -409,6 +416,8 @@ def _print_feasibility(protocol: Protocol, parts: dict, search: list, validation
     print(f"feasibility: at most {min(len(fresh), cfg.max_confirmations)} milestone confirmation(s) "
           f"(fresh batches {len(fresh)}, max_confirmations {cfg.max_confirmations}); "
           f"b={cfg.b_cards} max_rounds={protocol.max_rounds}")
+    print("safeguards (iteration protocol): " + ", ".join(
+        f"{s['key']} {s['direction']} margin {s['margin']}" for s in parts.get("safeguards") or []))
     if any(s != cfg.n_fresh for s in sizes):
         print(f"warning: pre-registered n_fresh={cfg.n_fresh} but fresh batch sizes are {sizes}")
 

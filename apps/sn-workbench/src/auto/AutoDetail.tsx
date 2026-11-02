@@ -8,7 +8,7 @@ import { DiffFile } from '../tree/NodeDetail';
 import { agentsOf, iterationAnalystsOf } from '../tree/next';
 import { agentStatusLabels } from '../agents/AgentPicker';
 import { attemptLabels, attemptWhy, attributionLabels, AutoAttempt, AutoCard, AutoConfirmation, AutoNode, AutoRunView, AutoSegment, duration,
-  nodeStateLabels, num, segmentVerdictLabels } from './contracts';
+  nodeStateLabels, num, SafeguardCheck, segmentVerdictLabels } from './contracts';
 import { Marker } from './AutoRunPage';
 
 // The right column of the automatic-run page: what the selection is and the numbers behind it.
@@ -46,6 +46,7 @@ function AgentList({ title, ids, props }: { title: string; ids: TaskSession[]; p
 function RunDetail({ view, agents }: { view: AutoRunView; agents: AgentProps }) {
   const { run, config } = view;
   const bounds = (config?.safeguard_bounds ?? {}) as Record<string, number>;
+  const specs = view.safeguards?.specs ?? [];
   return <View testID="auto-detail-run">
     <Heading eyebrow="自动运行" title={run.run_id ?? '—'} />
     <Section title="运行">
@@ -58,10 +59,21 @@ function RunDetail({ view, agents }: { view: AutoRunView; agents: AgentProps }) 
       {CONFIG_LABELS.filter(([key]) => config[key] !== undefined && config[key] !== null).map(([key, label]) =>
         <KeyValue key={key} label={label}><Number_ value={String(config[key])} /></KeyValue>)}
       {Object.entries(bounds).map(([metric, bound]) => <KeyValue key={metric} label="保护指标"><Mono size={11}>{metric} ≤ {bound}</Mono></KeyValue>)}
+      {specs.map(s => <KeyValue key={s.key} label="保护指标"><Mono size={11}>{s.key} · {s.direction === 'higher_is_better' ? '越高越好' : '越低越好'} · 容差 {s.margin}</Mono></KeyValue>)}
     </Section>}
     <AgentList title="分析 Agent" ids={iterationAnalystsOf(agents.sessions)} props={agents} />
     <Copy small muted>选中谱系里的段或候选，这里显示它的依据。</Copy>
   </View>;
+}
+
+// Observed reference → subject per pre-registered safeguard; a breach or a missing observation blocks the verdict.
+function SafeguardRows({ check }: { check: SafeguardCheck }) {
+  return <>
+    {check.checks.map(row => <KeyValue key={row.key} label={row.key}>
+      <Number_ value={`${num(row.reference ?? null)} → ${num(row.subject)}（容差 ${row.margin}）${row.breached === null ? ' 未观测' : row.breached ? ' 越界' : ''}`} />
+    </KeyValue>)}
+    {!check.ok && <Copy small muted>{check.reasons.join('，')}：判定为不可测。</Copy>}
+  </>;
 }
 
 function AttributionBlock({ c }: { c: AutoConfirmation }) {
@@ -80,7 +92,7 @@ function AttributionBlock({ c }: { c: AutoConfirmation }) {
 function SegmentDetail({ segment, onSelect }: { segment: AutoSegment; onSelect: (id: string) => void }) {
   const c = segment.confirmation;
   const status = segment.status === 'certified' ? '已确认' : segment.status === 'open' ? '暂定中' : '已回滚';
-  const safeguards = Object.entries(c?.safeguards_end ?? {});
+  const safeguards = c?.safeguards_end ?? null;
   return <View testID="auto-detail-segment">
     <Heading eyebrow={`段 ${segment.index}`} title={c ? segmentVerdictLabels[c.verdict] : status}>
       <Badge label={status} tone={segment.status === 'certified' ? 'success' : segment.status === 'open' ? 'primary' : undefined} />
@@ -97,8 +109,8 @@ function SegmentDetail({ segment, onSelect }: { segment: AutoSegment; onSelect: 
         <Copy small muted>缩水 = 验证池累积增益 − 新鲜批次增益，是选择偏差的直接读数。</Copy>
       </Section>
       <Section title="归因" testID="auto-attribution"><AttributionBlock c={c} /></Section>
-      {(safeguards.length > 0 || c.cost_change !== null) && <Section title="保护指标与成本" defaultOpen={false}>
-        {safeguards.map(([metric, value]) => <KeyValue key={metric} label={metric}><Number_ value={num(value)} /></KeyValue>)}
+      {(safeguards || c.cost_change !== null) && <Section title="保护指标与成本" defaultOpen={!!safeguards && !safeguards.ok}>
+        {safeguards && <SafeguardRows check={safeguards} />}
         {c.cost_change !== null && <KeyValue label="成本变化"><Number_ value={signed(c.cost_change, 1)} /></KeyValue>}
       </Section>}
     </> : <Copy small muted>还没有确认。累积 Δ_val 到 T 时用下一个新鲜批次确认整段。</Copy>}
@@ -155,6 +167,9 @@ function AttemptDetail({ attempt, node, proposal, agents }: { attempt: AutoAttem
       {attempt.rebased_from && <KeyValue label="rebase"><Mono size={11}>来自 {short(attempt.rebased_from)}</Mono></KeyValue>}
       {attempt.reason && attempt.verdict !== 'screen_pass' && <Mono size={11} muted>{attempt.reason}</Mono>}
     </Section>
+    {attempt.safeguards && <Section title="保护指标" defaultOpen={!attempt.safeguards.ok} testID="auto-safeguards">
+      <SafeguardRows check={attempt.safeguards} />
+    </Section>}
     <CardText proposal={proposal} />
     {timings.length > 0 && <Section title="耗时" defaultOpen={false}>
       {timings.map(([key, value]) => <KeyValue key={key} label={timingLabels[key] ?? key}><Copy small>{duration(value)}</Copy></KeyValue>)}

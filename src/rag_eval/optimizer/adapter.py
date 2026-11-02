@@ -55,6 +55,9 @@ class EvalResult:
     costs: dict[str, float]                  # task_id → aggregate cost
     error_classes: dict[str, Optional[str]]  # task_id → error class or None
     safeguard_values: dict[str, float] = field(default_factory=dict, compare=False)
+    # Adapter-private provenance of the result (SN: candidate id and the scope of
+    # each task), read back by the same adapter, e.g. by ``safeguards``.
+    context: dict = field(default_factory=dict, compare=False)
 
 
 @dataclass
@@ -193,6 +196,32 @@ class SystemAdapter(abc.ABC):
     @abc.abstractmethod
     def implement(self, card: Card, workspace: Any) -> Diff:
         """Run the implementer agent for one card; return a Diff."""
+
+    # -- safeguards (§1 保护指标) --------------------------------------------
+
+    def safeguards(self, candidate: EvalResult, reference: EvalResult, bounds: dict) -> dict:
+        """Pre-registered safeguards of one paired decision (screen / confirmation).
+
+        *candidate* and *reference* come from the same ``evaluate_pair`` call;
+        *bounds* is ``ProtocolConfig.safeguard_bounds``. Returns
+        ``{source, ok, reasons, checks}``: ``ok`` False (a breach, or a
+        safeguard that could not be observed) makes the decision unmeasurable
+        (§2.2). ``checks`` holds one row per safeguard with its observed values.
+
+        Default: each bound is a maximum of ``candidate.safeguard_values[metric]``
+        (absent counts as 0.0). Systems with their own pre-registered
+        safeguards (SN: the iteration protocol) override this.
+        """
+        checks = []
+        for metric, max_delta in (bounds or {}).items():
+            value = candidate.safeguard_values.get(metric, 0.0)
+            checks.append(dict(key=metric, margin=max_delta, subject=value, breached=value > max_delta))
+        reasons = [f"safeguard_breached:{c['key']}" for c in checks if c["breached"]]
+        return dict(source="protocol_config", ok=not reasons, reasons=reasons, checks=checks)
+
+    def describe_safeguards(self, bounds: dict) -> dict:
+        """Which safeguards are in force for this run (recorded in state.json and the ledger)."""
+        return dict(source="protocol_config", bounds=dict(bounds or {}))
 
     # -- evaluation request generation (operator retry) ----------------------
 

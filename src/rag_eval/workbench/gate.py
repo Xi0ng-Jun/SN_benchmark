@@ -158,17 +158,42 @@ def validate_safeguards(value):
     return [dict(s) for s in value]
 
 
+def safeguard_checks(observed, infra, safeguards):
+    """Pre-registered safeguards against one pair: (per-safeguard rows, blocking reasons).
+
+    *observed*: key -> {reference, subject} (``comparisons.observe_safeguards``);
+    *infra*: side -> {total, failed, unobserved} (``ComparisonService._infrastructure``),
+    from which the infrastructure failure rate is derived when every execution
+    published per-case results. A safeguard whose two sides are not both observed
+    is ``safeguard_unobserved``; a harm beyond its margin is ``safeguard_breached``.
+    Either blocks a verdict (unmeasurable).
+    """
+    specs, sides = validate_safeguards(safeguards), ('reference', 'subject')
+    observed = dict(observed or {})
+    if 'infrastructure_failure_rate' not in observed and infra and all(
+            infra[s].get('total') and not infra[s].get('unobserved') for s in sides):
+        observed['infrastructure_failure_rate'] = {s: infra[s]['failed'] / infra[s]['total'] for s in sides}
+    rows, reasons = [], []
+    for spec in specs:
+        value = observed.get(spec['key']) or {}
+        known = all(type(value.get(s)) in (int, float) and math.isfinite(value[s]) for s in sides)
+        change = value['subject'] - value['reference'] if known else None
+        harm = (-change if spec['direction'] == 'higher_is_better' else change) if known else None
+        rows.append(dict(spec, reference=value.get('reference'), subject=value.get('subject'),
+                         change=change, breached=harm > spec['margin'] if known else None))
+        if not known or harm > spec['margin']:
+            reasons.append(('safeguard_breached:' if known else 'safeguard_unobserved:') + spec['key'])
+    return rows, reasons
+
+
 def _v2(comparison, rule, z_key, safeguards):
     """Shared screen/confirm trace: safeguards, admission, then the paired statistic."""
     if (not isinstance(rule, dict) or set(rule) != set(RULE_V2)
             or any(rule[k] != RULE_V2[k] for k in ('id', 'statistic', 'safeguards'))
             or any(type(rule[k]) not in (int, float) or not 0 < rule[k] < math.inf for k in ('z_screen', 'z_confirm'))):
         raise ValueError('Unsupported gate rule')
-    specs, sides = validate_safeguards(safeguards), ('reference', 'subject')
-    observed, infra = dict(comparison.get('safeguards') or {}), comparison.get('infrastructure')
-    if 'infrastructure_failure_rate' not in observed and infra and all(
-            infra[s].get('total') and not infra[s].get('unobserved') for s in sides):
-        observed['infrastructure_failure_rate'] = {s: infra[s]['failed'] / infra[s]['total'] for s in sides}
+    sides, infra = ('reference', 'subject'), comparison.get('infrastructure')
+    checks, blocking = safeguard_checks(comparison.get('safeguards'), infra, safeguards)
     rows = [r for r in comparison.get('rows', []) if 'validation' not in comparison or r.get('role') == 'validation']
     noise = comparison.get('noise') or {}
     k = min((noise.get(s) or {}).get('k') or 0 for s in sides) or None
@@ -180,15 +205,8 @@ def _v2(comparison, rule, z_key, safeguards):
                   case_retry=comparison.get('retry_summary'),
                   evidence=dict(paired=paired, mean=comparison.get('mean'), validation=comparison.get('validation'),
                                 rows=rows, infrastructure=infra, attempts_used=comparison.get('attempts_used'), noise=noise))
-    for spec in specs:
-        value = observed.get(spec['key']) or {}
-        known = all(type(value.get(s)) in (int, float) and math.isfinite(value[s]) for s in sides)
-        change = value['subject'] - value['reference'] if known else None
-        harm = (-change if spec['direction'] == 'higher_is_better' else change) if known else None
-        result['safeguards'].append(dict(spec, reference=value.get('reference'), subject=value.get('subject'),
-                                         change=change, breached=harm > spec['margin'] if known else None))
-        if not known or harm > spec['margin']:
-            result['reasons'].append(('safeguard_breached:' if known else 'safeguard_unobserved:') + spec['key'])
+    result['safeguards'].extend(checks)
+    result['reasons'].extend(blocking)
     if (comparison.get('admission') or {}).get('status') != 'admitted':
         result['reasons'].append('pair_not_admitted')
     if (comparison.get('validation') or {}).get('incomplete') or any(r.get('delta') is None for r in rows):
