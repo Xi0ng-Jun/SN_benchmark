@@ -104,7 +104,7 @@ def _titles(state: dict) -> dict[str, str]:
 def _attempt(raw: dict, round_id: int, *, titles: dict, candidate_ids: dict, z_screen: float) -> dict:
     out = {k: raw.get(k) for k in _ATTEMPT_COPIED}
     out["round_id"] = round_id
-    out["title"] = titles.get(raw.get("card_ref")) or raw.get("card_ref")
+    out["title"] = raw.get("title") or titles.get(raw.get("card_ref")) or raw.get("card_ref")
     out["candidate_id"] = raw.get("candidate_id") or candidate_ids.get(raw.get("candidate"))
     out["lower_val"] = _lower(raw.get("delta_val"), raw.get("se_val"), z_screen)
     best, m = raw.get("best_before"), raw.get("ladder_m")

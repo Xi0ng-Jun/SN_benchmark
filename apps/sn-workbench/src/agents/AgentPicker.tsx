@@ -57,11 +57,13 @@ export type AgentMenuProps = {
   cwdLabel: string;
   /** The space the drawer leaves for the menu; the Agent list scrolls inside it. */
   maxHeight?: number;
+  /** Only switch between existing Agents: no creating, no linking. */
+  readOnly?: boolean;
   onClose: () => void;
 };
 
 /** Agent list for this Task plus "new Agent" per server-allowed model profile. */
-export function AgentMenu({ agents, onSelect, profiles, createEnabled, createReason, onCreate, creation, link, cwdLabel, maxHeight = 420, onClose }: AgentMenuProps) {
+export function AgentMenu({ agents, onSelect, profiles, createEnabled, createReason, onCreate, creation, link, cwdLabel, maxHeight = 420, readOnly = false, onClose }: AgentMenuProps) {
   const theme = useTheme();
   const [linkOpen, setLinkOpen] = React.useState(false);
   return <View testID="agent-menu" style={{ borderWidth: 1, borderColor: theme.line, borderRadius: 12, backgroundColor: theme.bg, padding: 6, gap: 2,
@@ -78,7 +80,8 @@ export function AgentMenu({ agents, onSelect, profiles, createEnabled, createRea
           onPress={() => { onSelect(agent.id); onClose(); }} />
       </React.Fragment>)}
     </ScrollView>
-    {!agents.length && <Copy small muted style={{ paddingHorizontal: 10 }}>还没有 Agent，从下面选一个模型新建</Copy>}
+    {!agents.length && <Copy small muted style={{ paddingHorizontal: 10 }}>{readOnly ? '还没有 Agent' : '还没有 Agent，从下面选一个模型新建'}</Copy>}
+    {!readOnly && <>
     <View style={{ height: 1, backgroundColor: theme.line, marginVertical: 4 }} />
     <Text style={{ fontSize: 11, color: theme.muted, paddingHorizontal: 10 }}>{cwdLabel}</Text>
     {profiles.map(profile => <Row key={profile.id} label={profile.label} detail={profile.detail} disabled={!createEnabled}
@@ -98,5 +101,6 @@ export function AgentMenu({ agents, onSelect, profiles, createEnabled, createRea
         {link.statusText && <Copy small muted>{link.statusText}</Copy>}
       </View>
     </View> : <Button label="关联 Paseo 中已有的 Agent…" onPress={() => setLinkOpen(true)} testID="agent-link-open" />}
+    </>}
   </View>;
 }

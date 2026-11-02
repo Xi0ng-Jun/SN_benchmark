@@ -25,6 +25,20 @@ PYTHONPATH=src .venv/bin/python -m rag_eval.workbench.cli --state var/sn-workben
 
 **所有写操作都经确认框**：派生、冻结、运行、采纳／放弃、批准／驳回提议、确认／驳回 Agent 请求，框内列出对象、源码、题单与参数后才调用服务器。运行只提交超时，不设费用上限，因此没有费用账本。Agent 侧写动作只能申请（`sn-eval`），由人在这里确认后服务器按登记参数执行；本机无沙箱，请求账本记录谁申请、谁确认。
 
+## 自动运行（方法 v3）
+
+`python -m rag_eval.optimizer.cli run` 把运行绑定到迭代后，这个迭代在左栏标“自动”，点开是专门的只读页面（`src/auto/`），不再构建候选树，也不计算比较记录。页面从上到下回答：现在怎么样、还能走多远、得到了什么（按段的谱系，实心 = 已确认，空心 = 暂定，虚线 = 已回滚）、正在做什么、能主张什么（证据账本，各栏不相加）。右栏显示选中对象的依据，没选中时显示预注册参数。
+
+绑定后手动操作在后端拒绝（HTTP 409）：派生、冻结、运行、采纳、提议、确认请求、向 Agent 发消息、新建或移除 Agent。Agent 命令行也收窄，分析 Agent 只能用 `evidence / docs / leak-check / proposal draft`，实现 Agent 只能用 `card / leak-check`。绑定不可解除，所以试跑请用测试迭代。启动、续跑和封存集评测目前走命令行，见 [runbook](../../docs/method-v3-runbook.md)。
+
+页面的验收用真实循环跑出来的状态，不依赖服务器：
+
+```bash
+npm --prefix apps/sn-workbench run build
+PYTHONPATH=src:. .venv/bin/python apps/sn-workbench/tests/auto_run_fixture.py --port 8097 --root /tmp/auto-fixture
+WORKBENCH_TEST_URL=http://127.0.0.1:8097 node apps/sn-workbench/tests/auto-run-browser.mjs
+```
+
 ## 浏览器验收
 
 `tests/tree-browser.mjs` 针对一个运行中的工作台（至少一个已评测子候选，例如 smoke state）。默认只读：两种主题的谱系、节点详情与比较记录、确认框取消不写入、排行不改树序、逐题矩阵与读题、Ctrl+K、Agent 抽屉、窄屏详情。给出 `WORKBENCH_CONFIRM_REQUEST`／`WORKBENCH_REJECT_REQUEST`（待确认请求 id）时经页面确认／驳回并核对回执。

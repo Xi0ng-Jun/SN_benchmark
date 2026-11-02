@@ -154,8 +154,8 @@ class RoundResult:
     rolled_back: bool
     halt_reason: Optional[str]
     # One dict per card that entered the pipeline, in decision order. Keys:
-    # card_ref, card_index, verdict (CANDIDATE_VERDICTS), reason, parent,
-    # candidate, rebased_from, smoke_verdict, delta_val, se_val, score_val,
+    # card_ref, title, card_index, verdict (CANDIDATE_VERDICTS), reason, parent,
+    # candidate, candidate_id, rebased_from, smoke_verdict, delta_val, se_val, score_val,
     # best_before, ladder_m, val_pool_size, screen_evaluations, n_unpaired,
     # timings, has_predicate, resumed, halted (True: recorded because the
     # loop halted on a process failure, not a decision on the card).
@@ -1090,6 +1090,7 @@ class _Run:
                 rec.delta_val, rec.se_val = mean_delta(d), paired_se(d)
         round_res.candidates.append(dict(
             card_ref=rec.card.ref or rec.card.failure_mode_desc[:60],
+            title=rec.card.failure_mode_desc,
             card_index=rec.card_index,
             verdict=verdict,
             reason=reason,

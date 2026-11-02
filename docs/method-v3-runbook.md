@@ -111,3 +111,9 @@ $V3 sealed $COMMON --state-dir var/method-v3/$RUN --budget sealed-budget.json --
 检查：`halt reason`（分类停机原因）；`ledger.json` 三部分；`status` 中确认节点、指针、验证池大小、m、已用新鲜批次；`sealed-curve.json` 的 `status: finished`、每个节点的 `state/style`、`delta_vs_seed`、校正后区间。
 
 汇报：`status` 输出；`ledger.json`；`rounds.jsonl`；`sealed-curve.json`；总耗时与每轮耗时；所有退出码。
+
+## 工作台
+
+`run` 会把运行绑定到迭代，绑定不可解除。之后这个迭代在工作台上是只读的自动运行页，手动操作和 Agent 的多数命令都会被拒绝，所以第二级试跑要用测试迭代，正式运行用新迭代。`analyse-only` 不绑定。
+
+`run` 运行期间持有运行目录下的 `run.lock`，页面据此判断进程是否还在。进程退出后页面显示“已中断”，用同一条命令续跑。服务端和运行进程必须能访问同一个运行目录（`--state-dir`），页面才读得到状态。

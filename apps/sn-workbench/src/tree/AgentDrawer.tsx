@@ -28,6 +28,10 @@ export type NodeContext = { candidateId: string; label: string; state: string; h
 const roleLabels: Record<string, string> = { analyst: '分析', implementer: '实现' };
 // Each Agent's header states what it can see (design §7). The isolation is
 // information not sent plus a leak scan, not a filesystem sandbox.
+const autoScopes: Record<string, string> = {
+  analyst: '可见：搜索集诊断视图 · 历史标签；无 gold、无分数（非沙箱）',
+  implementer: '可见：已批准卡片 · 候选 worktree 代码（非沙箱）',
+};
 const scopes: Record<string, string> = {
   analyst: '可见：题面 · gold · 成绩 · 运行；对 SN 只读',
   implementer: '可见：已批准提议 · 候选 worktree 代码；不下发题面、gold、成绩（非沙箱）',
@@ -60,11 +64,13 @@ function TopHandle({ height, onResize }: { height: number; onResize: (n: number)
 }
 
 export function AgentDrawer({ task, boot, compact, open, available, onToggle, hasRuns, target, onTargetDone, onTaskChanged, labels, focus,
-  node, evaluated, onRemoveAgent }: {
+  node, evaluated, onRemoveAgent, readOnly = false }: {
   task: Task | undefined; boot: Bootstrap; compact: boolean; open: boolean; available: number; onToggle: () => void; hasRuns: boolean;
   target: AgentTarget | null; onTargetDone: () => void; onTaskChanged: () => void;
   labels: Record<string, string>; focus: { sessionId: string; nonce: number } | null;
   node: NodeContext | null; evaluated: number; onRemoveAgent: (sessionId: string) => Promise<unknown>;
+  // An automatic run's Agents: conversations can be read, never joined.
+  readOnly?: boolean;
 }) {
   const theme = useTheme();
   const [size, setSize] = useState(readSize);
@@ -165,7 +171,7 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
   useEffect(() => { if (sentRecords.data) setRecordsAt(sentTick); }, [sentRecords.data]);
   const autoTried = useRef(new Set<string>());
   useEffect(() => {
-    if (!session || !sentRecords.data || recordsAt !== sentTick || messages.editingLocked || messages.status !== 'idle') return;
+    if (readOnly || !session || !sentRecords.data || recordsAt !== sentTick || messages.editingLocked || messages.status !== 'idle') return;
     const delivered = sentRecords.data.filter(r => r.session_id === session.id && r.status === 'acknowledged').flatMap(r => r.contexts);
     const lastSha = (kind: string) => delivered.filter(c => c.reference.kind === kind).at(-1)?.sha256 ?? null;
     const wanted = [
@@ -243,9 +249,9 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
       <IconButton label={open ? '收起 Agent 抽屉' : '展开 Agent 抽屉'} icon={Chevron} onPress={onToggle} testID="toggle-drawer" />
       <Text testID="agent-binding" numberOfLines={1} style={{ fontSize: 13, fontWeight: '500', color: theme.text }}>
         {session ? `${roleLabels[role]} · ${binding(task?.sessions.find(s => s.id === session.id))}` : 'Agent'}</Text>
-      {session && <Text testID="agent-scope" numberOfLines={1} style={{ flexShrink: 1, fontSize: 11, color: theme.muted }}>{scopes[role]}</Text>}
+      {session && <Text testID="agent-scope" numberOfLines={1} style={{ flexShrink: 1, fontSize: 11, color: theme.muted }}>{(readOnly ? autoScopes : scopes)[role]}</Text>}
       <View style={{ flex: 1 }} />
-      {open && session && <RemoveConfirm key={session.id} onRemove={() => removeCurrent(session.id)} testID="drawer-remove-agent" />}
+      {open && session && !readOnly && <RemoveConfirm key={session.id} onRemove={() => removeCurrent(session.id)} testID="drawer-remove-agent" />}
       {open && candidates.recordsPanel && <IconButton label="发现记录" icon={Lightbulb} selected={findingsOpen} onPress={() => setFindingsOpen(v => !v)} testID="toggle-findings" />}
       {open && <IconButton label={maximized ? '还原抽屉' : '最大化对话'} icon={maximized ? Minimize2 : Maximize2} selected={maximized} onPress={() => setMaximized(m => !m)} testID="maximize-drawer" />}
     </View>
@@ -277,7 +283,7 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
             onOlder={sessions.older ? () => { candidates.invalidateSource(); sessions.older?.(); } : undefined}
             onLatest={() => { candidates.invalidateSource(); sessions.refresh(); }}
             onCandidate={(id, kind) => { candidates.requestCandidate(id, kind); setCandidateOpen(true); }}
-            empty={<View style={{ gap: 8, alignItems: 'flex-start' }}>
+            empty={readOnly ? <Copy muted>这次自动运行还没有派发 Agent。派发后可以在这里看它们的对话。</Copy> : <View style={{ gap: 8, alignItems: 'flex-start' }}>
               <Copy muted>这个迭代还没有 Agent。节点 Agent 从候选详情里新建：分析 Agent 绑定一个已评测候选，读它的运行与证据并在它下面提提议；实现 Agent 绑定一个候选，在它的 worktree 里改码。迭代分析 Agent 从谱系头部的“分析整个迭代”新建，读整棵树做横向比较。写动作只能申请，由你确认。</Copy>
             </View>} />
           {candidates.draftPanel && <View style={{ gap: 8 }}>
@@ -287,7 +293,19 @@ export function AgentDrawer({ task, boot, compact, open, available, onToggle, ha
           </View>}
           </View>
         </ScrollView>
-        {task && <View style={{ width: '100%', maxWidth: 868, alignSelf: 'center' }}><ChatComposer compact={compact} value={messageText} onChange={contexts.message.onChange} editable={Boolean(session) && !messages.editingLocked}
+        {task && readOnly && <View testID="drawer-readonly" style={{ position: 'relative', flexDirection: 'row', alignItems: 'center', gap: 10, padding: 8, borderTopWidth: 1, borderColor: theme.line }}>
+          <AgentButton label={currentAgent?.label ?? '选择 Agent'} open={menu === 'agent'}
+            status={session && sessions.remote.status === 'available' ? sessions.remote.agentStatusLabel : undefined}
+            onPress={() => setMenu(m => m === 'agent' ? 'none' : 'agent')} />
+          <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 12, color: theme.muted }}>Agent 由自动运行派发，这里只能查看，不能发消息</Text>
+          {menu === 'agent' && <View style={{ position: 'absolute', zIndex: 10, left: 8, bottom: 46, width: Math.min(460, compact ? 320 : 460) }}>
+            <AgentMenu readOnly agents={sessionOptions} profiles={[]} createEnabled={false} createReason={null} onCreate={() => undefined} creation={null} cwdLabel=""
+              link={{ value: '', onChange: () => undefined, onSubmit: () => undefined, statusText: null }}
+              onSelect={id => { if (id !== session?.id) { contexts.invalidate(); candidates.invalidateSource(); sessions.selectSession(id); setChatError(null); } }}
+              maxHeight={Math.max(180, Math.min(420, height - 38 - 60))} onClose={() => setMenu('none')} />
+          </View>}
+        </View>}
+        {task && !readOnly && <View style={{ width: '100%', maxWidth: 868, alignSelf: 'center' }}><ChatComposer compact={compact} value={messageText} onChange={contexts.message.onChange} editable={Boolean(session) && !messages.editingLocked}
           canSend={canSend} onSend={send} placeholder={session ? '给 Agent 发消息（Enter 发送，Shift+Enter 换行）' : '先选择或新建一个 Agent'}
           attachments={contexts.message.attachments.map(item => ({ id: item.id, label: item.title }))}
           onOpenAttachment={id => { setMenu('context'); contexts.open(id); }} onRemoveAttachment={contexts.message.onRemoveReference}

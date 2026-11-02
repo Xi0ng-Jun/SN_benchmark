@@ -49,7 +49,7 @@ export function IterationSidebar({ width, compact, project, iterations, statuses
       <Row label="新建迭代" onPress={onNew} leading={<Plus size={14} strokeWidth={1.75} color={theme.muted} />} testID="new-iteration" />
       <Heading>{project}</Heading>
       {iterations.map(it => <Row key={it.id} label={it.title} selected={it.id === iterationId} onPress={() => onIteration(it.id)}
-        detail={[it.protocol?.mode, statuses[it.id]?.label].filter(Boolean).join(' · ')} testID={'iteration-nav-' + it.id}
+        detail={[it.auto ? '自动' : it.protocol?.mode, statuses[it.id]?.label].filter(Boolean).join(' · ')} testID={'iteration-nav-' + it.id}
         leading={<View style={{ width: 14, alignItems: 'center' }}>{statuses[it.id]?.tone
           ? <StatusDot tone={statuses[it.id].tone} /> : <GitBranch size={13} strokeWidth={1.75} color={theme.muted} />}</View>} />)}
       {!iterations.length && <Text style={{ color: theme.muted, fontSize: 12, padding: 8 }}>还没有迭代。新建一个：选起点 commit 和冻结题单。</Text>}

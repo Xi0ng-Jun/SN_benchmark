@@ -45,7 +45,7 @@ function FlipTable({ record, rootRegressed, testID }: { record: ComparisonRecord
   </View>;
 }
 
-function DiffFile({ file }: { file: ChangedFile }) {
+export function DiffFile({ file }: { file: ChangedFile }) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
   return <View style={{ borderWidth: 1, borderColor: theme.line, borderRadius: 8, overflow: 'hidden' }}>

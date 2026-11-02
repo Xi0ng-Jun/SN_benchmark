@@ -20,6 +20,9 @@ import { NewIterationDialog } from './tree/NewIterationDialog';
 import { AgentDrawer, AgentTarget } from './tree/AgentDrawer';
 import { agentsOf, analystsOf, iterationAnalystsOf, stepsOf } from './tree/next';
 import { useLive } from './tree/useLive';
+import { actionTexts, AutoRunView } from './auto/contracts';
+import { AutoRunPage } from './auto/AutoRunPage';
+import { AutoDetail } from './auto/AutoDetail';
 
 // Project → iteration → candidate tree (design §7). The five-tab Task surface was
 // removed on 2026-10-20 (DELETION_LOG.md); backend routes are unchanged.
@@ -57,11 +60,17 @@ export default function App() {
 
   const iterations = useResource<Iteration[]>(boot ? '/iterations' : null, refresh);
   const iterationId = route.iteration ?? iterations.data?.at(-1)?.id ?? null;
-  const treeState = useResource<IterationTree>(boot && iterationId ? `/iterations/${iterationId}` : null, refresh);
+  const current = iterations.data?.find(it => it.id === iterationId);
+  // An automatic run's page reads the run's own state; the candidate tree (and its comparisons) is never built for it.
+  const auto = current?.auto ?? null;
+  const [autoTick, setAutoTick] = useState(0);
+  const autoRun = useResource<AutoRunView>(auto ? `/iterations/${iterationId}/auto-run` : null, refresh + autoTick);
+  const treeState = useResource<IterationTree>(boot && current && !auto ? `/iterations/${iterationId}` : null, refresh);
   const tree = treeState.data?.id === iterationId ? treeState.data : undefined;
-  const proposals = useResource<Proposal[]>(tree ? `/tasks/${tree.task_id}/hypotheses` : null, refresh);
+  const taskId = current?.task_id ?? tree?.task_id;
+  const proposals = useResource<Proposal[]>(taskId ? `/tasks/${taskId}/hypotheses` : null, refresh);
   const requests = useResource<ActionRequest[]>(boot ? '/action-requests' : null, refresh);
-  const taskState = useResource<Task>(tree ? `/tasks/${tree.task_id}` : null, refresh);
+  const taskState = useResource<Task>(taskId ? `/tasks/${taskId}` : null, refresh);
   const runList = useResource<RunList>(reader && !reader.execution ? '/run-views/runs' : null, refresh);
   const labels = useMemo(() => tree ? treeLabels(tree) : {}, [tree]);
   const label = (id: string | null) => id ? labels[id] ?? short(id) : '—';
@@ -72,7 +81,7 @@ export default function App() {
   const proposal = route.proposal ? proposalById[route.proposal] : undefined;
   const allRequests = requests.data ?? [];
   const treeRequests = tree ? allRequests.filter(r => r.task_id === tree.task_id) : [];
-  const task = taskState.data?.id === tree?.task_id ? taskState.data : undefined;
+  const task = taskState.data?.id === taskId ? taskState.data : undefined;
   const { live, changes, ready: liveReady } = useLive(task, tree, refresh);
   const steps = tree && task && liveReady && proposals.data ? stepsOf({ tree, proposals: proposalById, requests: treeRequests, sessions: task?.sessions ?? [], live, changes }) : {};
   const agentMarks = Object.fromEntries((tree?.candidates ?? []).map(c => [c.id, agentsOf(c.id, task?.sessions ?? []).map(s => ({ sessionId: s.id, role: s.role!, status: live[s.id]?.status ?? null }))]));
@@ -101,6 +110,14 @@ export default function App() {
     const timer = setInterval(bump, 4000);
     return () => clearInterval(timer);
   }, [moving]);
+  // The run moves on its own: its state every 5 s while alive; the rest, and whether it came back, every 30 s.
+  const autoAlive = Boolean(auto?.alive || autoRun.data?.run.alive);
+  useEffect(() => {
+    if (!auto) return;
+    const slow = setInterval(bump, 30000);
+    const fast = autoAlive ? setInterval(() => setAutoTick(n => n + 1), 5000) : null;
+    return () => { clearInterval(slow); if (fast) clearInterval(fast); };
+  }, [Boolean(auto), autoAlive]);
   const reload = async () => { const data = await api<Bootstrap>('/bootstrap'); setBoot(data); setAuth(false); };
   useEffect(() => {
     let active = true;
@@ -154,6 +171,8 @@ export default function App() {
         kind: step.action === 'request' ? 'request' as const : step.action === 'proposal' ? 'proposal' as const : 'step' as const,
         onPress: () => { setReader(null); setNav(false); step.action === 'proposal' && step.proposalId ? update({ proposal: step.proposalId, node: null }) : update({ node: c.id, proposal: null }); } }];
     }).sort((a, b) => a.rank - b.rank),
+    ...(auto && autoRun.data?.next_action ? [{ id: 'auto-action', label: actionTexts[autoRun.data.next_action].title, detail: current?.title ?? '',
+      kind: 'step' as const, onPress: () => { setNav(false); update({ node: null, proposal: null }); } }] : []),
     ...allRequests.filter(r => r.status === 'pending' && (r.task_id !== tree?.task_id || !r.target_id)).map(r => ({ id: 'request-' + r.id,
       label: `${verbLabels[r.verb] ?? r.verb}请求`, detail: iterations.data?.find(i => i.task_id === r.task_id)?.title ?? '其他迭代', kind: 'request' as const, onPress: () => openRequest(r) })),
   ];
@@ -167,8 +186,8 @@ export default function App() {
     todo.find(t => t.id.startsWith('step-'))?.onPress();
   }, [tree?.id, Boolean(task), Boolean(proposals.data), liveReady]);
   const statuses: Record<string, IterationStatus> = Object.fromEntries((iterations.data ?? []).map(it => {
-    const waiting = it.id === tree?.id ? todo.length : allRequests.filter(r => r.task_id === it.task_id && r.status === 'pending').length;
-    const running = it.id === tree?.id && tree.candidates.some(c => c.state === 'running');
+    const waiting = it.id === tree?.id || it.id === current?.id ? todo.length : allRequests.filter(r => r.task_id === it.task_id && r.status === 'pending').length;
+    const running = it.auto ? it.auto.alive : it.id === tree?.id && tree.candidates.some(c => c.state === 'running');
     return [it.id, running ? { tone: 'running', label: '运行中' } : waiting ? { tone: 'warning', label: `${waiting} 项待处理` } : { tone: null, label: '' }];
   }));
   const paletteItems: PaletteItem[] = [
@@ -205,6 +224,8 @@ export default function App() {
     selection={{ runId: reader.runId, caseId: reader.caseId, panel: 'run-cases', needsRead: false, against: null, provenance: false }}
     onClose={() => setReader(null)} onChange={changes => setReader(prev => prev && ({ runId: changes.runId ?? prev.runId, caseId: changes.caseId !== undefined ? changes.caseId : prev.caseId }))} />
     : reader ? <Copy small muted>正在读取运行…</Copy>
+    : auto ? (autoRun.data ? <AutoDetail view={autoRun.data} selected={route.node} proposals={proposalById} sessions={task?.sessions ?? []} live={live}
+      onOpenAgent={openAgent} onSelect={selectNode} /> : <Copy small muted>正在读取运行…</Copy>)
     : tree && actions && proposal ? <ProposalDetail proposal={proposal} labels={labels} actions={actions} onConfirm={setConfirm} />
     : tree && actions && candidate ? <CandidateDetail key={candidate.id} tree={tree} candidate={candidate} labels={labels} refreshKey={refresh}
       proposal={candidate.proposal_id ? proposalById[candidate.proposal_id] : undefined} requests={treeRequests} actions={actions} onConfirm={setConfirm}
@@ -216,7 +237,7 @@ export default function App() {
         label: `${s.role === 'analyst' ? '分析' : '实现'} Agent · ${s.agent_id.slice(0, 8)} · ${date(s.linked_at)} 关联` }))} />
     : <View style={{ gap: 8, paddingTop: 8 }}><Copy small muted>选一个候选看详情：假设与预测、对父的翻转、代码差异、运行与准入。</Copy>
       {treeRequests.some(r => r.status === 'pending') && <Copy small style={{ color: theme.warning }}>有 {treeRequests.filter(r => r.status === 'pending').length} 条待确认请求，见左栏“待处理”。</Copy>}</View>;
-  const detailOpen = Boolean(reader || proposal || candidate);
+  const detailOpen = Boolean(reader || proposal || candidate || (auto && route.node));
 
   return <ThemeContext.Provider value={theme}>
     <View style={{ flex: 1, backgroundColor: theme.bg, flexDirection: 'row' }}>
@@ -233,7 +254,8 @@ export default function App() {
             <View style={{ flex: 1, minWidth: 0 }}>
               <View style={{ height: 44, borderBottomWidth: 1, borderColor: theme.line, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {(compact || !layout.leftOpen) && <IconButton label="展开侧栏" icon={PanelLeftOpen} onPress={() => compact ? setNav(n => !n) : layout.toggleLeft()} testID="toggle-left-sidebar" />}
-                <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 14, fontWeight: '600', color: theme.text }}>{tree?.title ?? '迭代'}</Text>
+                <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 14, fontWeight: '600', color: theme.text }}>{tree?.title ?? current?.title ?? '迭代'}</Text>
+                {auto && !compact && <Mono size={11} muted>自动 · {auto.run_id}</Mono>}
                 {tree && !compact && <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center', flexShrink: 1 }}>
                   <Mono size={11} muted>起点 {short(tree.start_commit, 7)}</Mono>
                   <Mono size={11} muted>题单 {short(tree.selection_hash, 8)}（冻结）</Mono>
@@ -253,6 +275,8 @@ export default function App() {
                   {!iterations.data ? <Copy small muted>正在读取迭代…</Copy>
                     : !iterations.data.length ? <View style={{ gap: 10, alignItems: 'flex-start' }}><Copy muted>还没有迭代。迭代固定一个起点 commit 和冻结题单，候选从这里派生成树。</Copy>
                       <Button label="新建迭代" primary onPress={() => setNewIteration(true)} testID="empty-new-iteration" /></View>
+                    : auto ? (autoRun.data ? <AutoRunPage view={autoRun.data} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} />
+                      : <Copy small muted>{autoRun.error ?? '正在读取自动运行…'}</Copy>)
                     : !tree ? <Copy small muted>正在读取迭代树…</Copy>
                       : route.matrix ? <CompareMatrix tree={tree} labels={labels} picked={picked} onClose={() => update({ matrix: false })}
                         onReadCase={(runId, caseId) => setReader({ runId, caseId })} />
@@ -273,7 +297,7 @@ export default function App() {
           </View>
           <AgentDrawer task={task} boot={boot} compact={compact} open={drawer} available={height - 44} labels={labels} focus={focus}
             onToggle={() => setDrawer(d => !d)} hasRuns={Boolean(tree?.candidates.some(c => c.attempts.length))}
-            target={target} onTargetDone={() => setTarget(null)} onTaskChanged={bump} onRemoveAgent={removeAgent} evaluated={evaluatedCount}
+            target={target} onTargetDone={() => setTarget(null)} onTaskChanged={bump} onRemoveAgent={removeAgent} evaluated={evaluatedCount} readOnly={Boolean(auto)}
             node={candidate ? { candidateId: candidate.id, label: label(candidate.id), state: candidate.state, hypothesisId: candidate.proposal_id ?? undefined } : null} />
         </View>
         {compact && detailOpen && <View style={{ position: 'absolute', zIndex: 15, top: 0, bottom: 0, left: 0, right: 0, backgroundColor: theme.bg }}>
