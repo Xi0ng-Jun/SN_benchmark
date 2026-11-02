@@ -12,13 +12,12 @@ accepts that dict directly; pass additional service objects as keyword args.
 from __future__ import annotations
 
 import hashlib
-import json
 import subprocess
 import time
-from pathlib import Path
 from typing import Any, Optional
 
-from .adapter import Card, Diff, EvalResult, Predicate, SystemAdapter, Version
+from .adapter import (BudgetExhausted, Card, Diff, EvalResult, EvaluationUnavailable, Predicate,
+                      SystemAdapter, Version)
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +68,8 @@ class SNAdapter(SystemAdapter):
     repository:
         ``WorkbenchRepository`` (``rag_eval.workbench.repository``).
     run_views:
-        ``RunViews`` (``rag_eval.workbench.run_views``).
+        ``RunViews`` (``rag_eval.workbench.run_views``) for score reads;
+        defaults to ``round_operations.api.views``.
     iterations:
         ``IterationStore`` (``rag_eval.workbench.iterations``).
     round_operations:
@@ -86,7 +86,8 @@ class SNAdapter(SystemAdapter):
         run_id                — v3 run identity; every v2 request key derives
                                 from it (no uuid), so rerunning the same command
                                 replays v2 receipts instead of dispatching again
-        actor                 — the v2 actor recorded on approvals/derives/freezes
+        actor                 — the v2 actor recorded on approvals/derives/freezes,
+                                and on every evaluation request
     """
 
     def __init__(
@@ -104,6 +105,10 @@ class SNAdapter(SystemAdapter):
         agent_timeout: float = 600.0,
         worktree_timeout: float = 600.0,
         analyst_view_budget: int = 12000,
+        eval_poll_interval: float = 30.0,
+        eval_timeout: float = 7200.0,
+        infra_retry: int = 1,
+        execution_timeout_seconds: int = 7200,
     ) -> None:
         self._config = config
         self._repository = repository
@@ -117,6 +122,13 @@ class SNAdapter(SystemAdapter):
         self._agent_poll_interval = agent_poll_interval
         self._agent_timeout = agent_timeout
         self._worktree_timeout = worktree_timeout
+        # Evaluation polling (binding plan §2.5): interval and deadline of one
+        # evaluate call. infra_retry and execution_timeout_seconds are forwarded
+        # to v2 and frozen with each request key: keep them constant per run.
+        self._eval_poll_interval = eval_poll_interval
+        self._eval_timeout = eval_timeout
+        self._infra_retry = infra_retry
+        self._execution_timeout_seconds = execution_timeout_seconds
         # Message text is capped at 16384 chars by the v2 message bridge; the
         # instructions take ~1K, so diagnostic views get the rest minus headroom.
         if not 0 < analyst_view_budget <= 15000:
@@ -128,6 +140,9 @@ class SNAdapter(SystemAdapter):
         # Bounded to the most recent _TRAJ_CACHE_SIZE entries to cap memory use.
         self._traj_cache: dict[tuple[str, str], dict] = {}
         self._TRAJ_CACHE_SIZE = 2000
+        # Admitted-execution score cache: execution_id -> {case: (value, stub)}.
+        self._score_cache: dict[str, dict] = {}
+        self._SCORE_CACHE_SIZE = 512
 
     # ------------------------------------------------------------------
     # v2 candidate plumbing: request keys, actor, versions
@@ -234,8 +249,236 @@ class SNAdapter(SystemAdapter):
         return self._version(candidate)
 
     # ------------------------------------------------------------------
-    # 2. evaluate
+    # 2. evaluate — dispatch v2 round measurements, poll, read admitted scores
     # ------------------------------------------------------------------
+    #
+    # Binding plan §2.2/§2.3/§2.5. Every v3 task set maps to one v2 scope:
+    #   search set / validation pool  -> scope None (one v2 execution covers
+    #                                    search ∪ validation), plus each completed
+    #                                    fresh batch's own scope (merged pool)
+    #   smoke sample                  -> registered scope ``smoke:<hash>``
+    #   i-th fresh batch              -> its batch id (v2 ``segment``)
+    # v2 measurements are asynchronous and idempotent per request key: the same
+    # key is called again until it reports ``complete``; a rerun after a crash
+    # replays the stored footprint instead of dispatching again.
+
+    _MEASURE_PURPOSES = ("baseline", "diagnose", "screen")
+
+    def _views(self):
+        if self._run_views is not None:
+            return self._run_views
+        return self._require_round_ops("evaluate").api.views
+
+    def _protocol(self) -> dict:
+        """The frozen v2 iteration protocol (splits, fresh_batches, k_base)."""
+        ops = self._require_round_ops("evaluate")
+        iteration_id, _ = self._require_ids()
+        # iteration_record reads only the row; iteration() builds the whole tree.
+        read = getattr(ops.service, "iteration_record", None) or ops.service.iteration
+        return read(iteration_id)["protocol"]
+
+    def _used_batches(self, *, completed: bool = False) -> list[dict]:
+        """v2 ``splits.batches``: claimed fresh batches; ``completed`` = reconciled into the pool."""
+        from rag_eval.workbench.splits import batches
+        ops = self._require_round_ops("evaluate")
+        iteration_id, _ = self._require_ids()
+        return batches(ops.repository, iteration_id, completed=completed)
+
+    @staticmethod
+    def _k_base(protocol: dict) -> int:
+        return protocol.get("k_base", 2)  # v2 RoundOperations.describe uses the same default
+
+    def partitions(self) -> dict:
+        """The iteration's v3-visible partitions, read from the frozen v2 protocol.
+
+        ``fresh_batches`` keeps protocol order (v3 consumes them in this order);
+        ``completed_fresh_batch_ids`` are the batches already reconciled into
+        the validation pool, in v2 completion order.
+        """
+        protocol = self._protocol()
+        splits = protocol.get("splits") or {}
+        fresh = [dict(batch_id=b["batch_id"], case_ids=list(b["case_ids"]))
+                 for b in protocol.get("fresh_batches", [])]
+        return dict(search=list(splits.get("search", ())),
+                    validation=list(splits.get("validation", ())),
+                    fresh_batches=fresh,
+                    completed_fresh_batch_ids=[b["batch_id"] for b in self._used_batches(completed=True)],
+                    k_base=self._k_base(protocol))
+
+    @staticmethod
+    def _check_k(k: Any, expected: int, purpose: str) -> None:
+        if type(k) is not int or k != expected:
+            raise ValueError(
+                f"{purpose} evaluation needs k={expected} (fixed by the v2 iteration protocol); got k={k!r}"
+            )
+
+    def _case_scopes(self, task_ids: list[str], purpose: str, protocol: dict) -> dict[str, Optional[str]]:
+        """task id -> v2 scope for a measure purpose; refuses ids outside the partition.
+
+        diagnose: search set only. baseline / screen: validation pool, i.e. the
+        validation split plus the cases of every COMPLETED fresh batch (v2
+        ``splits.roles`` semantics). The set is never silently changed.
+        """
+        if not task_ids:
+            raise ValueError(f"{purpose} evaluation needs at least one task id")
+        splits = protocol["splits"]
+        if purpose == "diagnose":
+            allowed: dict[str, Optional[str]] = {c: None for c in splits["search"]}
+            where = "the search set"
+        else:
+            allowed = {c: None for c in splits["validation"]}
+            completed = {b["batch_id"] for b in self._used_batches(completed=True)}
+            for batch in protocol.get("fresh_batches", []):
+                if batch["batch_id"] in completed:
+                    allowed.update({c: batch["batch_id"] for c in batch["case_ids"]})
+            where = "the validation pool (validation split and completed fresh batches)"
+        outside = [t for t in task_ids if t not in allowed]
+        if outside:
+            raise ValueError(
+                f"{len(outside)} {purpose} task id(s) are outside {where}, e.g. {outside[:3]!r}"
+            )
+        return {t: allowed[t] for t in task_ids}
+
+    def _v2_run_kwargs(self) -> dict:
+        # These values are part of v2's frozen request: v2 refuses a replayed key
+        # whose actor/infra_retry/timeout differ, so they must stay constant per run.
+        return dict(actor=self._actor(), infra_retry=self._infra_retry,
+                    timeout_seconds=self._execution_timeout_seconds)
+
+    def _await(self, calls: dict[str, tuple[str, Any]]) -> None:
+        """Re-issue each keyed v2 call until all report ``complete``.
+
+        *calls*: label -> (request key, zero-argument callable). v2 statuses:
+        running -> poll again; complete -> done; budget_exhausted ->
+        BudgetExhausted (the frozen footprint waits for human confirmation);
+        failed / exhausted / stopped / anything else, or the poll deadline ->
+        EvaluationUnavailable. Missing measurements are never evidence.
+        """
+        pending = dict(calls)
+        deadline = time.monotonic() + self._eval_timeout
+        while True:
+            for label, (key, call) in list(pending.items()):
+                result = call() or {}
+                status = result.get("status")
+                if status == "complete":
+                    del pending[label]
+                elif status == "running":
+                    continue
+                elif status == "budget_exhausted":
+                    raise BudgetExhausted(
+                        f"{label}: v2 footprint exceeds the frozen budget (key={key!r}, "
+                        f"action_request={result.get('action_request_id')!r})"
+                    )
+                else:
+                    raise EvaluationUnavailable(
+                        f"{label}: v2 status {status!r} (key={key!r}): "
+                        f"{result.get('reason') or result.get('errors') or 'no reason given'}"
+                    )
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                raise EvaluationUnavailable(
+                    f"{', '.join(pending)} not complete within {self._eval_timeout}s "
+                    f"(keys={[k for k, _ in pending.values()]!r}); rerun resumes the same keys"
+                )
+            time.sleep(self._eval_poll_interval)
+
+    def _measure(self, candidate_ids: list[str]) -> None:
+        """v2 ``measure`` each candidate on search ∪ validation ∪ completed fresh batches.
+
+        Key ``v3/{run_id}/measure/{cid}/{n}`` with n = completed fresh batches.
+        v2 ``RoundMeasurements._plan`` freezes the measure footprint at the
+        first call of a key, with the completed fresh batches known AT THAT
+        TIME; replays never re-plan. Once another batch is folded into the
+        pool the old key cannot top up the new scope, so n is part of the key.
+        If a batch completes while we wait, measure again under the new n.
+        The same candidate measured for different purposes shares one key
+        (v2 replays the receipt), so diagnose and screen cost one footprint.
+        """
+        ops = self._require_round_ops("evaluate")
+        kwargs = self._v2_run_kwargs()
+        while True:
+            n = len(self._used_batches(completed=True))
+            calls = {}
+            for cid in dict.fromkeys(candidate_ids):
+                key = self._request_key("measure", cid, n)
+                calls[f"measure {cid}"] = (key, lambda cid=cid, key=key: ops.measure(cid, key=key, **kwargs))
+            self._await(calls)
+            if len(self._used_batches(completed=True)) == n:
+                return
+
+    def _execution_values(self, execution_id: str) -> dict[str, tuple[Optional[float], dict]]:
+        """case -> (raw primary score, trajectory stub) for one admitted execution.
+
+        Values come from ``RunViews.flips`` on each partition run paired with
+        itself: the same per-case value path v2 ``ComparisonService._compute_pair``
+        uses (official per-case primary metric, with declared case-retry
+        answers replacing failed first answers), including its shared-bundle
+        optimisation. Admitted executions are terminal, so the result is cached.
+        """
+        hit = self._score_cache.get(execution_id)
+        if hit is not None:
+            return hit
+        views = self._views()
+        runs = views.execution_runs(execution_id)
+        bundle = views.shared_bundle(runs[0].id) if len(runs) > 1 else None
+        out: dict[str, tuple[Optional[float], dict]] = {}
+        for run in runs:
+            flips = (views.flips(run.id, run.id, bundle=bundle) if bundle is not None
+                     else views.flips(run.id, run.id))
+            values = ({r["case_id"]: r["left"] for r in flips["rows"]}
+                      if flips.get("admission") == "admitted" else {})
+            stub = dict(run_dir=str(run.run_dir), run_id=run.id, execution_id=execution_id)
+            for case_id in run.case_ids:
+                out[case_id] = (values.get(case_id), stub)
+        if runs:
+            if len(self._score_cache) >= self._SCORE_CACHE_SIZE:
+                self._score_cache.pop(next(iter(self._score_cache)))
+            self._score_cache[execution_id] = out
+        return out
+
+    def _read(self, candidate_id: str, case_scopes: dict[str, Optional[str]]) -> EvalResult:
+        """Per-case mean raw primary score over the candidate's admitted attempts.
+
+        Attempt set: v2 ``ComparisonService.admitted(ComparisonService.scoped(c, scope))``,
+        exactly the attempts a v2 comparison averages (every admitted execution
+        on that scope; scope None also includes legacy links). Attempts that
+        failed admission (infrastructure failures, cancelled, incomplete
+        scoring) are excluded, as in v2. Per-case mean: v2 ``noise.estimate``
+        (mean over attempts with a value; None when no attempt scored it).
+        """
+        from rag_eval.workbench.comparisons import ComparisonService
+        from rag_eval.workbench.noise import estimate
+        candidate = self._round_ops.service.candidate(candidate_id)
+        wanted_by_scope: dict[Optional[str], set[str]] = {}
+        for case_id, scope in case_scopes.items():
+            wanted_by_scope.setdefault(scope, set()).add(case_id)
+        trajectories: dict[str, list[Any]] = {t: [] for t in case_scopes}
+        attempts = []
+        for scope, wanted in wanted_by_scope.items():
+            for admitted in ComparisonService.admitted(ComparisonService.scoped(candidate, scope)):
+                values = self._execution_values(admitted["execution_id"])
+                rows = []
+                for case_id in sorted(wanted & values.keys()):
+                    value, stub = values[case_id]
+                    trajectories[case_id].append(dict(stub, attempt=admitted.get("attempt"), batch_id=scope,
+                                                      candidate_id=candidate_id))
+                    rows.append(dict(case_id=case_id, family=stub["run_id"], value=value))
+                attempts.append(dict(execution_id=admitted["execution_id"], rows=rows))
+        cases = estimate(dict(attempts=attempts))["cases"] if attempts else {}
+        per_task_scores = {t: cases[t]["mean"] for t in case_scopes
+                           if t in cases and cases[t]["mean"] is not None}
+        return EvalResult(
+            per_task_scores=per_task_scores,
+            trajectories=trajectories,
+            # v2 exposes per-case tokens only through RunViews.observation, which
+            # builds each partition's full run view; not worth it for a record
+            # field. Cost stays 0.0 until a cheap per-case usage reader exists.
+            costs={t: 0.0 for t in case_scopes},
+            error_classes={t: None if t in per_task_scores else
+                           ("no_admitted_attempt" if not trajectories[t] else "unscored")
+                           for t in case_scopes},
+        )
 
     def evaluate(
         self,
@@ -245,85 +488,128 @@ class SNAdapter(SystemAdapter):
         *,
         purpose: str = "screen",
     ) -> EvalResult:
-        """Collect k admitted run-batches for *version* from the v2 run_views.
+        """Measure *version* through v2 ``measure`` and read its admitted scores.
 
-        Precondition: evaluation has already been dispatched through the v2
-        server (EvaluationJobStore / JobExecutionService).  This method is a
-        *reader* — it does not trigger new executions; that remains a v2
-        server-side concern.
-
-        Per-task score: mean raw ``value`` across all case rows in k runs.
-        Trajectories: list of k dicts, each the run's manifest (run_dir,
-        case_ids, scores path, execution_id) — kept lightweight so callers
-        that only care about scores don't pay for full output loading.
-
-        NOTE: ``reference_version`` is accepted for API compatibility but the
-        pairing is not currently implemented; reference runs are ignored.  Add
-        interleaved pairing here when the v2 job dispatch is wired end-to-end.
+        purpose: 'diagnose' (task_ids ⊆ search set) or 'baseline' / 'screen'
+        (task_ids ⊆ validation pool). k must equal the protocol's ``k_base``;
+        v2 tops each scope up to k_base admitted attempts (only the missing
+        ones run). Fresh batches and smoke samples are pair-only
+        (``evaluate_pair``); the sealed set is the end step's.
         """
-        if self._run_views is None:
-            raise RuntimeError("run_views service required for evaluate()")
-
-        execution_id = (version.metadata or {}).get("execution_id")
-        if not execution_id:
+        if purpose not in self._MEASURE_PURPOSES:
             raise ValueError(
-                "Version.metadata must contain 'execution_id'; "
-                "run v2 evaluation first and store the id."
+                f"SN evaluate() serves {self._MEASURE_PURPOSES}; {purpose!r} is evaluated in "
+                "pairs (evaluate_pair) or by the sealed end step"
             )
+        cid = self.candidate_id(version)
+        protocol = self._protocol()
+        self._check_k(k, self._k_base(protocol), purpose)
+        scopes = self._case_scopes(list(task_ids), purpose, protocol)
+        self._measure([cid])
+        return self._read(cid, scopes)
 
-        runs = self._run_views.execution_runs(execution_id)
-        if not runs:
-            raise RuntimeError(
-                f"No admitted runs found for execution_id={execution_id!r}"
-            )
+    def evaluate_pair(
+        self,
+        version: Version,
+        reference: Version,
+        task_ids: list[str],
+        k: int,
+        *,
+        purpose: str,
+    ) -> tuple[EvalResult, EvalResult]:
+        """(version, reference) on the same tasks, through one v2 paired measurement.
 
-        # Restrict to the requested task_ids when run_views supports it; many
-        # v2 run sets span a single task so the filter is usually a no-op.
-        # NOTE: v2 runs carry .case_ids (list); filter by overlap with task_ids.
-        task_id_set = set(task_ids)
+        smoke   : k=1, task_ids ⊆ search, reference = version's parent; v2
+                  ``smoke`` (one attempt per side on the registered sample).
+        screen  : k=k_base on the validation pool; v2 ``measure`` on both.
+        confirm : k=k_base; task_ids must be exactly one unused protocol fresh
+                  batch; v2 ``segment(start=reference, end=version)`` consumes it.
+        """
+        ops = self._require_round_ops("evaluate_pair")
+        vcid, rcid = self.candidate_id(version), self.candidate_id(reference)
+        protocol = self._protocol()
+        task_ids = list(task_ids)
+        if purpose == "screen":
+            self._check_k(k, self._k_base(protocol), purpose)
+            scopes = self._case_scopes(task_ids, purpose, protocol)
+            self._measure([vcid, rcid])
+            return self._read(vcid, scopes), self._read(rcid, scopes)
+        if purpose == "smoke":
+            from rag_eval.workbench.execution_scopes import smoke_scope_id
+            self._check_k(k, 1, purpose)
+            scope_id = smoke_scope_id(protocol, task_ids)  # refuses non-search / duplicate ids
+            parent = ops.service.candidate(vcid).get("parent_candidate_id")
+            if parent != rcid:
+                raise ValueError(f"smoke compares a candidate with its parent ({parent!r}), not {rcid!r}")
+            key = self._request_key("smoke", vcid, scope_id)
+            kwargs = self._v2_run_kwargs()
+            self._await({f"smoke {vcid}": (key, lambda: ops.smoke(vcid, task_ids, key=key, **kwargs))})
+            scopes = {t: scope_id for t in task_ids}
+            return self._read(vcid, scopes), self._read(rcid, scopes)
+        if purpose == "confirm":
+            from rag_eval.workbench.loop_measurements import segment_start
+            self._check_k(k, self._k_base(protocol), purpose)
+            wanted = set(task_ids)
+            batch = next((b for b in protocol.get("fresh_batches", []) if set(b["case_ids"]) == wanted), None)
+            if not task_ids or batch is None:
+                raise ValueError("confirm task_ids are not exactly one fresh batch of the iteration protocol")
+            batch_id = batch["batch_id"]
+            claim = next((b for b in self._used_batches() if b["batch_id"] == batch_id), None)
+            # A claim by this very segment (same end and start) is a resume; any other use is refused.
+            if claim is not None and not (claim["candidate_id"] == vcid
+                                          and segment_start(ops.repository, claim["request_key"]) == rcid):
+                raise ValueError(f"fresh batch {batch_id!r} is already used")
+            key = self._request_key("segment", rcid, vcid, batch_id)
+            kwargs = self._v2_run_kwargs()
+            self._await({f"segment {rcid}->{vcid} on {batch_id}": (
+                key, lambda: ops.segment(start_id=rcid, end_id=vcid, batch_id=batch_id, key=key, **kwargs))})
+            scopes = {t: batch_id for t in task_ids}
+            return self._read(vcid, scopes), self._read(rcid, scopes)
+        raise ValueError(f"SN evaluate_pair() serves smoke/screen/confirm, not {purpose!r}")
 
-        per_task_scores: dict[str, float] = {}
-        trajectories: dict[str, list[Any]] = {}
-        costs: dict[str, float] = {}
-        error_classes: dict[str, Optional[str]] = {}
+    # ------------------------------------------------------------------
+    # 2b. rebase — re-file the change onto a new parent (v2 derive + rebase)
+    # ------------------------------------------------------------------
 
-        # k most-recent runs (v2 returns them in creation order).
-        selected_runs = runs[-k:] if len(runs) >= k else runs
+    def rebase(self, candidate: Version, new_parent: Version) -> Optional[Version]:
+        """Re-apply *candidate*'s frozen change onto *new_parent*; None on conflict.
 
-        for run in selected_runs:
-            run_case_ids = getattr(run, "case_ids", [])
-            relevant = [c for c in run_case_ids if not task_id_set or c in task_id_set]
-            run_scores = _load_scores(run)
-            traj_entry = {
-                "run_id": run.id,
-                "run_dir": str(getattr(run, "run_dir", "")),
-                "execution_id": execution_id,
-                "case_ids": relevant,
-            }
-            for case_id in relevant:
-                trajectories.setdefault(case_id, []).append(traj_entry)
-                score_val = (run_scores or {}).get(case_id)
-                if score_val is not None:
-                    per_task_scores.setdefault(case_id, []).append(float(score_val))  # type: ignore[assignment]
-
-        # Average accumulated lists.
-        per_task_scores = {
-            tid: sum(vals) / len(vals)
-            for tid, vals in per_task_scores.items()  # type: ignore[assignment]
-            if vals
-        }
-
-        # Cost: token-based proxy where available, else 0.
-        for task_id in task_ids:
-            costs[task_id] = 0.0
-            error_classes[task_id] = None
-
-        return EvalResult(
-            per_task_scores=per_task_scores,
-            trajectories=trajectories,
-            costs=costs,
-            error_classes=error_classes,
-        )
+        v2 sequence: ``RoundOperations.derive(new_parent, rebase_from=candidate)``
+        re-files the approved card under the new parent and derives the child;
+        once its worktree is ready, ``RoundOperations.rebase`` applies the
+        source's frozen diff uncommitted (receipt: applied / conflict / empty,
+        or running while the worktree is not ready). An applied rebase is
+        frozen by the coordinator as in materialize(). A conflicting or empty
+        rebase leaves the unfrozen child in the v2 tree and returns None.
+        """
+        ops = self._require_round_ops("rebase")
+        cid, parent_cid = self.candidate_id(candidate), self.candidate_id(new_parent)
+        actor = self._actor()
+        source = ops.service.candidate(cid)
+        hypothesis_id = source.get("proposal_id") or (candidate.metadata or {}).get("hypothesis_id")
+        if not hypothesis_id:
+            raise ValueError(f"Candidate {cid!r} has no approved card to rebase")
+        derive_key = self._request_key("rebase", cid, parent_cid)
+        new_cid = ops.derive(parent_cid, hypothesis_id=hypothesis_id, key=derive_key, actor=actor,
+                             rebase_from=cid)
+        self._await_worktree(new_cid)
+        apply_key = self._request_key("rebase-apply", new_cid)
+        deadline = time.monotonic() + self._worktree_timeout
+        result = ops.rebase(new_cid, key=apply_key, actor=actor)
+        while result.get("status") == "running":
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"rebase of {cid!r} onto {parent_cid!r} not applied within "
+                                   f"{self._worktree_timeout}s ({result.get('reason')!r})")
+            time.sleep(self._agent_poll_interval)
+            result = ops.rebase(new_cid, key=apply_key, actor=actor)
+        if result.get("status") in ("conflict", "empty"):
+            return None
+        if result.get("status") != "applied":
+            raise RuntimeError(f"v2 rebase returned {result!r}")
+        child = ops.service.candidate(new_cid)
+        if child.get("status") != "frozen":
+            child = ops.service.freeze(new_cid, actor=actor)
+        return self._version(child)
 
     # ------------------------------------------------------------------
     # 3. features
@@ -681,29 +967,3 @@ def _extract_worktree_diff(workspace: Any) -> str:
             if added is not None and added.returncode in (0, 1):  # 1 = files differ
                 parts.append(added.stdout)
     return "".join(parts)
-
-def _load_scores(run) -> dict[str, float] | None:
-    """Load per-case raw scores from a v2 run record.
-
-    v2 run objects carry a ``.scores`` path attribute pointing to a JSON file
-    with a ``{case_id: {score: float, ...}, ...}`` structure.  Returns None
-    when the file is absent or malformed.
-    """
-    scores_path = getattr(run, "scores", None)
-    if not scores_path:
-        return None
-    try:
-        raw = json.loads(Path(scores_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, dict):
-        return None
-    result = {}
-    for case_id, entry in raw.items():
-        if isinstance(entry, (int, float)):
-            result[case_id] = float(entry)
-        elif isinstance(entry, dict):
-            val = entry.get("score")
-            if val is not None:
-                result[case_id] = float(val)
-    return result
