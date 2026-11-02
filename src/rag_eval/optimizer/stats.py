@@ -216,6 +216,12 @@ def attribution_label(
         )
     if slice_size < n_min:
         return 'insufficient'
+    return _attribution_rule(r_p, r_c, delta_S, delta_notS, predicted_direction)
+
+
+def _attribution_rule(r_p: float, r_c: float, delta_S: float, delta_notS: float,
+                      predicted_direction: str) -> str:
+    """The §2.2 label rule on a slice that already has at least n_min tasks."""
     moved = (predicted_direction == 'decrease' and r_c < r_p) or \
             (predicted_direction == 'increase' and r_c > r_p)
     if moved and delta_S > 0.0 and delta_S > delta_notS:
@@ -226,3 +232,38 @@ def attribution_label(
     if delta_S <= delta_notS:
         return 'refuted'
     return 'insufficient'
+
+
+def attribution_result(
+    r_p: Optional[float],
+    r_c: Optional[float],
+    delta_S: Optional[float],
+    delta_notS: Optional[float],
+    predicted_direction: str,
+    n_min: int,
+    slice_size: int,
+    *,
+    independent_parent_slice: bool,
+    bias_reason: Optional[str] = None,
+) -> dict:
+    """§2.2 归因 as a record: {'label', 'possibly_biased', 'reason'}.
+
+    Unlike ``attribution_label`` this also serves the case §2.2 allows when
+    an independent parent run is not affordable: the slice was chosen on the
+    same parent run whose scores enter Δ_S. The label is then computed by the
+    same rule but marked ``possibly_biased=True`` ("可能有偏，仅供参考"), and
+    *bias_reason* is required so the record says why.
+
+    Not-computable inputs (None r_p / r_c / Δ_S) give 'insufficient'. An empty
+    complement (Δ_¬S None) cannot carry the gain, so it compares as -inf.
+    """
+    if not independent_parent_slice and not bias_reason:
+        raise ValueError("a slice chosen on a non-independent parent run needs bias_reason")
+    if r_p is None or r_c is None or delta_S is None or slice_size < n_min:
+        label = 'insufficient'
+    else:
+        label = _attribution_rule(r_p, r_c, delta_S,
+                                  float('-inf') if delta_notS is None else delta_notS,
+                                  predicted_direction)
+    return dict(label=label, possibly_biased=not independent_parent_slice,
+                reason=None if independent_parent_slice else bias_reason)

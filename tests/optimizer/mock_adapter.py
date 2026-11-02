@@ -74,6 +74,8 @@ class MockAdapter(SystemAdapter):
         self.evaluate_calls = 0
         self.materialize_calls = 0
         self.rebase_calls = 0
+        # history argument of every analyse() call (§2.3 labels)
+        self.history_calls: list[Optional[list[dict]]] = []
         # (method, Version) for every Version the loop hands to the adapter.
         self.received: list[tuple[str, Version]] = []
         # (purpose, version_hash, task_ids) for every evaluate() call.
@@ -185,13 +187,14 @@ class MockAdapter(SystemAdapter):
         case_roles: Optional[dict[str, str]] = None,
         parent: Optional[Version] = None,
         round_id: Optional[int] = None,
+        history: Optional[list[dict]] = None,
     ) -> list[Card]:
         self.analyse_calls += 1
+        self.history_calls.append(list(history) if history is not None else None)
         if parent is not None:
             self._receive("analyse", parent)
-        # Use the call count to pick the script entry; analyse is called
-        # once per round at the start.
-        round_id = self.analyse_calls
+        # The loop round picks the script entry (call count if not given).
+        round_id = round_id if round_id is not None else self.analyse_calls
         script = self._round_script(round_id)
         cards = []
         for i, entry in enumerate(script.get("cards", [])[:n_cards]):

@@ -171,6 +171,7 @@ class SystemAdapter(abc.ABC):
         case_roles: Optional[dict[str, str]] = None,
         parent: Optional[Version] = None,
         round_id: Optional[int] = None,
+        history: Optional[list[dict]] = None,
     ) -> list[Card]:
         """Run the analyst agent on search-set trajectories only (§2.3 isolation).
 
@@ -179,9 +180,36 @@ class SystemAdapter(abc.ABC):
         being diagnosed and *round_id* the loop round; adapters use them to bind
         cards to the parent and to derive restart-stable request keys.
 
+        *history* (§2.3 历史标签): hypotheses already processed under this
+        parent, oldest first, as ``{'title', 'label'}`` with label one of
+        smoke_fail / screen_fail / provisional_adopted / confirmed / rejected /
+        insufficient / unmeasurable, plus optional ``attribution`` (supported /
+        refuted / insufficient / unattributed) and
+        ``attribution_possibly_biased``. Never scores, deltas or task ids.
+
         Returns up to n_cards Cards.
         """
 
     @abc.abstractmethod
     def implement(self, card: Card, workspace: Any) -> Diff:
         """Run the implementer agent for one card; return a Diff."""
+
+    # -- evaluation request generation (operator retry) ----------------------
+
+    @property
+    def key_generation(self) -> int:
+        """Generation suffix for restart-stable evaluation request keys (default 0).
+
+        Systems that replay a stored receipt per request key (SN/v2) also
+        replay a *failed* result forever. After a process-failure halt the
+        operator may request a retry; the loop then bumps the generation (it
+        is persisted in state.json) and calls ``set_key_generation`` so the
+        adapter issues fresh measurement keys. Adapters without keyed replay
+        ignore it.
+        """
+        return getattr(self, "_key_generation", 0)
+
+    def set_key_generation(self, generation: int) -> None:
+        if type(generation) is not int or generation < 0:
+            raise ValueError(f"key_generation must be a non-negative int, got {generation!r}")
+        self._key_generation = generation

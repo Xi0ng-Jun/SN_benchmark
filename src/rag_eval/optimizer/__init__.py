@@ -15,6 +15,7 @@ from .loop import ProtocolConfig, LoopResult, RoundResult, run_optimization
 from .stats import (
     alpha_warning,
     attribution_label,
+    attribution_result,
     confirm_decision,
     ladder_m,
     mean_delta,
@@ -32,6 +33,6 @@ __all__ = [
     # loop
     "ProtocolConfig", "LoopResult", "RoundResult", "run_optimization",
     # stats
-    "alpha_warning", "attribution_label", "confirm_decision", "ladder_m",
+    "alpha_warning", "attribution_label", "attribution_result", "confirm_decision", "ladder_m",
     "mean_delta", "paired_differences", "paired_se", "required_n_fresh", "screen_decision",
 ]

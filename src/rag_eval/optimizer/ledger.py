@@ -132,3 +132,36 @@ class Lineage:
     def all_nodes(self) -> list[LineageNode]:
         """Return all nodes in append order (for sealed-set evaluation)."""
         return list(self._nodes)
+
+    # -- persistence (binding plan §2.7) -------------------------------------
+
+    def to_records(self) -> list[dict]:
+        """JSON-safe node records in append order (state as its string value)."""
+        out = []
+        for n in self._nodes:
+            out.append(dict(
+                version_hash=n.version_hash, parent_hash=n.parent_hash, diff_ref=n.diff_ref,
+                card_ref=n.card_ref, predicate_ref=n.predicate_ref, agent_cost=n.agent_cost,
+                created_at=n.created_at, state=n.state.value,
+                fresh_result=getattr(n, '_fresh_result', None),
+            ))
+        return out
+
+    @classmethod
+    def from_records(cls, records: list[dict]) -> "Lineage":
+        """Inverse of to_records()."""
+        lineage = cls()
+        for r in records:
+            node = LineageNode(
+                version_hash=r["version_hash"], parent_hash=r.get("parent_hash"),
+                diff_ref=r.get("diff_ref"), card_ref=r.get("card_ref"),
+                predicate_ref=r.get("predicate_ref"), agent_cost=r.get("agent_cost", 0.0),
+                created_at=r.get("created_at", ""), state=NodeState(r["state"]),
+            )
+            if r.get("fresh_result") is not None:
+                object.__setattr__(node, '_fresh_result', r["fresh_result"])
+            if node.version_hash in lineage._index:
+                raise ValueError(f"duplicate version_hash {node.version_hash!r} in lineage records")
+            lineage._nodes.append(node)
+            lineage._index[node.version_hash] = node
+        return lineage
