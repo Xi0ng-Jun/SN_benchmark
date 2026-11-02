@@ -16,11 +16,45 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 from .adapter import Card, Diff, EvalResult, Predicate, SystemAdapter, Version
+
+
+# ---------------------------------------------------------------------------
+# v2 card → v3 Card conversion
+# ---------------------------------------------------------------------------
+
+def _v2_card_to_v3_card(v2_record: dict) -> Card:
+    """Convert a v2 HypothesisStore record into a v3 Card.
+
+    v2 card schema (hypotheses.py): required fields are title, component,
+    mechanism, predictions, falsification, implementer_brief; optional
+    contract (lcd-v2 mechanism with slice_predicate/manipulation/slice_effect).
+
+    v3 Card: failure_mode_desc (from title), change_hypothesis (from
+    implementer_brief), optional Predicate (from contract when present).
+    """
+    card_json = v2_record.get("card") or {}
+    failure_mode_desc = card_json.get("title", "")
+    change_hypothesis = card_json.get("implementer_brief", "")
+    predicate: Optional[Predicate] = None
+    contract = card_json.get("contract")
+    if isinstance(contract, dict) and "slice_predicate" in contract:
+        manipulation = contract.get("manipulation", {})
+        predicate = Predicate(
+            boolean_expression=contract["slice_predicate"],
+            predicted_direction=manipulation.get("direction", "decrease"),
+            predicted_threshold=manipulation.get("threshold"),
+        )
+    return Card(
+        failure_mode_desc=failure_mode_desc,
+        change_hypothesis=change_hypothesis,
+        predicate=predicate,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -74,15 +108,28 @@ class SNAdapter(SystemAdapter):
         run_views=None,
         iterations=None,
         hypothesis_worktrees=None,
+        round_operations=None,
+        hypotheses=None,
+        analyst_profile: str = "pi-flash",
+        implementer_profile: str = "pi-flash",
+        agent_poll_interval: float = 5.0,
+        agent_timeout: float = 600.0,
     ) -> None:
         self._config = config
         self._repository = repository
         self._run_views = run_views
         self._iterations = iterations
         self._hypothesis_worktrees = hypothesis_worktrees
+        # Services required for agent dispatch (analyse + implement).
+        # round_operations: rag_eval.workbench.loop_services.RoundOperations
+        # hypotheses: rag_eval.workbench.hypotheses.HypothesisStore
+        self._round_ops = round_operations
+        self._hypotheses = hypotheses
+        self._analyst_profile = analyst_profile
+        self._implementer_profile = implementer_profile
+        self._agent_poll_interval = agent_poll_interval
+        self._agent_timeout = agent_timeout
 
-        # Workspace root for materialised versions (configurable, defaults to
-        # the v2 workspace.location so both v2 and v3 share the same disk tree).
         workspace_cfg = config.get("workspace", {})
         self._workspace_root = Path(
             workspace_cfg.get("location", tempfile.gettempdir())
@@ -304,7 +351,7 @@ class SNAdapter(SystemAdapter):
         return binding
 
     # ------------------------------------------------------------------
-    # 5. analyse (stub — LLM call)
+    # 5. analyse — dispatch analyst agent, poll until idle, read cards
     # ------------------------------------------------------------------
 
     def analyse(
@@ -312,35 +359,210 @@ class SNAdapter(SystemAdapter):
         search_set_trajectories: dict[str, list[Any]],
         n_cards: int,
     ) -> list[Card]:
-        """Stub — return empty list until the LLM bridge is wired.
+        """Dispatch an analyst agent via v2 RoundOperations; poll until idle; return Cards.
 
-        TODO: delegate to AgentBridgeAdapter (rag_eval.workbench.bridge_adapter)
-        for the listProviders / readAgent / readTimeline round-trip, then parse
-        the analyst agent's output into Card objects.  See bridge_adapter.py's
-        AgentBridgeAdapter.call() for the envelope format.
+        Requires self._round_ops (RoundOperations) and self._hypotheses
+        (HypothesisStore) to be injected at construction time.
+
+        The analyst agent is created with 'iteration' scope so it has access to
+        the full search-set trajectory brief rather than a single candidate view.
+        Once idle, approved draft cards are read from HypothesisStore and
+        converted to v3 Cards via _v2_card_to_v3_card().
+
+        Cards are filtered to those with status 'draft' or 'approved' that
+        belong to the current parent candidate (iteration scope gives all).
         """
-        return []
+        if self._round_ops is None or self._hypotheses is None:
+            raise RuntimeError(
+                "analyse() requires round_operations and hypotheses services; "
+                "inject them via SNAdapter.__init__ keyword arguments."
+            )
+        iteration_id = self._config.get("iteration_id")
+        task_id = self._config.get("task_id")
+        if not iteration_id or not task_id:
+            raise ValueError(
+                "config must contain 'iteration_id' and 'task_id' to dispatch agents."
+            )
+        # Build a unique request key for this analyse call so v2's durable
+        # creation store can de-duplicate retries.
+        analyst_key = f"v3/analyst/{uuid.uuid4().hex}"
+        # Compose the analyst prompt: ask for up to n_cards mechanism cards.
+        analyst_text = (
+            f"Analyse search-set failures and draft up to {n_cards} legal lcd-v2 "
+            f"mechanism cards for the top unresolved failure patterns. "
+            f"Each card needs title, component, mechanism, implementer_brief, "
+            f"falsification, predictions (may be empty list under lcd-v2), "
+            f"and a contract with slice_predicate, manipulation, and slice_effect. "
+            f"Focus on cards with mechanically verifiable slice predicates."
+        )
+        # Dispatch the analyst agent (non-blocking call that returns immediately
+        # if the agent is already running or created).
+        result = self._round_ops.agent(
+            "analyst",
+            None,                         # candidate_id — None for iteration scope
+            iteration_id=iteration_id,
+            key=analyst_key,
+            profile=self._analyst_profile,
+            text=analyst_text,
+            scope="iteration",
+        )
+        # Poll until the agent goes idle, fails, or timeout is reached.
+        deadline = time.monotonic() + self._agent_timeout
+        while result.get("status") in ("running", "unknown"):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Analyst agent did not finish within {self._agent_timeout}s "
+                    f"(key={analyst_key!r})"
+                )
+            time.sleep(self._agent_poll_interval)
+            result = self._round_ops.agent(
+                "analyst",
+                None,
+                iteration_id=iteration_id,
+                key=analyst_key,
+                profile=self._analyst_profile,
+                text=analyst_text,
+                scope="iteration",
+            )
+        if result.get("status") != "idle":
+            raise RuntimeError(
+                f"Analyst agent ended with status {result.get('status')!r}: "
+                f"{result.get('reason', 'no reason given')}"
+            )
+        # Read all hypothesis cards for this task, pick the most recent n_cards
+        # that are draft or approved (analyst may have drafted several).
+        all_records = self._hypotheses.list(task_id)
+        eligible = [
+            r for r in all_records
+            if r.get("status") in ("draft", "approved")
+        ]
+        # Sort newest-first (list returns ascending by created_at).
+        eligible = list(reversed(eligible))
+        return [_v2_card_to_v3_card(r) for r in eligible[:n_cards]]
 
     # ------------------------------------------------------------------
-    # 6. implement (stub — LLM call)
+    # 6. implement — dispatch implementer agent, poll, extract diff
     # ------------------------------------------------------------------
 
     def implement(self, card: Card, workspace: Any) -> Diff:
-        """Stub — not yet implemented.
+        """Dispatch an implementer agent, poll until idle, extract the resulting diff.
 
-        TODO: delegate to the implementer agent via AgentBridgeAdapter, passing
-        workspace binding as the worktree context.  Return a Diff whose content
-        is the unified-diff output from the agent session.
+        *workspace* is the binding returned by self.workspace() — a dict with
+        a 'hypothesis_id' key from HypothesisWorktreeService.
+
+        The implementer is created against the hypothesis for this card.  Once
+        idle we read the worktree diff with ``git diff HEAD`` against the parent
+        snapshot to obtain the unified-diff string.
+
+        Requires self._round_ops to be injected.
         """
-        raise NotImplementedError(
-            "implement() requires the LLM bridge; "
-            "see rag_eval.workbench.bridge_adapter.AgentBridgeAdapter"
+        if self._round_ops is None:
+            raise RuntimeError(
+                "implement() requires round_operations service; "
+                "inject via SNAdapter.__init__ keyword arguments."
+            )
+        iteration_id = self._config.get("iteration_id")
+        task_id = self._config.get("task_id")
+        if not iteration_id or not task_id:
+            raise ValueError(
+                "config must contain 'iteration_id' and 'task_id' to dispatch agents."
+            )
+        # workspace is from HypothesisWorktreeService.get() — dict with hypothesis_id.
+        hypothesis_id: Optional[str] = None
+        if isinstance(workspace, dict):
+            hypothesis_id = workspace.get("hypothesis_id") or workspace.get("binding", {}) and workspace["binding"].get("hypothesis_id")
+        if not hypothesis_id:
+            raise ValueError(
+                f"workspace does not contain a hypothesis_id: {workspace!r}"
+            )
+        implementer_key = f"v3/implementer/{hypothesis_id}"
+        implementer_text = (
+            f"Implement the approved card for candidate (hypothesis {hypothesis_id}). "
+            f"Required order: implementation → relevant SN tests → node freeze → "
+            f"node run. Use only approved implementer material."
+        )
+        result = self._round_ops.agent(
+            "implementer",
+            None,
+            iteration_id=iteration_id,
+            key=implementer_key,
+            profile=self._implementer_profile,
+            text=implementer_text,
+            hypothesis_id=hypothesis_id,
+        )
+        # Poll until idle/done.
+        deadline = time.monotonic() + self._agent_timeout
+        while result.get("status") in ("running", "unknown"):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Implementer agent did not finish within {self._agent_timeout}s "
+                    f"(hypothesis={hypothesis_id!r})"
+                )
+            time.sleep(self._agent_poll_interval)
+            result = self._round_ops.agent(
+                "implementer",
+                None,
+                iteration_id=iteration_id,
+                key=implementer_key,
+                profile=self._implementer_profile,
+                text=implementer_text,
+                hypothesis_id=hypothesis_id,
+            )
+        if result.get("status") != "idle":
+            raise RuntimeError(
+                f"Implementer agent ended with status {result.get('status')!r}: "
+                f"{result.get('reason', 'no reason given')}"
+            )
+        # Extract diff from the worktree.
+        diff_content = _extract_worktree_diff(workspace)
+        return Diff(
+            content=diff_content,
+            test_refs=(),
+            metadata={"hypothesis_id": hypothesis_id},
         )
 
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _extract_worktree_diff(workspace: Any) -> str:
+    """Extract the uncommitted diff from a v2 hypothesis worktree binding.
+
+    *workspace* is the dict returned by HypothesisWorktreeService.get():
+        {
+            "binding": {
+                "path": "/abs/path/to/worktree",
+                "branch": "...",
+                "base_revision": "<sha>",
+                ...
+            },
+            ...
+        }
+
+    Runs ``git diff HEAD`` in the worktree directory.  Returns the unified-diff
+    string, or an empty string if the worktree is clean or path unavailable.
+    """
+    if not isinstance(workspace, dict):
+        return ""
+    binding = workspace.get("binding") or {}
+    worktree_path = binding.get("path") or (workspace.get("path") if isinstance(workspace, dict) else None)
+    if not worktree_path:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD"],
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        return ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
 
 def _load_scores(run) -> dict[str, float] | None:
     """Load per-case raw scores from a v2 run record.
