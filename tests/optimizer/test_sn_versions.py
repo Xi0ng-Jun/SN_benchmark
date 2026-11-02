@@ -79,7 +79,11 @@ class _FakeRoundOps:
 def _adapter(service=None, **kw):
     service = service or _FakeService()
     ops = _FakeRoundOps(service, **kw)
-    return SNAdapter(dict(CONFIG), round_operations=ops, agent_poll_interval=0), ops, service
+    adapter = SNAdapter(dict(CONFIG), round_operations=ops, agent_poll_interval=0)
+    # Workspace tests stop at the approval seam; _approve has its own tests below.
+    adapter._approve = lambda hid, it, actor: ops.approve(
+        hid, iteration_id=it, key=adapter._request_key("approve", hid), actor=actor)
+    return adapter, ops, service
 
 
 CARD = Card(failure_mode_desc="empty retrieval", change_hypothesis="retry", ref="H1")
@@ -143,8 +147,8 @@ def test_workspace_needs_candidate_version_and_run_id():
 
 def test_workspace_times_out_when_worktree_never_ready():
     service = _FakeService(ready_after=10 ** 9)
-    adapter = SNAdapter(dict(CONFIG), round_operations=_FakeRoundOps(service),
-                        agent_poll_interval=0, worktree_timeout=0.01)
+    adapter, _, _ = _adapter(service)
+    adapter._worktree_timeout = 0.01
     with pytest.raises(TimeoutError):
         adapter.workspace(adapter.version_for("root"), CARD)
 
@@ -221,3 +225,69 @@ def test_loop_passes_versions_with_metadata():
         assert version.metadata.get("candidate_id") == version.content_hash, (method, version)
     # Non-seed parents were handed over as materialized (carry their parent link).
     assert any(v.metadata.get("parent_candidate_id") for m, v in adapter.received if m == "workspace")
+
+
+# -- v3 approval (v2 card checks without the cluster binding) ---------------
+
+class _FakeHypothesisStore:
+    def __init__(self, card, status="draft"):
+        self.record = dict(id="H1", status=status, card=card)
+        self.decisions = []
+
+    def get(self, task_id, hid):
+        return dict(self.record)
+
+    def decide(self, task_id, hid, decision, *, actor, note):
+        self.decisions.append((hid, decision, actor, note))
+        self.record["status"] = "approved"
+        return dict(self.record)
+
+
+class _ApprovalOps:
+    def __init__(self, store):
+        self.api = type("Api", (), {"hypotheses": store, "views": object()})()
+
+    def _tree(self, iteration_id):
+        return dict(task_id="T", protocol=dict(gate_rule={"id": "lcd-v2"}))
+
+    @staticmethod
+    def _raw_card(card):
+        return dict(card)
+
+
+V3_CARD = dict(title="Retry empty retrievals", component="retrieval", mechanism="empty first pass",
+               predictions=[], falsification="no change in empty retrievals",
+               implementer_brief="Add a keyword fallback when the first retrieval returns nothing.")
+
+
+def _approval(monkeypatch, card, status="draft", leak=False):
+    import rag_eval.workbench.agent_tools as tools
+    import rag_eval.workbench.hypotheses as hyp
+    monkeypatch.setattr(tools, "task_run_ids", lambda views, task_id: [])
+    monkeypatch.setattr(hyp, "benchmark_material", lambda views, ids: ["material"])
+    monkeypatch.setattr(hyp, "scan_text", lambda text, material: ["hit"] if leak else [])
+    store = _FakeHypothesisStore(card, status)
+    adapter = SNAdapter(dict(CONFIG), round_operations=_ApprovalOps(store))
+    return adapter._approve("H1", "I", "v3-test"), store
+
+
+def test_approve_v3_card_without_cluster(monkeypatch):
+    result, store = _approval(monkeypatch, V3_CARD)
+    assert result == dict(status="approved")
+    assert store.decisions[0][:3] == ("H1", "approve", "v3-test")
+    assert "v3/R1/approve/H1" in store.decisions[0][3]
+
+
+def test_approve_rejects_invalid_card(monkeypatch):
+    result, store = _approval(monkeypatch, {k: v for k, v in V3_CARD.items() if k != "mechanism"})
+    assert result["status"] == "rejected" and not store.decisions
+
+
+def test_approve_rejects_benchmark_leak(monkeypatch):
+    result, store = _approval(monkeypatch, V3_CARD, leak=True)
+    assert result == dict(status="rejected", reason="benchmark_text_leak") and not store.decisions
+
+
+def test_approve_passes_through_non_draft(monkeypatch):
+    result, store = _approval(monkeypatch, V3_CARD, status="approved")
+    assert result == dict(status="approved") and not store.decisions

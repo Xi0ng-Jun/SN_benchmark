@@ -417,11 +417,43 @@ class SNAdapter(SystemAdapter):
     # 4. workspace — approve the card, derive the child candidate
     # ------------------------------------------------------------------
 
+    def _approve(self, hypothesis_id: str, iteration_id: str, actor: str) -> dict:
+        """Approve a v3 card: v2 ``_card_legal`` checks minus the cluster binding.
+
+        v2 ``RoundOperations.approve`` looks up the card's frozen cluster and
+        rejects cards that do not reference it; v3 has no clusters (§2.1), so
+        that path cannot approve any v3 card. The contract shape (gate rule)
+        and the benchmark-text leak scan of implementer-visible fields stay.
+        """
+        import json as _json
+        from rag_eval.workbench.agent_tools import task_run_ids
+        from rag_eval.workbench.gate import DEFAULT_RULE
+        from rag_eval.workbench.hypotheses import benchmark_material, scan_text, validate_card
+        ops = self._require_round_ops("workspace")
+        tree = ops._tree(iteration_id)
+        task_id = tree["task_id"]
+        record = ops.api.hypotheses.get(task_id, hypothesis_id)
+        if record["status"] != "draft":
+            return dict(status=record["status"])
+        try:
+            card = validate_card(ops._raw_card(record["card"]), tree["protocol"].get("gate_rule", DEFAULT_RULE))
+            material = benchmark_material(ops.api.views, task_run_ids(ops.api.views, task_id))
+            visible = {k: card.get(k) for k in ("title", "component", "mechanism", "implementer_brief",
+                                                "possible_harm", "change_scope")}
+            leaked = scan_text(_json.dumps(visible, ensure_ascii=False), material)
+        except (ValueError, KeyError) as exc:
+            return dict(status="rejected", reason=f"invalid_card: {exc}")
+        if leaked:
+            return dict(status="rejected", reason="benchmark_text_leak")
+        decided = ops.api.hypotheses.decide(task_id, hypothesis_id, "approve", actor=actor,
+                                            note="method-v3 approval: " + self._request_key("approve", hypothesis_id))
+        return dict(status=decided["status"])
+
     def workspace(self, version: Version, card: Optional[Card] = None) -> dict:
         """Derive a child candidate of *version* for *card*; return its binding.
 
-        v2 sequence: ``RoundOperations.approve`` (draft → approved; legality
-        and leak checks are v2's), ``RoundOperations.derive`` (child at the
+        v2 sequence: approval (``_approve``: v2 card validation and leak scan,
+        without v2's cluster binding), ``RoundOperations.derive`` (child at the
         parent's frozen commit, keyed so a rerun returns the same child), then
         wait until the child's worktree is ``ready``, nudging
         ``IterationService.provision`` (which only reconciles after its first
@@ -434,15 +466,15 @@ class SNAdapter(SystemAdapter):
         actor = self._actor()
         parent_cid = self.candidate_id(version)
         hypothesis_id = card.ref
-        approval = ops.approve(hypothesis_id, iteration_id=iteration_id,
-                               key=self._request_key("approve", hypothesis_id), actor=actor)
+        # Build keys first: a missing run_id must fail before any v2 write.
+        derive_key = self._request_key("derive", parent_cid, hypothesis_id)
+        approval = self._approve(hypothesis_id, iteration_id, actor)
         if approval.get("status") not in ("approved", "implementing"):
             raise RuntimeError(
                 f"Card {hypothesis_id!r} was not approved: {approval.get('status')!r} "
                 f"({approval.get('reason', 'no reason given')})"
             )
-        cid = ops.derive(parent_cid, hypothesis_id=hypothesis_id,
-                         key=self._request_key("derive", parent_cid, hypothesis_id), actor=actor)
+        cid = ops.derive(parent_cid, hypothesis_id=hypothesis_id, key=derive_key, actor=actor)
         candidate = self._await_worktree(cid)
         tree = candidate["worktree"]
         return dict(candidate_id=cid, parent_candidate_id=parent_cid, hypothesis_id=hypothesis_id,
