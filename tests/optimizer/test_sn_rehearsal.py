@@ -8,7 +8,8 @@ run lock, auto_runs binding).
 
 Fake: the Paseo bridges, the agents' behaviour and the executions. A driver thread plays the agents
 (when the analyst's message was sent it drafts lcd-v2 cards under the parent through ``sn-eval``;
-when an implementer's message was sent it edits that candidate's worktree) and finishes every running
+when an implementer's message was sent it edits that candidate's worktree; a smoke-repair implementer
+reads its feedback file, then edits) and finishes every running
 execution with synthetic per-case scores and run rows (``outputs.jsonl``) chosen by the scenario.
 Only ``cli.build_services`` is replaced: by ``cli.services_from_operations`` over the test's
 RoundOperations, i.e. the same SNAdapter wiring the server uses.
@@ -207,6 +208,8 @@ class Rig:
         self.finished: set[str] = set()
         self.handled = 0
         self.evidence_read: list[tuple[str, str]] = []
+        self.repairs: list[dict] = []            # one per repair message: candidate, feedback file, text
+        self.repaired: set[str] = set()          # candidates a repair implementer edited
         self.titles: dict[str, list[str]] = {}
         self._stop = threading.Event()
         self._thread = None
@@ -273,6 +276,7 @@ class Rig:
             text = command['text']
             parent = re.search(r'proposal draft --parent (\S+) ', text)
             implement = re.search(r'Implement the approved card \(hypothesis (\S+)\) in candidate (\S+),', text)
+            repair = re.search(r'Repair the approved card \(hypothesis (\S+)\) in candidate (\S+),', text)
             if parent:
                 named = re.search(r'Your evidence is the file (\S+) \(sha256 ([0-9a-f]{64})\)', text)
                 assert named, 'the analyst message names no evidence file'
@@ -282,6 +286,14 @@ class Rig:
                 self._analyst(parent.group(1))
             elif implement:
                 self._implementer(implement.group(2))
+            elif repair:
+                named = re.search(r'The file (\S+) \(sha256 ([0-9a-f]{64})\)', text)
+                assert named, 'the repair message names no feedback file'
+                data = Path(named.group(1)).read_bytes()      # the repair implementer reads it
+                assert hashlib.sha256(data).hexdigest() == named.group(2)
+                self.repairs.append(dict(candidate_id=repair.group(2), path=named.group(1),
+                                         feedback=data.decode('utf-8'), text=text))
+                self._implementer(repair.group(2), repair=True)
             else:
                 raise AssertionError('unexpected agent message: ' + text[:200])
             self.reads.done.add(command['agentId'])
@@ -302,13 +314,25 @@ class Rig:
                 self.kill_during_analysis = False
                 self.crashed.set()
 
-    def _implementer(self, candidate_id):
+    def _implementer(self, candidate_id, *, repair=False):
         candidate = self.api.service.candidate(candidate_id)
         title = self.api.hypotheses.get(self.task_id, candidate['proposal_id'])['card']['title']
-        if self.effects[title].get('empty'):
+        if self.effects[title].get('empty') and not repair:
             return
-        slug = re.sub(r'\W+', '_', title.lower())
+        slug = re.sub(r'\W+', '_', title.lower()) + ('_repair' if repair else '')
         Path(candidate['worktree']['path'], 'backend/app', slug + '.py').write_text(f'ENABLED = True  # {title}\n')
+        if repair:
+            self.repaired.add(candidate_id)
+
+    def repaired_lineage(self, candidate_id):
+        """True when the candidate or one of its ancestors was edited by a repair implementer."""
+        cursor = self.api.service.candidate(candidate_id)
+        while cursor:
+            if cursor['id'] in self.repaired:
+                return True
+            parent = cursor.get('parent_candidate_id')
+            cursor = self.api.service.candidate(parent) if parent else None
+        return False
 
     def chain(self, candidate_id):
         """Card titles from the candidate up to (excluding) the root."""
@@ -333,7 +357,9 @@ class Rig:
         return round(value, 6)
 
     def _row(self, candidate_id, case_id):
-        fixed = any(self.effects[t].get('fix_empty') for t in self.chain(candidate_id))
+        # fix_empty: True (the change fixes empty retrievals) or 'after_repair' (only once repaired).
+        fixes = [self.effects[t].get('fix_empty') for t in self.chain(candidate_id)]
+        fixed = True in fixes or ('after_repair' in fixes and self.repaired_lineage(candidate_id))
         spans = [dict(step_type='plan', summary='p', detail=dict(sub_queries=['q1'], source='intent')),
                  dict(step_type='retrieve', summary='r', detail=dict(count=3 if fixed else 0, result_ids=[])),
                  dict(step_type='synthesis', summary='y', detail=dict(citations=1, anchors=1))]
@@ -793,4 +819,166 @@ def test_analyse_only_dispatches_one_node_analyst_and_binds_nothing(rig, capsys,
             (root, None, 'method-v3'), (root, None, None)]           # v3's node analyst, then the manual one
         assert [c['id'] for c in rig.candidates()] == [root]          # nothing derived
         assert not batches(rig.repo, rig.tree['id'])                   # no fresh batch touched
+        rig.assert_no_duplicate_measurements()
+
+
+# ---------------------------------------------------------------------------
+# method-v3 §2.1 失败后的处理 (amendment 2026-11-03) against the real v2 services
+# ---------------------------------------------------------------------------
+
+def _protocol_with(rig, **changes):
+    rig.protocol_file.write_text(json.dumps(dict(json.loads(rig.protocol_file.read_text()), **changes)))
+
+
+def _attempt_rows(st):
+    return [c for r in st['rounds'] + ([st['current_round']['round']] if st.get('current_round') else [])
+            for c in r['candidates']]
+
+
+def test_a_behavioural_smoke_failure_is_repaired_on_a_sibling_and_the_repair_passes(rig, capsys):
+    rig.analyst_cards = [card('Retry empty retrievals')]
+    rig.effects = {'Retry empty retrievals': dict(val=.2, fresh=.2, fix_empty='after_repair')}
+    with rig:
+        assert rig.run() == 0, capsys.readouterr()
+        st = rig.state()
+        rows = _attempt_rows(st)
+        assert [(c['attempt'], c['verdict'], c['superseded'], c['smoke_verdict']) for c in rows] == [
+            (1, 'smoke_fail', True, 'fail'), (2, 'screen_pass', False, 'pass')]
+        first, second = rows
+        assert second['repair_of'] == first['candidate'] and second['repaired']
+        assert st['rounds'][0]['confirmation_verdict'] == 'confirmed'
+        # v2: the repair is a sibling under the same parent that starts from the failed change.
+        root = rig.tree['root_candidate_id']
+        v2 = {c['id']: c for c in rig.candidates()}
+        failed, repaired = v2[first['candidate_id']], v2[second['candidate_id']]
+        assert failed['parent_candidate_id'] == repaired['parent_candidate_id'] == root
+        assert failed['status'] == repaired['status'] == 'frozen'
+        assert [(i['candidate_id'], i['method']) for i in repaired['integrated_from']] == [(failed['id'], 'cherry-pick')]
+        refiled = rig.api.hypotheses.get(rig.task_id, repaired['proposal_id'])
+        assert repaired['proposal_id'] != failed['proposal_id'] and refiled['status'] in ('approved', 'implementing')
+        assert refiled['card']['title'] == 'Retry empty retrievals' and refiled['parent_candidate_id'] == root
+        # The repair implementer: a new v3 implementer Agent of the sibling, reading one feedback file.
+        [rep] = rig.repairs
+        assert rep['candidate_id'] == repaired['id']
+        assert Path(rep['path']).parent == (rig.run_dir / cli.EVIDENCE_DIR).resolve()
+        fb = rep['feedback']
+        assert fb.count('predicate parent=true, previous attempt=true') == 2 and 'should decrease' in fb
+        assert '[parent]' in fb and '[previous attempt]' in fb
+        assert 'qasper:' not in fb and 'GOLD' not in fb and 'answer_f1' not in fb and 'score' not in fb
+        body = json.loads(rep['text'])
+        assert body['context'][0]['title'].startswith('Method-v3 implementer brief · ' + repaired['id'])
+        assert 'feedback file' in body['context'][0]['text'] and len(body['message'].encode()) < 4000
+        assert [i.get('candidate_id') for i in rig.intents('implementer')] == [failed['id'], repaired['id']]
+        # History: the adopted (then confirmed) hypothesis is marked as repaired.
+        assert [(h['label'], h.get('repaired')) for h in st['history']] == [('confirmed', True)]
+        view = run_view.read_run(rig.run_dir)
+        assert [a['key'] for a in view['rounds'][0]['attempts']] == ['1:0', '1:0:a2']
+        rig.assert_no_duplicate_measurements()      # the parent's smoke attempt is shared, not repeated
+
+
+def test_a_repair_that_fails_again_reaches_the_next_analyst_as_smoke_fail_after_repair(rig, capsys):
+    root = rig.tree['root_candidate_id']
+    calls = []
+
+    def cards(parent):
+        calls.append(parent)
+        return ([card('Rerank without effect'), card('Plain prompt tweak', predicate=False)] if len(calls) == 1
+                else [card('Another prompt tweak', predicate=False)])
+    rig.analyst_cards = cards
+    rig.effects = {'Rerank without effect': dict(val=.2), 'Plain prompt tweak': dict(val=-.05),
+                   'Another prompt tweak': dict(val=-.05)}
+    _protocol_with(rig, max_rounds=2, analyst_cards=2)
+    with rig:
+        assert rig.run() == 0, capsys.readouterr()
+        st = rig.state()
+        rerank = [(c['attempt'], c['verdict'], c['superseded']) for c in _attempt_rows(st)
+                  if c['title'] == 'Rerank without effect']
+        assert rerank == [(1, 'smoke_fail', True), (2, 'smoke_fail', False)]
+        assert len(rig.repairs) == 1 and calls == [root, root]
+        evidence = Path(rig.evidence_read[1][0]).read_text()
+        assert '- Rerank without effect -> smoke_fail; after repair\n' in evidence
+        assert '- Plain prompt tweak -> screen_fail; smoke: behaviour unchecked\n' in evidence
+        assert 'no adoption under this parent for 1 consecutive round(s)' in evidence
+        rig.assert_no_duplicate_measurements()
+
+
+def test_every_hypothesis_of_a_rolled_back_segment_reaches_the_certified_node(rig, capsys):
+    a, b, c = 'Retry empty retrievals', 'Expand sub-queries', 'Plain prompt tweak'
+    calls = []
+
+    def cards(parent):
+        calls.append(parent)
+        return [card(a), card(b, predicate=False), card(c, predicate=False)] if len(calls) == 1 else []
+    rig.analyst_cards = cards
+    rig.effects = {a: dict(val=.2, fresh=-.1, fix_empty=True), b: dict(val=.2, fresh=-.1), c: dict(val=-.1)}
+    _protocol_with(rig, max_rounds=2, b_cards=3, analyst_cards=3, T=0.3)
+
+    def lineage_len():
+        try:
+            return len(rig.state()['lineage'])
+        except (OSError, ValueError, KeyError):
+            return 0
+
+    def decided(title):
+        try:
+            return any(x['title'] == title for x in _attempt_rows(rig.state()))
+        except (OSError, ValueError, KeyError):
+            return False
+    # C is decided after A's adoption (rebased onto the provisional A); B (on the seed) waits until
+    # C is decided, is then rebased onto A and adopted: a two-node segment A -> B reaching T.
+    rig.hold = lambda cid: ((rig.chain(cid) == [c] and lineage_len() < 2)
+                            or (rig.chain(cid) == [b] and not decided(c)))
+    with rig:
+        assert rig.run() == 0, capsys.readouterr()
+        st = rig.state()
+        rows = {x['title']: x for x in _attempt_rows(st)}
+        a_hash = rows[a]['candidate']
+        assert rows[c]['verdict'] == 'screen_fail' and rows[c]['parent'] == a_hash
+        assert rows[b]['verdict'] == 'screen_pass' and rows[b]['parent'] == a_hash
+        conf = st['rounds'][0]['confirmations']
+        assert [x['verdict'] for x in conf] == ['rejected'] and conf[0]['segment_steps'] == 2
+        assert [n['state'] for n in st['lineage']] == ['certified', 'rolled_back', 'rolled_back']
+        root_hash = st['lineage'][0]['version_hash']
+        assert {h['title']: (h['parent'], h.get('tried_under')) for h in st['history']} == {
+            a: (root_hash, None), c: (root_hash, a_hash), b: (root_hash, a_hash)}
+        # Round 2 diagnoses the certified node: all three hypotheses, the moved ones marked.
+        evidence = Path(rig.evidence_read[1][0]).read_text()
+        lines = [line for line in evidence.splitlines() if line.startswith('- ')]
+        assert lines == [f'- {a} -> rejected',
+                         f'- {c} -> screen_fail; smoke: behaviour unchecked; tried in a rolled-back segment',
+                         f'- {b} -> rejected; tried in a rolled-back segment; attribution: unattributed']
+        assert st['rounds'][1]['analysis']['no_adoption_rounds'] == 0     # the pointer moved: first tier
+        rig.assert_no_duplicate_measurements()
+
+
+def test_no_adoption_rounds_rotate_the_cases_and_step_up_the_evidence(rig, capsys):
+    calls = []
+
+    def cards(parent):
+        calls.append(parent)
+        return [card(f'Prompt tweak {len(calls)}', predicate=False)]
+    rig.analyst_cards = cards
+    rig.effects = {f'Prompt tweak {i}': dict(val=-.05) for i in (1, 2, 3)}
+    _protocol_with(rig, max_rounds=3, b_cards=1, analyst_cards=1, max_rounds_without_screen_pass=3,
+                   analyst_max_failures=2, analyst_max_failures_step=1, analyst_view_budget_step=1000)
+    with rig:
+        assert rig.run() == 0, capsys.readouterr()
+        st = rig.state()
+        root_hash = st['lineage'][0]['version_hash']
+        analysis = [r['analysis'] for r in st['rounds']]
+        assert [x['no_adoption_rounds'] for x in analysis] == [0, 1, 2]
+        assert [x['max_failures'] for x in analysis] == [2, 3, 4]
+        assert [x['failures_new'] for x in analysis] == [2, 3, 1]       # 6 failing search cases
+        assert [x['failures_shown'] for x in analysis] == [2, 3, 4]
+        assert [x['adapter']['budget'] for x in analysis] == [12000, 13000, 14000]
+        assert st['no_adoption'] == dict(parent=root_hash, rounds=3)
+        failing = sorted(c for c in rig.protocol['splits']['search'] if int(c[-1]) < 2)
+        assert sorted(st['analyst_shown'][root_hash]) == failing
+        texts = [json.loads(m['text'])['message'] for m in rig.messenger.commands if 'proposal draft' in m['text']]
+        assert len(texts) == 3 and 'consecutive' not in texts[0]
+        assert 'for 1 consecutive round(s): change direction' in texts[1]
+        assert 'for 2 consecutive round(s): change direction' in texts[2]
+        third = Path(rig.evidence_read[2][0]).read_text()
+        assert 'cases: 7 with a view of 7 selected' in third and '(budget 14000 chars)' in third   # + 3 controls
+        assert '- Prompt tweak 1 -> screen_fail; smoke: behaviour unchecked' in third
         rig.assert_no_duplicate_measurements()
