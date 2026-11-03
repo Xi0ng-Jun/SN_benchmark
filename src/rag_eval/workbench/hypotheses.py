@@ -292,10 +292,17 @@ def scan_text(text, material):
 
 
 def leak_check(run_views, task_id, run_ids, extra_texts=(), *, hypothesis_id=None, candidate_id=None):
-    """Scan added diff lines in the Task worktree (and given texts) for benchmark material."""
+    """Scan added diff lines in the Task worktree (and given texts) for benchmark material.
+
+    §2.1 worktree boundary: when candidate_id is given and the worktree path is known,
+    also check that no files outside the candidate worktree have been modified in the
+    project root repository.  Such changes are reported as kind='outside_worktree'
+    findings so the implementer and the coordinator can detect boundary violations.
+    """
     material = benchmark_material(run_views, run_ids)
     findings = []
     found = None
+    worktree_path = None
     if candidate_id is not None:
         from .iterations import IterationService
         service = run_views._worktree_service
@@ -306,6 +313,7 @@ def leak_check(run_views, task_id, run_ids, extra_texts=(), *, hypothesis_id=Non
             raise ValueError('Candidate belongs to another iteration Task')
         if view.binding(task_id) is not None:
             found = (view.read(task_id), 'candidate_worktree')
+            worktree_path = view.binding(task_id).get('worktree_path')
     elif hypothesis_id is not None:
         from .hypothesis_worktrees import HypothesisWorktreeService
         service = run_views._worktree_service
@@ -318,6 +326,25 @@ def leak_check(run_views, task_id, run_ids, extra_texts=(), *, hypothesis_id=Non
             found = (view.read(task_id), 'hypothesis_worktree')
     if found is None:
         found = run_views._binding_read(task_id)
+    # §2.1 worktree boundary check: detect files modified outside the candidate worktree.
+    # Runs git diff --name-only HEAD in the project root; any changed file whose absolute
+    # path does not start with the candidate worktree path is a boundary violation.
+    if worktree_path:
+        import subprocess, os
+        try:
+            project_root = run_views._worktree_service.project_root
+            result = subprocess.run(
+                ['git', 'diff', '--name-only', 'HEAD'],
+                cwd=str(project_root), capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                wt = os.path.realpath(str(worktree_path))
+                for rel in result.stdout.strip().splitlines():
+                    abs_path = os.path.realpath(os.path.join(str(project_root), rel))
+                    if not abs_path.startswith(wt + os.sep) and abs_path != wt:
+                        findings.append(dict(kind='outside_worktree', source=rel,
+                                             text=f'modified outside candidate worktree {wt}'))
+        except Exception:
+            pass  # boundary check is best-effort; don't mask real errors
     files = found[0].get('files', []) if found else []
     for file in files:
         added = '\n'.join(line[1:] for line in (file.get('diff') or '').splitlines()
@@ -327,6 +354,9 @@ def leak_check(run_views, task_id, run_ids, extra_texts=(), *, hypothesis_id=Non
     for name, text in extra_texts:
         for hit in scan_text(text, material):
             findings.append(dict(hit, source=name))
-    return dict(status='suspect' if findings else 'clean', checked_files=len(files), runs=list(run_ids),
+    boundary_violations = [f for f in findings if f.get('kind') == 'outside_worktree']
+    leak_findings = [f for f in findings if f.get('kind') != 'outside_worktree']
+    status = 'boundary_violation' if boundary_violations else ('suspect' if leak_findings else 'clean')
+    return dict(status=status, checked_files=len(files), runs=list(run_ids),
                 findings=findings, at=now(),
                 note='overlap with questions, gold answers/evidence (8-word) or case ids of these runs; not proof of misuse')

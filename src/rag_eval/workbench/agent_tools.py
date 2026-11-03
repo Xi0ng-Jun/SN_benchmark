@@ -277,6 +277,8 @@ def dispatch(options, repository, views, store, policy):
         if options.role == 'implementer':
             out['findings'] = [dict(kind=f['kind'], source=f['source']) for f in out['findings']]
             out.pop('runs', None)
+        if out.get('status') == 'boundary_violation':
+            raise SystemExit('boundary_violation: files modified outside the candidate worktree')
     return out
 
 
