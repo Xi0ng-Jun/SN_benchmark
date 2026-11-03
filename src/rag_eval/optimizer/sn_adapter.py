@@ -1053,10 +1053,11 @@ class SNAdapter(SystemAdapter):
         evidence, n_shown, n_omitted = render_views(items, budget - len(tried))
         stuck = (f"no adoption under this parent for {no_adoption_rounds} consecutive round(s)\n"
                  if no_adoption_rounds else "")
+        worktree_map = _render_worktree_map(self._round_ops, parent_cid)
         content = (f"# method-v3 analyst evidence\nformat: {EVIDENCE_FORMAT}\nround: {round_id}\n"
                    f"parent: {parent_cid}\ncases: {len(items)} with a view of {len(search_set_trajectories)} "
                    f"selected; {n_shown} shown, {n_omitted} omitted (budget {budget} chars)\n"
-                   + stuck + "\n" + tried + evidence)
+                   + stuck + "\n" + worktree_map + tried + evidence)
         path, digest, reused = self._write_evidence(f"round-{round_id}-{parent_cid[:12]}.md", content)
         analyst_text = (
             f"Diagnose the parent version's failures and draft up to {n_cards} legal lcd-v2 mechanism cards, "
@@ -1398,6 +1399,44 @@ def _history_line(entry: dict) -> Optional[str]:
         if entry.get("attribution_possibly_biased"):
             line += " (possibly biased)"
     return line + "\n"
+
+
+def _render_worktree_map(round_ops: Any, candidate_id: str) -> str:
+    """§2.1 路 B: list the SN product worktree's file tree so the analyst can write
+    implementer_brief entries that point at real product files rather than harness paths.
+
+    Runs ``git ls-files`` in the candidate worktree; capped at 4000 chars. Returns
+    "" if the worktree path is unavailable (e.g. in tests with a mock adapter that
+    has no real worktree).
+    """
+    import subprocess
+    try:
+        candidate = round_ops.service.candidate(candidate_id)
+        tree = (candidate.get("worktree") or {})
+        wt_path = tree.get("path") if isinstance(tree, dict) else None
+        if not wt_path:
+            return ""
+        result = subprocess.run(
+            ["git", "ls-files"], cwd=wt_path,
+            capture_output=True, text=True, timeout=10)
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
+        lines = result.stdout.strip().splitlines()
+        # Render top-level directory structure first, then all files.
+        dirs = sorted({l.split("/")[0] for l in lines if "/" in l} |
+                      {l for l in lines if "/" not in l})
+        section = "## SN product worktree file tree\n"
+        section += ("The implementer's worktree contains only these product files. "
+                    "The implementer_brief must reference paths from this list, "
+                    "not src/rag_eval/ or any evaluation-harness path.\n")
+        section += "\n".join(dirs) + "\n\n"
+        detail = "\n".join(lines)
+        cap = 4000 - len(section)
+        if len(detail) > cap:
+            detail = detail[:cap] + "\n...(truncated)"
+        return section + detail + "\n\n"
+    except Exception:
+        return ""
 
 
 def _render_history(history: list[dict], budget_chars: int) -> tuple[str, int, int]:
