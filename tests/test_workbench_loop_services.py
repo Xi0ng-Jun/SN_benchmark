@@ -634,11 +634,11 @@ def test_provider_idle_queue_uses_configured_start_grace(adapter, monkeypatch):
     store = adapter['message'].store
     original = store.list
     def aged(*args, **kwargs):
-        return [dict(m, finished_at=(datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat())
+        return [dict(m, finished_at=(datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat())
                 for m in original(*args, **kwargs)]
     monkeypatch.setattr(store, 'list', aged)
     assert agent(adapter)['status'] == 'running'
-    assert agent(adapter, start_grace_seconds=45)['status'] == 'idle'
+    assert agent(adapter, start_grace_seconds=20)['status'] == 'idle'
 
 
 def test_v2_selection_ranks_by_raw_parent_headroom_without_m_v_pi(adapter):

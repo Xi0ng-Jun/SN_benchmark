@@ -148,7 +148,7 @@ class RoundOperations:
         return self.measurements.segment(start_id, end_id, batch_id, **kwargs)
 
     def agent(self, role, candidate_id, *, iteration_id, key, profile, text, scope=None, hypothesis_id=None,
-              message_stage='initial', start_grace_seconds=300, brief=None):
+              message_stage='initial', start_grace_seconds=60, brief=None):
         """Create (once) and message (once per stage) the Agent for *key*; report its state.
 
         ``brief`` selects the brief v2 attaches to the Agent's messages: None for

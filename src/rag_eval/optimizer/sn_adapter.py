@@ -1041,7 +1041,11 @@ class SNAdapter(SystemAdapter):
             f"predictions (may be []), and a contract with slice_predicate, manipulation and slice_effect. "
             f"A slice_predicate may read behaviour fields and trace.* step features (e.g. "
             f"trace.n_empty_retrievals, trace.clarification_requested). Draft each card under the parent "
-            f"node with `proposal draft --parent {parent_cid} --file <card.json>`; draft the cards now."
+            f"node with `proposal draft --parent {parent_cid} --file <card.json>`; "
+            "Each card's implementer_brief must name the specific file(s) to change, the exact "
+            "pattern or logic to modify, and the pytest command(s) for verification (e.g. "
+            "`pytest tests/test_ask_service.py -k test_language`); a brief that only restates "
+            "the failure mode is not acceptable. Draft the cards now."
         )
         from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected
         stats = dict(selected=len(search_set_trajectories), with_view=len(views), shown=n_shown,
@@ -1126,6 +1130,7 @@ class SNAdapter(SystemAdapter):
         hypothesis_id = workspace.get("hypothesis_id") or card.ref
         text = (
             f"Implement the approved card (hypothesis {hypothesis_id}) in candidate {cid}, "
+            f"Card failure mode: {card.failure_mode_desc}. Implementer brief: {card.change_hypothesis}. "
             f"editing only that candidate's worktree. Required order: implementation -> only "
             f"relevant SN tests -> leak-check. Leave your changes uncommitted. Do not commit, "
             f"do not freeze the candidate, and do not run or request any evaluation (no node, "
