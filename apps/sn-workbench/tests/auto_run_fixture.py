@@ -103,16 +103,34 @@ def still_running(state):
     return state
 
 
+# The sealed run: round 5 adopts two cards (the second rebased onto the first), so the curve has
+# two points in one round, a rolled-back branch off round 1 and a final pointer in round 5.
+SEALED_ROUNDS = ROUNDS + [dict(cards=[dict(name='多跳问题只检索第一跳', deltas=deltas(0.05)),
+                                      dict(name='澄清判断过于保守', deltas=deltas(0.05), rebase=True),
+                                      dict(name='缩写没有展开就进入检索', deltas=deltas(-0.2), smoke_pass=False)])]
+SEALED_DELTAS = [0.0, 0.094, 0.021, 0.018, 0.071, 0.083, 0.088]
+
+
 def sealed_curve(state):
-    points = []
+    """What cli sealed --confirm writes (sn_sealed._curve over v2 lineage_curve), with scripted numbers."""
+    points, m, half = [], len(state['lineage']) - 1, 0.041
     for i, node in enumerate(state['lineage']):
-        delta = None if i == 0 else [None, 0.094, 0.021, 0.018, 0.071][min(i, 4)]
+        delta = SEALED_DELTAS[min(i, len(SEALED_DELTAS) - 1)]
         points.append(dict(index=i, version_hash=node['version_hash'], candidate_id=state['versions'][node['version_hash']].get('candidate_id'),
                            state=node['state'], style={'certified': 'solid', 'provisional': 'hollow', 'rolled_back': 'dashed'}[node['state']],
-                           status='finished', score=0.34 + (delta or 0), se=0.012, delta_vs_seed=delta,
-                           lower_adj=None if i == 0 else delta - 0.041, upper_adj=None if i == 0 else delta + 0.041,
+                           k=2, status='measured', score=0.34 + delta, se=0.012, n=40, delta_vs_seed=delta, se_delta=0.0 if i == 0 else 0.016,
+                           lower=delta - (0 if i == 0 else 0.026), upper=delta + (0 if i == 0 else 0.026),
+                           lower_adj=delta - (0 if i == 0 else half), upper_adj=delta + (0 if i == 0 else half),
+                           p=None if i == 0 else 0.001 if delta > 0.05 else 0.1,
                            p_holm=None if i == 0 else 0.004 if delta > 0.05 else 0.4, holds_holm=None if i == 0 else delta > 0.05))
-    return dict(kind='v3-sealed-lineage', status='finished', metric='answer_f1', n=40, k=2, correction='holm-p+bonferroni-interval', points=points)
+    return dict(kind='v3-sealed-lineage', status='finished', metric='answer_f1', n=40, k=2, alpha=0.05, z=1.645, z_adj=2.64, m=m,
+                correction='holm-p+bonferroni-interval', points=points)
+
+
+def sealed_run(run_dir):
+    """A halted run with its sealed curve written, as after cli sealed --confirm (also the sample for cli curve)."""
+    state = real_run(Path(run_dir), SEALED_ROUNDS, config=dict(b_cards=2), max_rounds=9)
+    atomic_write_json(Path(run_dir) / 'sealed-curve.json', sealed_curve(state))
 
 
 def seed_iteration(repository, workspace_id, iteration_id, title):
@@ -137,9 +155,8 @@ def main():
     shutil.rmtree(root, ignore_errors=True)
     runs = root / 'runs'
 
-    finished = real_run(runs / 'auto-done', ROUNDS)
-    real_run(runs / 'auto-sealed', ROUNDS)
-    atomic_write_json(runs / 'auto-sealed' / 'sealed-curve.json', sealed_curve(finished))
+    real_run(runs / 'auto-done', ROUNDS)
+    sealed_run(runs / 'auto-sealed')
     in_flight = dict(config=dict(b_cards=2), budget_from=5, max_rounds=9)
     real_run(runs / 'auto-budget', ROUNDS + [LAST_ROUND], **in_flight)
     for name in ('auto-running', 'auto-interrupted'):

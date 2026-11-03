@@ -11,6 +11,7 @@ analyse-only Server validation stage 1: one analyst dispatch on the root's
              measured on fresh / sealed data.
 status       Read ``state.json`` / ``ledger.json`` of a run directory.
 sealed       End step: one sealed evaluation of seed + every lineage node.
+curve        Figure of ``sealed-curve.json``: round x sealed score (.svg/.pdf/.png).
 
 Services are built exactly as the workbench server builds them: the same
 ``load_config`` and ``create_app`` (``rag_eval.workbench.api``); the v2
@@ -591,6 +592,36 @@ def cmd_sealed(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# curve
+# ---------------------------------------------------------------------------
+
+def cmd_curve(args: argparse.Namespace) -> int:
+    _require(args, "state_dir", "out")
+    from .curve_view import read_curve
+    state_dir = Path(args.state_dir)
+    _state(state_dir)
+    if Path(args.out).suffix.lower() not in (".svg", ".pdf", ".png"):
+        raise UsageError("--out must end in .svg, .pdf or .png")
+    try:
+        curve = read_curve(state_dir)
+    except (OSError, ValueError, KeyError) as exc:
+        raise UsageError(f"cannot read the sealed curve of {state_dir}: {exc}") from None
+    if curve is None:
+        raise UsageError(f"{state_dir / SEALED_CURVE_FILE} does not exist or has no points; run sealed --confirm first")
+    try:
+        from .curve_figure import render
+    except ImportError as exc:  # matplotlib is optional for everything else
+        raise UsageError(f"the curve figure needs matplotlib: {exc}") from None
+    lang = render(curve, args.out, lang=args.lang, font=args.font, width=args.width, height=args.height)
+    inferred = [p["index"] for p in curve["points"] if p["round_inferred"]]
+    print(f"curve: {args.out} ({len(curve['points'])} node(s), rounds 0-{curve['max_round']}, "
+          f"main path {curve['path']}, labels {lang})")
+    if inferred:
+        print(f"nodes without a screen_pass record, placed at the latest earlier round: {inferred}")
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
 
@@ -630,10 +661,17 @@ def build_parser() -> argparse.ArgumentParser:
     sealed.add_argument("--k", type=int, help="repetitions per node (default: the protocol's k_sealed)")
     sealed.add_argument("--allow-process-failure-halt", action="store_true",
                         help="end a run that halted with process_failure instead of retrying it")
+    curve = sub.add_parser("curve", parents=[common], help="figure: round x sealed score of the lineage")
+    curve.add_argument("--out", help="output file: .svg, .pdf or .png")
+    curve.add_argument("--lang", choices=("zh", "en"), default="zh", help="label language (zh needs a CJK font)")
+    curve.add_argument("--font", help="font file for the labels (default: first CJK font found)")
+    curve.add_argument("--width", type=float, default=3.4, help="inches; 3.4 is one paper column")
+    curve.add_argument("--height", type=float, default=2.5, help="inches")
     return parser
 
 
-COMMANDS = {"run": cmd_run, "analyse-only": cmd_analyse_only, "status": cmd_status, "sealed": cmd_sealed}
+COMMANDS = {"run": cmd_run, "analyse-only": cmd_analyse_only, "status": cmd_status, "sealed": cmd_sealed,
+            "curve": cmd_curve}
 
 
 def main(argv: Optional[list[str]] = None) -> int:

@@ -58,7 +58,15 @@ export type AutoLedger = {
 };
 export type SealedPoint = { index?: number; candidate_id: string; state?: NodeState; style?: 'solid' | 'hollow' | 'dashed'; status?: string; score?: number | null; se?: number | null;
   delta_vs_seed?: number | null; lower_adj?: number | null; upper_adj?: number | null; p_holm?: number | null; holds_holm?: boolean | null };
-export type SealedCurve = { status: string; metric?: string | null; n?: number | null; k?: number; correction?: string; points: SealedPoint[] };
+// Round x sealed score (optimizer/curve_view.py). y_lower/y_upper = seed score + the corrected bounds on Δ vs the seed.
+export type CurvePoint = { index: number; version_hash: string; candidate_id: string | null; state: NodeState | null; style?: string | null;
+  status?: string | null; score: number | null; delta_vs_seed: number | null; lower_adj: number | null; upper_adj: number | null;
+  p_holm: number | null; holds_holm: boolean | null; parent_hash: string | null; parent_index: number | null; round: number; round_inferred: boolean;
+  on_path: boolean; slot: number; slots: number; y_lower: number | null; y_upper: number | null; attempt: string | null; title: string | null };
+export type SealedCurveView = { metric: string | null; n: number | null; k: number | null; m?: number | null; correction: string | null;
+  seed_score: number | null; max_round: number; path: number[]; points: CurvePoint[] };
+export type SealedCurve = { status: string; metric?: string | null; n?: number | null; k?: number; correction?: string; points: SealedPoint[];
+  curve?: SealedCurveView | null };
 export type RunStatus = 'running' | 'interrupted' | 'halted' | 'not_started';
 export type NextAction = 'resume' | 'retry' | 'budget' | 'sealed' | 'review';
 export type AutoRunView = {

@@ -121,3 +121,38 @@ $V3 sealed $COMMON --state-dir var/method-v3/$RUN --budget sealed-budget.json --
 `run` 会把运行绑定到迭代，绑定不可解除。之后这个迭代在工作台上是只读的自动运行页，手动操作和 Agent 的多数命令都会被拒绝，所以第二级试跑要用测试迭代，正式运行用新迭代。`analyse-only` 不绑定。
 
 `run` 运行期间持有运行目录下的 `run.lock`，页面据此判断进程是否还在。进程退出后页面显示“已中断”，用同一条命令续跑。服务端和运行进程必须能访问同一个运行目录（`--state-dir`），页面才读得到状态。
+
+## round × 封存集曲线图
+
+### 工作台（自动运行页）
+
+`cli sealed --confirm` 完成后刷新工作台，自动运行页的封存集区块会显示轮次 × 得分曲线：
+
+- x 轴为轮次（种子 = 第 0 轮），y 轴为该轮封存集得分；
+- 主路径（种子 → … → 最终指针）连实线；已确认节点为实心点，暂定为空心，已回滚为虚线轮廓并以虚线段连到父节点；
+- 竖向误差棒为相对种子的配对差的多重校正区间（Bonferroni），误差棒与种子参照线的相对位置直接体现校正后是否成立；
+- 同一轮多个节点横向微偏；悬停任一节点显示分数、Δ、p_holm、成立与否；点击节点在右栏显示封存集数值和候选详情；
+- 曲线下方的"逐节点数值"折叠区始终包含全部节点的数字，可在不悬停的情况下核查。
+
+投影逻辑在 `src/rag_eval/optimizer/curve_view.py`：节点的"轮"取 `rounds.jsonl`（或 `state.json`）中首个非 superseded 的 `screen_pass` 记录的 `round_id`；主路径沿 `parent_hash` 从最终指针追溯（跳过已回滚节点）；如果找不到 `screen_pass` 记录则取前序节点的最大轮次（标注 `round_inferred`）。
+
+### 论文图（`cli curve`）
+
+```bash
+python -m rag_eval.optimizer.cli curve \
+  --state-dir <运行目录> \
+  --out fig.svg          # 也可以 .pdf 或 .png
+```
+
+可选参数：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--lang zh\|en` | `zh` | 坐标轴标注语言；`zh` 需要 CJK 字体 |
+| `--font <字体文件>` | 自动检测 | 指定字体文件路径（ttf/ttc） |
+| `--width <英寸>` | 3.4 | 单栏宽度约 3.4 英寸 |
+| `--height <英寸>` | 2.5 | |
+
+图形编码与工作台一致（§6）：实心已确认、空心暂定、虚线已回滚，误差棒为多重校正区间，种子参照横线，图例说明三种标记和区间。
+
+样本输出（已生成）：`harness-opt/docs/paper/figures/v3-curve-sample.svg`

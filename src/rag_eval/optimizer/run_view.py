@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from . import ledger_io
+from .curve_view import project_curve
 
 VIEW_SCHEMA_VERSION = 1
 LOCK_FILE = "run.lock"
@@ -234,6 +235,20 @@ def _ledger_view(ledger: Optional[dict]) -> Optional[dict]:
                 integrity=ledger.get("integrity") or {})
 
 
+def _sealed_view(sealed: Optional[dict], lineage: list[dict], rounds: list[dict], attempts: list[dict]) -> Optional[dict]:
+    """The sealed result as written, plus ``curve``: round x score with the main path (curve_view)."""
+    if not sealed:
+        return sealed
+    curve = project_curve(sealed, lineage, rounds)
+    if curve:
+        adoption = {a["candidate"]: a for a in attempts if a.get("verdict") == "screen_pass" and a.get("candidate")}
+        for point in curve["points"]:
+            attempt = adoption.get(point["version_hash"])
+            point["attempt"] = (attempt or {}).get("key")
+            point["title"] = (attempt or {}).get("title")
+    return dict(sealed, curve=curve)
+
+
 def _next_action(status: str, halt_reason: Optional[str], sealed: Optional[dict]) -> Optional[str]:
     """What a person has to do now; None while the machine is working."""
     if status == "interrupted":
@@ -315,7 +330,7 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
         open_round=_open_round(state, titles=titles, candidate_ids=candidate_ids, z_screen=z_screen, phase=phase),
         rounds=finished,
         ledger=_ledger_view(ledger),
-        sealed=sealed,
+        sealed=_sealed_view(sealed, state.get("lineage") or [], rounds_raw, attempts),
     )
 
 

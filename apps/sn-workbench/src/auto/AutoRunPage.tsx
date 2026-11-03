@@ -4,7 +4,8 @@ import { Copy, hover, StatusDot, useTheme } from '../ui';
 import { signed, short } from '../tree/contracts';
 import { Badge, Delta, Eyebrow, Mono, Section } from '../tree/parts';
 import { actionTexts, ago, AttemptVerdict, attemptLabels, attemptWhy, attributionLabels, AutoAttempt, AutoCard, AutoConfirmation, AutoLedger, AutoNode, AutoOpenRound,
-  AutoProgress, AutoRound, AutoRunView, AutoSegment, haltLabels, NodeState, num, Phase, phaseLabels, SealedCurve, segmentVerdictLabels, statusLabels } from './contracts';
+  AutoProgress, AutoRound, AutoRunView, AutoSegment, haltLabels, NodeState, num, Phase, phaseLabels, SealedCurve, SealedPoint, segmentVerdictLabels, statusLabels } from './contracts';
+import { curveSelection, SealedChart, SealedLegend } from './SealedChart';
 
 // The automatic run, read top to bottom: how is it now, how far can it still go,
 // what did it get, what is it doing, what can be claimed. Nothing here writes.
@@ -381,26 +382,37 @@ function Ledger({ ledger }: { ledger: AutoLedger }) {
   </View>;
 }
 
-function Sealed({ sealed, compact }: { sealed: SealedCurve; compact: boolean }) {
+// The sealed result: the round x score curve, then the same numbers per node (the chart's table view).
+function Sealed({ sealed, compact, selected, onSelect }: { sealed: SealedCurve; compact: boolean; selected: string | null; onSelect: (id: string | null) => void }) {
   const theme = useTheme();
-  const bounds = sealed.points.flatMap(p => [p.lower_adj, p.upper_adj]).filter((x): x is number => typeof x === 'number');
-  const scale = Math.max(0.01, ...bounds.map(Math.abs)) * 1.15;
-  return <View testID="auto-sealed" style={{ gap: 4 }}>
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 24, flexWrap: 'wrap' }}>
+  const curve = sealed.curve;
+  const points = curve?.points;
+  return <View testID="auto-sealed" style={{ gap: 8 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', columnGap: 10, rowGap: 2, minHeight: 24, flexWrap: 'wrap' }}>
       <Eyebrow>封存集</Eyebrow>
-      <Text style={{ fontSize: 12, color: theme.muted }}>{sealed.metric ?? '—'} · n = {sealed.n ?? '—'} · k = {sealed.k ?? '—'} · 相对种子，区间已做多重校正</Text>
+      <Text testID="sealed-axis-note" style={{ fontSize: 12, color: theme.muted, flexShrink: 1 }}>{sealed.metric ?? '—'} · n = {sealed.n ?? '—'} · k = {sealed.k ?? '—'} · 区间已做多重校正</Text>
     </View>
-    {sealed.points.map((p, i) => <View key={p.candidate_id + i} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 28, paddingHorizontal: 5 }}>
-      <Marker state={i === 0 ? 'seed' : p.state ?? 'provisional'} />
-      <Mono size={11} muted>#{i} {short(p.candidate_id)}</Mono>
-      <Mono size={12}>{num(p.score)}</Mono>
-      <View style={{ flex: 1 }} />
-      {i > 0 && !compact && <IntervalPlot lower={p.lower_adj ?? null} upper={p.upper_adj ?? null} center={p.delta_vs_seed ?? null} scale={scale}
-        tone={p.holds_holm ? theme.success : theme.muted} title={`Δ种子 ${num(p.delta_vs_seed)}，p_holm ${num(p.p_holm)}`} />}
-      <View style={{ width: compact ? undefined : NUMBERS_WIDTH, alignItems: 'flex-end' }}>
-        <Mono size={11} muted>{i === 0 ? '种子' : `${signed(p.delta_vs_seed)} · ${p.holds_holm === null || p.holds_holm === undefined ? '—' : p.holds_holm ? '成立' : '不成立'}`}</Mono>
-      </View>
-    </View>)}
+    {curve && <SealedChart curve={curve} selected={selected} onSelect={onSelect} />}
+    {curve && <SealedLegend />}
+    <Section title="逐节点数值" defaultOpen={!curve} testID="sealed-table">
+      {(points ?? sealed.points.map((p, i) => ({ ...p, index: i } as SealedPoint & { index: number }))).map((p, i) => {
+        const cp = points ? points[i] : null;
+        const id = cp ? curveSelection(cp) : null;
+        return <RowPress key={i} selected={!!id && selected === id} onPress={() => id && onSelect(id)} testID={`sealed-row-${i}`}>
+          <View style={{ width: 20, alignItems: 'center' }}><Marker state={i === 0 ? 'seed' : p.state ?? 'provisional'} /></View>
+          <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 20, color: p.state === 'rolled_back' ? theme.muted : theme.secondary }}>
+            {i === 0 ? '种子' : cp?.title ?? short(p.candidate_id)}</Text>
+          {cp && <Mono size={11} muted>第 {cp.round} 轮</Mono>}
+          <View style={{ width: 44, alignItems: 'flex-end' }}><Mono size={12}>{num(p.score)}</Mono></View>
+          <View style={{ width: compact ? 64 : NUMBERS_WIDTH, alignItems: 'flex-end' }}>
+            <Mono size={11} muted>{i === 0 ? '参照' : compact ? signed(p.delta_vs_seed) : `${signed(p.delta_vs_seed)} [${signed(p.lower_adj)}, ${signed(p.upper_adj)}]`}</Mono>
+          </View>
+          {!compact && <View style={{ width: 52, alignItems: 'flex-end' }}>
+            <Text style={{ fontSize: 11, lineHeight: 16, color: theme.muted }}>{i === 0 ? '' : p.holds_holm === null || p.holds_holm === undefined ? '—' : p.holds_holm ? '成立' : '不成立'}</Text>
+          </View>}
+        </RowPress>;
+      })}
+    </Section>
   </View>;
 }
 
@@ -415,7 +427,7 @@ export function AutoRunPage({ view, compact: narrowScreen, selected, onSelect }:
   return <View testID="auto-run" onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ gap: 24 }}>
     <StatusBand view={view} />
     {view.progress && <Progress progress={view.progress} />}
-    {view.sealed && <Sealed sealed={view.sealed} compact={compact} />}
+    {view.sealed && <Sealed sealed={view.sealed} compact={compact} selected={selected} onSelect={onSelect} />}
     {view.progress && <Lineage view={view} compact={compact} selected={selected} onSelect={onSelect} />}
     {view.open_round && <OpenRound round={view.open_round} alive={view.run.alive} compact={compact} selected={selected} onSelect={onSelect} />}
     <Rounds rounds={view.rounds} compact={compact} selected={selected} onSelect={onSelect} openLatest={!view.open_round} />

@@ -130,6 +130,35 @@ function SegmentDetail({ segment, onSelect }: { segment: AutoSegment; onSelect: 
   </View>;
 }
 
+// The node's sealed numbers, when the run has its sealed curve.
+function SealedFacts({ view, versionHash }: { view: AutoRunView; versionHash: string | null }) {
+  const point = view.sealed?.curve?.points.find(p => p.version_hash === versionHash);
+  if (!point) return null;
+  const seed = point.index === 0;
+  return <Section title="封存集" testID="auto-sealed-facts">
+    <KeyValue label="分数"><Number_ value={`${num(point.score)}（${view.sealed?.metric ?? '—'}）`} /></KeyValue>
+    {!seed && <KeyValue label="Δ种子"><Number_ value={`${signed(point.delta_vs_seed)} [${signed(point.lower_adj)}, ${signed(point.upper_adj)}]`} /></KeyValue>}
+    {!seed && <KeyValue label="p_holm"><Number_ value={`${num(point.p_holm)} · ${point.holds_holm === null ? '—' : point.holds_holm ? '成立' : '不成立'}`} /></KeyValue>}
+    <KeyValue label="轮"><Number_ value={`第 ${point.round} 轮${point.round_inferred ? '（无采纳记录，按谱系顺序推定）' : ''}`} /></KeyValue>
+    <KeyValue label="路径"><Copy small>{seed ? '起点' : point.on_path ? '主路径' : point.state === 'rolled_back' ? '已回滚，挂在父节点上' : '不在主路径'}</Copy></KeyValue>
+    <Copy small muted>区间是相对种子的配对差，已做多重校正（{view.sealed?.correction ?? '—'}）。</Copy>
+  </Section>;
+}
+
+function SealedNodeDetail({ view, versionHash }: { view: AutoRunView; versionHash: string }) {
+  const point = view.sealed?.curve?.points.find(p => p.version_hash === versionHash);
+  const node = view.segments.flatMap(s => s.nodes).find(n => n.version_hash === versionHash);
+  const seed = point?.index === 0 || view.seed?.version_hash === versionHash;
+  const state = node?.state ?? point?.state ?? null;
+  return <View testID="auto-detail-node">
+    <Heading eyebrow={seed ? '种子' : '谱系节点'} title={seed ? '种子' : node?.title ?? short(versionHash)}>
+      {!seed && state && <Badge label={nodeStateLabels[state]} tone={state === 'certified' ? 'success' : state === 'provisional' ? 'primary' : undefined} />}
+      <Badge label={short(point?.candidate_id ?? node?.candidate_id ?? versionHash)} />
+    </Heading>
+    <SealedFacts view={view} versionHash={versionHash} />
+  </View>;
+}
+
 function Changes({ candidateId }: { candidateId: string }) {
   const changes = useResource<CandidateChanges>(`/candidates/${candidateId}/changes`);
   return <Section title="代码差异" defaultOpen={false} testID="auto-changes">
@@ -151,7 +180,7 @@ function CardText({ proposal }: { proposal: Proposal | undefined }) {
   </Section>;
 }
 
-function AttemptDetail({ attempt, node, proposal, agents }: { attempt: AutoAttempt; node: AutoNode | undefined; proposal: Proposal | undefined; agents: AgentProps }) {
+function AttemptDetail({ view, attempt, node, proposal, agents }: { view: AutoRunView; attempt: AutoAttempt; node: AutoNode | undefined; proposal: Proposal | undefined; agents: AgentProps }) {
   const timings = Object.entries(attempt.timings ?? {}).filter(([key]) => key !== 'total_s');
   const timingLabels: Record<string, string> = { implement_s: '实现', smoke_s: '冒烟', screen_s: '筛选', rebase_s: 'rebase' };
   const measured = attempt.delta_val !== null;
@@ -176,6 +205,7 @@ function AttemptDetail({ attempt, node, proposal, agents }: { attempt: AutoAttem
     {attempt.safeguards && <Section title="保护指标" defaultOpen={!attempt.safeguards.ok} testID="auto-safeguards">
       <SafeguardRows check={attempt.safeguards} />
     </Section>}
+    <SealedFacts view={view} versionHash={attempt.candidate} />
     <CardText proposal={proposal} />
     {timings.length > 0 && <Section title="耗时" defaultOpen={false}>
       {timings.map(([key, value]) => <KeyValue key={key} label={timingLabels[key] ?? key}><Copy small>{duration(value)}</Copy></KeyValue>)}
@@ -207,9 +237,10 @@ export function AutoDetail({ view, selected, proposals, onSelect, ...agents }: A
   }
   if (kind === 'att') {
     const attempt = attempts.find(a => a.key === id);
-    if (attempt) return <AttemptDetail attempt={attempt} node={nodes.find(n => n.version_hash === attempt.candidate)}
+    if (attempt) return <AttemptDetail view={view} attempt={attempt} node={nodes.find(n => n.version_hash === attempt.candidate)}
       proposal={attempt.card_ref ? proposals[attempt.card_ref] : undefined} agents={agents} />;
   }
+  if (kind === 'node' && view.sealed?.curve?.points.some(p => p.version_hash === id)) return <SealedNodeDetail view={view} versionHash={id} />;
   if (kind === 'card') {
     const card = view.open_round?.cards.find(c => String(c.index) === id);
     if (card) return <CardDetail card={card} proposal={card.ref ? proposals[card.ref] : undefined} />;
