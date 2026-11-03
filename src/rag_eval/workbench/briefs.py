@@ -319,7 +319,7 @@ Commands (`$S` = `{s}`):
 - `$S leak-check`: benchmark-text leak scan of your change
 Nothing else.
 
-Order: implement the card -> run only the SN tests relevant to your change -> leak-check. Leave your changes uncommitted. Never commit, freeze, run or request evaluations, or request anything else: the coordinator freezes and evaluates the candidate after you finish. Use only the card's implementer material; never look for gold answers, scores, validation or benchmark cases.
+Order: implement the card -> run only the SN tests relevant to your change -> leak-check. Leave your changes uncommitted. Never commit, freeze, run or request evaluations, or request anything else: the coordinator freezes and evaluates the candidate after you finish. Use only the card's implementer material and, in a repair (a second attempt after the coordinator's smoke check), the one feedback file its message names: read no other file under var/; never look for gold answers, scores, validation or benchmark cases.
 
 When you finish, reply with the files you changed and why, the test commands and their results, and remaining risks.
 '''
