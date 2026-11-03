@@ -94,6 +94,18 @@ export default function App() {
   };
   const iterationAgent = iterationAnalystsOf(task?.sessions ?? []).at(-1)?.id ?? null;
   const evaluatedCount = tree?.candidates.filter(c => c.state === 'evaluated').length ?? 0;
+  // Trigger sealed-set curve evaluation for an automatic run
+  const triggerSealed = async () => {
+    if (!iterationId) return;
+    try {
+      await api<{ status: string; iteration_id: string; k: number }>(`/iterations/${iterationId}/sealed-evaluate`, { budget: {}, request_key: `sealed-${Date.now()}` });
+      setAutoTick(n => n + 1);
+      bump();
+      setNotice('封存集评测已触发');
+    } catch (e) {
+      setError(`触发封存集评测失败：${(e as Error).message}`);
+    }
+  };
   // Removal hides the session everywhere; the Paseo archive is best effort.
   const removeAgent = async (sessionId: string) => {
     if (!task) return;
@@ -275,7 +287,7 @@ export default function App() {
                   {!iterations.data ? <Copy small muted>正在读取迭代…</Copy>
                     : !iterations.data.length ? <View style={{ gap: 10, alignItems: 'flex-start' }}><Copy muted>还没有迭代。迭代固定一个起点 commit 和冻结题单，候选从这里派生成树。</Copy>
                       <Button label="新建迭代" primary onPress={() => setNewIteration(true)} testID="empty-new-iteration" /></View>
-                    : auto ? (autoRun.data ? <AutoRunPage view={autoRun.data} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} />
+                    : auto ? (autoRun.data ? <AutoRunPage view={autoRun.data} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} onTriggerSealed={triggerSealed} />
                       : <Copy small muted>{autoRun.error ?? '正在读取自动运行…'}</Copy>)
                     : !tree ? <Copy small muted>正在读取迭代树…</Copy>
                       : route.matrix ? <CompareMatrix tree={tree} labels={labels} picked={picked} onClose={() => update({ matrix: false })}

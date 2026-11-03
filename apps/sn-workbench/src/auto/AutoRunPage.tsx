@@ -9,6 +9,7 @@ import { curveSelection, SealedChart, SealedLegend } from './SealedChart';
 
 // The automatic run, read top to bottom: how is it now, how far can it still go,
 // what did it get, what is it doing, what can be claimed. Nothing here writes.
+// Exception: sealed evaluation trigger is a manual action available in the UI.
 
 const PLOT_WIDTH = 200;
 const NUMBERS_WIDTH = 172;
@@ -24,13 +25,14 @@ export function Marker({ state, size = 10 }: { state: NodeState | 'seed'; size?:
   return <View style={{ ...base, borderColor: fill, backgroundColor: fill }} />;
 }
 
-function StatusBand({ view }: { view: AutoRunView }) {
+function StatusBand({ view, onTriggerSealed }: { view: AutoRunView; onTriggerSealed?: () => void }) {
   const theme = useTheme();
   const { run, progress, next_action: action } = view;
   const headline = run.status === 'running' ? (progress ? `第 ${progress.round} 轮 · ${phaseLabels[progress.phase]}` : '正在启动')
     : run.status === 'halted' ? haltLabels[run.halt_reason ?? ''] ?? run.halt_reason ?? '已停机'
     : run.status === 'interrupted' ? `停在第 ${progress?.round ?? 0} 轮` : '已登记，还没有写入状态';
   const tone = run.status === 'running' ? 'running' as const : action === 'resume' || action === 'retry' || action === 'budget' ? 'warning' as const : 'idle' as const;
+  const canTriggerSealed = action === 'sealed' && onTriggerSealed;
   return <View testID="auto-status" style={{ gap: 10 }}>
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <StatusDot tone={tone} size={8} />
@@ -40,8 +42,17 @@ function StatusBand({ view }: { view: AutoRunView }) {
       <Text style={{ fontSize: 12, color: theme.muted }}>更新于 {ago(run.updated_at)}</Text>
     </View>
     {action && <View testID="auto-next-action" style={{ borderWidth: 1, borderColor: theme.line, borderRadius: 8, backgroundColor: theme.surface, paddingHorizontal: 12, paddingVertical: 10, gap: 2 }}>
-      <Text style={{ fontSize: 13, lineHeight: 20, fontWeight: '500', color: action === 'sealed' || action === 'review' ? theme.text : theme.warning }}>{actionTexts[action].title}</Text>
-      <Copy small muted>{actionTexts[action].detail}</Copy>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ fontSize: 13, lineHeight: 20, fontWeight: '500', color: action === 'sealed' || action === 'review' ? theme.text : theme.warning }}>{actionTexts[action].title}</Text>
+          <Copy small muted>{actionTexts[action].detail}</Copy>
+        </View>
+        {canTriggerSealed && <Pressable onPress={onTriggerSealed} testID="trigger-sealed-btn"
+          style={hover(hovered => ({ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6, backgroundColor: hovered ? theme.primaryHover : theme.primary }))}
+          accessibilityRole="button" accessibilityLabel="触发封存集评测">
+          <Text style={{ fontSize: 13, lineHeight: 20, fontWeight: '500', color: theme.bg }}>评测封存集</Text>
+        </Pressable>}
+      </View>
     </View>}
     {run.status === 'halted' && run.halt_reason !== 'process_failure' && run.halt_reason !== 'budget_exhausted' &&
       <Copy small muted>停机原因只说明这次运行为什么结束，不代表改进空间已经用尽。</Copy>}
@@ -383,38 +394,14 @@ function Ledger({ ledger }: { ledger: AutoLedger }) {
 }
 
 // The sealed result: the round x score curve, then the same numbers per node (the chart's table view).
-function Sealed({ sealed, compact, selected, onSelect, onRefresh }: { sealed: SealedCurve; compact: boolean; selected: string | null; onSelect: (id: string | null) => void; onRefresh?: () => void }) {
+function Sealed({ sealed, compact, selected, onSelect }: { sealed: SealedCurve; compact: boolean; selected: string | null; onSelect: (id: string | null) => void }) {
   const theme = useTheme();
   const curve = sealed.curve;
   const points = curve?.points;
-  const [refreshing, setRefreshing] = useState(false);
-
-  const handleRefresh = async () => {
-    if (!onRefresh || refreshing) return;
-    setRefreshing(true);
-    try {
-      await onRefresh();
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
   return <View testID="auto-sealed" style={{ gap: 8 }}>
     <View style={{ flexDirection: 'row', alignItems: 'center', columnGap: 10, rowGap: 2, minHeight: 24, flexWrap: 'wrap' }}>
       <Eyebrow>封存集</Eyebrow>
       <Text testID="sealed-axis-note" style={{ fontSize: 12, color: theme.muted, flexShrink: 1 }}>{sealed.metric ?? '—'} · n = {sealed.n ?? '—'} · k = {sealed.k ?? '—'} · 区间已做多重校正</Text>
-      {onRefresh && <Pressable
-        onPress={handleRefresh}
-        disabled={refreshing}
-        style={({ pressed, hovered }: any) => [
-          { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, backgroundColor: pressed ? theme.pressed : hovered ? theme.hover : theme.button },
-          refreshing && { opacity: 0.5 }
-        ]}
-        testID="sealed-refresh-button">
-        <Text style={{ fontSize: 12, color: theme.buttonText, fontWeight: '500' }}>
-          {refreshing ? '评测中...' : '更新曲线'}
-        </Text>
-      </Pressable>}
     </View>
     {curve && <SealedChart curve={curve} selected={selected} onSelect={onSelect} />}
     {curve && <SealedLegend />}
@@ -444,31 +431,20 @@ function Sealed({ sealed, compact, selected, onSelect, onRefresh }: { sealed: Se
 // decides, not the screen: side panels take most of a mid-size window.
 const FULL_WIDTH = 680;
 
-export function AutoRunPage({ view, compact: narrowScreen, selected, onSelect }: { view: AutoRunView; compact: boolean; selected: string | null; onSelect: (id: string | null) => void }) {
+export function AutoRunPage({ view, compact: narrowScreen, selected, onSelect, onTriggerSealed }: {
+  view: AutoRunView; compact: boolean; selected: string | null; onSelect: (id: string | null) => void; onTriggerSealed?: () => void;
+}) {
   const theme = useTheme();
   const [width, setWidth] = useState(FULL_WIDTH);
   const compact = narrowScreen || width < FULL_WIDTH;
-
-  const handleSealedRefresh = async () => {
-    // Trigger sealed evaluation for all current lineage nodes
-    // The backend will evaluate all nodes and update sealed-curve.json
-    const response = await fetch(`/api/auto-run/${view.run.id}/sealed/refresh`, {
-      method: 'POST',
-    });
-    if (!response.ok) {
-      throw new Error(`Sealed refresh failed: ${response.statusText}`);
-    }
-    // The view will be refreshed automatically via polling
-  };
-
   return <View testID="auto-run" onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ gap: 24 }}>
-    <StatusBand view={view} />
+    <StatusBand view={view} onTriggerSealed={onTriggerSealed} />
     {view.progress && <Progress progress={view.progress} />}
-    {view.sealed && <Sealed sealed={view.sealed} compact={compact} selected={selected} onSelect={onSelect} onRefresh={handleSealedRefresh} />}
+    {view.sealed && <Sealed sealed={view.sealed} compact={compact} selected={selected} onSelect={onSelect} />}
     {view.progress && <Lineage view={view} compact={compact} selected={selected} onSelect={onSelect} />}
     {view.open_round && <OpenRound round={view.open_round} alive={view.run.alive} compact={compact} selected={selected} onSelect={onSelect} />}
     <Rounds rounds={view.rounds} compact={compact} selected={selected} onSelect={onSelect} openLatest={!view.open_round} />
     {view.ledger && <Ledger ledger={view.ledger} />}
-    <Text style={{ fontSize: 11, lineHeight: 16, color: theme.muted }}>这个迭代由机器驱动，手动操作已锁定。启动、续跑和封存集评测目前走命令行。</Text>
+    <Text style={{ fontSize: 11, lineHeight: 16, color: theme.muted }}>这个迭代由机器驱动，手动操作已锁定。启动、续跑和封存集评测可通过界面触发。</Text>
   </View>;
 }
