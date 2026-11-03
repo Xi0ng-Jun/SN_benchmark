@@ -312,7 +312,7 @@ def v3_implementer_brief(task, *, tool, hypothesis_id, candidate_id, worktree):
     s = f'{tool} --task {task["id"]} --role implementer --hypothesis {hypothesis_id} --candidate {candidate_id}'
     return f'''# Method-v3 implementer · candidate {candidate_id}
 
-You implement one approved card (hypothesis `{hypothesis_id}`) in candidate `{candidate_id}` of an automatic method-v3 run. Your worktree: `{worktree or "not ready"}`. Edit only files there.
+You implement one approved card (hypothesis `{hypothesis_id}`) in candidate `{candidate_id}`) of an automatic method-v3 run. Your worktree: `{worktree or "not ready"}` — this is the SN product repo (backend/, frontend/, etc.). Edit ONLY files inside this worktree path; never read or write anything outside it. If the card names a path that does not exist here (e.g. src/rag_eval/), find the equivalent SN product file (e.g. the answerer prompt in backend/app/services/) and change that instead.
 
 Commands (`$S` = `{s}`):
 - `$S card`: the approved card (what to change and why)

@@ -1073,6 +1073,11 @@ class SNAdapter(SystemAdapter):
             "pattern or logic to modify, and the pytest command(s) for verification (e.g. "
             "`pytest tests/test_ask_service.py -k test_language`); a brief that only restates "
             "the failure mode is not acceptable. "
+            "IMPORTANT: the implementer edits only the SN product worktree (backend/, frontend/, etc.). "
+            "If the root cause is in a file whose path starts with src/rag_eval/ (the evaluation harness), "
+            "the implementer_brief must identify the EQUIVALENT file in the SN product repo that controls "
+            "the same behaviour (e.g. the answerer prompt in backend/app/services/), not the harness file. "
+            "Never write a brief that names src/rag_eval/ paths as the files to change. "
             + (f"No hypothesis has been adopted under this parent for {no_adoption_rounds} consecutive "
                "round(s): change direction. Target failure modes or components different from every "
                "hypothesis listed as already tried in the evidence file. " if no_adoption_rounds else "")
