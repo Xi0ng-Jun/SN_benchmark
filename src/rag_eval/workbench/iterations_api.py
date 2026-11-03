@@ -334,6 +334,58 @@ class IterationAPI:
             from ..optimizer.run_view import read_run
             return read_run(bound['state_dir'])
 
+        @router.post('/api/auto-run/{run_id}/sealed/refresh')
+        async def auto_run_sealed_refresh(run_id: str):
+            # Find iteration by run_id
+            binding_row = None
+            with self.repository.connect() as conn:
+                if auto_runs._has_table(conn):
+                    binding_row = conn.execute('SELECT * FROM auto_runs WHERE run_id=?', (run_id,)).fetchone()
+            if binding_row is None:
+                raise UnknownIdentity(f'No auto-run binding found for run_id {run_id}')
+
+            iteration_id = binding_row['iteration_id']
+            state_dir = Path(binding_row['state_dir'])
+            self._scope(iteration_id=iteration_id)
+
+            # Read current state
+            from ..optimizer.run_view import _read_state
+            state = _read_state(state_dir)
+            if state is None:
+                raise UnknownIdentity(f'No state file found in {state_dir}')
+
+            # Load lineage and versions
+            from ..optimizer.ledger import Lineage
+            from ..optimizer.adapter import Version
+            lineage = Lineage.from_dict(state['lineage'])
+            versions = {h: Version.from_dict(v) for h, v in state['versions'].items()}
+
+            # Get adapter
+            from ..optimizer.sn_adapter import SNAdapter
+            adapter = SNAdapter(
+                repository=self.repository,
+                service=service,
+                iteration_id=iteration_id,
+                actor=binding_row['actor'],
+            )
+
+            # Trigger sealed evaluation
+            from ..optimizer.sn_sealed import evaluate_lineage_sealed
+            curve = evaluate_lineage_sealed(
+                adapter,
+                lineage,
+                versions,
+                confirmed=True,
+                budget={},
+                k=None,
+            )
+
+            # Write sealed-curve.json
+            sealed_path = state_dir / 'sealed-curve.json'
+            sealed_path.write_text(json.dumps(curve, indent=1, ensure_ascii=False) + '\n')
+
+            return {'status': 'ok', 'sealed_path': str(sealed_path)}
+
         @router.get('/api/candidates/{candidate_id}')
         def node_show(candidate_id: str):
             self._scope(candidate_id=candidate_id)

@@ -383,14 +383,38 @@ function Ledger({ ledger }: { ledger: AutoLedger }) {
 }
 
 // The sealed result: the round x score curve, then the same numbers per node (the chart's table view).
-function Sealed({ sealed, compact, selected, onSelect }: { sealed: SealedCurve; compact: boolean; selected: string | null; onSelect: (id: string | null) => void }) {
+function Sealed({ sealed, compact, selected, onSelect, onRefresh }: { sealed: SealedCurve; compact: boolean; selected: string | null; onSelect: (id: string | null) => void; onRefresh?: () => void }) {
   const theme = useTheme();
   const curve = sealed.curve;
   const points = curve?.points;
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return <View testID="auto-sealed" style={{ gap: 8 }}>
     <View style={{ flexDirection: 'row', alignItems: 'center', columnGap: 10, rowGap: 2, minHeight: 24, flexWrap: 'wrap' }}>
       <Eyebrow>封存集</Eyebrow>
       <Text testID="sealed-axis-note" style={{ fontSize: 12, color: theme.muted, flexShrink: 1 }}>{sealed.metric ?? '—'} · n = {sealed.n ?? '—'} · k = {sealed.k ?? '—'} · 区间已做多重校正</Text>
+      {onRefresh && <Pressable
+        onPress={handleRefresh}
+        disabled={refreshing}
+        style={({ pressed, hovered }: any) => [
+          { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, backgroundColor: pressed ? theme.pressed : hovered ? theme.hover : theme.button },
+          refreshing && { opacity: 0.5 }
+        ]}
+        testID="sealed-refresh-button">
+        <Text style={{ fontSize: 12, color: theme.buttonText, fontWeight: '500' }}>
+          {refreshing ? '评测中...' : '更新曲线'}
+        </Text>
+      </Pressable>}
     </View>
     {curve && <SealedChart curve={curve} selected={selected} onSelect={onSelect} />}
     {curve && <SealedLegend />}
@@ -424,10 +448,23 @@ export function AutoRunPage({ view, compact: narrowScreen, selected, onSelect }:
   const theme = useTheme();
   const [width, setWidth] = useState(FULL_WIDTH);
   const compact = narrowScreen || width < FULL_WIDTH;
+
+  const handleSealedRefresh = async () => {
+    // Trigger sealed evaluation for all current lineage nodes
+    // The backend will evaluate all nodes and update sealed-curve.json
+    const response = await fetch(`/api/auto-run/${view.run.id}/sealed/refresh`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new Error(`Sealed refresh failed: ${response.statusText}`);
+    }
+    // The view will be refreshed automatically via polling
+  };
+
   return <View testID="auto-run" onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ gap: 24 }}>
     <StatusBand view={view} />
     {view.progress && <Progress progress={view.progress} />}
-    {view.sealed && <Sealed sealed={view.sealed} compact={compact} selected={selected} onSelect={onSelect} />}
+    {view.sealed && <Sealed sealed={view.sealed} compact={compact} selected={selected} onSelect={onSelect} onRefresh={handleSealedRefresh} />}
     {view.progress && <Lineage view={view} compact={compact} selected={selected} onSelect={onSelect} />}
     {view.open_round && <OpenRound round={view.open_round} alive={view.run.alive} compact={compact} selected={selected} onSelect={onSelect} />}
     <Rounds rounds={view.rounds} compact={compact} selected={selected} onSelect={onSelect} openLatest={!view.open_round} />

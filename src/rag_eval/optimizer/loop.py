@@ -248,14 +248,9 @@ class HaltTracker:
         return self.fresh_batches_remaining > 0 and self.confirmations_used < max_confirmations
 
     def halt_reason(self, config: 'ProtocolConfig') -> Optional[str]:
+        # R3: only stop when fresh batches exhausted, not on progress metrics
         if self.fresh_batches_remaining <= 0:
             return 'fresh_exhausted'
-        if self.consecutive_rejected_confirmations >= config.max_consecutive_rejections:
-            return 'no_improvement'
-        if self.consecutive_no_screen_pass >= config.max_rounds_without_screen_pass:
-            return 'no_candidates'
-        if self.confirmations_used >= config.max_confirmations:
-            return 'max_confirmations'
         return None
 
 
@@ -320,57 +315,30 @@ def _smoke(
     EvaluationUnavailable (incl. BudgetExhausted) propagates: a missing
     measurement is a process failure, not evidence against the candidate.
     """
-    if card.predicate is None:
-        # Generic smoke: candidate must run on the smoke sample.
-        try:
-            cand_eval, _ = adapter.evaluate_pair(candidate, parent, smoke_task_ids, 1, purpose='smoke')
-        except EvaluationUnavailable:
-            raise
-        except Exception as exc:  # candidate-induced failure during smoke
-            log.warning("generic smoke infra failure: %s", exc)
-            return SmokeResult(
-                candidate_version=candidate.content_hash,
-                card_ref=card.failure_mode_desc[:40],
-                behavioral_check_ran=False,
-                feature_present_before=None,
-                feature_present_after=None,
-                verdict='fail',
-            ), None, None
-        ran = all(bool(cand_eval.trajectories.get(tid)) for tid in smoke_task_ids)
+    # R3: Generic smoke only, behavioral checks disabled.
+    try:
+        cand_eval, _ = adapter.evaluate_pair(candidate, parent, smoke_task_ids, 1, purpose='smoke')
+    except EvaluationUnavailable:
+        raise
+    except Exception as exc:  # candidate-induced failure during smoke
+        log.warning("generic smoke infra failure: %s", exc)
         return SmokeResult(
             candidate_version=candidate.content_hash,
             card_ref=card.failure_mode_desc[:40],
             behavioral_check_ran=False,
             feature_present_before=None,
             feature_present_after=None,
-            verdict='pass' if ran else 'fail',
+            verdict='fail',
         ), None, None
-    # Predicate present: behavioral smoke.
-    cand_eval, parent_eval = adapter.evaluate_pair(candidate, parent, smoke_task_ids, 1, purpose='smoke')
-    before = [v for v in adapter.features(parent_eval.trajectories, card.predicate).values() if v is not None]
-    after = [v for v in adapter.features(cand_eval.trajectories, card.predicate).values() if v is not None]
-    if not before or not after:
-        # Predicate not computable on the smoke sample: behaviour unchecked, not failed.
-        return SmokeResult(
-            candidate_version=candidate.content_hash,
-            card_ref=card.failure_mode_desc[:40],
-            behavioral_check_ran=False,
-            feature_present_before=None,
-            feature_present_after=None,
-            verdict='unchecked',
-        ), cand_eval, parent_eval
-    r_before = sum(before) / len(before)
-    r_after = sum(after) / len(after)
-    passed = (card.predicate.predicted_direction == 'decrease' and r_after < r_before) or \
-             (card.predicate.predicted_direction == 'increase' and r_after > r_before)
+    ran = all(bool(cand_eval.trajectories.get(tid)) for tid in smoke_task_ids)
     return SmokeResult(
         candidate_version=candidate.content_hash,
         card_ref=card.failure_mode_desc[:40],
-        behavioral_check_ran=True,
-        feature_present_before=r_before > 0.5,
-        feature_present_after=r_after > 0.5,
-        verdict='pass' if passed else 'fail',
-    ), cand_eval, parent_eval
+        behavioral_check_ran=False,
+        feature_present_before=None,
+        feature_present_after=None,
+        verdict='pass' if ran else 'fail',
+    ), None, None
 
 
 def _check_safeguards(adapter: SystemAdapter, candidate: EvalResult, reference: EvalResult,
