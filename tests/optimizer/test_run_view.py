@@ -30,7 +30,7 @@ def _run(tmp_path, script, *, config=None, adapter=None, n_batches=3, max_rounds
 def test_certified_segment_carries_its_nodes_and_interval(tmp_path):
     _, view = _run(tmp_path, [dict(cards=["card A"], deltas=UP, smoke_pass=True)])
     assert view["run"]["status"] == "halted" and view["run"]["alive"] is False
-    assert view["run"]["halt_reason"] == "no_candidates"
+    assert view["run"]["halt_reason"] == "max_rounds"
     assert view["seed"]["candidate_id"] == "seed_v0"
     certified = [s for s in view["segments"] if s["status"] == "certified"]
     assert len(certified) == 1

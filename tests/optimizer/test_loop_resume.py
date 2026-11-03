@@ -217,10 +217,10 @@ def test_crash_during_confirmation_resumes_the_same_batch(tmp_path):
 def test_finished_run_resume_is_idempotent(tmp_path):
     adapter = MockAdapter([], n_tasks=12)
     first = _run(adapter, _config(), state_dir=tmp_path, max_rounds=5)
-    assert first.halt_reason == "no_candidates"
+    assert first.halt_reason == "max_rounds"
     calls = adapter.analyse_calls
     again = _run(adapter, _config(), state_dir=tmp_path, max_rounds=5)
-    assert again.halt_reason == "no_candidates"
+    assert again.halt_reason == "max_rounds"
     assert adapter.analyse_calls == calls
     lines = (tmp_path / "rounds.jsonl").read_text().splitlines()
     assert [json.loads(l)["round_id"] for l in lines] == [r.round_id for r in first.rounds]

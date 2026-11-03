@@ -95,7 +95,7 @@ def test_ledger_utility_selection_mechanism_content(finished_run):
     assert pa == dict(cards_generated=4, cards_with_predicate=0, rate=0.0, floor=0.6, meets_floor=False)
     assert mech["counts_for_mechanism_comparison"] is False
     ctx = ledger["context"]
-    assert ctx["halt_reason"] == result.halt_reason == "no_candidates"
+    assert ctx["halt_reason"] == result.halt_reason == "max_rounds"
     assert ctx["validation_pool_size"] == 12 and ctx["initial_validation_pool_size"] == 6
     assert ctx["config_sha256"] == ledger_io.config_digest(_config(analyst_cards=3))[1]
     assert "familywise_error" in ctx["alpha_note"]

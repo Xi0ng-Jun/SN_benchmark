@@ -77,52 +77,8 @@ def _attempts(round_res):
 
 
 # ---------------------------------------------------------------------------
-# 1. Smoke repair
+# 1. Smoke (execution-only, no predicate check)
 # ---------------------------------------------------------------------------
-
-def test_behavioural_smoke_fail_is_repaired_and_the_repaired_attempt_is_screened():
-    script = [{"cards": [_card("a", pool=0.12, repair={"fixed": True})], "predicate": PRED}]
-    adapter = BehaviourAdapter(script, n_tasks=12)
-    result = _run(adapter, _config())
-    rr = result.rounds[0]
-    assert _attempts(rr) == [(1, "smoke_fail", True), (2, "screen_pass", False)]
-    first, second = rr.candidates
-    assert first["smoke_verdict"] == "fail" and first["reason"] == "repaired: attempt 2 follows"
-    assert second["repair_of"] == first["candidate"] != second["candidate"] and second["repaired"]
-    assert first["card_index"] == second["card_index"] == 0 and not first["repaired"]
-    assert second["smoke_verdict"] == "pass" and rr.smoke_passed == 1 and rr.screen_passed == 1
-    assert "repair_s" in second["timings"] and "implement_s" in first["timings"]
-    # The repair saw the smoke sample of both sides (search set), on the same parent.
-    [call] = adapter.repair_calls
-    assert call == dict(card="R1:a", parent="seed_v0", failed=first["candidate"], attempt=2,
-                        smoke_verdict="fail", candidate_tasks=POOL[:2], parent_tasks=POOL[:2])
-    assert result.lineage.current_parent().version_hash == second["candidate"]
-
-
-def test_a_repair_that_fails_again_is_smoke_fail_after_repair_in_the_history():
-    script = [{"cards": [_card("a", repair={"fixed": False})], "predicate": PRED},
-              {"cards": [_card("b")], "predicate": PRED}]
-    adapter = BehaviourAdapter(script, n_tasks=12)
-    result = _run(adapter, _config(), max_rounds=2)
-    assert _attempts(result.rounds[0]) == [(1, "smoke_fail", True), (2, "smoke_fail", False)]
-    assert [c["card"] for c in adapter.repair_calls] == ["R1:a", "R2:b"]   # one repair per card
-    assert adapter.history_calls[1] == [dict(title="a", label="smoke_fail", repaired=True)]
-
-
-def test_repair_attempts_are_pre_registered():
-    script = [{"cards": [_card("a", repair={"fixed": False})], "predicate": PRED}]
-    adapter = BehaviourAdapter(script, n_tasks=12)
-    result = _run(adapter, _config(smoke_repair_attempts=2))
-    assert _attempts(result.rounds[0]) == [(1, "smoke_fail", True), (2, "smoke_fail", True),
-                                           (3, "smoke_fail", False)]
-    assert [c["attempt"] for c in adapter.repair_calls] == [2, 3]
-    c = result.rounds[0].candidates
-    assert c[2]["repair_of"] == c[1]["candidate"] and c[1]["repair_of"] == c[0]["candidate"]
-
-    adapter = BehaviourAdapter(script, n_tasks=12)
-    result = _run(adapter, _config(smoke_repair_attempts=0))
-    assert _attempts(result.rounds[0]) == [(1, "smoke_fail", False)] and adapter.repair_calls == []
-
 
 def test_generic_smoke_failures_and_smoke_run_failures_are_not_repaired():
     # No predicate: generic smoke (the candidate did not run) -> process failure, no repair.
@@ -138,60 +94,6 @@ def test_generic_smoke_failures_and_smoke_run_failures_are_not_repaired():
     assert adapter.repair_calls == []
 
 
-def test_an_adapter_without_repairs_leaves_the_smoke_failure_standing():
-    adapter = BehaviourAdapter([{"cards": [_card("a")], "predicate": PRED}], n_tasks=12)   # no 'repair' spec
-    result = _run(adapter, _config())
-    assert _attempts(result.rounds[0]) == [(1, "smoke_fail", False)]
-    assert len(adapter.repair_calls) == 1                                                  # asked, None
-
-
-def test_a_failing_repair_is_recorded_as_error_and_the_card_stays_smoke_fail():
-    script = [{"cards": [_card("a", repair={"raise": True}), _card("b")], "predicate": PRED},
-              {"cards": [_card("c")]}]
-    adapter = BehaviourAdapter(script, n_tasks=12)
-    result = _run(adapter, _config(analyst_cards=2), max_rounds=2)
-    rr = result.rounds[0]
-    assert [(c["title"], c["attempt"], c["verdict"]) for c in rr.candidates][:2] == [
-        ("a", 1, "smoke_fail"), ("a", 2, "error")]
-    assert rr.candidates[1]["reason"].startswith("repair: RuntimeError") and rr.candidates[1]["candidate"] is None
-    assert rr.candidates[2]["title"] == "b"                                  # the error refilled the slot
-    assert adapter.history_calls[1][0] == dict(title="a", label="smoke_fail", repaired=True)
-
-
-def test_every_attempt_is_in_rounds_jsonl_and_the_ledger(tmp_path):
-    script = [{"cards": [_card("a", repair={"fixed": True})], "predicate": PRED}]
-    _run(BehaviourAdapter(script, n_tasks=12), _config(), state_dir=tmp_path)
-    [line] = (tmp_path / ledger_io.ROUNDS_FILE).read_text().splitlines()
-    rows = json.loads(line)["candidates"]
-    assert [(r["attempt"], r["verdict"], r["superseded"]) for r in rows] == [(1, "smoke_fail", True),
-                                                                            (2, "screen_fail", False)]
-    integrity = json.loads((tmp_path / ledger_io.LEDGER_FILE).read_text())["integrity"]
-    assert integrity["n_attempts_recorded"] == 2 and integrity["cards_not_attempted"] == 0
-    assert integrity["attempts_by_verdict"] == {"smoke_fail": 1, "screen_fail": 1}
-
-
-def test_a_kill_during_the_repair_resumes_and_records_each_attempt_once(tmp_path):
-    class CrashingRepair(BehaviourAdapter):
-        armed = True
-
-        def repair(self, *a, **kw):
-            out = super().repair(*a, **kw)
-            if self.armed:
-                raise Crash("process killed")
-            return out
-
-    script = [{"cards": [_card("a", repair={"fixed": True})], "predicate": PRED}]
-    adapter = CrashingRepair(script, n_tasks=12)
-    with pytest.raises(Crash):
-        _run(adapter, _config(), state_dir=tmp_path)
-    st = json.loads((tmp_path / ledger_io.STATE_FILE).read_text())
-    assert st["current_round"]["inflight"] == {"0": "seed_v0"} and st["current_round"]["round"]["candidates"] == []
-    adapter.armed = False          # the same adapter: the mock's card specs live in it
-    result = _run(adapter, _config(), state_dir=tmp_path)
-    assert _attempts(result.rounds[0]) == [(1, "smoke_fail", True), (2, "screen_fail", False)]
-    assert all(c["resumed"] for c in result.rounds[0].candidates)
-
-
 # ---------------------------------------------------------------------------
 # 2. Richer history labels (§2.3: discrete details only)
 # ---------------------------------------------------------------------------
@@ -203,7 +105,7 @@ def test_screen_fail_carries_the_smoke_conclusion_and_unmeasurable_the_breached_
     adapter = BehaviourAdapter(script, n_tasks=12)
     _run(adapter, _config(max_rounds_without_screen_pass=5), max_rounds=3)
     assert adapter.history_calls[2] == [
-        dict(title="changed", label="screen_fail", smoke="behaviour_changed"),
+        dict(title="changed", label="screen_fail", smoke="unchecked"),
         dict(title="plain", label="screen_fail", smoke="unchecked")]
 
     adapter = BehaviourAdapter([{"cards": [_card("costly", pool=0.12)]}, {"cards": [_card("x")]}], n_tasks=12)

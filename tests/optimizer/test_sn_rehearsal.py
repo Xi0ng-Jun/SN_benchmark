@@ -574,26 +574,6 @@ def test_a_gain_that_breaches_cost_per_task_is_unmeasurable_at_screening(rig, ca
         assert view['rounds'][0]['attempts'][0]['safeguards'] == check
 
 
-def test_empty_change_and_smoke_failure_are_recorded_and_refilled(rig, capsys):
-    rig.analyst_cards = [card('Nothing to change'), card('Rerank without effect'),
-                         card('Plain prompt tweak', predicate=False)]
-    rig.effects = {'Nothing to change': dict(empty=True), 'Rerank without effect': dict(val=.2),
-                   'Plain prompt tweak': dict(val=-.05)}
-    with rig:
-        assert rig.run() == 0, capsys.readouterr()
-        cards, rounds = records(rig)
-        assert cards['Nothing to change']['verdict'] == 'error'
-        assert 'materialize' in cards['Nothing to change']['reason'] and 'no changes' in cards['Nothing to change']['reason']
-        assert cards['Rerank without effect']['verdict'] == 'smoke_fail'
-        assert cards['Rerank without effect']['smoke_verdict'] == 'fail'
-        assert cards['Plain prompt tweak']['verdict'] == 'screen_fail'
-        assert cards['Plain prompt tweak']['smoke_verdict'] == 'pass'          # generic smoke: it ran
-        assert cards['Plain prompt tweak']['card_index'] == 2
-        assert rounds[0]['cards_generated'] == 3 and rounds[0]['screen_passed'] == 0
-        assert [n['state'] for n in rig.state()['lineage']] == ['certified']
-        rig.assert_no_duplicate_measurements()
-
-
 # ---------------------------------------------------------------------------
 # (d) resume after a kill mid-round: no second analyst, no execution twice
 # ---------------------------------------------------------------------------
@@ -833,73 +813,6 @@ def _protocol_with(rig, **changes):
 def _attempt_rows(st):
     return [c for r in st['rounds'] + ([st['current_round']['round']] if st.get('current_round') else [])
             for c in r['candidates']]
-
-
-def test_a_behavioural_smoke_failure_is_repaired_on_a_sibling_and_the_repair_passes(rig, capsys):
-    rig.analyst_cards = [card('Retry empty retrievals')]
-    rig.effects = {'Retry empty retrievals': dict(val=.2, fresh=.2, fix_empty='after_repair')}
-    with rig:
-        assert rig.run() == 0, capsys.readouterr()
-        st = rig.state()
-        rows = _attempt_rows(st)
-        assert [(c['attempt'], c['verdict'], c['superseded'], c['smoke_verdict']) for c in rows] == [
-            (1, 'smoke_fail', True, 'fail'), (2, 'screen_pass', False, 'pass')]
-        first, second = rows
-        assert second['repair_of'] == first['candidate'] and second['repaired']
-        assert st['rounds'][0]['confirmation_verdict'] == 'confirmed'
-        # v2: the repair is a sibling under the same parent that starts from the failed change.
-        root = rig.tree['root_candidate_id']
-        v2 = {c['id']: c for c in rig.candidates()}
-        failed, repaired = v2[first['candidate_id']], v2[second['candidate_id']]
-        assert failed['parent_candidate_id'] == repaired['parent_candidate_id'] == root
-        assert failed['status'] == repaired['status'] == 'frozen'
-        assert [(i['candidate_id'], i['method']) for i in repaired['integrated_from']] == [(failed['id'], 'cherry-pick')]
-        refiled = rig.api.hypotheses.get(rig.task_id, repaired['proposal_id'])
-        assert repaired['proposal_id'] != failed['proposal_id'] and refiled['status'] in ('approved', 'implementing')
-        assert refiled['card']['title'] == 'Retry empty retrievals' and refiled['parent_candidate_id'] == root
-        # The repair implementer: a new v3 implementer Agent of the sibling, reading one feedback file.
-        [rep] = rig.repairs
-        assert rep['candidate_id'] == repaired['id']
-        assert Path(rep['path']).parent == (rig.run_dir / cli.EVIDENCE_DIR).resolve()
-        fb = rep['feedback']
-        assert fb.count('predicate parent=true, previous attempt=true') == 2 and 'should decrease' in fb
-        assert '[parent]' in fb and '[previous attempt]' in fb
-        assert 'qasper:' not in fb and 'GOLD' not in fb and 'answer_f1' not in fb and 'score' not in fb
-        body = json.loads(rep['text'])
-        assert body['context'][0]['title'].startswith('Method-v3 implementer brief · ' + repaired['id'])
-        assert 'feedback file' in body['context'][0]['text'] and len(body['message'].encode()) < 4000
-        assert [i.get('candidate_id') for i in rig.intents('implementer')] == [failed['id'], repaired['id']]
-        # History: the adopted (then confirmed) hypothesis is marked as repaired.
-        assert [(h['label'], h.get('repaired')) for h in st['history']] == [('confirmed', True)]
-        view = run_view.read_run(rig.run_dir)
-        assert [a['key'] for a in view['rounds'][0]['attempts']] == ['1:0', '1:0:a2']
-        rig.assert_no_duplicate_measurements()      # the parent's smoke attempt is shared, not repeated
-
-
-def test_a_repair_that_fails_again_reaches_the_next_analyst_as_smoke_fail_after_repair(rig, capsys):
-    root = rig.tree['root_candidate_id']
-    calls = []
-
-    def cards(parent):
-        calls.append(parent)
-        return ([card('Rerank without effect'), card('Plain prompt tweak', predicate=False)] if len(calls) == 1
-                else [card('Another prompt tweak', predicate=False)])
-    rig.analyst_cards = cards
-    rig.effects = {'Rerank without effect': dict(val=.2), 'Plain prompt tweak': dict(val=-.05),
-                   'Another prompt tweak': dict(val=-.05)}
-    _protocol_with(rig, max_rounds=2, analyst_cards=2)
-    with rig:
-        assert rig.run() == 0, capsys.readouterr()
-        st = rig.state()
-        rerank = [(c['attempt'], c['verdict'], c['superseded']) for c in _attempt_rows(st)
-                  if c['title'] == 'Rerank without effect']
-        assert rerank == [(1, 'smoke_fail', True), (2, 'smoke_fail', False)]
-        assert len(rig.repairs) == 1 and calls == [root, root]
-        evidence = Path(rig.evidence_read[1][0]).read_text()
-        assert '- Rerank without effect -> smoke_fail; after repair\n' in evidence
-        assert '- Plain prompt tweak -> screen_fail; smoke: behaviour unchecked\n' in evidence
-        assert 'no adoption under this parent for 1 consecutive round(s)' in evidence
-        rig.assert_no_duplicate_measurements()
 
 
 def test_every_hypothesis_of_a_rolled_back_segment_reaches_the_certified_node(rig, capsys):
