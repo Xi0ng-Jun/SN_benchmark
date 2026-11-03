@@ -299,9 +299,11 @@ def test_key_generation_without_state_dir_is_passed_to_adapter():
 
 def _no_numbers(entries):
     for e in entries:
-        assert set(e) <= {"title", "label", "attribution", "attribution_possibly_biased"}
+        assert set(e) <= {"title", "label", "attribution", "attribution_possibly_biased",
+                          "smoke", "safeguards_breached", "repaired", "rolled_back_segment"}
         for v in e.values():
-            assert isinstance(v, (str, bool)), e
+            assert isinstance(v, (str, bool, list)), e
+            assert not isinstance(v, list) or all(isinstance(x, str) for x in v), e
 
 
 def test_history_has_labels_for_current_parent_only():
@@ -314,7 +316,8 @@ def test_history_has_labels_for_current_parent_only():
     _run(adapter, _config(b_cards=1, analyst_cards=2), max_rounds=3)
     h = adapter.history_calls
     assert h[0] == []
-    assert h[1] == [dict(title="a", label="smoke_fail"), dict(title="b", label="screen_fail")]
+    # §2.1: screen_fail carries the smoke conclusion (no predicate: behaviour unchecked).
+    assert h[1] == [dict(title="a", label="smoke_fail"), dict(title="b", label="screen_fail", smoke="unchecked")]
     assert h[2] == []                                               # new parent c
     for entries in h:
         _no_numbers(entries)

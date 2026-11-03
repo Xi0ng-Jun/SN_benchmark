@@ -356,3 +356,89 @@ def test_analyse_needs_an_evidence_directory(tmp_path):
     with pytest.raises(RuntimeError, match="evidence directory"):
         adapter.analyse({}, 1, round_id=1, history=[])
     assert ops.texts == []
+
+
+# -- §2.1 失败后的处理: history details, escalation, repair feedback -----------
+
+def test_history_lines_carry_only_whitelisted_discrete_details():
+    from rag_eval.optimizer.sn_adapter import _render_history
+    history = [
+        dict(title="worked but no gain", label="screen_fail", smoke="behaviour_changed"),
+        dict(title="unchecked", label="screen_fail", smoke="unchecked"),
+        dict(title="leaky smoke", label="screen_fail", smoke="r_after=0.31"),               # not a token
+        dict(title="costly", label="unmeasurable", safeguards_breached=["cost_per_task", "0.71", "a b=2"]),
+        dict(title="smoke only", label="smoke_fail", safeguards_breached=["cost_per_task"]),  # names only on unmeasurable
+        dict(title="did not take effect", label="smoke_fail", repaired=True),
+        dict(title="second step", label="rejected", rolled_back_segment=True, attribution="refuted",
+             attribution_possibly_biased=True),
+        dict(title="truthy", label="screen_fail", repaired="yes", rolled_back_segment=1),       # only True counts
+    ]
+    text, shown, omitted = _render_history(history, 10_000)
+    assert (shown, omitted) == (8, 0)
+    lines = [line for line in text.splitlines() if line.startswith("- ")]
+    assert lines == [
+        "- worked but no gain -> screen_fail; smoke: behaviour changed as predicted",
+        "- unchecked -> screen_fail; smoke: behaviour unchecked",
+        "- leaky smoke -> screen_fail",
+        "- costly -> unmeasurable; breached safeguards: cost_per_task",
+        "- smoke only -> smoke_fail",
+        "- did not take effect -> smoke_fail; after repair",
+        "- second step -> rejected; tried in a rolled-back segment; attribution: refuted (possibly biased)",
+        "- truthy -> screen_fail",
+    ]
+
+
+def _escalation_adapter(tmp_path, **kw):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    run = _write_run(tmp_path, [_row("a", spans=SPANS), _row("ok")])
+    hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
+    adapter = SNAdapter({"iteration_id": "I", "task_id": "T", "parent_candidate_id": "P", "run_id": "R"},
+                        round_operations=ops, hypotheses=hyps, agent_poll_interval=0,
+                        evidence_dir=tmp_path / "evidence", **kw)
+    return adapter, ops, _stubs(run, ["a", "ok"])
+
+
+def test_analyse_steps_up_the_budget_and_asks_for_another_direction(tmp_path):
+    adapter, ops, stubs = _escalation_adapter(tmp_path, analyst_view_budget=4000, analyst_view_budget_step=1000)
+    adapter.analyse(stubs, 2, round_id=1, history=[])
+    assert adapter.last_analysis["budget"] == 4000 and adapter.last_analysis["no_adoption_rounds"] == 0
+    assert "consecutive" not in ops.texts[0] and "consecutive" not in _evidence(adapter)
+    adapter.analyse(stubs, 2, round_id=2, history=[dict(title="old", label="screen_fail")], no_adoption_rounds=2)
+    assert adapter.last_analysis["budget"] == 6000
+    assert "for 2 consecutive round(s): change direction" in ops.texts[1]
+    assert "different from every hypothesis listed as already tried" in ops.texts[1]
+    assert "no adoption under this parent for 2 consecutive round(s)\n" in _evidence(adapter)
+    assert "(budget 6000 chars)" in _evidence(adapter)
+    capped, _, stubs = _escalation_adapter(tmp_path / "x", analyst_view_budget=59000, analyst_view_budget_step=1000)
+    capped.analyse(stubs, 1, round_id=1, history=[], no_adoption_rounds=5)
+    assert capped.last_analysis["budget"] == 60000                       # MAX_ANALYST_VIEW_BUDGET
+    with pytest.raises(ValueError):
+        SNAdapter({}, analyst_view_budget_step=-1)
+
+
+def test_repair_feedback_holds_predicate_values_and_views_without_scores_or_ids(tmp_path):
+    (tmp_path / "p").mkdir()
+    (tmp_path / "c").mkdir()
+    parent_run = _write_run(tmp_path / "p", [_row("case-a", spans=SPANS), _row("case-b")])
+    cand_run = _write_run(tmp_path / "c", [_row("case-a", spans=SPANS, answer="CANDIDATE ANSWER"),
+                                           _row("case-b", answer="OTHER")])
+    adapter = SNAdapter({}, evidence_dir=tmp_path / "evidence")
+    pred = Predicate({"kind": "range", "field": "trace.n_empty_retrievals", "min": 1}, "decrease")
+    from rag_eval.optimizer.adapter import Card
+
+    def result(run):
+        return EvalResult(per_task_scores={"case-a": 0.777, "case-b": 0.123},
+                          trajectories=_stubs(run, ["case-a", "case-b"]), costs={}, error_classes={})
+    content, stats = adapter._repair_feedback(Card("empty retrieval", "retry once", pred, ref="h1"), "CANDX", 2,
+                                              result(cand_run), result(parent_run))
+    assert content.startswith("# method-v3 smoke repair feedback\nformat: sn-v3-repair-feedback-v1\nattempt: 2\n")
+    assert "- s1: predicate parent=true, previous attempt=true" in content
+    assert "- s2: predicate parent=not computable, previous attempt=not computable" in content
+    assert "should decrease from parent to candidate" in content
+    assert "### s1 [parent]" in content and "### s1 [previous attempt]" in content and "CANDIDATE ANSWER" in content
+    # Opaque refs (the fixture's question text itself names the case, as in the analyst's views).
+    assert "### case-a" not in content and "- case-a" not in content
+    assert "0.777" not in content and "0.123" not in content
+    assert "GOLD-SECRET" not in content
+    assert stats == dict(cases=2, views=4, views_shown=4, views_omitted=0, budget=12000)

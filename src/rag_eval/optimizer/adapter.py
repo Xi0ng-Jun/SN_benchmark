@@ -175,6 +175,7 @@ class SystemAdapter(abc.ABC):
         parent: Optional[Version] = None,
         round_id: Optional[int] = None,
         history: Optional[list[dict]] = None,
+        no_adoption_rounds: int = 0,
     ) -> list[Card]:
         """Run the analyst agent on search-set trajectories only (§2.3 isolation).
 
@@ -189,6 +190,16 @@ class SystemAdapter(abc.ABC):
         insufficient / unmeasurable, plus optional ``attribution`` (supported /
         refuted / insufficient / unattributed) and
         ``attribution_possibly_biased``. Never scores, deltas or task ids.
+        §2.1 失败后的处理 adds optional discrete details: ``smoke``
+        ('behaviour_changed' / 'unchecked', on screen_fail), ``safeguards_breached``
+        (safeguard key names, on unmeasurable), ``repaired`` (the outcome is
+        that of a smoke-repair attempt) and ``rolled_back_segment`` (tried on a
+        node of a segment that was rolled back).
+
+        *no_adoption_rounds* (§2.1 逐级加码): consecutive rounds under this
+        parent that ended without the parent pointer moving. N >= 1 asks the
+        analyst for different failure modes / components than the history
+        titles; adapters may widen their evidence budget per round.
 
         Returns up to n_cards Cards.
         """
@@ -196,6 +207,33 @@ class SystemAdapter(abc.ABC):
     @abc.abstractmethod
     def implement(self, card: Card, workspace: Any) -> Diff:
         """Run the implementer agent for one card; return a Diff."""
+
+    def repair(
+        self,
+        card: Card,
+        parent: Version,
+        failed: Version,
+        *,
+        smoke: SmokeResult,
+        candidate_smoke: EvalResult,
+        parent_smoke: EvalResult,
+        attempt: int,
+    ) -> Optional[Diff]:
+        """Smoke repair (§2.1 失败后的处理): a further attempt of *card* after a behavioural smoke fail.
+
+        *failed* (a frozen child of *parent*) did not move its predicate in the
+        predicted direction on the smoke sample. The implementer gets one more
+        attempt on a fresh, unfrozen child of the same *parent* that starts from
+        the failed change, plus the smoke tasks' (search set) predicate values
+        and diagnostic views of parent and *failed*, built from
+        ``candidate_smoke`` / ``parent_smoke`` trajectories only: never scores,
+        gold or task ids (§2.3). *attempt* is 2 for the first repair.
+
+        Returns the Diff of that child, which the loop freezes with
+        ``materialize(diff, parent)`` and smokes again; None when the system
+        does not support repairs (the smoke failure then stands).
+        """
+        return None
 
     # -- safeguards (§1 保护指标) --------------------------------------------
 

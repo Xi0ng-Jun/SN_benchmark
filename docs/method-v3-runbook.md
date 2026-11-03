@@ -39,8 +39,8 @@ JSON 对象，未知键直接拒绝。首次 `run` 把文件 sha256、原文副�
 |---|---|---|
 | `mde`, `sigma_d`, `ladder_c`, `K_max`, `T`, `n_fresh` | 是 | `ProtocolConfig` 必填字段 |
 | `max_rounds`, `smoke_sample_size` | 是 | 轮数上限；冒烟样本量（规则：搜索集 id 按 sha256(case_id) 排序取前 N，存 `smoke-sample.json`） |
-| 其余 `ProtocolConfig` 字段 | 否 | `z_screen`, `z_confirm`, `b_cards`, `k_screen`（必须等于迭代的 `k_base`，否则启动前拒绝）, `max_confirmations`, `predicate_coverage_floor`, `analyst_failure_threshold`, `analyst_max_failures`, `analyst_n_controls`, `analyst_cards`, `max_consecutive_run_failures`, `max_rounds_without_screen_pass`（默认 2：连续多少轮无候选过筛即停机 `no_candidates`）, `max_consecutive_rejections`（默认 2：连续多少次确认被拒即停机 `no_improvement`）, `attribution_n_min`; `k_smoke` 只能是 1；不接受 `n_smoke_sample`（用 `smoke_sample_size`）；不接受非空 `safeguard_bounds`：保护指标只来自迭代协议里预注册的 v2 `safeguards`（迭代没有就拒绝 `run`） |
-| 适配器设置 | 否 | `analyst_profile`, `implementer_profile`（默认 `pi-flash`）, `agent_poll_interval`(30), `agent_timeout`(5400), `worktree_timeout`(600), `analyst_view_budget`(12000, ≤60000；证据文件的字符预算，不受 v2 消息上限约束), `eval_poll_interval`(30), `eval_timeout`(7200), `infra_retry`(1), `execution_timeout_seconds`(7200) |
+| 其余 `ProtocolConfig` 字段 | 否 | `z_screen`, `z_confirm`, `b_cards`, `k_screen`（必须等于迭代的 `k_base`，否则启动前拒绝）, `max_confirmations`, `predicate_coverage_floor`, `analyst_failure_threshold`, `analyst_max_failures`, `analyst_n_controls`, `analyst_cards`, `max_consecutive_run_failures`, `max_rounds_without_screen_pass`（默认 2：连续多少轮无候选过筛即停机 `no_candidates`）, `max_consecutive_rejections`（默认 2：连续多少次确认被拒即停机 `no_improvement`）, `attribution_n_min`, `smoke_repair_attempts`（默认 1，≥0，0 关闭：行为冒烟未过（谓词没按预测方向变）时给实现 Agent 的修复次数；通用冒烟失败和冒烟运行故障不修复）, `analyst_max_failures_step`（默认 0，≥0：本父节点下每多一个连续无采纳轮，失败案例上限加这么多，不超过搜索集大小）; `k_smoke` 只能是 1；不接受 `n_smoke_sample`（用 `smoke_sample_size`）；不接受非空 `safeguard_bounds`：保护指标只来自迭代协议里预注册的 v2 `safeguards`（迭代没有就拒绝 `run`） |
+| 适配器设置 | 否 | `analyst_profile`, `implementer_profile`（默认 `pi-flash`）, `agent_poll_interval`(30), `agent_timeout`(5400), `worktree_timeout`(600), `analyst_view_budget`(12000, ≤60000；证据文件的字符预算，不受 v2 消息上限约束；冒烟修复的反馈文件用同一预算), `analyst_view_budget_step`(0, ≥0；本父节点下每多一个连续无采纳轮，证据预算加这么多字符，总数不超过 60000), `eval_poll_interval`(30), `eval_timeout`(7200), `infra_retry`(1), `execution_timeout_seconds`(7200) |
 
 ## 第 1 级：只测 analyse()
 
@@ -82,6 +82,9 @@ $V3 status --state-dir var/method-v3/$RUN
 - `var/method-v3/$RUN/rounds.jsonl` 每张卡的 `verdict`、`timings`（`implement_s`、`smoke_s`、`total_s`）：两张卡的实现时间应重叠（并行生效），整轮耗时约等于最慢的一张，而不是相加。
 - 中途杀掉进程再用同一条命令续跑：应不重新派发分析，已决定的卡跳过，未完成的卡回放（v2 回执，不重复评测）。
 - 停在 `process_failure`（退出码 3）：修好原因后同一命令加 `--retry-failed`（key_generation +1：measure/smoke 换新键，且每个失败槽位多给 `infra_retry` 次 v2 基础设施重试；v2 在任何键下都把失败 attempt 算作已占用槽位，只能沿重试链重跑）。新鲜批次 segment 不换键，已认领批次上的失败 segment 无法靠重试恢复。
+
+- 冒烟修复（`smoke_repair_attempts` > 0）：`rounds.jsonl` 里同一张卡有两条记录，第一条 `attempt: 1, verdict: smoke_fail, superseded: true`，第二条 `attempt: 2, repaired: true, repair_of: <第一次的候选>`。迭代树上修复是同一父节点下的兄弟候选（`integrated_from` 指向失败的那个，卡片由 v2 重新登记为一份已批准副本），由新的实现 Agent 完成；它读的反馈文件是 `analyst-evidence/repair-<失败候选前12位>-a2.md`（消息里写路径和 sha256）。反馈文件里只有谓词取值和诊断视图，没有分数、gold 和题目 id。
+- 每轮 `analysis`：`no_adoption_rounds`（本父节点下连续无采纳轮数，父指针一动就清零）、`max_failures`、`failures_new`（轮换选题新看到的失败案例数）、`adapter.budget`（本轮证据预算）。
 
 汇报：`status` 输出；`rounds.jsonl`；每张卡的 timings；总耗时；任何异常 traceback。
 

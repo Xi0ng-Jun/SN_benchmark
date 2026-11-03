@@ -37,7 +37,8 @@ _CONFIG_SHOWN = ("mde", "sigma_d", "T", "ladder_c", "K_max", "n_fresh", "z_scree
                  "analyst_cards", "max_consecutive_run_failures")
 _ATTEMPT_COPIED = ("round_id", "card_index", "card_ref", "verdict", "reason", "parent", "candidate", "rebased_from",
                    "smoke_verdict", "delta_val", "se_val", "score_val", "best_before", "ladder_m", "val_pool_size",
-                   "n_unpaired", "screen_evaluations", "timings", "has_predicate", "resumed", "halted", "safeguards")
+                   "n_unpaired", "screen_evaluations", "timings", "has_predicate", "resumed", "halted", "safeguards",
+                   "attempt", "repair_of", "repaired", "superseded")
 
 
 class RunLocked(Exception):
@@ -109,7 +110,9 @@ def _attempt(raw: dict, round_id: int, *, titles: dict, candidate_ids: dict, z_s
     out["lower_val"] = _lower(raw.get("delta_val"), raw.get("se_val"), z_screen)
     best, m = raw.get("best_before"), raw.get("ladder_m")
     out["threshold"] = best + (m or 0.0) if best is not None else None
-    out["key"] = f"{round_id}:{raw.get('card_index')}"
+    # A smoke repair is a further attempt of the same card: its own key (§2.1, §2.4).
+    attempt = raw.get("attempt") or 1
+    out["key"] = f"{round_id}:{raw.get('card_index')}" + (f":a{attempt}" if attempt > 1 else "")
     return out
 
 

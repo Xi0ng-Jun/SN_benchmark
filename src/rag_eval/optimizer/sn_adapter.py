@@ -12,13 +12,15 @@ accepts that dict directly; pass additional service objects as keyword args.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import subprocess
 import threading
 import time
 from typing import Any, Optional
 
 from .adapter import (BudgetExhausted, Card, Diff, EvalResult, EvaluationUnavailable, Predicate,
-                      SystemAdapter, Version)
+                      SmokeResult, SystemAdapter, Version)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +125,7 @@ class SNAdapter(SystemAdapter):
         agent_timeout: float = 600.0,
         worktree_timeout: float = 600.0,
         analyst_view_budget: int = 12000,
+        analyst_view_budget_step: int = 0,
         eval_poll_interval: float = 30.0,
         eval_timeout: float = 7200.0,
         infra_retry: int = 1,
@@ -154,10 +157,16 @@ class SNAdapter(SystemAdapter):
         if not 0 < analyst_view_budget <= MAX_ANALYST_VIEW_BUDGET:
             raise ValueError(f"analyst_view_budget must be in (0, {MAX_ANALYST_VIEW_BUDGET}] characters")
         self._analyst_view_budget = analyst_view_budget
+        # §2.1 逐级加码: characters added per consecutive no-adoption round under the
+        # analysed parent, the total capped by MAX_ANALYST_VIEW_BUDGET.
+        if type(analyst_view_budget_step) is not int or analyst_view_budget_step < 0:
+            raise ValueError("analyst_view_budget_step must be a non-negative int")
+        self._analyst_view_budget_step = analyst_view_budget_step
         self.evidence_dir = None
         if evidence_dir is not None:
             self.set_evidence_dir(evidence_dir)
         self.last_analysis: dict = {}
+        self.last_repair: dict = {}       # stats of the last repair feedback (file, sha256, counts)
         # Full text of the last analyst message (instructions + history + evidence),
         # set before dispatch so a failed dispatch can still be inspected.
         self.last_analyst_text: Optional[str] = None
@@ -763,15 +772,8 @@ class SNAdapter(SystemAdapter):
         new_cid = ops.derive(parent_cid, hypothesis_id=hypothesis_id, key=derive_key, actor=actor,
                              rebase_from=cid)
         self._await_worktree(new_cid)
-        apply_key = self._request_key("rebase-apply", new_cid)
-        deadline = time.monotonic() + self._worktree_timeout
-        result = ops.rebase(new_cid, key=apply_key, actor=actor)
-        while result.get("status") == "running":
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"rebase of {cid!r} onto {parent_cid!r} not applied within "
-                                   f"{self._worktree_timeout}s ({result.get('reason')!r})")
-            time.sleep(self._agent_poll_interval)
-            result = ops.rebase(new_cid, key=apply_key, actor=actor)
+        result = self._apply_source(new_cid, self._request_key("rebase-apply", new_cid),
+                                    f"rebase of {cid!r} onto {parent_cid!r}")
         if result.get("status") in ("conflict", "empty"):
             return None
         if result.get("status") != "applied":
@@ -780,6 +782,19 @@ class SNAdapter(SystemAdapter):
         if child.get("status") != "frozen":
             child = ops.service.freeze(new_cid, actor=actor)
         return self._version(child)
+
+    def _apply_source(self, candidate_id: str, key: str, what: str) -> dict:
+        """v2 ``RoundOperations.rebase``: apply the source's frozen diff uncommitted; poll while not ready."""
+        ops, actor = self._round_ops, self._actor()
+        deadline = time.monotonic() + self._worktree_timeout
+        result = ops.rebase(candidate_id, key=key, actor=actor)
+        while result.get("status") == "running":
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"{what} not applied within {self._worktree_timeout}s "
+                                   f"({result.get('reason')!r})")
+            time.sleep(self._agent_poll_interval)
+            result = ops.rebase(candidate_id, key=key, actor=actor)
+        return result
 
     # ------------------------------------------------------------------
     # 3. features
@@ -965,6 +980,7 @@ class SNAdapter(SystemAdapter):
         parent: Optional[Version] = None,
         round_id: Optional[int] = None,
         history: Optional[list[dict]] = None,
+        no_adoption_rounds: int = 0,
     ) -> list[Card]:
         """Dispatch an analyst agent on accountant-selected search cases; return its new Cards.
 
@@ -990,6 +1006,11 @@ class SNAdapter(SystemAdapter):
         counts against ``analyst_view_budget`` (at most a quarter of it; the
         oldest entries are trimmed first). Entries whose label is not in the
         §2.3 vocabulary are dropped, so no score can reach the prompt.
+
+        *no_adoption_rounds* N (§2.1 逐级加码): the budget is
+        ``analyst_view_budget + N * analyst_view_budget_step`` (at most
+        MAX_ANALYST_VIEW_BUDGET), and for N >= 1 the message states the count
+        and asks for failure modes or components other than the history titles.
 
         The request key is ``v3/{run_id}/analyse/{round_id}/{parent_cid}``:
         round ids grow monotonically within a run and are restored with the
@@ -1024,12 +1045,18 @@ class SNAdapter(SystemAdapter):
         if self.evidence_dir is None:
             raise RuntimeError("analyse() needs an evidence directory (set_evidence_dir): the analyst reads "
                                "its evidence from a file in the v3 run directory")
-        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], self._analyst_view_budget // 4)
-        evidence, n_shown, n_omitted = render_views(items, self._analyst_view_budget - len(tried))
+        if type(no_adoption_rounds) is not int or no_adoption_rounds < 0:
+            raise ValueError(f"no_adoption_rounds must be a non-negative int, got {no_adoption_rounds!r}")
+        budget = min(MAX_ANALYST_VIEW_BUDGET,
+                     self._analyst_view_budget + no_adoption_rounds * self._analyst_view_budget_step)
+        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], budget // 4)
+        evidence, n_shown, n_omitted = render_views(items, budget - len(tried))
+        stuck = (f"no adoption under this parent for {no_adoption_rounds} consecutive round(s)\n"
+                 if no_adoption_rounds else "")
         content = (f"# method-v3 analyst evidence\nformat: {EVIDENCE_FORMAT}\nround: {round_id}\n"
                    f"parent: {parent_cid}\ncases: {len(items)} with a view of {len(search_set_trajectories)} "
-                   f"selected; {n_shown} shown, {n_omitted} omitted (budget {self._analyst_view_budget} chars)\n\n"
-                   + tried + evidence)
+                   f"selected; {n_shown} shown, {n_omitted} omitted (budget {budget} chars)\n"
+                   + stuck + "\n" + tried + evidence)
         path, digest, reused = self._write_evidence(f"round-{round_id}-{parent_cid[:12]}.md", content)
         analyst_text = (
             f"Diagnose the parent version's failures and draft up to {n_cards} legal lcd-v2 mechanism cards, "
@@ -1045,12 +1072,17 @@ class SNAdapter(SystemAdapter):
             "Each card's implementer_brief must name the specific file(s) to change, the exact "
             "pattern or logic to modify, and the pytest command(s) for verification (e.g. "
             "`pytest tests/test_ask_service.py -k test_language`); a brief that only restates "
-            "the failure mode is not acceptable. Draft the cards now."
+            "the failure mode is not acceptable. "
+            + (f"No hypothesis has been adopted under this parent for {no_adoption_rounds} consecutive "
+               "round(s): change direction. Target failure modes or components different from every "
+               "hypothesis listed as already tried in the evidence file. " if no_adoption_rounds else "")
+            + "Draft the cards now."
         )
         from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected
         stats = dict(selected=len(search_set_trajectories), with_view=len(views), shown=n_shown,
                      omitted=n_omitted, evidence_chars=len(evidence), history_shown=n_hist_shown,
-                     history_omitted=n_hist_omitted, history_chars=len(tried), budget=self._analyst_view_budget,
+                     history_omitted=n_hist_omitted, history_chars=len(tried), budget=budget,
+                     no_adoption_rounds=no_adoption_rounds,
                      evidence_path=str(path), evidence_sha256=digest, evidence_reused=reused,
                      message_bytes=len(analyst_text.encode("utf-8")))
         self.last_analysis, self.last_analyst_text = stats, analyst_text
@@ -1148,6 +1180,139 @@ class SNAdapter(SystemAdapter):
                           parent_candidate_id=workspace.get("parent_candidate_id")),
         )
 
+    # ------------------------------------------------------------------
+    # 6b. repair — §2.1 smoke repair on a sibling candidate (v2 derive + rebase)
+    # ------------------------------------------------------------------
+
+    def repair(
+        self,
+        card: Card,
+        parent: Version,
+        failed: Version,
+        *,
+        smoke: SmokeResult,
+        candidate_smoke: EvalResult,
+        parent_smoke: EvalResult,
+        attempt: int,
+    ) -> Diff:
+        """Second attempt of *card* after a behavioural smoke failure; returns the new child's Diff.
+
+        v2 freezes a candidate for good ("derive a child for further changes"),
+        and a child of *failed* would not be a child of *parent* (smoke, the
+        screen pair and the parent-hash rule all need the same parent). So the
+        repair is a sibling: ``RoundOperations.derive(parent, rebase_from=failed)``
+        (v2 re-files the approved card under the same parent as an approved
+        copy and records ``integrated_from`` = failed, cherry-pick), then
+        ``RoundOperations.rebase`` applies the failed attempt's frozen diff
+        uncommitted to the sibling's worktree, then a new implementer Agent
+        (keyed ``repair-implement/<sibling>``) gets the repair message. The
+        coordinator freezes it in ``materialize``. Every step is keyed by the
+        failed candidate and *attempt*, so a rerun replays.
+
+        The message names a feedback file in the evidence directory (path +
+        sha256, written once like the analyst's): per smoke case (opaque refs
+        s1, s2, ...; the smoke sample is part of the search set) the predicate's
+        value on the parent and on the failed attempt, and both diagnostic
+        views (whitelisted projection: no gold, no scores, no task ids), within
+        ``analyst_view_budget`` characters.
+        """
+        ops = self._require_round_ops("repair")
+        iteration_id, _ = self._require_ids()
+        if self.evidence_dir is None:
+            raise RuntimeError("repair() needs an evidence directory (set_evidence_dir) for its feedback file")
+        actor = self._actor()
+        failed_cid, parent_cid = self.candidate_id(failed), self.candidate_id(parent)
+        source = ops.service.candidate(failed_cid)
+        if source.get("parent_candidate_id") != parent_cid:
+            raise ValueError(f"repair of {failed_cid!r} needs its own parent {source.get('parent_candidate_id')!r}, "
+                             f"not {parent_cid!r}")
+        hypothesis_id = source.get("proposal_id")
+        if not hypothesis_id:
+            raise ValueError(f"Candidate {failed_cid!r} has no approved card to repair")
+        content, stats = self._repair_feedback(card, failed_cid, attempt, candidate_smoke, parent_smoke)
+        path, digest, reused = self._write_evidence(f"repair-{failed_cid[:12]}-a{attempt}.md", content)
+        new_cid = ops.derive(parent_cid, hypothesis_id=hypothesis_id, key=self._request_key("repair", failed_cid, attempt),
+                             actor=actor, rebase_from=failed_cid)
+        candidate = self._await_worktree(new_cid)
+        applied = self._apply_source(new_cid, self._request_key("repair-apply", new_cid),
+                                     f"repair start (diff of {failed_cid!r}) in {new_cid!r}")
+        if applied.get("status") != "applied":
+            raise RuntimeError(f"the failed attempt's change could not be applied to the repair candidate: {applied!r}")
+        tree = candidate["worktree"]
+        workspace = dict(candidate_id=new_cid, parent_candidate_id=parent_cid,
+                         hypothesis_id=candidate.get("proposal_id"), path=tree["path"])
+        text = (
+            f"Repair the approved card (hypothesis {workspace['hypothesis_id']}) in candidate {new_cid}, "
+            f"attempt {attempt}. Card failure mode: {card.failure_mode_desc}. Implementer brief: "
+            f"{card.change_hypothesis}. The previous attempt's change is already applied, uncommitted, in "
+            f"this worktree. The coordinator's smoke check ran it on a few search cases and the predicted "
+            f"behaviour change did not happen (the card's trajectory predicate did not move in the predicted "
+            f"direction), so the change most likely did not take effect. The file {path} (sha256 {digest}) "
+            f"holds, per smoke case, the predicate's value on the parent and on the previous attempt and both "
+            f"diagnostic views; read it in full and read no other file under var/. Find why the change did "
+            f"not take effect and fix it, editing only this candidate's worktree. Required order: fix -> only "
+            f"relevant SN tests -> leak-check. Leave your changes uncommitted. Do not commit, do not freeze "
+            f"the candidate, and do not run or request any evaluation: the coordinator freezes and smokes the "
+            f"candidate again after you finish. Never inspect gold or validation cases."
+        )
+        self.last_repair = dict(stats, feedback_path=str(path), feedback_sha256=digest, feedback_reused=reused,
+                                candidate_id=new_cid, repair_of=failed_cid, attempt=attempt,
+                                message_bytes=len(text.encode("utf-8")))
+        call = dict(iteration_id=iteration_id, key=self._request_key("repair-implement", new_cid),
+                    profile=self._implementer_profile, text=text, hypothesis_id=workspace["hypothesis_id"],
+                    brief=V3_BRIEF)
+        self._poll_agent("implementer", new_cid, call)
+        return Diff(
+            content=_extract_worktree_diff(workspace),
+            test_refs=(),
+            metadata=dict(candidate_id=new_cid, hypothesis_id=workspace["hypothesis_id"],
+                          parent_candidate_id=parent_cid, repair_of=failed_cid, attempt=attempt),
+        )
+
+    def _repair_feedback(self, card: Card, failed_cid: str, attempt: int,
+                         candidate_smoke: EvalResult, parent_smoke: EvalResult) -> tuple[str, dict]:
+        """Feedback file of a smoke repair: predicate values and diagnostic views, no scores or ids."""
+        from .sn_trajectory import render_views
+        cand_traj = dict((candidate_smoke.trajectories if candidate_smoke is not None else {}) or {})
+        par_traj = dict((parent_smoke.trajectories if parent_smoke is not None else {}) or {})
+        task_ids = list(dict.fromkeys([*par_traj, *cand_traj]))
+        before = self.features(par_traj, card.predicate) if card.predicate else {}
+        after = self.features(cand_traj, card.predicate) if card.predicate else {}
+        par_views, cand_views = self.diagnostic_views(par_traj), self.diagnostic_views(cand_traj)
+
+        def value(v: Optional[bool]) -> str:
+            return "not computable" if v is None else ("true" if v else "false")
+
+        def rate(values: dict) -> str:
+            known = [v for v in values.values() if v is not None]
+            return f"{sum(known)} of {len(known)} computable case(s) true"
+
+        pred = card.predicate
+        lines = [f"# method-v3 smoke repair feedback\nformat: {REPAIR_FORMAT}\nattempt: {attempt}\n"
+                 f"previous attempt: {failed_cid}\ncard: {' '.join(card.failure_mode_desc.split())}\n"]
+        if pred is not None:
+            expr = pred.boolean_expression
+            lines.append(f"predicate: {json.dumps(expr, ensure_ascii=False, sort_keys=True) if isinstance(expr, dict) else '(not serialisable)'}\n"
+                         f"predicted: the share of cases where the predicate is true should "
+                         f"{pred.predicted_direction} from parent to candidate\n"
+                         f"observed: parent {rate(before)}; previous attempt {rate(after)} (not as predicted)\n")
+        lines.append("\nPer smoke case (s1, s2, ...): predicate values, then the parent's and the previous "
+                     "attempt's diagnostic views.\n")
+        items, header = [], []
+        for i, task_id in enumerate(task_ids, 1):
+            ref = f"s{i}"
+            header.append(f"- {ref}: predicate parent={value(before.get(task_id))}, "
+                          f"previous attempt={value(after.get(task_id))}\n")
+            if task_id in par_views:
+                items.append((ref, "parent", par_views[task_id]))
+            if task_id in cand_views:
+                items.append((ref, "previous attempt", cand_views[task_id]))
+        head = "".join(lines) + "".join(header) + "\n"
+        views, n_shown, n_omitted = render_views(items, max(0, self._analyst_view_budget - len(head)))
+        stats = dict(cases=len(task_ids), views=len(items), views_shown=n_shown, views_omitted=n_omitted,
+                     budget=self._analyst_view_budget)
+        return head + views, stats
+
     def _poll_agent(self, role: str, candidate_id: Optional[str], call: dict) -> dict:
         """Call ``RoundOperations.agent`` with one key until the agent is idle."""
         result = self._round_ops.agent(role, candidate_id, **call)
@@ -1176,6 +1341,7 @@ MAX_ANALYST_VIEW_BUDGET = 60000
 # Marks v2 Agents created by method v3: v2 then attaches the short v3 brief.
 V3_BRIEF = "method-v3"
 EVIDENCE_FORMAT = "sn-v3-analyst-evidence-v1"
+REPAIR_FORMAT = "sn-v3-repair-feedback-v1"
 # User decision (differs from v2, where such an attempt is unobserved and blocks the verdict).
 V3_INFRASTRUCTURE_RULE = (
     "infrastructure_failure_rate = failed / total over every terminal attempt of a side on the pair's scopes; "
@@ -1196,28 +1362,48 @@ _HISTORY_LABELS = ("smoke_fail", "screen_fail", "provisional_adopted", "confirme
                    "rejected", "insufficient", "unmeasurable")
 _ATTRIBUTION_LABELS = ("supported", "refuted", "insufficient", "unattributed")
 _HISTORY_TITLE_CHARS = 160
+# §2.1 失败后的处理 details: whitelisted tokens only (never values).
+_SMOKE_DETAILS = {"behaviour_changed": "smoke: behaviour changed as predicted",
+                  "unchecked": "smoke: behaviour unchecked"}
+_SAFEGUARD_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+
+
+def _history_line(entry: dict) -> Optional[str]:
+    """``- <title> -> <label>[; smoke: ...][; breached safeguards: k1, k2][; after repair]
+    [; tried in a rolled-back segment][; attribution: <label>[ (possibly biased)]]``; None if not whitelisted."""
+    label = entry.get("label") if isinstance(entry, dict) else None
+    if label not in _HISTORY_LABELS:
+        return None
+    title = " ".join(str(entry.get("title") or "(untitled)").split())[:_HISTORY_TITLE_CHARS]
+    line = f"- {title} -> {label}"
+    if label == "screen_fail" and entry.get("smoke") in _SMOKE_DETAILS:
+        line += "; " + _SMOKE_DETAILS[entry["smoke"]]
+    names = entry.get("safeguards_breached") if label == "unmeasurable" else None
+    names = [n for n in names if isinstance(n, str) and _SAFEGUARD_NAME.fullmatch(n)] \
+        if isinstance(names, (list, tuple)) else []
+    if names:
+        line += "; breached safeguards: " + ", ".join(names)
+    if entry.get("repaired") is True:
+        line += "; after repair"
+    if entry.get("rolled_back_segment") is True:
+        line += "; tried in a rolled-back segment"
+    attribution = entry.get("attribution")
+    if attribution in _ATTRIBUTION_LABELS:
+        line += f"; attribution: {attribution}"
+        if entry.get("attribution_possibly_biased"):
+            line += " (possibly biased)"
+    return line + "\n"
 
 
 def _render_history(history: list[dict], budget_chars: int) -> tuple[str, int, int]:
     """Labels-only section of hypotheses already tried under this parent (§2.3).
 
-    Returns (text, n_shown, n_omitted). Only whitelisted labels pass; titles
-    are collapsed to one line and capped. When the section exceeds
-    *budget_chars* the oldest entries are dropped first; "" if none fit.
+    Returns (text, n_shown, n_omitted). Only whitelisted labels and details
+    pass (``_history_line``); titles are collapsed to one line and capped.
+    When the section exceeds *budget_chars* the oldest entries are dropped
+    first; "" if none fit.
     """
-    lines = []
-    for entry in history:
-        label = entry.get("label") if isinstance(entry, dict) else None
-        if label not in _HISTORY_LABELS:
-            continue
-        title = " ".join(str(entry.get("title") or "(untitled)").split())[:_HISTORY_TITLE_CHARS]
-        line = f"- {title} -> {label}"
-        attribution = entry.get("attribution")
-        if attribution in _ATTRIBUTION_LABELS:
-            line += f"; attribution: {attribution}"
-            if entry.get("attribution_possibly_biased"):
-                line += " (possibly biased)"
-        lines.append(line + "\n")
+    lines = [line for line in map(_history_line, history) if line is not None]
     total = len(lines)
 
     def section(kept: list[str]) -> str:
@@ -1230,6 +1416,7 @@ def _render_history(history: list[dict], budget_chars: int) -> tuple[str, int, i
     if not lines:
         return "", 0, total
     return section(lines), len(lines), total - len(lines)
+
 
 def _signature_fields(signature: dict) -> set[str]:
     """Fields a v2 signature reads (all_of / any_of / not / leaf)."""

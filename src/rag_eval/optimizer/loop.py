@@ -5,12 +5,12 @@ milestone confirmation, rollback, validation-pool growth, and §2.5 halt
 conditions from method-v3.md.  All SN-specific logic is behind SystemAdapter.
 
 Concurrency (binding plan §2.6): per-card work — workspace, implement,
-materialize, smoke, screening measurement, and any rebase + re-measurement —
-runs in a thread pool of ``b_cards`` workers.  Every decision (Ladder gate,
-provisional adoption, milestone confirmation, state transitions) is taken on
-the main thread, one finished candidate at a time, in completion order.
-Workers never touch loop state; they get immutable snapshots (parent version,
-validation-pool ids) and return a CandidateRecord.
+materialize, smoke, any smoke repair (§2.1 失败后的处理), screening measurement, and
+any rebase + re-measurement — runs in a thread pool of ``b_cards`` workers.
+Every decision (Ladder gate, provisional adoption, milestone confirmation,
+state transitions) is taken on the main thread, one finished candidate at a
+time, in completion order. Workers never touch loop state; they get immutable
+snapshots (parent version, validation-pool ids) and return a CandidateRecord.
 
 Durability (binding plan §2.7): with ``state_dir`` the main thread rewrites
 ``state.json`` atomically after every transition (round start, the round's
@@ -20,6 +20,7 @@ from it; adapter calls of interrupted work replay under deterministic keys.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import time
@@ -102,6 +103,13 @@ class ProtocolConfig:
     # §2.2 归因: minimum slice size |S| on the fresh batch; below it the
     # attribution label is 'insufficient'.
     attribution_n_min: int = 5
+    # §2.1 失败后的处理: repairs granted to a card whose behavioural smoke
+    # failed (predicate did not move as predicted); 0 disables. A generic-smoke
+    # failure or a smoke run failure is never repaired (process failure).
+    smoke_repair_attempts: int = 1
+    # §2.1 逐级加码: per consecutive no-adoption round under the same parent the
+    # analyst's failure-case cap grows by this step (capped by the search set).
+    analyst_max_failures_step: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +152,12 @@ class CandidateRecord:
     resumed: bool = False               # re-submitted after a restart (adapter calls replay)
     started_at: float = 0.0
     finished_at: float = 0.0
+    # §2.1 smoke repair: 1 for the original attempt, n+1 after the n-th repair.
+    attempt: int = 1
+    repair_of: Optional[str] = None     # content hash of the failed attempt this one repairs
+    prior_attempts: list = field(default_factory=list)   # superseded attempts (recorded first)
+    smoke_evals: Optional[tuple] = None  # (candidate, parent) smoke results, while a repair may follow
+    repair_failed: bool = False          # the repair step itself failed (no repaired candidate)
 
 
 @dataclass
@@ -166,7 +180,10 @@ class RoundResult:
     # best_before, ladder_m, val_pool_size, screen_evaluations, n_unpaired, safeguards
     # (SystemAdapter.safeguards of the screen pair, or None when not screened),
     # timings, has_predicate, resumed, halted (True: recorded because the
-    # loop halted on a process failure, not a decision on the card).
+    # loop halted on a process failure, not a decision on the card), attempt
+    # (1, or n+1 after n smoke repairs), repair_of (candidate hash the attempt
+    # repairs), repaired (attempt > 1), superseded (True: a smoke-failed attempt
+    # a repair of the same card follows; §2.4 every attempt is recorded).
     candidates: list = field(default_factory=list)
     # One dict per milestone confirmation this round. Keys: verdict,
     # delta_fresh, se_fresh, n_fresh, n_unpaired, k_fresh, fresh_batch_index,
@@ -181,6 +198,12 @@ class RoundResult:
     cards_with_predicate: int = 0         # §6 predicate attachment
     started_at: Optional[str] = None      # ISO-8601 UTC
     finished_at: Optional[str] = None
+    # §2.3 diagnosis record (诊断预算和实际消耗记入运行记录): parent,
+    # no_adoption_rounds, max_failures, failures_shown, failures_new,
+    # rotation_cycle_restarted, controls_shown, adapter (the adapter's own
+    # analysis stats, e.g. SN evidence budget and file), and at round end
+    # pointer_moved / no_adoption_rounds_after.
+    analysis: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -269,7 +292,22 @@ def _run_smoke(
     card: Card,
     smoke_task_ids: list[str],
 ) -> SmokeResult:
+    """The §2.1 step 3 smoke verdict (see ``_smoke``)."""
+    return _smoke(adapter, candidate, parent, card, smoke_task_ids)[0]
+
+
+def _smoke(
+    adapter: SystemAdapter,
+    candidate: Version,
+    parent: Version,
+    card: Card,
+    smoke_task_ids: list[str],
+) -> tuple[SmokeResult, Optional[EvalResult], Optional[EvalResult]]:
     """Run the cheap pre-screen behavioral check on n_smoke_sample tasks.
+
+    Returns (verdict, candidate smoke result, parent smoke result); the
+    results are None for a generic smoke (only a behavioural failure is
+    repaired, and the repair reads them).
 
     With a predicate (§2.1 step 3a): check the feature rate moved in the
     predicted direction; fail the candidate if it did not.
@@ -297,7 +335,7 @@ def _run_smoke(
                 feature_present_before=None,
                 feature_present_after=None,
                 verdict='fail',
-            )
+            ), None, None
         ran = all(bool(cand_eval.trajectories.get(tid)) for tid in smoke_task_ids)
         return SmokeResult(
             candidate_version=candidate.content_hash,
@@ -306,7 +344,7 @@ def _run_smoke(
             feature_present_before=None,
             feature_present_after=None,
             verdict='pass' if ran else 'fail',
-        )
+        ), None, None
     # Predicate present: behavioral smoke.
     cand_eval, parent_eval = adapter.evaluate_pair(candidate, parent, smoke_task_ids, 1, purpose='smoke')
     before = [v for v in adapter.features(parent_eval.trajectories, card.predicate).values() if v is not None]
@@ -320,7 +358,7 @@ def _run_smoke(
             feature_present_before=None,
             feature_present_after=None,
             verdict='unchecked',
-        )
+        ), cand_eval, parent_eval
     r_before = sum(before) / len(before)
     r_after = sum(after) / len(after)
     passed = (card.predicate.predicted_direction == 'decrease' and r_after < r_before) or \
@@ -332,7 +370,7 @@ def _run_smoke(
         feature_present_before=r_before > 0.5,
         feature_present_after=r_after > 0.5,
         verdict='pass' if passed else 'fail',
-    )
+    ), cand_eval, parent_eval
 
 
 def _check_safeguards(adapter: SystemAdapter, candidate: EvalResult, reference: EvalResult,
@@ -389,7 +427,8 @@ def _smoke_and_screen(adapter: SystemAdapter, config: ProtocolConfig, rec: Candi
                       smoke_ids: list[str], pool: list[str]) -> CandidateRecord:
     t0 = time.monotonic()
     try:
-        rec.smoke = _run_smoke(adapter, rec.candidate, rec.parent, rec.card, smoke_ids)
+        rec.smoke, *evals = _smoke(adapter, rec.candidate, rec.parent, rec.card, smoke_ids)
+        rec.smoke_evals = tuple(evals)
     except BudgetExhausted:
         raise
     except EvaluationUnavailable as exc:
@@ -403,8 +442,62 @@ def _smoke_and_screen(adapter: SystemAdapter, config: ProtocolConfig, rec: Candi
         return _stop(rec, 'error', f"smoke: {type(exc).__name__}: {exc}")
     rec.timings['smoke_s'] = rec.timings.get('smoke_s', 0.0) + time.monotonic() - t0
     if rec.smoke.verdict == 'fail':
+        # §2.1 失败后的处理: a behavioural failure (the predicate did not move as
+        # predicted) most likely means the change did not take effect: repair.
+        if rec.smoke.behavioral_check_ran and rec.attempt - 1 < config.smoke_repair_attempts:
+            return _repair(adapter, config, rec, smoke_ids, pool)
+        rec.smoke_evals = None
         return _stop(rec, 'smoke_fail')
+    rec.smoke_evals = None
     return _screen(adapter, config, rec, pool)
+
+
+def _repair(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord,
+            smoke_ids: list[str], pool: list[str]) -> CandidateRecord:
+    """§2.1 smoke repair: one more attempt of the same card on the same parent.
+
+    The smoke-failed attempt is kept as a superseded attempt (the main thread
+    records it first, §2.4 integrity); the record then continues as attempt
+    n+1: ``adapter.repair`` (smoke feedback from the search-set smoke sample)
+    → ``materialize`` → smoke → screening, exactly like the original attempt.
+    ``repair`` returning None (unsupported) leaves the smoke failure standing.
+    A per-card exception of the repair step ends the card as 'error' with
+    ``repair_failed`` (its history label stays smoke_fail).
+    """
+    t0 = time.monotonic()
+    cand_eval, parent_eval = rec.smoke_evals or (None, None)
+    rec.smoke_evals = None
+    attempt = rec.attempt + 1
+    error = None
+    try:
+        diff = adapter.repair(rec.card, rec.parent, rec.candidate, smoke=rec.smoke,
+                              candidate_smoke=cand_eval, parent_smoke=parent_eval, attempt=attempt)
+    except EvaluationUnavailable:
+        raise
+    except Exception as exc:  # per-card failure of the repair
+        log.warning("repair failed on card %r: %s", rec.card.failure_mode_desc[:40], exc)
+        diff, error = None, f"repair: {type(exc).__name__}: {exc}"
+    if diff is None and error is None:
+        return _stop(rec, 'smoke_fail')
+    failed = copy.copy(rec)
+    failed.prior_attempts, failed.timings = [], dict(rec.timings)
+    _stop(failed, 'smoke_fail')
+    rec.prior_attempts.append(failed)
+    rec.attempt, rec.repair_of = attempt, rec.candidate.content_hash
+    rec.diff, rec.candidate, rec.smoke, rec.rebased_from = diff, None, None, None
+    rec.timings, rec.started_at = {}, t0
+    if error is None:
+        try:
+            rec.candidate = adapter.materialize(diff, rec.parent)
+        except EvaluationUnavailable:
+            raise
+        except Exception as exc:
+            error = f"repair materialize: {type(exc).__name__}: {exc}"
+    rec.timings['repair_s'] = time.monotonic() - t0
+    if error is not None:
+        rec.repair_failed = True
+        return _stop(rec, 'error', error)
+    return _smoke_and_screen(adapter, config, rec, smoke_ids, pool)
 
 
 def _screen(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord,
@@ -574,6 +667,11 @@ class _Run:
         self.best_stale = False          # pool grew; best not yet re-measured
         # §2.3 history: one entry per hypothesis processed (labels only reach the analyst).
         self.history: list[dict] = []
+        # §2.1 逐级加码: consecutive no-adoption rounds of the current parent (restarts
+        # at 0 whenever the pointer moves), and per parent the failing search tasks
+        # already shown to an analyst in the current rotation cycle.
+        self.no_adoption: dict = dict(parent=None, rounds=0)
+        self.analyst_shown: dict[str, list[str]] = {}
         self.aborted_attempts: list[dict] = []   # halted records moved aside on retry
         self.halt_reason: Optional[str] = None
         self.started_at = _now()
@@ -648,6 +746,8 @@ class _Run:
             current_round=cur,
             run_failures=self.run_failures,
             history=self.history,
+            no_adoption=self.no_adoption,
+            analyst_shown=self.analyst_shown,
             aborted_attempts=self.aborted_attempts,
             key_generation=self.key_generation,
             key_generation_log=self.key_generation_log,
@@ -702,6 +802,9 @@ class _Run:
         self.rounds = [RoundResult(**r) for r in st["rounds"]]
         self.run_failures = st.get("run_failures", 0)
         self.history = list(st.get("history", []))
+        # Absent in states written before §2.1 escalation: first tier.
+        self.no_adoption = dict(st.get("no_adoption") or dict(parent=None, rounds=0))
+        self.analyst_shown = {h: list(v) for h, v in (st.get("analyst_shown") or {}).items()}
         self.aborted_attempts = list(st.get("aborted_attempts", []))
         self.key_generation = st.get("key_generation", 0)
         self.key_generation_log = list(st.get("key_generation_log", []))
@@ -791,17 +894,60 @@ class _Run:
                           alpha_warning(self.halt.confirmations_used))
 
     def history_for(self, parent: Version) -> list[dict]:
-        """§2.3: labels of hypotheses processed under *parent*; no scores, deltas or task ids."""
+        """§2.3: labels of hypotheses processed under *parent*; no scores, deltas or task ids.
+
+        Entries tried on nodes of a rolled-back segment are listed under the
+        certified node the pointer returned to (``_milestone_confirm``).
+        """
         out = []
         for e in self.history:
             if e["parent"] != parent.content_hash:
                 continue
             item = dict(title=e["title"], label=e["label"])
+            # §2.1 失败后的处理: discrete details only (labels, safeguard key names, flags).
+            if e.get("smoke"):
+                item["smoke"] = e["smoke"]
+            if e.get("safeguards_breached"):
+                item["safeguards_breached"] = list(e["safeguards_breached"])
+            if e.get("repaired"):
+                item["repaired"] = True
+            if e.get("rolled_back_segment"):
+                item["rolled_back_segment"] = True
             if e.get("attribution"):
                 item["attribution"] = e["attribution"]
                 item["attribution_possibly_biased"] = bool(e.get("attribution_possibly_biased"))
             out.append(item)
         return out
+
+    def no_adoption_rounds(self, parent: Version) -> int:
+        """§2.1 逐级加码: consecutive no-adoption rounds under *parent* (0 unless it is the pointer's count)."""
+        na = self.no_adoption
+        return na.get('rounds', 0) if na.get('parent') == parent.content_hash else 0
+
+    def _count_no_adoption(self, round_res: RoundResult) -> None:
+        """Update the §2.1 no-adoption count at the end of a finished round.
+
+        A no-adoption round ends with the parent pointer where it started,
+        with no adoption and no confirmation in between. Any pointer movement
+        (adoption, confirmation, or a rollback, even one returning to the
+        round's own start) restarts the count at 0 for the new pointer and
+        clears its rotation record: the next diagnosis uses the first tier
+        (restart-on-pointer-change; a certified node returned to after a
+        rollback does not continue an earlier count).
+        """
+        end = self.pointer().content_hash
+        start = round_res.analysis.get('parent')
+        stayed = (start == end and round_res.screen_passed == 0
+                  and not round_res.milestone_triggered)
+        if stayed:
+            same = self.no_adoption.get('parent') == end
+            self.no_adoption = dict(parent=end, rounds=(self.no_adoption.get('rounds', 0) if same else 0) + 1)
+        else:
+            self.no_adoption = dict(parent=end, rounds=0)
+            self.analyst_shown.pop(end, None)
+        if round_res.analysis:
+            round_res.analysis.update(pointer_moved=not stayed,
+                                      no_adoption_rounds_after=self.no_adoption['rounds'])
 
     # -- top level ----------------------------------------------------------
 
@@ -863,6 +1009,7 @@ class _Run:
                 round_res.halt_reason = failure
                 return self._finish(failure)
             self.halt.record_round(round_res.screen_passed)
+            self._count_no_adoption(round_res)
             round_res.finished_at = _now()
             self.current = None
             self._save()
@@ -878,11 +1025,30 @@ class _Run:
             # Search-set runs share k with screening (one SN measure covers search ∪ validation).
             parent_eval_search = self.adapter.evaluate(parent_v, self.search_set_ids,
                                                        self.config.k_screen, purpose='diagnose')
-            selected, roles = select_analysis_cases(parent_eval_search, self.config)
+            # §2.1 逐级加码: rotation over failing tasks not yet shown under this
+            # parent, and a larger case cap per consecutive no-adoption round.
+            n_stuck = self.no_adoption_rounds(parent_v)
+            shown = self.analyst_shown.get(parent_v.content_hash, [])
+            max_failures = min(len(self.search_set_ids),
+                               self.config.analyst_max_failures + n_stuck * self.config.analyst_max_failures_step)
+            selected, roles = select_analysis_cases(parent_eval_search, self.config, shown=shown,
+                                                    max_failures=max_failures)
             n_cards = self.config.analyst_cards or self.config.b_cards
             cards = self.adapter.analyse(selected, n_cards, case_roles=roles,
                                          parent=parent_v, round_id=round_res.round_id,
-                                         history=self.history_for(parent_v))
+                                         history=self.history_for(parent_v),
+                                         no_adoption_rounds=n_stuck)
+            failures = [t for t, r in roles.items() if r == 'failure']
+            restarted = _rotation_restarts(parent_eval_search, self.config, shown)
+            before = set() if restarted else set(shown)
+            self.analyst_shown[parent_v.content_hash] = (
+                [] if restarted else list(shown)) + [t for t in failures if t not in before]
+            stats = getattr(self.adapter, 'last_analysis', None)
+            round_res.analysis = dict(
+                parent=parent_v.content_hash, no_adoption_rounds=n_stuck, max_failures=max_failures,
+                failures_shown=len(failures), failures_new=sum(t not in before for t in failures),
+                rotation_cycle_restarted=restarted, controls_shown=len(roles) - len(failures),
+                adapter=dict(stats) if isinstance(stats, dict) else None)
             progress.cards = list(cards)
             round_res.cards_generated = len(cards)
             round_res.cards_with_predicate = sum(c.predicate is not None for c in cards)
@@ -1092,6 +1258,13 @@ class _Run:
     def _record(self, round_res: RoundResult, rec: CandidateRecord, verdict: str,
                 reason: Optional[str], *, score_val: Optional[float] = None,
                 best_before: Optional[float] = None, halted: bool = False) -> None:
+        # §2.4 integrity: the card's superseded (smoke-failed, then repaired)
+        # attempts first, each its own record; they never enter the history.
+        for prior in rec.prior_attempts:
+            round_res.candidates.append(self._attempt_record(
+                prior, 'smoke_fail', f"repaired: attempt {prior.attempt + 1} follows",
+                halted=halted, superseded=True))
+        rec.prior_attempts = []
         if rec.smoke is not None and rec.smoke.verdict != 'fail' and verdict != 'smoke_fail':
             round_res.smoke_passed += 1
         if (verdict == 'error' and rec.delta_val is None and rec.eval_result is not None
@@ -1101,7 +1274,22 @@ class _Run:
             if len(xs) >= 2:
                 d = paired_differences(xs, ys)
                 rec.delta_val, rec.se_val = mean_delta(d), paired_se(d)
-        round_res.candidates.append(dict(
+        round_res.candidates.append(self._attempt_record(rec, verdict, reason, score_val=score_val,
+                                                         best_before=best_before, halted=halted))
+        if halted:
+            return   # not a decision: the card stays in flight for a retry
+        if self.current is not None:
+            self.current.inflight.pop(rec.card_index, None)
+        label = self._HISTORY_LABEL.get(verdict)
+        if label is None and rec.repair_failed:
+            label = 'smoke_fail'   # the repair produced no candidate: the smoke failure stands
+        if label is not None:
+            self.history.append(self._history_entry(round_res, rec, label))
+
+    def _attempt_record(self, rec: CandidateRecord, verdict: str, reason: Optional[str], *,
+                        score_val: Optional[float] = None, best_before: Optional[float] = None,
+                        halted: bool = False, superseded: bool = False) -> dict:
+        return dict(
             card_ref=rec.card.ref or rec.card.failure_mode_desc[:60],
             title=rec.card.failure_mode_desc,
             card_index=rec.card_index,
@@ -1125,17 +1313,34 @@ class _Run:
             has_predicate=rec.card.predicate is not None,
             resumed=rec.resumed,
             halted=halted,
-        ))
-        if halted:
-            return   # not a decision: the card stays in flight for a retry
-        if self.current is not None:
-            self.current.inflight.pop(rec.card_index, None)
-        label = self._HISTORY_LABEL.get(verdict)
-        if label is not None:
-            self.history.append(dict(
-                round_id=round_res.round_id, parent=rec.parent.content_hash,
-                candidate=rec.candidate.content_hash if rec.candidate else None,
-                card_ref=rec.card.ref, title=rec.card.failure_mode_desc, label=label))
+            attempt=rec.attempt,
+            repair_of=rec.repair_of,
+            repaired=rec.attempt > 1,
+            superseded=superseded,
+        )
+
+    @staticmethod
+    def _history_entry(round_res: RoundResult, rec: CandidateRecord, label: str) -> dict:
+        """One §2.3 history entry, with the §2.1 失败后的处理 discrete details.
+
+        screen_fail carries the smoke conclusion ('behaviour_changed': the
+        behavioural smoke passed; 'unchecked': no behaviour check ran);
+        unmeasurable carries the names of the breached safeguards (never their
+        values); a repaired attempt is marked ``repaired``.
+        """
+        entry = dict(round_id=round_res.round_id, parent=rec.parent.content_hash,
+                     candidate=rec.candidate.content_hash if rec.candidate else None,
+                     card_ref=rec.card.ref, title=rec.card.failure_mode_desc, label=label)
+        if rec.attempt > 1:
+            entry['repaired'] = True
+        if label == 'screen_fail' and rec.smoke is not None:
+            entry['smoke'] = ('behaviour_changed' if rec.smoke.behavioral_check_ran
+                              and rec.smoke.verdict == 'pass' else 'unchecked')
+        if label == 'unmeasurable':
+            breached = _breached_safeguards(rec.safeguards)
+            if breached:
+                entry['safeguards_breached'] = breached
+        return entry
 
     # -- milestone confirmation ---------------------------------------------
 
@@ -1233,9 +1438,20 @@ class _Run:
         for e in self.history:
             if e['label'] == 'provisional_adopted' and e.get('candidate') in seg_hashes:
                 e['label'] = verdict
+                if verdict == 'unmeasurable' and _breached_safeguards(safeguards):
+                    e['safeguards_breached'] = _breached_safeguards(safeguards)   # names only
                 if e['candidate'] == end_v.content_hash:
                     e['attribution'] = attribution['label']
                     e['attribution_possibly_biased'] = bool(attribution.get('possibly_biased'))
+        if verdict != 'confirmed':
+            # §2.1 失败后的处理: every hypothesis tried on a node of the rolled-back
+            # segment (adopted or not) is listed under the certified node the
+            # pointer returns to, marked as tried in a rolled-back segment.
+            for e in self.history:
+                if e['parent'] in seg_hashes:
+                    e.setdefault('tried_under', e['parent'])
+                    e['parent'] = start_v.content_hash
+                    e['rolled_back_segment'] = True
 
         # Fold F_i into the validation pool (all outcomes), then recompute m.
         # Best is re-measured on the enlarged pool (_refresh_best). On rollback
@@ -1321,24 +1537,54 @@ class _Run:
 # Analyst case selection (§2.3)
 # ---------------------------------------------------------------------------
 
+def _failing(search_eval: EvalResult, config: ProtocolConfig) -> list[str]:
+    """Failing search tasks, worst first (ties by task id)."""
+    scores = search_eval.per_task_scores
+    return sorted((t for t, s in scores.items() if s < config.analyst_failure_threshold),
+                  key=lambda t: (scores[t], t))
+
+
+def _rotation_restarts(search_eval: EvalResult, config: ProtocolConfig,
+                       shown: Optional[list[str]]) -> bool:
+    """True when every failing task was already shown: the rotation starts a new cycle."""
+    seen = set(shown or ())
+    return bool(seen) and all(t in seen for t in _failing(search_eval, config))
+
+
 def select_analysis_cases(
-    search_eval: EvalResult, config: ProtocolConfig,
+    search_eval: EvalResult, config: ProtocolConfig, *,
+    shown: Optional[list[str]] = None, max_failures: Optional[int] = None,
 ) -> tuple[dict[str, list], dict[str, str]]:
     """Pick the search cases the analyst sees; returns (trajectories, roles).
 
-    Failures: score < analyst_failure_threshold, worst first (ties by task id).
+    Failures: score < analyst_failure_threshold, worst first (ties by task id),
+    at most *max_failures* (default analyst_max_failures).
     Controls: passing tasks ordered by sha256(task_id), so the choice is fixed
     and does not depend on which candidate is being diagnosed. The analyst
     receives only these trajectory stubs and a failure/control label, no scores.
+
+    §2.1 轮换选题: failing tasks in *shown* (already shown to an analyst under
+    this parent) come after the unshown ones, each group worst first; once
+    every failing task was shown the rotation starts a new cycle (``shown``
+    ignored, ``_rotation_restarts``).
     """
     scores = search_eval.per_task_scores
-    failures = sorted((t for t, s in scores.items() if s < config.analyst_failure_threshold),
-                      key=lambda t: (scores[t], t))[:config.analyst_max_failures]
+    cap = config.analyst_max_failures if max_failures is None else max_failures
+    failing = _failing(search_eval, config)
+    seen = set() if _rotation_restarts(search_eval, config, shown) else set(shown or ())
+    failures = ([t for t in failing if t not in seen] + [t for t in failing if t in seen])[:cap]
     passing = sorted((t for t, s in scores.items() if s >= config.analyst_failure_threshold),
                      key=lambda t: hashlib.sha256(t.encode()).hexdigest())[:config.analyst_n_controls]
     roles = {**{t: 'failure' for t in failures}, **{t: 'control' for t in passing}}
     trajectories = {t: search_eval.trajectories.get(t, []) for t in roles}
     return trajectories, roles
+
+
+def _breached_safeguards(check: Optional[dict]) -> list[str]:
+    """Names of the breached safeguards of a SystemAdapter.safeguards result (no values)."""
+    prefix = 'safeguard_breached:'
+    return sorted({r[len(prefix):] for r in (check or {}).get('reasons') or []
+                   if isinstance(r, str) and r.startswith(prefix)})
 
 
 # ---------------------------------------------------------------------------

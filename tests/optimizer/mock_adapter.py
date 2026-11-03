@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Optional
 
-from rag_eval.optimizer.adapter import Card, Diff, EvalResult, Predicate, SystemAdapter, Version
+from rag_eval.optimizer.adapter import Card, Diff, EvalResult, Predicate, SmokeResult, SystemAdapter, Version
 
 
 class MockAdapter(SystemAdapter):
@@ -34,7 +34,10 @@ class MockAdapter(SystemAdapter):
         deltas / smoke_pass) or a dict spec overriding them per card:
             {"name": str, "deltas": {...}, "smoke_pass": bool,
              "sleep": seconds spent in implement(),
-             "rebase": bool (rebase() returns a Version instead of None)}
+             "rebase": bool (rebase() returns a Version instead of None),
+             "repair": dict overriding the spec for the repaired attempt
+                       (absent: repair() returns None, i.e. unsupported);
+                       "repair": {"raise": True} makes repair() fail}
         The loop reads one entry per round.  When the loop asks for more
         rounds than script provides, an empty card list is returned
         (drives the 'no_candidates' halt).
@@ -76,6 +79,11 @@ class MockAdapter(SystemAdapter):
         self.rebase_calls = 0
         # history argument of every analyse() call (§2.3 labels)
         self.history_calls: list[Optional[list[dict]]] = []
+        # no_adoption_rounds and selected case roles of every analyse() call (§2.1 逐级加码)
+        self.no_adoption_calls: list[int] = []
+        self.roles_calls: list[dict] = []
+        # one dict per repair() call (§2.1 smoke repair)
+        self.repair_calls: list[dict] = []
         # (method, Version) for every Version the loop hands to the adapter.
         self.received: list[tuple[str, Version]] = []
         # (purpose, version_hash, task_ids) for every evaluate() call.
@@ -188,9 +196,12 @@ class MockAdapter(SystemAdapter):
         parent: Optional[Version] = None,
         round_id: Optional[int] = None,
         history: Optional[list[dict]] = None,
+        no_adoption_rounds: int = 0,
     ) -> list[Card]:
         self.analyse_calls += 1
         self.history_calls.append(list(history) if history is not None else None)
+        self.no_adoption_calls.append(no_adoption_rounds)
+        self.roles_calls.append(dict(case_roles or {}))
         if parent is not None:
             self._receive("analyse", parent)
         # The loop round picks the script entry (call count if not given).
@@ -230,3 +241,23 @@ class MockAdapter(SystemAdapter):
                       "smoke_pass": spec.get("smoke_pass", True),
                       "spec": spec},
         )
+
+    def repair(self, card: Card, parent: Version, failed: Version, *, smoke: SmokeResult,
+               candidate_smoke: EvalResult, parent_smoke: EvalResult, attempt: int) -> Optional[Diff]:
+        self._receive("repair", parent)
+        with self._lock:
+            spec = self._card_specs[card.ref]
+            self.repair_calls.append(dict(card=card.ref, parent=parent.content_hash, failed=failed.content_hash,
+                                          attempt=attempt, smoke_verdict=smoke.verdict,
+                                          candidate_tasks=sorted(candidate_smoke.trajectories),
+                                          parent_tasks=sorted(parent_smoke.trajectories)))
+        override = spec.get("repair")
+        if override is None:
+            return None
+        if override.get("raise"):
+            raise RuntimeError("repair agent failed")
+        repaired = {**spec, **override}
+        return Diff(content=f"# repair {attempt} for {card.failure_mode_desc}", test_refs=(),
+                    metadata={"deltas": repaired.get("deltas", {}),
+                              "smoke_pass": repaired.get("smoke_pass", True),
+                              "spec": repaired})

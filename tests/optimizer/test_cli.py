@@ -160,6 +160,10 @@ def test_unknown_subcommand_and_missing_args_exit_2(tmp_path, services, capsys):
     (dict(smoke_sample_size=0), "smoke_sample_size"),
     (dict(analyst_profile=""), "non-empty string"),
     (dict(analyst_view_budget=60001), "analyst_view_budget"),
+    (dict(smoke_repair_attempts=-1), "smoke_repair_attempts must be >= 0"),
+    (dict(analyst_max_failures_step=-2), "analyst_max_failures_step must be >= 0"),
+    (dict(analyst_view_budget_step=-1), "analyst_view_budget_step must be >= 0"),
+    (dict(analyst_view_budget_step=0.5), "integer"),
 ])
 def test_protocol_file_is_strict(tmp_path, services, capsys, overrides, message):
     adapter = services(FakeSN([]))
@@ -186,6 +190,22 @@ def test_load_protocol_maps_fields_and_defaults(tmp_path):
     assert p.resolved["smoke_sample_size"] == 4 and p.resolved["mde"] == 0.05
     raw = (tmp_path / "protocol.json").read_bytes()
     assert p.sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_failure_handling_parameters_are_pre_registered(tmp_path):
+    """§2.1 失败后的处理: defaults when absent; the ProtocolConfig ones enter the config sha256."""
+    from rag_eval.optimizer import ledger_io
+    p = cli.load_protocol(write_protocol(tmp_path))
+    assert (p.config.smoke_repair_attempts, p.config.analyst_max_failures_step) == (1, 0)
+    assert p.adapter_settings["analyst_view_budget_step"] == 0
+    assert {k: p.resolved[k] for k in ("smoke_repair_attempts", "analyst_max_failures_step",
+                                       "analyst_view_budget_step")} == dict(
+        smoke_repair_attempts=1, analyst_max_failures_step=0, analyst_view_budget_step=0)
+    q = cli.load_protocol(write_protocol(tmp_path, name="q.json", smoke_repair_attempts=0,
+                                         analyst_max_failures_step=4, analyst_view_budget_step=2000))
+    assert (q.config.smoke_repair_attempts, q.config.analyst_max_failures_step) == (0, 4)
+    assert q.adapter_settings["analyst_view_budget_step"] == 2000
+    assert ledger_io.config_digest(p.config)[1] != ledger_io.config_digest(q.config)[1]
 
 
 def test_changed_protocol_file_refused_on_resume(tmp_path, services, capsys):

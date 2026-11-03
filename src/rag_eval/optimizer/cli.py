@@ -65,6 +65,7 @@ ADAPTER_DEFAULTS: dict[str, Any] = dict(
     agent_timeout=5400.0,
     worktree_timeout=600.0,
     analyst_view_budget=12000,
+    analyst_view_budget_step=0,      # §2.1 逐级加码: + chars per no-adoption round (cap MAX_ANALYST_VIEW_BUDGET)
     eval_poll_interval=30.0,
     eval_timeout=7200.0,
     infra_retry=1,
@@ -165,6 +166,12 @@ def load_protocol(path: str | Path) -> Protocol:
             raise UsageError(f"{key} must be >= 1")
     if cfg_values.get("analyst_cards") is not None and cfg_values["analyst_cards"] < 1:
         raise UsageError("analyst_cards must be >= 1 or null")
+    # §2.1 失败后的处理 / 逐级加码: 0 disables the repair or the step-up.
+    for key in ("smoke_repair_attempts", "analyst_max_failures_step"):
+        if key in cfg_values and cfg_values[key] < 0:
+            raise UsageError(f"{key} must be >= 0")
+    if data.get("analyst_view_budget_step", 0) < 0:
+        raise UsageError("analyst_view_budget_step must be >= 0")
     from .sn_adapter import MAX_ANALYST_VIEW_BUDGET
     budget = data.get("analyst_view_budget", ADAPTER_DEFAULTS["analyst_view_budget"])
     if not 0 < budget <= MAX_ANALYST_VIEW_BUDGET:
