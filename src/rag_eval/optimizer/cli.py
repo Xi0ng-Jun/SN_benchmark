@@ -159,7 +159,8 @@ def load_protocol(path: str | Path) -> Protocol:
     for key in ("max_rounds", "smoke_sample_size"):
         if data[key] < 1:
             raise UsageError(f"{key} must be >= 1")
-    for key in ("b_cards", "k_screen", "K_max", "n_fresh"):
+    for key in ("b_cards", "k_screen", "K_max", "n_fresh", "max_rounds_without_screen_pass",
+                "max_consecutive_rejections"):
         if key in cfg_values and cfg_values[key] < 1:
             raise UsageError(f"{key} must be >= 1")
     if cfg_values.get("analyst_cards") is not None and cfg_values["analyst_cards"] < 1:

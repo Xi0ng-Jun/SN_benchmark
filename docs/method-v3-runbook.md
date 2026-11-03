@@ -39,7 +39,7 @@ JSON 对象，未知键直接拒绝。首次 `run` 把文件 sha256、原文副�
 |---|---|---|
 | `mde`, `sigma_d`, `ladder_c`, `K_max`, `T`, `n_fresh` | 是 | `ProtocolConfig` 必填字段 |
 | `max_rounds`, `smoke_sample_size` | 是 | 轮数上限；冒烟样本量（规则：搜索集 id 按 sha256(case_id) 排序取前 N，存 `smoke-sample.json`） |
-| 其余 `ProtocolConfig` 字段 | 否 | `z_screen`, `z_confirm`, `b_cards`, `k_screen`（必须等于迭代的 `k_base`，否则启动前拒绝）, `max_confirmations`, `predicate_coverage_floor`, `analyst_failure_threshold`, `analyst_max_failures`, `analyst_n_controls`, `analyst_cards`, `max_consecutive_run_failures`, `attribution_n_min`; `k_smoke` 只能是 1；不接受 `n_smoke_sample`（用 `smoke_sample_size`）；不接受非空 `safeguard_bounds`：保护指标只来自迭代协议里预注册的 v2 `safeguards`（迭代没有就拒绝 `run`） |
+| 其余 `ProtocolConfig` 字段 | 否 | `z_screen`, `z_confirm`, `b_cards`, `k_screen`（必须等于迭代的 `k_base`，否则启动前拒绝）, `max_confirmations`, `predicate_coverage_floor`, `analyst_failure_threshold`, `analyst_max_failures`, `analyst_n_controls`, `analyst_cards`, `max_consecutive_run_failures`, `max_rounds_without_screen_pass`（默认 2：连续多少轮无候选过筛即停机 `no_candidates`）, `max_consecutive_rejections`（默认 2：连续多少次确认被拒即停机 `no_improvement`）, `attribution_n_min`; `k_smoke` 只能是 1；不接受 `n_smoke_sample`（用 `smoke_sample_size`）；不接受非空 `safeguard_bounds`：保护指标只来自迭代协议里预注册的 v2 `safeguards`（迭代没有就拒绝 `run`） |
 | 适配器设置 | 否 | `analyst_profile`, `implementer_profile`（默认 `pi-flash`）, `agent_poll_interval`(30), `agent_timeout`(5400), `worktree_timeout`(600), `analyst_view_budget`(12000, ≤60000；证据文件的字符预算，不受 v2 消息上限约束), `eval_poll_interval`(30), `eval_timeout`(7200), `infra_retry`(1), `execution_timeout_seconds`(7200) |
 
 ## 第 1 级：只测 analyse()

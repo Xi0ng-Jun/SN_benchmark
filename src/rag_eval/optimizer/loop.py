@@ -95,6 +95,10 @@ class ProtocolConfig:
     # §2.5 流程故障: consecutive candidates whose smoke run itself failed
     # (crash / not admitted) before the loop halts as a process failure.
     max_consecutive_run_failures: int = 3
+    # §2.5 停机: consecutive rounds with no screen pass ('no_candidates') and
+    # consecutive rejected confirmations ('no_improvement') before the loop halts.
+    max_rounds_without_screen_pass: int = 2
+    max_consecutive_rejections: int = 2
     # §2.2 归因: minimum slice size |S| on the fresh batch; below it the
     # attribution label is 'insufficient'.
     attribution_n_min: int = 5
@@ -220,14 +224,14 @@ class HaltTracker:
     def can_confirm(self, max_confirmations: int) -> bool:
         return self.fresh_batches_remaining > 0 and self.confirmations_used < max_confirmations
 
-    def halt_reason(self, max_confirmations: int) -> Optional[str]:
+    def halt_reason(self, config: 'ProtocolConfig') -> Optional[str]:
         if self.fresh_batches_remaining <= 0:
             return 'fresh_exhausted'
-        if self.consecutive_rejected_confirmations >= 2:
+        if self.consecutive_rejected_confirmations >= config.max_consecutive_rejections:
             return 'no_improvement'
-        if self.consecutive_no_screen_pass >= 2:
+        if self.consecutive_no_screen_pass >= config.max_rounds_without_screen_pass:
             return 'no_candidates'
-        if self.confirmations_used >= max_confirmations:
+        if self.confirmations_used >= config.max_confirmations:
             return 'max_confirmations'
         return None
 
@@ -829,7 +833,7 @@ class _Run:
 
         while True:
             if self.current is None:
-                reason = self.halt.halt_reason(self.config.max_confirmations)
+                reason = self.halt.halt_reason(self.config)
                 if reason is not None:
                     return self._finish(reason)
                 if self.round_counter >= max_rounds:

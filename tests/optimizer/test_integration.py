@@ -78,6 +78,17 @@ class TestHaltNoCandidates:
         assert result.halt_reason == 'no_candidates'
         assert result.rounds[-1].cards_generated == 0
 
+    @pytest.mark.parametrize("limit", [2, 3])
+    def test_no_screen_pass_limit_is_preregistered(self, limit):
+        adapter = MockAdapter(script=[], n_tasks=6)
+        result = run_optimization(
+            adapter, adapter.seed, _config(max_rounds_without_screen_pass=limit),
+            search_set_ids=_val_pool_ids(), val_pool_ids=_val_pool_ids(),
+            fresh_batch_ids=_fresh_batches(), smoke_sample_ids=_smoke_ids(), max_rounds=10,
+        )
+        assert result.halt_reason == 'no_candidates'
+        assert len(result.rounds) == limit
+
 
 # ---------------------------------------------------------------------------
 # Test: happy path — two screen_passes trigger a milestone confirmation
