@@ -1,62 +1,113 @@
-# Silicon Notebook RAG Benchmark + DeepEval
+# RAG System Optimizer
 
-这是 Silicon Notebook 的离线评测仓库。目标是用公开任务、Notebook 场景和 Agent 轨迹解释系统的回答、检索、引用和评分表现，并保存可复查的输入、输出、配置和错误。
+This repository implements **Method v3**: a pre-registered, agent-driven optimization protocol for RAG (Retrieval-Augmented Generation) systems. It automatically searches for performance improvements through hypothesis generation, implementation, screening, and confirmation on held-out data.
 
-## 当前入口
+## Overview
 
-先读 [CURRENT_STATE.md](CURRENT_STATE.md) 了解当前目标、不变量与执行范围；安装、启动、测试和服务器交付看 [RUNBOOK.md](RUNBOOK.md)，实现关系看[当前架构](ARCHITECTURE_CURRENT.md)，执行证据看[验证与实验记录](docs/evaluation-status.md)。当前主线已经合并 Dashboard 实验地图和原生评分恢复；Notebook 协议与比较实现位于 `feat/benchmark-protocol-correctness`，执行前核实实际 checkout，服务器状态以实际产物为准。
+Method v3 is a complete implementation of the protocol described in the accompanying paper. Key features:
 
-2026-10-13源码执行切片已增加显式captured启动路径、正常provider的Settings／registry／scheduled Future代际观测，以及E4保存journal的run级结构审计，经独立审在披露范围闭合。完整reader、aggregation和report可见配对／pending／截断；不证明完整历史、HTTP／模型／scorer／Job完成，也不归入逐题事件。E3d原M1结论保留，逐题展示仍未接入；启动比较相同不证明后续调用代际相同。旧 Job v1 的意图记录仍为 `executable=false`；后续工作台 execution 层已接显式确认运行的 captured runner，已有固定三题闭环，但不代表正式成绩。源码执行阶段的范围与失败证据见[唯一源码执行记录](docs/superpowers/plans/2026-10-12-sn-workbench-source-execution.md)。
+- **Pre-registered protocol**: All statistical thresholds, sample sizes, and decision rules are fixed before the run
+- **Automatic hypothesis generation**: An analyst agent reads failure cases and proposes targeted fixes
+- **Parallel candidate evaluation**: Multiple hypotheses tested concurrently with screening on a validation pool
+- **Fresh-batch confirmation**: Adopted improvements are confirmed on previously unseen test cases to control for selection bias
+- **Sealed lineage evaluation**: Final performance measured on a sealed holdout set with family-wise error control
 
-外部方法比较的最新本地结果与重放命令见[外部答卷与受控方法](docs/notebook-external-results-2026-09-28.md)：Multi-Meta-RAG 两模型完整 2,556 题、ALCE 八份样本答卷及 ASQA 文本配对、QMSum Socratic SegEnc 的 281 题 Perl 重评分，以及 QASPER LAB、HotpotQA KG2RAG、ALCE VANILLA 受控运行入口；正式 SN 对外部方法的比较仍待服务器运行。
+The system is designed to optimize a target RAG system (e.g., Silicon Notebook) while maintaining statistical rigor and preventing overfitting.
 
-当前主要命令：
+## Architecture
 
-- `scripts/build_experiment_dashboard.py`：只读已有 run，生成实验地图、单题回放和结果分析。
-- `scripts/prepare_notebook_benchmarks.py`、`scripts/run_notebook_benchmarks.py`：准备和运行 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA。
-- `scripts/run_notebook_baseline.py`：运行 QMSum BM25 + 显式生成模型对照。
-- `scripts/run_notebook_agent.py`：运行 SN 原生 DeepEval 组件或显式完整轨迹评测。
-- `scripts/score_native_components.py`：从已保存组件建立独立补评批次。
+**Core optimizer** (`src/rag_eval/optimizer/`):
+- `loop.py`: Main optimization loop with screening, confirmation, and halt logic
+- `stats.py`: Statistical decision rules (Ladder-m screening, Holm-Bonferroni confirmation)
+- `adapter.py`: Abstract interface to the target RAG system
+- `sn_adapter.py`: Concrete adapter for Silicon Notebook via workbench API
+- `ledger_io.py`: Durable state management and resume support
 
-这些命令可能调用 Silicon Notebook 或模型服务。当前本地只做离线检查，不自动启动 SN、judge、下载、timer 或生产部署。服务器操作必须使用专题文档中的独立 run-dir、配置和身份。
+**Workbench** (`src/rag_eval/workbench/`):
+- HTTP API server for managing optimization runs
+- Integration with Silicon Notebook v2 candidate/measurement services
+- Automatic run registration and monitoring
+- UI for viewing lineage curves and sealed results
 
-**2026-09-29 支持范围已确定只保留 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA。** 其他旧 benchmark 专属代码、测试、配置、受跟踪数据／结果与文档已清理，详见 [DELETION_LOG.md](DELETION_LOG.md)；五套内外部方法、Agent 和 Dashboard 继续保留。删除边界与测试／门禁／兼容层盘点见 [TRIAGE.md](TRIAGE.md)。
+**CLI** (`src/rag_eval/optimizer/cli.py`):
+- `sn-method-v3 run`: Start an optimization run
+- `sn-method-v3 sealed`: Evaluate sealed lineage after run completion
+- `sn-method-v3 status`: Monitor run progress
 
-## 文档分层
+## Documentation
 
-- [当前状态 SPEC](CURRENT_STATE.md)：目标、不变量、活跃约束、废弃假设、暂缓债务和非目标；开发首读页。
-- [当前架构](ARCHITECTURE_CURRENT.md)：入口、数据存储、模块调用、依赖、演进和高风险修改边界。
-- [验证与实验记录](docs/evaluation-status.md)：代码快照、已有验证证据和阶段进展。
-- [稳定约束](docs/evaluation-context.md)：范围、证据分层、隔离和非目标。
-- [文档导航](docs/README.md)：当前协议、专题说明和历史归档的索引。
-- [Benchmark Wiki](docs/benchmark-wiki/README.md)：由浅入深了解 benchmark 来源、运行实现、方法比较和结果解释。
-- [历史归档](docs/archive/README.md)：五套与共用功能的旧交接和阶段性设计；退役套件专属文档已删除。
+- [Method v3 Runbook](docs/method-v3-runbook.md): Protocol parameters, pre-registration, and execution guide
+- [Workbench API](docs/evaluation-improvement-workbench-prd.md): Server setup and API reference
+- [Failure Ledger](docs/failure-ledger.md): Error handling and recovery procedures
 
-## 安装
+## Installation
 
 ```bash
-# 在所选 evaluator checkout 根目录执行；已有 .venv 时不要覆盖。
+# Create a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev,deepeval,notebook]'
+
+# Install the optimizer package with development dependencies
+pip install -e '.[dev]'
 ```
 
-完整离线测试需要 `dev,deepeval` 依赖，但不调用模型。产品观测集成测试与 Perl ROUGE 测试的额外前提见 RUNBOOK。产品依赖、模型服务配置和密钥不随仓库分发。
+For workbench UI development:
+```bash
+cd apps/sn-workbench
+npm install
+npm run dev  # Start development server
+npm run build  # Build for production
+```
 
-## 测试
+## Quick Start
+
+### Running an optimization
 
 ```bash
-.venv/bin/python -m pytest -q -rs
-node --test tests/dashboard_core.test.cjs tests/explorer_core.test.cjs tests/map_view.test.cjs
+# Start the workbench server
+python -m rag_eval.workbench.cli serve --config config.json --port 8093
+
+# In another terminal, start an optimization run
+sn-method-v3 run \
+  --iteration-id my-run \
+  --protocol protocol.json \
+  --state-dir ./runs/my-run
 ```
 
-本地测试验证代码、协议和离线报告。它们不等于服务器模型或 judge 实验验收。
+### Evaluating the sealed lineage
 
-## 数据和结果
+After a run completes:
 
-大体量数据、原始运行目录、产品源码快照、数据库、模型日志和私有候选资料保留在本机隔离目录，不随 Git 上传。结果记录必须区分本地核实、服务器转述、人工判断和暂定假设；错误、缺失和不适用不补零。
+```bash
+sn-method-v3 sealed \
+  --state-dir ./runs/my-run \
+  --confirm  # Confirm to run the evaluation
+```
 
-五套 benchmark 的官方成绩与 Agent／组件指标分别报告，不合成未经校准的总分或发布门槛。评测仓库地址为 [Xi0ng-Jun/SN_benchmark](https://github.com/Xi0ng-Jun/SN_benchmark)。
-## 服务器工作台交付
+### Monitoring progress
 
-在已有 SN 的服务器接入当前工作台，先读 [服务器 Agent 交接](docs/server-workbench-handoff.md)。Git 同步代码，数据、私有配置和运行 state 在服务器独立登记；`scripts/configure_workbench_server.py` 提供无模型初始化和本地检查。
+```bash
+# Check run status
+sn-method-v3 status --state-dir ./runs/my-run
+
+# Or view in the workbench UI at http://localhost:8093
+```
+
+## Testing
+
+```bash
+# Run Python tests
+pytest tests/
+
+# Run workbench UI tests
+cd apps/sn-workbench
+npm test
+```
+
+## Configuration
+
+See [Method v3 Runbook](docs/method-v3-runbook.md) for detailed protocol parameter configuration and pre-registration guidelines.
+
+## License
+
+See LICENSE file for details.

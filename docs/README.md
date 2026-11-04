@@ -1,6 +1,19 @@
-# Silicon Notebook 评测文档导航
+# Documentation Index
 
-阅读顺序是：先看当前状态 SPEC，再按需查看操作、架构与协议；实验记录提供证据，历史归档提供背景。2026-09-29 起仅保留 QASPER、MultiHop-RAG、ALCE、QMSum、HotpotQA；退役 benchmark 专属文档已删除，历史由 Git 回溯。
+This directory contains documentation for the RAG System Optimizer (Method v3).
+
+## Core Documentation
+
+- [Method v3 Runbook](method-v3-runbook.md): Complete protocol specification, parameter guide, and execution instructions
+- [Workbench PRD](evaluation-improvement-workbench-prd.md): Workbench server setup, API reference, and integration guide
+- [Failure Ledger](failure-ledger.md): Error handling, recovery procedures, and troubleshooting guide
+
+## Technical Reference
+
+- [Deferred Notebook Metadata](deferred-notebook-metadata.md): Preparation cache and lazy evaluation strategy
+- [Evaluation Context](evaluation-context.md): Isolation rules and evidence boundaries
+- [Evaluation Data Contract](evaluation-data-contract.md): Data formats and storage conventions
+- [Benchmark Metrics Reference](benchmark-metrics-reference.md): Statistical decision rules and metric calculations
 
 ## 当前状态与约束
 
