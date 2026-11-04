@@ -97,6 +97,99 @@ def smoke_plan(service, iteration, case_ids):
     return get(service.repository, iteration['id'], scope_id)
 
 
+def validation_scope_id(protocol):
+    """Content-addressed id of the validation pool (validation split + completed fresh batches).
+
+    Unlike smoke (search-only), this includes validation split cases and is extended
+    as fresh batches complete. The scope_id is deterministic based on case_ids.
+    """
+    splits = (protocol or {}).get('splits') or {}
+    validation_cases = set(splits.get('validation', ()))
+    if not validation_cases:
+        raise ValueError('Protocol must have a validation split')
+    import hashlib
+    # Note: This is a snapshot; caller must handle completed batches separately
+    return 'validation:' + hashlib.sha256('\n'.join(sorted(validation_cases)).encode()).hexdigest()[:16]
+
+
+def validation_pool_plan(service, iteration, completed_batch_ids=None):
+    """Register (idempotently) the frozen plan for the validation pool.
+
+    The validation pool includes the validation split plus all completed fresh batches.
+    Unlike smoke/cluster (which are fixed), this scope can grow as batches complete.
+
+    Parameters
+    ----------
+    completed_batch_ids : list[str] or None
+        Batch IDs already completed and folded into the validation pool.
+        If None, only the validation split is included.
+    """
+    from .splits import Policy
+    protocol = iteration['protocol']
+    splits = protocol.get('splits') or {}
+    task = iteration['task_id']
+
+    # Build case set: validation split + completed batch cases
+    cases = set(splits.get('validation', ()))
+    if completed_batch_ids:
+        for batch_id in completed_batch_ids:
+            batch = next((b for b in protocol.get('fresh_batches', [])
+                         if b['batch_id'] == batch_id), None)
+            if batch:
+                cases.update(batch['case_ids'])
+
+    if not cases:
+        raise ValueError('Validation pool is empty')
+
+    members = sorted(cases)
+
+    # Content-addressed scope_id based on actual case set
+    import hashlib
+    scope_id = 'validation:' + hashlib.sha256('\n'.join(members).encode()).hexdigest()[:16]
+
+    # Check if already registered
+    try:
+        return get(service.repository, iteration['id'], scope_id)
+    except UnknownIdentity:
+        pass
+
+    # Register with v2 splits policy (validation role)
+    policy = Policy(service.repository, task)
+    for cid in members:
+        # Validation pool cases may be from validation split or fresh batches
+        # Don't require_search; these are validation cases
+        pass
+
+    p = service.plans.save(
+        task_id=task,
+        input_id=protocol['input']['input_id'],
+        expected_bundle_id=protocol['input']['bundle_id'],
+        case_ids=members,
+        title=f'Validation pool {scope_id}',
+        mode=protocol['mode'],
+        actor='scope',
+        request_key=scope_id,
+        roles={c: 'validation' for c in members}
+    )
+
+    scope = dict(
+        scope_id=scope_id,
+        kind='validation',
+        case_ids=members,
+        completed_batch_ids=list(completed_batch_ids or []),
+        plan_id=p['plan_id'],
+        plan_revision=p['revision'],
+        plan_content_hash=p['content_hash'],
+        selection_hash=p['content']['selection']['selection_hash']
+    )
+
+    with service.repository.connect(write=True) as conn:
+        conn.execute('INSERT OR IGNORE INTO iteration_scopes VALUES(?,?,?,?,?)',
+                     (iteration['id'], scope_id, 'validation', json.dumps(scope), now()))
+
+    return get(service.repository, iteration['id'], scope_id)
+
+
 def dispatch_steps(service, record):
     """Freeze an explicit request's entire footprint, including parent top-ups."""
     repository = service.repository
