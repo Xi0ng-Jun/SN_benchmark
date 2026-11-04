@@ -149,11 +149,19 @@ class RoundMeasurements:
                          'SET payload_json=excluded.payload_json', (key, json.dumps(value)))
 
     @contextmanager
-    def _lock(self, iteration_id):
-        # Separate from the engine lock: short planning section, never launch I/O.
+    def _lock(self, iteration_id, storage_key=None):
+        # Fine-grained locking: separate lock per measurement to allow concurrent planning
+        # of different candidates. Falls back to iteration-wide lock for recovery operations.
         root = Path(self.service.trees.store.root) / 'round-measurement-locks'
         root.mkdir(parents=True, exist_ok=True)
-        with (root / (iteration_id + '.lock')).open('a') as stream:
+        if storage_key:
+            # Per-measurement lock: different candidates can plan concurrently
+            lock_suffix = hashlib.sha256(storage_key.encode()).hexdigest()[:16]
+            lock_path = root / f'{iteration_id}-{lock_suffix}.lock'
+        else:
+            # Iteration-wide lock for recovery operations that scan all measurements
+            lock_path = root / f'{iteration_id}.lock'
+        with lock_path.open('a') as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             try:
                 yield
@@ -477,7 +485,7 @@ class RoundMeasurements:
             from .execution_scopes import smoke_plan
             smoke_plan(self.service, tree, case_ids)
         storage_key = 'round-measure:' + hashlib.sha256(key.encode()).hexdigest()
-        with self._lock(tree['id']):
+        with self._lock(tree['id'], storage_key):
             self._recover_retry_mappings(tree['id'])
             state = self._read(storage_key)
             if observe_only:
@@ -561,7 +569,7 @@ class RoundMeasurements:
                 return dict(type=type(exc).__name__, transient=transient(exc))
         with ThreadPoolExecutor(max_workers=max(1, len(steps))) as pool:
             errors = list(pool.map(launch, steps))
-        with self._lock(tree['id']):
+        with self._lock(tree['id'], storage_key):
             state = self._read(storage_key)
             if stopped(self.repository, key):
                 return dict(status='stopped')
