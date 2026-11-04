@@ -137,6 +137,11 @@ class RoundMeasurements:
         with self.repository.connect(write=True) as conn:
             conn.execute('CREATE TABLE IF NOT EXISTS round_measurements '
                          '(key TEXT PRIMARY KEY, payload_json TEXT NOT NULL)')
+            # Track parent top-up coverage to avoid redundant measurements across multiple children
+            conn.execute('CREATE TABLE IF NOT EXISTS round_parent_topup_coverage '
+                         '(iteration_id TEXT NOT NULL, parent_id TEXT NOT NULL, scope_id TEXT, '
+                         'covering_key TEXT NOT NULL, created_at TEXT NOT NULL, '
+                         'PRIMARY KEY(iteration_id,parent_id,scope_id))')
 
     def _read(self, key):
         with self.repository.connect() as conn:
@@ -257,7 +262,20 @@ class RoundMeasurements:
         for scope, count in scopes:
             sides = list(candidates)
             if scope is not None and kind == 'measure' and candidate.get('parent_candidate_id'):
-                sides.insert(0, candidate['parent_candidate_id'])
+                parent_id = candidate['parent_candidate_id']
+                # Check if this parent+scope combination is already covered by another measurement
+                with self.repository.connect() as conn:
+                    covered = conn.execute(
+                        'SELECT 1 FROM round_parent_topup_coverage '
+                        'WHERE iteration_id=? AND parent_id=? AND scope_id=?',
+                        (tree['id'], parent_id, scope)).fetchone()
+                if not covered:
+                    # This is the first measurement to cover this parent+scope, include parent
+                    sides.insert(0, parent_id)
+                    # Record coverage immediately to prevent other concurrent measurements from duplicating
+                    with self.repository.connect(write=True) as conn:
+                        conn.execute('INSERT OR IGNORE INTO round_parent_topup_coverage VALUES(?,?,?,?,?)',
+                                     (tree['id'], parent_id, scope, key, now()))
             for cid in sides:
                 existing = [a for a in self.service.candidate(cid)['attempts'] if a.get('batch_id') == scope]
                 watched.extend(dict(candidate_id=cid, attempt=a['attempt'], batch_id=scope, case_count=count,
