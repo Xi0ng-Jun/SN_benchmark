@@ -303,9 +303,48 @@ class PreparationCache:
 
         The run's runtime database, storage and product cell must not exist
         yet. A rejected entry leaves nothing behind and raises CacheRejected.
+
+        When another run is preparing the same key (marker exists but entry
+        does not), wait for it to complete and then install the published entry.
         """
         entry = self._entry(key)
+        preparing_marker = entry.parent / f'.preparing-{entry.name}'
+
+        # If someone is preparing this entry, wait for them to finish
+        if preparing_marker.exists() and not entry.is_dir():
+            # Poll for the entry to appear, with exponential backoff
+            wait_seconds, max_wait = 0, 3600  # max 1 hour
+            poll_interval = 5
+            while preparing_marker.exists() and not entry.is_dir() and wait_seconds < max_wait:
+                time.sleep(poll_interval)
+                wait_seconds += poll_interval
+                # Exponential backoff up to 60s
+                if poll_interval < 60:
+                    poll_interval = min(poll_interval * 1.5, 60)
+
+            # If entry appeared while waiting, install it
+            if entry.is_dir():
+                # Entry was published, proceed to install below
+                pass
+            elif not preparing_marker.exists():
+                # Marker was removed but no entry - prep failed, we'll prep
+                return None
+            else:
+                # Timeout - marker still exists after max_wait
+                # Treat as stale marker, remove it and prep ourselves
+                try:
+                    preparing_marker.unlink()
+                except OSError:
+                    pass
+                return None
+
         if not entry.is_dir():
+            # Cache miss - create preparing marker so other runs wait for us
+            entry.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                preparing_marker.touch()
+            except OSError:
+                pass  # Best effort; if it fails, other runs will prep independently
             return None
         runtime, cell = run / 'runtime', run / 'product-artifacts'
         if (runtime / 'database.db').exists() or (runtime / 'storage').exists() or cell.exists():
@@ -355,9 +394,18 @@ class PreparationCache:
         """Publish ``run``'s freshly prepared notebook under ``key`` (read-only).
 
         Call after preparation and before asking. An existing entry wins.
+        Removes the preparing marker so waiting runs can proceed.
         """
         entry = self._entry(key)
+        preparing_marker = entry.parent / f'.preparing-{entry.name}'
+
         if entry.exists():
+            # Another run published while we were preparing - clean up our marker
+            try:
+                if preparing_marker.exists():
+                    preparing_marker.unlink()
+            except OSError:
+                pass
             return dict(status='already_cached', cache_key=key)
         runtime, cell = run / 'runtime', run / 'product-artifacts'
         storage = runtime / 'storage'
@@ -409,6 +457,12 @@ class PreparationCache:
         except BaseException:
             _remove(incoming)
             raise
+        # Successfully published - clean up preparing marker
+        try:
+            if preparing_marker.exists():
+                preparing_marker.unlink()
+        except OSError:
+            pass
         return dict(status='stored', cache_key=key, files=len(files),
                     entry_sha256=_file_digest(entry / 'entry.json'))
 
