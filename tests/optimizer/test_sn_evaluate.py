@@ -323,7 +323,8 @@ def test_screen_pair_measures_candidate_and_reference(env):
         env.views.add(eid, [{"v1": value}])
     adapter, ops = env.build()
     cand, ref = adapter.evaluate_pair(V_CAND, V_ROOT, ["v1"], 2, purpose="screen")
-    assert sorted(c[2]["key"] for c in ops.calls) == ["v3/R1/measure/cand1/0", "v3/R1/measure/root/0"]
+    # Screening now uses validation() instead of measure() to avoid wasteful search set measurement
+    assert sorted(c[2]["key"] for c in ops.calls) == ["v3/R1/validation/cand1/0", "v3/R1/validation/root/0"]
     assert cand.per_task_scores == {"v1": 1.0} and ref.per_task_scores == {"v1": 0.5}
 
 

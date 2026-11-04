@@ -153,13 +153,7 @@ def validation_pool_plan(service, iteration, completed_batch_ids=None):
     except UnknownIdentity:
         pass
 
-    # Register with v2 splits policy (validation role)
-    policy = Policy(service.repository, task)
-    for cid in members:
-        # Validation pool cases may be from validation split or fresh batches
-        # Don't require_search; these are validation cases
-        pass
-
+    # Register plan with validation role for all cases
     p = service.plans.save(
         task_id=task,
         input_id=protocol['input']['input_id'],

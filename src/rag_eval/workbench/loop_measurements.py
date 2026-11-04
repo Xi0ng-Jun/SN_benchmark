@@ -173,6 +173,24 @@ class RoundMeasurements:
             finally:
                 fcntl.flock(stream, fcntl.LOCK_UN)
 
+    def cleanup_locks(self, iteration_id):
+        """Clean up lock files for a completed iteration.
+
+        Should be called when an iteration is complete or abandoned to prevent
+        accumulation of lock files over time.
+        """
+        root = Path(self.service.trees.store.root) / 'round-measurement-locks'
+        if not root.exists():
+            return
+
+        # Remove both iteration-wide and per-measurement locks
+        pattern = f'{iteration_id}*.lock'
+        for lock_file in root.glob(pattern):
+            try:
+                lock_file.unlink()
+            except OSError:
+                pass  # File may be in use or already deleted
+
     def _infra(self, attempt):
         if attempt.get('execution_state') == 'running' or not attempt.get('execution_id'):
             return False
@@ -263,19 +281,15 @@ class RoundMeasurements:
             sides = list(candidates)
             if scope is not None and kind == 'measure' and candidate.get('parent_candidate_id'):
                 parent_id = candidate['parent_candidate_id']
-                # Check if this parent+scope combination is already covered by another measurement
-                with self.repository.connect() as conn:
-                    covered = conn.execute(
-                        'SELECT 1 FROM round_parent_topup_coverage '
-                        'WHERE iteration_id=? AND parent_id=? AND scope_id=?',
-                        (tree['id'], parent_id, scope)).fetchone()
-                if not covered:
-                    # This is the first measurement to cover this parent+scope, include parent
-                    sides.insert(0, parent_id)
-                    # Record coverage immediately to prevent other concurrent measurements from duplicating
-                    with self.repository.connect(write=True) as conn:
-                        conn.execute('INSERT OR IGNORE INTO round_parent_topup_coverage VALUES(?,?,?,?,?)',
-                                     (tree['id'], parent_id, scope, key, now()))
+                # Atomically check and record parent coverage to prevent race conditions
+                # Try to insert first; if successful (rowcount > 0), we won the race and include parent
+                with self.repository.connect(write=True) as conn:
+                    cursor = conn.execute(
+                        'INSERT OR IGNORE INTO round_parent_topup_coverage VALUES(?,?,?,?,?)',
+                        (tree['id'], parent_id, scope, key, now()))
+                    if cursor.rowcount > 0:
+                        # Successfully inserted: this is the first measurement for this parent+scope
+                        sides.insert(0, parent_id)
             for cid in sides:
                 existing = [a for a in self.service.candidate(cid)['attempts'] if a.get('batch_id') == scope]
                 watched.extend(dict(candidate_id=cid, attempt=a['attempt'], batch_id=scope, case_count=count,
