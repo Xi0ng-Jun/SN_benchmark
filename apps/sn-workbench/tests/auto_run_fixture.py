@@ -133,6 +133,121 @@ def sealed_run(run_dir):
     atomic_write_json(Path(run_dir) / 'sealed-curve.json', sealed_curve(state))
 
 
+# ---------------------------------------------------------------------------
+# Mini experiment: 20-case ALCE-ASQA exploration run.
+# Mirrors mini-exp-protocol.json (ladder_c=0.3, z_screen=0.0, z_confirm=1.28,
+# T=0.001, K_max=10, b_cards=1).  Pool = 12 search, 8 val; two fresh batches
+# of 5 each.  Script drives: round 1 fail+pass, milestone triggered, batch 1
+# rejected; round 2 pass, batch 2 confirmed; fresh_exhausted halt.
+# ---------------------------------------------------------------------------
+MINI_POOL = [f'm{i}' for i in range(12)]   # search set (12)
+MINI_VAL = [f'v{i}' for i in range(8)]     # initial val pool (8); total = 20
+MINI_BATCHES = [[f'b0_{i}' for i in range(5)], [f'b1_{i}' for i in range(5)]]
+MINI_ALL = MINI_POOL + MINI_VAL + [t for b in MINI_BATCHES for t in b]
+MINI_PREDICATE = Predicate({'field': 'trace.answer_language', 'kind': 'equals', 'value': 'zh'}, 'decrease')
+
+
+def mini_deltas(pool, f=None, g=None):
+    """Per-task delta for the mini pool (12 search) and two fresh batches of 5."""
+    out = {t: wave(pool)(i) for i, t in enumerate(MINI_POOL + MINI_VAL)}
+    for level, batch in zip((f, g), MINI_BATCHES):
+        out.update({t: wave(pool if level is None else level)(i) for i, t in enumerate(batch)})
+    return out
+
+
+MINI_ROUNDS = [
+    # Round 1: one smoke fail, one screen fail, one pass (language-match fix).
+    dict(cards=[
+        dict(name='答案语言不随问题语言切换', deltas=mini_deltas(0.08, f=0.12), predicate=MINI_PREDICATE),
+        dict(name='引用块跨段截断导致内容丢失', deltas=mini_deltas(-0.04)),
+        dict(name='检索结果排序没有考虑问题类型', deltas=mini_deltas(0.09), smoke_pass=False),
+    ]),
+    # Round 2 (after batch 1 rejected, pointer rolled back): direction change.
+    dict(cards=[
+        dict(name='多跳推理中间步骤未写入上下文', deltas=mini_deltas(0.10, f=0.08, g=0.09), predicate=MINI_PREDICATE),
+        dict(name='否定问题答案极性反转', deltas=mini_deltas(0.06)),
+    ]),
+    # Round 3: one more pass; batch 2 confirms → fresh_exhausted.
+    dict(cards=[
+        dict(name='数量范围题超出检索范围时未声明', deltas=mini_deltas(0.07, f=0.07, g=0.07)),
+    ]),
+]
+
+MINI_CONFIG = dict(
+    mde=0.058, sigma_d=0.28, ladder_c=0.3, K_max=10, T=0.001, n_fresh=5,
+    z_screen=0.0, z_confirm=1.28, b_cards=1, analyst_cards=2, k_screen=2,
+    n_smoke_sample=3, predicate_coverage_floor=0.6, attribution_n_min=3,
+)
+
+MINI_SEALED_DELTAS = [0.0, 0.078, 0.031, 0.095]
+
+
+def mini_sealed_curve(state):
+    """Scripted sealed curve for the mini experiment (4 lineage nodes)."""
+    points, m, half = [], len(state['lineage']) - 1, 0.038
+    for i, node in enumerate(state['lineage']):
+        delta = MINI_SEALED_DELTAS[min(i, len(MINI_SEALED_DELTAS) - 1)]
+        seed_score = 0.43
+        points.append(dict(
+            index=i, version_hash=node['version_hash'],
+            candidate_id=state['versions'][node['version_hash']].get('candidate_id'),
+            state=node['state'],
+            style={'certified': 'solid', 'provisional': 'hollow', 'rolled_back': 'dashed'}[node['state']],
+            k=2, status='measured', score=seed_score + delta, se=0.014, n=5,
+            delta_vs_seed=delta, se_delta=0.0 if i == 0 else 0.018,
+            lower=delta - (0 if i == 0 else 0.030), upper=delta + (0 if i == 0 else 0.030),
+            lower_adj=delta - (0 if i == 0 else half), upper_adj=delta + (0 if i == 0 else half),
+            p=None if i == 0 else 0.002 if delta > 0.06 else 0.12,
+            p_holm=None if i == 0 else 0.008 if delta > 0.06 else 0.48,
+            holds_holm=None if i == 0 else delta > 0.06,
+        ))
+    return dict(kind='v3-sealed-lineage', status='finished', metric='answer_f1', n=5, k=2,
+                alpha=0.05, z=1.645, z_adj=2.64, m=m,
+                correction='holm-p+bonferroni-interval', points=points)
+
+
+class MiniScripted(MockAdapter):
+    """Mini-experiment adapter: 20-task pool (12 search + 8 val) + 10 fresh (2×5)."""
+
+    def __init__(self, script):
+        pool_scores = {t: 0.43 + 0.05 * math.sin(i) for i, t in enumerate(MINI_POOL + MINI_VAL)}
+        super().__init__(script=script, n_tasks=len(MINI_ALL),
+                         base_scores={t: pool_scores.get(t, 0.43) for t in MINI_ALL})
+        # Reset task ids to the mini set
+        self._task_ids = list(MINI_ALL)
+        self._scores[self._seed_hash] = {t: pool_scores.get(t, 0.43) for t in MINI_ALL}
+
+    def analyse(self, trajectories, n_cards, *, round_id=None, **kw):
+        cards = super().analyse(trajectories, n_cards, round_id=round_id, **kw)
+        round_id = round_id if round_id is not None else self.analyse_calls
+        script = self._round_script(round_id)
+        return [dataclasses.replace(c, predicate=self._card_specs[c.ref].get('predicate')) for c in cards]
+
+
+def mini_run(run_dir):
+    """A fresh-exhausted mini-experiment run with sealed curve attached."""
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True)
+    atomic_write_json(run_dir / 'cli-run.json', dict(
+        run_id=run_dir.name, iteration_id=run_dir.name, actor='v3-operator',
+        protocol_sha256='b2c3d4e5f607182940a1b2c3d4e5f607', created_at=NOW,
+    ))
+    adapter = MiniScripted(MINI_ROUNDS)
+    run_optimization(
+        adapter, adapter.seed,
+        ProtocolConfig(**MINI_CONFIG),
+        search_set_ids=MINI_POOL,
+        val_pool_ids=MINI_POOL + MINI_VAL,
+        fresh_batch_ids=MINI_BATCHES,
+        smoke_sample_ids=MINI_POOL[:3],
+        max_rounds=10,
+        state_dir=run_dir,
+    )
+    state = json.loads((run_dir / 'state.json').read_text())
+    atomic_write_json(run_dir / 'sealed-curve.json', mini_sealed_curve(state))
+    return state
+
+
 def seed_iteration(repository, workspace_id, iteration_id, title):
     task_id = 'task-' + iteration_id
     root = 'root-' + iteration_id
@@ -157,6 +272,7 @@ def main():
 
     real_run(runs / 'auto-done', ROUNDS)
     sealed_run(runs / 'auto-sealed')
+    mini_run(runs / 'mini-exp')
     in_flight = dict(config=dict(b_cards=2), budget_from=5, max_rounds=9)
     real_run(runs / 'auto-budget', ROUNDS + [LAST_ROUND], **in_flight)
     for name in ('auto-running', 'auto-interrupted'):
@@ -171,8 +287,9 @@ def main():
     with repository.connect() as conn:
         workspace_id = conn.execute('SELECT id FROM workspaces').fetchone()['id']
     seed_iteration(repository, workspace_id, 'manual', '手动迭代')
-    titles = dict(zip(('auto-new', 'auto-budget', 'auto-interrupted', 'auto-sealed', 'auto-done', 'auto-running'),
-                      ('自动 · 未开始', '自动 · 预算用尽', '自动 · 已中断', '自动 · 封存集已评', '自动 · 已结束', '自动 · 运行中')))
+    titles = dict(zip(('auto-new', 'auto-budget', 'auto-interrupted', 'auto-sealed', 'auto-done', 'auto-running', 'mini-exp'),
+                      ('自动 · 未开始', '自动 · 预算用尽', '自动 · 已中断', '自动 · 封存集已评', '自动 · 已结束', '自动 · 运行中',
+                       'v3 方法 · ALCE-ASQA · 20 题 · 探索')))
     for name, title in titles.items():
         seed_iteration(repository, workspace_id, name, title)
         auto_runs.register(repository, name, run_id=name, state_dir=str(runs / name), actor='operator')
