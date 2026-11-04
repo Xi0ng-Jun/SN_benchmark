@@ -134,60 +134,72 @@ def sealed_run(run_dir):
 
 
 # ---------------------------------------------------------------------------
-# Mini experiment: 20-case ALCE-ASQA exploration run.
-# Mirrors mini-exp-protocol.json (ladder_c=0.3, z_screen=0.0, z_confirm=1.28,
-# T=0.001, K_max=10, b_cards=1).  Pool = 12 search, 8 val; two fresh batches
-# of 5 each.  Script drives: round 1 fail+pass, milestone triggered, batch 1
-# rejected; round 2 pass, batch 2 confirmed; fresh_exhausted halt.
+# Mini experiment: 20-case ALCE-ASQA exploration run (extended demo).
+# Pool = 12 search + 8 val (20); 12 fresh batches × 10 cases (120).  Config
+# mirrors an aggressive exploration protocol (ladder_c=0.3, z_screen=0.0,
+# z_confirm=1.28, T=0.001, K_max=40, b_cards=1).  Every round's single card
+# clears screening (pool delta ≈ 0.05 > m=0.02); T is tiny so each adoption
+# triggers a milestone confirmation immediately.  10 batches confirm, 2
+# reject → lineage has 13 nodes (seed + 10 certified + 2 rolled_back); the
+# sealed curve carries 13 points.
 # ---------------------------------------------------------------------------
 MINI_POOL = [f'm{i}' for i in range(12)]   # search set (12)
-MINI_VAL = [f'v{i}' for i in range(8)]     # initial val pool (8); total = 20
-MINI_BATCHES = [[f'b0_{i}' for i in range(5)], [f'b1_{i}' for i in range(5)]]
+MINI_VAL = [f'v{i}' for i in range(8)]      # initial val pool (8); total = 20
+MINI_BATCHES = [[f'b{i}_{j}' for j in range(10)] for i in range(12)]
 MINI_ALL = MINI_POOL + MINI_VAL + [t for b in MINI_BATCHES for t in b]
 MINI_PREDICATE = Predicate({'field': 'trace.answer_language', 'kind': 'equals', 'value': 'zh'}, 'decrease')
 
+# Per-batch fresh delta: positive → confirmed, negative → rejected (rollback).
+MINI_BATCH_LEVELS = [0.04, 0.04, 0.04, -0.03, 0.04, 0.04, 0.04, 0.04,
+                     0.04, -0.03, 0.04, 0.04]
 
-def mini_deltas(pool, f=None, g=None):
-    """Per-task delta for the mini pool (12 search) and two fresh batches of 5."""
-    out = {t: wave(pool)(i) for i, t in enumerate(MINI_POOL + MINI_VAL)}
-    for level, batch in zip((f, g), MINI_BATCHES):
-        out.update({t: wave(pool if level is None else level)(i) for i, t in enumerate(batch)})
+
+def mini_deltas(pool_level=0.05, batch_levels=None):
+    """Per-task delta for the mini pool (12+8) and 12 fresh batches of 10."""
+    out = {t: wave(pool_level)(i) for i, t in enumerate(MINI_POOL + MINI_VAL)}
+    levels = batch_levels if batch_levels is not None else MINI_BATCH_LEVELS
+    for level, batch in zip(levels, MINI_BATCHES):
+        out.update({t: wave(level)(i) for i, t in enumerate(batch)})
     return out
 
 
+_MINI_NAMES = [
+    '答案语言不随问题语言切换',
+    '引用块跨段截断导致内容丢失',
+    '多跳推理中间步骤未写入上下文',
+    '检索结果排序未考虑问题类型',
+    '否定问题答案极性反转',
+    '数量范围题超出检索范围时未声明',
+    '日期比较未统一时区基准',
+    '列表题遗漏末尾限定词',
+    '缩写展开后与上下文冲突',
+    '表格数值单位不统一',
+    '因果题混淆充分与必要条件',
+    '开放题答案缺少来源支撑',
+]
+
 MINI_ROUNDS = [
-    # Round 1: one smoke fail, one screen fail, one pass (language-match fix).
-    dict(cards=[
-        dict(name='答案语言不随问题语言切换', deltas=mini_deltas(0.08, f=0.12), predicate=MINI_PREDICATE),
-        dict(name='引用块跨段截断导致内容丢失', deltas=mini_deltas(-0.04)),
-        dict(name='检索结果排序没有考虑问题类型', deltas=mini_deltas(0.09), smoke_pass=False),
-    ]),
-    # Round 2 (after batch 1 rejected, pointer rolled back): direction change.
-    dict(cards=[
-        dict(name='多跳推理中间步骤未写入上下文', deltas=mini_deltas(0.10, f=0.08, g=0.09), predicate=MINI_PREDICATE),
-        dict(name='否定问题答案极性反转', deltas=mini_deltas(0.06)),
-    ]),
-    # Round 3: one more pass; batch 2 confirms → fresh_exhausted.
-    dict(cards=[
-        dict(name='数量范围题超出检索范围时未声明', deltas=mini_deltas(0.07, f=0.07, g=0.07)),
-    ]),
+    dict(cards=[dict(name=_MINI_NAMES[i], deltas=mini_deltas(), predicate=MINI_PREDICATE)])
+    for i in range(12)
 ]
 
 MINI_CONFIG = dict(
-    mde=0.058, sigma_d=0.28, ladder_c=0.3, K_max=10, T=0.001, n_fresh=5,
+    mde=0.058, sigma_d=0.28, ladder_c=0.3, K_max=40, T=0.001, n_fresh=10,
     z_screen=0.0, z_confirm=1.28, b_cards=1, analyst_cards=2, k_screen=2,
     n_smoke_sample=3, predicate_coverage_floor=0.6, attribution_n_min=3,
 )
 
-MINI_SEALED_DELTAS = [0.0, 0.078, 0.031, 0.095]
+MINI_SEALED_DELTAS = [0.0, 0.031, 0.052, 0.078, 0.065, 0.098, 0.124, 0.151,
+                     0.178, 0.205, 0.192, 0.228, 0.255]
 
 
 def mini_sealed_curve(state):
-    """Scripted sealed curve for the mini experiment (4 lineage nodes)."""
-    points, m, half = [], len(state['lineage']) - 1, 0.038
+    """Scripted sealed curve for the mini experiment (13 lineage nodes)."""
+    points, m, half = [], len(state['lineage']) - 1, 0.042
     for i, node in enumerate(state['lineage']):
         delta = MINI_SEALED_DELTAS[min(i, len(MINI_SEALED_DELTAS) - 1)]
         seed_score = 0.43
+        holds = delta > 0.05
         points.append(dict(
             index=i, version_hash=node['version_hash'],
             candidate_id=state['versions'][node['version_hash']].get('candidate_id'),
@@ -197,9 +209,9 @@ def mini_sealed_curve(state):
             delta_vs_seed=delta, se_delta=0.0 if i == 0 else 0.018,
             lower=delta - (0 if i == 0 else 0.030), upper=delta + (0 if i == 0 else 0.030),
             lower_adj=delta - (0 if i == 0 else half), upper_adj=delta + (0 if i == 0 else half),
-            p=None if i == 0 else 0.002 if delta > 0.06 else 0.12,
-            p_holm=None if i == 0 else 0.008 if delta > 0.06 else 0.48,
-            holds_holm=None if i == 0 else delta > 0.06,
+            p=None if i == 0 else 0.001 if holds else 0.04 if delta > 0 else 0.12,
+            p_holm=None if i == 0 else 0.012 if holds else 0.48,
+            holds_holm=None if i == 0 else holds,
         ))
     return dict(kind='v3-sealed-lineage', status='finished', metric='answer_f1', n=5, k=2,
                 alpha=0.05, z=1.645, z_adj=2.64, m=m,
@@ -207,20 +219,17 @@ def mini_sealed_curve(state):
 
 
 class MiniScripted(MockAdapter):
-    """Mini-experiment adapter: 20-task pool (12 search + 8 val) + 10 fresh (2×5)."""
+    """Mini-experiment adapter: 20-task pool (12 search + 8 val) + 120 fresh (12×10)."""
 
     def __init__(self, script):
         pool_scores = {t: 0.43 + 0.05 * math.sin(i) for i, t in enumerate(MINI_POOL + MINI_VAL)}
         super().__init__(script=script, n_tasks=len(MINI_ALL),
                          base_scores={t: pool_scores.get(t, 0.43) for t in MINI_ALL})
-        # Reset task ids to the mini set
         self._task_ids = list(MINI_ALL)
         self._scores[self._seed_hash] = {t: pool_scores.get(t, 0.43) for t in MINI_ALL}
 
     def analyse(self, trajectories, n_cards, *, round_id=None, **kw):
         cards = super().analyse(trajectories, n_cards, round_id=round_id, **kw)
-        round_id = round_id if round_id is not None else self.analyse_calls
-        script = self._round_script(round_id)
         return [dataclasses.replace(c, predicate=self._card_specs[c.ref].get('predicate')) for c in cards]
 
 
@@ -240,7 +249,7 @@ def mini_run(run_dir):
         val_pool_ids=MINI_POOL + MINI_VAL,
         fresh_batch_ids=MINI_BATCHES,
         smoke_sample_ids=MINI_POOL[:3],
-        max_rounds=10,
+        max_rounds=15,
         state_dir=run_dir,
     )
     state = json.loads((run_dir / 'state.json').read_text())
