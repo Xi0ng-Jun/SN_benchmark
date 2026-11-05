@@ -325,6 +325,38 @@ When you finish, reply with the files you changed and why, the test commands and
 '''
 
 
+V4_HISTORY_LABELS_TEXT = ('smoke_fail (did not run, or the predicted behaviour did not change on the smoke cases), '
+                          'minibatch_fail (clearly worse on the first validation slice), below_threshold (validation '
+                          'gain too small for its mechanism evidence), qualified_not_adopted (good enough, another '
+                          'card was better this round: you may propose it again on the new parent), adopted, '
+                          'safeguard_breached (with the safeguard names), pruned (adopted, then removed by ablation)')
+
+
+def v4_analyst_brief(task, *, tool, candidate_id):
+    s = f'{tool} --task {task["id"]} --role analyst --node {candidate_id}'
+    return f'''# Method-v4 analyst · node {candidate_id}
+
+You are the analyst of an automatic method-v4 run on iteration task "{task["title"]}", bound to candidate `{candidate_id}` (the round's parent). Each round's message names one evidence file (absolute path and sha256): diagnostic views of the parent's search cases, as c1, c2, ... marked [failure] or [control], and the outcome labels of hypotheses already tried under this parent. That file is your only input.
+
+Commands (`$S` = `{s}`):
+- `$S docs`: evaluation documents
+- `$S leak-check`: benchmark-text leak scan
+- `$S proposal draft --parent {candidate_id} --file card.json`: save one card under this node (it is leak-scanned and validated)
+Nothing else. Never request runs, freezes, derivations, adoptions or other decisions; the coordinator does all of that.
+
+Card (lcd-v2): JSON with title, component, mechanism, implementer_brief, falsification, predictions (may be []), optional change_scope, and contract = {{slice_predicate, manipulation: {{direction: decrease|increase, threshold in [0, 1]}}, slice_effect: {{direction: positive}}}}. The slice_predicate is the card's behaviour expectation: a closed signature (kind regex or range on one field; all_of / any_of / not) over behaviour fields or trace.* step features such as trace.n_empty_retrievals; never case ids, scores or gold. The coordinator checks it mechanically (smoke cases, then the validation pairs) and an independent reviewer judges whether the change took effect: a change whose mechanism is confirmed is adopted with a smaller validation gain, so make the expectation specific. One card per distinct failure mode.
+
+Outcome labels you may see: {V4_HISTORY_LABELS_TEXT}; with a mechanism tier (confirmed / unconfirmed / suspicious) when the candidate was fully measured.
+
+Rules: you see no gold answers, scores, validation or test cases and must not look for them. Do not read files under var/ except the evidence file named in the message; do not open other iterations or run directories; do not edit SN code.
+'''
+
+
+def v4_implementer_brief(task, *, tool, hypothesis_id, candidate_id, worktree):
+    return v3_implementer_brief(task, tool=tool, hypothesis_id=hypothesis_id, candidate_id=candidate_id,
+                                worktree=worktree).replace('Method-v3', 'Method-v4').replace('method-v3', 'method-v4')
+
+
 def v4_reviewer_brief(task, *, candidate_id):
     return f'''# Method-v4 reviewer · candidate {candidate_id}
 
@@ -363,9 +395,16 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
         selected = _creation_brief(conn, task_id, session['agent_id'])
         if selected == BRIEF_V4:
             candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
-            refs = {'task_id': task_id, 'session_id': session_id, 'role': 'reviewer', 'brief': BRIEF_V4,
+            role = session['role'] or 'analyst'
+            refs = {'task_id': task_id, 'session_id': session_id, 'role': role, 'brief': BRIEF_V4,
                     **({'candidate_id': candidate_id} if candidate_id else {})}
-            return ('Method-v4 reviewer brief · ' + str(candidate_id), v4_reviewer_brief(task, candidate_id=candidate_id), refs)
+            if role == 'reviewer':
+                return ('Method-v4 reviewer brief · ' + str(candidate_id), v4_reviewer_brief(task, candidate_id=candidate_id), refs)
+            if role == 'implementer':
+                return ('Method-v4 implementer brief · ' + str(candidate_id),
+                        v4_implementer_brief(task, tool=tool, hypothesis_id=session['hypothesis_id'],
+                                             candidate_id=candidate_id, worktree=cwd), refs)
+            return ('Method-v4 analyst brief · ' + str(candidate_id), v4_analyst_brief(task, tool=tool, candidate_id=candidate_id), refs)
         if selected == BRIEF_V3:
             candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
             refs = {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst',

@@ -28,6 +28,8 @@ class V4Mock(SystemAdapter):
         self.seed = Version("seed", metadata=dict(candidate_id="seed"))
         self.cards: dict[str, dict] = {}          # card ref -> spec
         self.chain: dict[str, list[str]] = {"seed": []}   # version -> card refs
+        self.parent_of: dict[str, Optional[str]] = {"seed": None}
+        self.measured: set = set()                  # distinct (version, subset, task ids, k): runs on SN
         self.lock = threading.Lock()
         self.calls: dict[str, int] = {}
         self.fail_once: dict[str, Exception] = {}   # "<stage>:<card name>" -> raised once
@@ -72,6 +74,8 @@ class V4Mock(SystemAdapter):
 
     def evaluate_subset(self, version, reference, subset, task_ids, k):
         self._count(f"subset:{subset}")
+        with self.lock:
+            self.measured.add((version.content_hash, subset, tuple(sorted(task_ids)), k))
         self._maybe_fail(subset, version)
         return self._result(version, task_ids, k), (self._result(reference, task_ids, k) if reference else None)
 
@@ -119,6 +123,7 @@ class V4Mock(SystemAdapter):
         h = f"{parent.content_hash}+{ref}" + (f"#a{attempt}" if attempt > 1 else "")
         with self.lock:
             self.chain[h] = self.chain[parent.content_hash] + [ref]
+            self.parent_of[h] = parent.content_hash
             if attempt == 1 and self.cards[ref].get("smoke_behaviour_fails"):
                 self.chain[h] = self.chain[parent.content_hash]      # change did not take effect
         return Version(h, metadata=dict(candidate_id=h))
@@ -131,12 +136,15 @@ class V4Mock(SystemAdapter):
 
     def rebase(self, candidate, new_parent):
         self._count("rebase")
-        own = [r for r in self.chain[candidate.content_hash] if r not in self.chain[new_parent.content_hash]]
+        # As v2 rebase: only the source's own change (its diff against its own parent) is applied.
+        parent = self.parent_of[candidate.content_hash]
+        own = [r for r in self.chain[candidate.content_hash] if r not in self.chain[parent]]
         if any(self.cards[r].get("conflict") for r in own):
             return None
         h = f"{new_parent.content_hash}*{'+'.join(own)}"
         with self.lock:
             self.chain[h] = self.chain[new_parent.content_hash] + own
+            self.parent_of[h] = new_parent.content_hash
         return Version(h, metadata=dict(candidate_id=h))
 
     def review(self, card, diff, pairs, *, candidate, key):

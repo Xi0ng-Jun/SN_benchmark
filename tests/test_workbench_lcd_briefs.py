@@ -169,18 +169,30 @@ def test_only_v3_analysts_and_implementers_take_the_v3_brief(tmp_path):
     assert 'brief' not in store.prepare(task['id'], 'allowed', actor='alice', request_key='k4', role='analyst')
 
 
-def test_method_v4_reviewer_brief_and_creation_rules(tmp_path):
+def test_method_v4_briefs_and_creation_rules(tmp_path):
+    import re
     import pytest
     from rag_eval.workbench import auto_runs
-    from rag_eval.workbench.briefs import v4_reviewer_brief
+    from rag_eval.workbench.briefs import (V3_ANALYST_COMMANDS, v4_analyst_brief, v4_implementer_brief,
+                                           v4_reviewer_brief)
     from test_workbench_agent_creations import setup
-    text = v4_reviewer_brief(dict(id='t', title='SN · method-v4'), candidate_id='c' * 32)
+    task = dict(id='t', title='SN · method-v4')
+    text = v4_reviewer_brief(task, candidate_id='c' * 32)
     assert 'verdict file' in text and '"gaming"' in text and 'evidence file' in text
     assert auto_runs.REVIEWER_ALLOWED == frozenset()
+    analyst = v4_analyst_brief(task, tool='sn-eval', candidate_id='c' * 32)
+    named = set(re.findall(r'`\$S ([a-z-]+(?: draft)?)', analyst))
+    assert named == set(V3_ANALYST_COMMANDS) == auto_runs.ANALYST_ALLOWED
+    assert 'qualified_not_adopted' in analyst and 'reviewer' in analyst and 'method-v3' not in analyst
+    implementer = v4_implementer_brief(task, tool='sn-eval', hypothesis_id='h' * 32, candidate_id='c' * 32,
+                                       worktree='/w')
+    assert 'Method-v4' in implementer and 'method-v3' not in implementer.lower().replace('method-v4', '')
     _, task, _, store = setup(tmp_path)
+    assert store.prepare(task['id'], 'allowed', actor='alice', request_key='a1', role='analyst',
+                         brief='method-v4')['brief'] == 'method-v4'
     with pytest.raises(ValueError, match='method-v4'):
-        store.prepare(task['id'], 'allowed', actor='alice', request_key='r1', role='analyst', brief='method-v4')
-    with pytest.raises(ValueError):
+        store.prepare(task['id'], 'allowed', actor='alice', request_key='r1', brief='method-v4')
+    with pytest.raises(ValueError):           # a reviewer reviews exactly one candidate
         store.prepare(task['id'], 'allowed', actor='alice', request_key='r2', role='reviewer', brief='method-v4')
     with pytest.raises(ValueError, match='method-v4'):
         store.prepare(task['id'], 'allowed', actor='alice', request_key='r3', role='reviewer', brief='method-v3')

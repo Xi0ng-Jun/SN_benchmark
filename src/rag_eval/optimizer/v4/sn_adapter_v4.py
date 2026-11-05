@@ -34,6 +34,7 @@ MAX_REVIEW_DIFF_CHARS = 12000
 class SNAdapterV4(SNAdapter):
     _KEY_PREFIX = "v4"
     _HISTORY_VOCABULARY = "v4"
+    _BRIEF = V4_REVIEWER_BRIEF       # every Agent of a v4 run: the v4 analyst / implementer / reviewer brief
 
     def __init__(self, config: dict, *, reviewer_profile: Optional[str] = None, reviewer_view_budget: int = 30000,
                  **kwargs) -> None:
@@ -56,7 +57,10 @@ class SNAdapterV4(SNAdapter):
             raise ValueError(f"a paired subset compares a candidate with its parent, not {rcid!r}")
         ids = sorted(task_ids)
         scope_id = subset_scope_id(self._protocol(), subset, ids)    # refuses non-validation ids
-        key = self._request_key("subset", subset, cid, k, *self._generation())
+        # The scope is in the key: each parent has its own minibatch (method §3.2), and a
+        # paired and an unpaired request never share a key.
+        key = self._request_key("subset", subset, scope_id.rsplit(":", 1)[-1], cid, k,
+                                "p" if rcid is not None else "u", *self._generation())
         kwargs = self._v2_run_kwargs()
         label = f"{subset} {cid} k={k}"
         self._await({label: (key, lambda: ops.subset(cid, subset, ids, k=k, paired=rcid is not None, key=key,
@@ -64,6 +68,62 @@ class SNAdapterV4(SNAdapter):
                     {label: (cid, rcid)})
         scopes = {t: scope_id for t in ids}
         return self._read(cid, scopes), (self._read(rcid, scopes) if rcid is not None else None)
+
+    # ------------------------------------------------------------------
+    # task families (papers) and the cache / timing profile of a measurement
+    # ------------------------------------------------------------------
+
+    def task_families(self, task_ids: list[str]) -> dict[str, str]:
+        """task -> paper (partition id of the frozen input); {} when the catalogue is unavailable."""
+        ops = self._require_round_ops("task_families")
+        try:
+            input_id = self._protocol()["input"]["input_id"]
+            partitions = ops.service.plans.inputs.describe(input_id)["partitions"]
+        except (AttributeError, KeyError, LookupError, TypeError, ValueError):
+            return {}
+        wanted = set(task_ids)
+        return {c: str(p["partition_id"]) for p in partitions for c in p.get("case_ids", ()) if c in wanted}
+
+    def timing_profile(self, result: EvalResult) -> list[dict]:
+        """Per execution behind *result*: wall seconds, cases, and preparation-cache hits / misses / lock waits.
+
+        Read from the execution record (started_at / finished_at) and each partition
+        run's ``preparation-cache.json``. Executions not yet terminal are skipped.
+        """
+        from datetime import datetime
+        ops = self._require_round_ops("timing_profile")
+        _, task_id = self._require_ids()
+        by_execution: dict[str, dict] = {}
+        for task, stubs in (result.trajectories or {}).items():
+            for stub in stubs or []:
+                if isinstance(stub, dict) and stub.get("execution_id"):
+                    row = by_execution.setdefault(stub["execution_id"], dict(cases=set(), runs=set()))
+                    row["cases"].add(task)
+                    if stub.get("run_dir"):
+                        row["runs"].add(stub["run_dir"])
+        out = []
+        for eid, row in sorted(by_execution.items()):
+            record = ops.service._execution(task_id, eid) or {}
+            try:
+                wall = (datetime.fromisoformat(record["finished_at"]) - datetime.fromisoformat(record["started_at"])
+                        ).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                continue
+            hits = misses = 0
+            waited = 0.0
+            for run_dir in row["runs"]:
+                try:
+                    receipt = json.loads((Path(run_dir) / "preparation-cache.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if receipt.get("status") == "hit":
+                    hits += 1
+                else:
+                    misses += 1
+                waited = max(waited, float(receipt.get("lock_waited_seconds") or 0.0))
+            out.append(dict(execution_id=eid, wall_s=wall, cases=len(row["cases"]), partitions=len(row["runs"]),
+                            cache_hits=hits, cache_misses=misses, lock_waited_s=waited))
+        return out
 
     # ------------------------------------------------------------------
     # safeguards: observation only (the verdict is method-v4's point rule)

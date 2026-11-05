@@ -35,6 +35,20 @@ def combine(*results: Optional[EvalResult]) -> EvalResult:
                       safeguard_values=values, context=context, attempt_scores=attempts)
 
 
+def restrict(result: EvalResult, task_ids: Iterable[str]) -> EvalResult:
+    """The part of *result* on *task_ids* (scores, trajectories, attempts and the scopes of those tasks)."""
+    keep = set(task_ids)
+    context = dict(result.context or {})
+    if isinstance(context.get("scopes"), dict):
+        context["scopes"] = {t: s for t, s in context["scopes"].items() if t in keep}
+    return EvalResult(per_task_scores={t: v for t, v in result.per_task_scores.items() if t in keep},
+                      trajectories={t: v for t, v in result.trajectories.items() if t in keep},
+                      costs={t: v for t, v in result.costs.items() if t in keep},
+                      error_classes={t: v for t, v in result.error_classes.items() if t in keep},
+                      safeguard_values=dict(result.safeguard_values), context=context,
+                      attempt_scores=[{t: v for t, v in a.items() if t in keep} for a in result.attempt_scores or []])
+
+
 def attempts_by_task(result: EvalResult) -> dict[str, list[float]]:
     """task -> its per-attempt scores (from ``attempt_scores``)."""
     out: dict[str, list[float]] = {}
@@ -50,30 +64,43 @@ def attempts_by_task(result: EvalResult) -> dict[str, list[float]]:
 # ---------------------------------------------------------------------------
 
 def paired_delta(candidate: EvalResult, reference: EvalResult, task_ids: Iterable[str], *,
-                 rerun_var: Optional[float] = None, k_candidate: int = 1, k_reference: int = 1) -> dict:
+                 rerun_var: Optional[float] = None, k_candidate: int = 1, k_reference: int = 1,
+                 families: Optional[dict] = None) -> dict:
     """Δ = mean(s_c − s_p) over tasks scored on both sides; SE floored by the A/A estimate.
 
-    The floor is the SE a zero effect would have from rerun noise alone:
+    Own SE: clustered by family (CR1, as v2 noise.paired_means) when *families*
+    gives two or more clusters among the paired tasks, else iid. The floor is
+    the SE a zero effect would have from rerun noise alone:
     sqrt(Σ_i rerun_var·(1/k_c,i + 1/k_p,i)) / n, with k_·,i the attempts actually
     averaged for task i (nominal k when attempts are not reported).
     """
     ids = list(task_ids)
     ca, ra = attempts_by_task(candidate), attempts_by_task(reference)
-    diffs, floor_terms = [], []
+    diffs, floor_terms, paired_ids = [], [], []
     for t in ids:
         x, y = candidate.per_task_scores.get(t), reference.per_task_scores.get(t)
         if x is None or y is None:
             continue
         diffs.append(x - y)
+        paired_ids.append(t)
         if rerun_var is not None:
             kc, kr = len(ca.get(t, ())) or k_candidate, len(ra.get(t, ())) or k_reference
             floor_terms.append(rerun_var * (1 / kc + 1 / kr))
     n = len(diffs)
-    out = dict(n=n, dropped=len(ids) - n, delta=None, se_own=None, se_floor=None, se=None)
+    out = dict(n=n, dropped=len(ids) - n, delta=None, se_own=None, se_floor=None, se=None, se_method=None)
     if n == 0:
         return out
     delta = sum(diffs) / n
-    se_own = math.sqrt(sum((d - delta) ** 2 for d in diffs) / (n - 1)) / math.sqrt(n) if n > 1 else None
+    groups: dict = {}
+    for t, d in zip(paired_ids, diffs):
+        groups.setdefault((families or {}).get(t, t) if families else t, []).append(d)
+    g = len(groups)
+    if families and 1 < g < n:
+        scores = [sum(d - delta for d in grp) for grp in groups.values()]
+        se_own, out["se_method"] = math.sqrt(g / (g - 1) * sum(x * x for x in scores)) / n, "cluster_cr1"
+    else:
+        se_own = math.sqrt(sum((d - delta) ** 2 for d in diffs) / (n - 1)) / math.sqrt(n) if n > 1 else None
+        out["se_method"] = "iid"
     se_floor = math.sqrt(sum(floor_terms)) / n if floor_terms else None
     known = [s for s in (se_own, se_floor) if s is not None]
     out.update(delta=delta, se_own=se_own, se_floor=se_floor, se=max(known) if known else None)

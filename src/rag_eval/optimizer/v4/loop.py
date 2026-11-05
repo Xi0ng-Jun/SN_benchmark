@@ -1,21 +1,35 @@
-"""method-v4 loop (method-v4.md §2.3, §3): calibration, then rounds under one parent.
+"""method-v4 loop (method-v4.md §2.3, §3, §4.2): calibration, rounds under one parent, ablation.
 
 A round: (prefetched) search-set diagnosis of the parent → one analysis (2b
 cards) → up to b implementations in parallel, each through stage 0 (smoke,
-one repair) and stage 1 (fixed minibatch, paired with the cached parent) →
-survivors queued by Δ_mb into stage 2 (rest of the validation set at k_val)
-and stage 3 (mechanism: mechanical check + blinded reviewer) → one decision at
-the end of the round: qualified candidates, the best adopted, the two best
-merged (rebase) and the merge adopted if it beats the best.
+one repair) and stage 1 (the parent's minibatch, paired with the parent's
+cached validation results) → survivors queued by Δ_mb into stage 2 (rest of
+the validation set at k_val) and stage 3 (mechanism: mechanical check +
+blinded reviewer) → one decision at the end of the round: qualified
+candidates, the best adopted, the two best merged (rebase) and the merge
+adopted if it beats the best; then the new parent's search set is prefetched.
+
+Each parent has its own minibatch (§3.2), drawn by a seed derived from its
+hash and stratified by paper. Candidates are measured alone; the parent's
+side of every pair is its cache: the seed's calibration (k = calibration_k on
+the whole validation set) or, for an adopted node, the measurement that got it
+adopted. Nothing is measured twice for a parent.
+
+When a stop rule fires, the adopted changes are ablated one at a time on the
+validation set (§4.2); changes whose removal costs less than one SE are
+pruned, and the pruned version is checked once more before it becomes the
+endpoint's final version.
 
 Workers never touch loop state: they get an immutable snapshot and return a
 JSON record. Every decision runs on the main thread. ``state.json`` is
-rewritten atomically after every transition; a rerun resumes the open round
-(adapter calls replay under deterministic keys; decided records are kept).
+rewritten atomically after every transition; a rerun resumes (adapter calls
+replay under deterministic keys; decided records are kept).
 """
 from __future__ import annotations
 
 import copy
+import dataclasses
+import hashlib
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -25,19 +39,17 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import ledger_io
-from ..adapter import (BudgetExhausted, Card, Diff, EvalResult, EvaluationUnavailable, SmokeResult, SystemAdapter,
-                       Version)
+from ..adapter import BudgetExhausted, Card, Diff, EvalResult, EvaluationUnavailable, SmokeResult, SystemAdapter, Version
 from ..loop import select_analysis_cases
 from . import calibrate, decide, mechanism
 from .config import V4Config, digest
 
 log = logging.getLogger(__name__)
 
-SCHEMA = "v4-state-1"
+SCHEMA = "v4-state-2"
 STATE_FILE, LEDGER_FILE = "state.json", "ledger.json"
 RUN_FAILURE = "smoke_run_failed"
 DIFF_EXCERPT_CHARS = 20000
-TERMINAL_STAGES = ("error", "smoke_fail", "minibatch_fail", "measured")
 FAILURE_HALTS = ("process_failure", "budget_exhausted")
 
 
@@ -50,12 +62,14 @@ class Snapshot:
     """Immutable inputs of one worker."""
     cfg: V4Config
     parent: Version
+    parent_val: EvalResult          # the parent's cached results on the whole validation set
     smoke: tuple
     mb: tuple
     rest: tuple
     k_val: int
     rerun_var: float
     seed_aa: Optional[EvalResult]
+    families: dict
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +101,13 @@ def _smoke(adapter: SystemAdapter, snap: Snapshot, card: Card, cand: Version) ->
         return dict(verdict="unchecked", reason="behaviour check disabled", _evals=(ce, pe))
     check = mechanism.smoke_behaviour(adapter, card.predicate, ce, pe)
     return dict(check, _evals=(ce, pe))
+
+
+def _cache(adapter: SystemAdapter, result: EvalResult) -> Optional[dict]:
+    try:
+        return calibrate.cache_summary(adapter.timing_profile(result))
+    except Exception:  # noqa: BLE001 - a profile is a record field, never a failure
+        return None
 
 
 def stage01(adapter: SystemAdapter, snap: Snapshot, rec: dict, card: Card) -> tuple[dict, Optional[Version], Any]:
@@ -140,11 +161,13 @@ def stage01(adapter: SystemAdapter, snap: Snapshot, rec: dict, card: Card) -> tu
             return _finish(rec, "smoke_fail", "behaviour did not change as predicted (no repair)"), cand, diff
         rec["repaired"] = True
         attempt += 1
-    # --- stage 1: minibatch, k=1, paired with the parent's cached results ---
+    # --- stage 1: the parent's minibatch, k=1, paired with the parent's cache ---
     t0 = time.monotonic()
-    cm, pm = adapter.evaluate_subset(cand, parent, "mb", list(snap.mb), 1)
+    cm, _ = adapter.evaluate_subset(cand, None, "mb", list(snap.mb), 1)
     _timed(rec, "minibatch_s", t0)
-    d = decide.paired_delta(cm, pm, snap.mb, rerun_var=snap.rerun_var)
+    rec["cache_mb"] = _cache(adapter, cm)
+    pm = decide.restrict(snap.parent_val, snap.mb)
+    d = decide.paired_delta(cm, pm, snap.mb, rerun_var=snap.rerun_var, families=snap.families)
     sg = decide.safeguard_verdict(adapter.observe_safeguards(cm, pm), cfg.safeguard_tolerances)
     rec.update(delta_mb=d["delta"], se_mb=d["se"], n_mb=d["n"], safeguards_mb=sg)
     if d["delta"] is None:
@@ -165,17 +188,18 @@ def _diff_fields(diff: Optional[Diff]) -> dict:
 
 def stage23(adapter: SystemAdapter, snap: Snapshot, rec: dict, card: Card, cand: Version) -> dict:
     """Stage 2 (rest at k_val; the minibatch result is reused) and stage 3 (mechanism, Δ_val > 0 only)."""
-    cfg, parent = snap.cfg, snap.parent
+    cfg = snap.cfg
     t0 = time.monotonic()
-    cm, pm = adapter.evaluate_subset(cand, parent, "mb", list(snap.mb), 1)        # replay, nothing new runs
-    cr, pr = adapter.evaluate_subset(cand, parent, "rest", list(snap.rest), snap.k_val)
+    cm, _ = adapter.evaluate_subset(cand, None, "mb", list(snap.mb), 1)        # replay, nothing new runs
+    cr, _ = adapter.evaluate_subset(cand, None, "rest", list(snap.rest), snap.k_val)
     _timed(rec, "validation_s", t0)
-    cv, pv = decide.combine(cm, cr), decide.combine(pm, pr)
+    rec["cache_rest"] = _cache(adapter, cr)
     ids = list(snap.mb) + list(snap.rest)
-    d = decide.paired_delta(cv, pv, ids, rerun_var=snap.rerun_var)
+    cv, pv = decide.combine(cm, cr), decide.restrict(snap.parent_val, ids)
+    d = decide.paired_delta(cv, pv, ids, rerun_var=snap.rerun_var, families=snap.families)
     sg = decide.safeguard_verdict(adapter.observe_safeguards(cv, pv), cfg.safeguard_tolerances)
-    rec.update(delta_val=d["delta"], se_val=d["se"], se_own=d["se_own"], se_floor=d["se_floor"], n_val=d["n"],
-               dropped_val=d["dropped"], safeguards=sg)
+    rec.update(delta_val=d["delta"], se_val=d["se"], se_own=d["se_own"], se_floor=d["se_floor"],
+               se_method=d["se_method"], n_val=d["n"], dropped_val=d["dropped"], safeguards=sg)
     mech = dict(mechanical=None, reviewer=dict(conclusion="none", reason="not reviewed"), tier=None)
     if d["delta"] is not None and d["delta"] > 0:
         t0 = time.monotonic()
@@ -212,14 +236,18 @@ class V4Run:
         self.adapter, self.seed, self.cfg = adapter, seed, cfg
         self.clock = clock
         self.state_dir = Path(state_dir) if state_dir is not None else None
-        mb, rest = decide.minibatch_split(validation, cfg.minibatch_fraction, cfg.minibatch_min,
-                                          seed=f"v4-minibatch:{seed.content_hash}", families=families)
-        import hashlib
+        validation = sorted(set(validation))
+        if families is None:
+            families = adapter.task_families(validation)
+        self.families = {t: f for t, f in (families or {}).items() if t in set(validation)}
         smoke = sorted(search, key=lambda c: (hashlib.sha256(c.encode()).hexdigest(), c))[:cfg.smoke_size]
-        self.partitions = dict(search=sorted(search), validation=sorted(validation), minibatch=mb, rest=rest,
-                               smoke=smoke, test_size=test_size)
+        self.partitions = dict(search=sorted(search), validation=validation, smoke=smoke, test_size=test_size,
+                               families=len(set(self.families.values())) or None)
+        mb, rest = self.split_for(seed.content_hash)
+        self.partitions.update(seed_minibatch=mb, seed_rest=rest)
         self.versions: dict[str, Version] = {seed.content_hash: seed}
-        self.lineage: list[dict] = [dict(version=seed.content_hash, parent=None, round=0, kind="seed")]
+        self.lineage: list[dict] = [dict(version=seed.content_hash, parent=None, round=0, kind="seed",
+                                         components=[])]
         self.calibration: Optional[dict] = None
         self.feasibility: Optional[dict] = None
         self.rounds: list[dict] = []
@@ -228,16 +256,17 @@ class V4Run:
         self.analyst_shown: dict[str, list[str]] = {}
         self.no_adoption = 0
         self.run_failures = 0
+        self.stop_reason: Optional[str] = None
         self.halt_reason: Optional[str] = None
+        self.ablation: Optional[dict] = None
         self.elapsed_before = 0.0
         self.sessions: list[dict] = []
         self.key_generation = 0
         self.key_generation_log: list[dict] = []
-        self.endpoint: Optional[dict] = None
         self.started_at = _now()
-        # In memory only (replayed on resume): calibration results, parent caches, prefetch.
+        # In memory only (replayed on resume): calibration results, validation caches, prefetch.
         self.cal_results: Optional[dict] = None
-        self._parent_cache: dict[str, tuple[EvalResult, EvalResult]] = {}
+        self._val_cache: dict[tuple, EvalResult] = {}
         self._prefetch: Optional[tuple[str, Future]] = None
         self._prefetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v4-prefetch")
         self._session_start = clock()
@@ -246,6 +275,14 @@ class V4Run:
             self._restore(ledger_io.read_json(self.state_dir / STATE_FILE))
         self._apply_key_generation(key_generation, resumed)
 
+    # -- partitions ----------------------------------------------------------
+
+    def split_for(self, parent_hash: str) -> tuple[list[str], list[str]]:
+        """(minibatch, rest) of one parent: fixed rule, seeded by the parent's hash (§3.2)."""
+        return decide.minibatch_split(self.partitions["validation"], self.cfg.minibatch_fraction,
+                                      self.cfg.minibatch_min, seed=f"v4-minibatch:{parent_hash}",
+                                      families=self.families or None)
+
     # -- persistence --------------------------------------------------------
 
     def elapsed(self) -> float:
@@ -253,13 +290,14 @@ class V4Run:
 
     def _state(self) -> dict:
         return dict(schema_version=SCHEMA, config_sha256=digest(self.cfg), seed=self.seed.content_hash,
-                    partitions=self.partitions, calibration=self.calibration, feasibility=self.feasibility,
+                    partitions=self.partitions, family_of=self.families, calibration=self.calibration,
+                    feasibility=self.feasibility,
                     versions={h: ledger_io.version_metadata(v) for h, v in self.versions.items()},
                     lineage=self.lineage, rounds=self.rounds, current_round=self.current, history=self.history,
                     analyst_shown=self.analyst_shown, no_adoption=self.no_adoption, run_failures=self.run_failures,
-                    halt_reason=self.halt_reason, elapsed_s=self.elapsed(), sessions=self.sessions,
-                    key_generation=self.key_generation, key_generation_log=self.key_generation_log,
-                    endpoint=self.endpoint, started_at=self.started_at, updated_at=_now())
+                    stop_reason=self.stop_reason, ablation=self.ablation, halt_reason=self.halt_reason,
+                    elapsed_s=self.elapsed(), sessions=self.sessions, key_generation=self.key_generation,
+                    key_generation_log=self.key_generation_log, started_at=self.started_at, updated_at=_now())
 
     def save(self) -> None:
         if self.state_dir is not None:
@@ -273,13 +311,13 @@ class V4Run:
         if st.get("seed") != self.seed.content_hash:
             raise ValueError(f"seed {self.seed.content_hash!r} differs from the run's seed {st.get('seed')!r}")
         recorded = dict(st["partitions"])
-        if {k: v for k, v in recorded.items() if k != "test_size"} != {
-                k: v for k, v in self.partitions.items() if k != "test_size"}:
-            raise ValueError("search/validation/minibatch/smoke ids differ from the ones this run started with")
+        same = ("search", "validation", "smoke", "seed_minibatch", "seed_rest")
+        if any(recorded.get(k) != self.partitions.get(k) for k in same) or st.get("family_of") != self.families:
+            raise ValueError("search/validation/smoke ids or task families differ from the ones this run started with")
         self.partitions = recorded
         self.versions = {h: Version(content_hash=h, metadata=m) for h, m in st["versions"].items()}
         for name in ("calibration", "feasibility", "lineage", "rounds", "history", "analyst_shown", "sessions",
-                     "key_generation_log", "endpoint", "started_at"):
+                     "key_generation_log", "started_at", "stop_reason", "ablation"):
             setattr(self, name, st.get(name, getattr(self, name)))
         self.current = st.get("current_round")
         self.no_adoption, self.run_failures = st.get("no_adoption", 0), st.get("run_failures", 0)
@@ -309,20 +347,35 @@ class V4Run:
         cand = [r for rd in rounds for r in (rd.get("records") or {}).values()]
         sums = {k: sum((r.get("timings") or {}).get(k, 0.0) for r in cand)
                 for k in ("agent_s", "smoke_s", "minibatch_s", "validation_s", "mechanism_s")}
-        stages = {}
+        stages: dict = {}
         for r in cand:
             stages[r.get("stage")] = stages.get(r.get("stage"), 0) + 1
-        return dict(kind="method-v4-ledger", config=_asdict(self.cfg), config_sha256=digest(self.cfg),
+        by_cache: dict = {}
+        for r in cand:
+            for stage, key in (("minibatch_s", "cache_mb"), ("validation_s", "cache_rest")):
+                if stage not in (r.get("timings") or {}):
+                    continue
+                c = r.get(key) or {}
+                cls = "cold" if c.get("cache_misses") else "warm" if c.get("cache_hits") else "unknown"
+                row = by_cache.setdefault(stage, {}).setdefault(cls, dict(n=0, total_s=0.0))
+                row["n"] += 1
+                row["total_s"] += r["timings"][stage]
+        for stage in by_cache.values():
+            for row in stage.values():
+                row["mean_s"] = row["total_s"] / row["n"]
+        return dict(kind="method-v4-ledger", config=dataclasses.asdict(self.cfg), config_sha256=digest(self.cfg),
                     variants=self.cfg.variants(), seed=self.seed.content_hash,
                     partitions={k: (len(v) if isinstance(v, list) else v) for k, v in self.partitions.items()},
                     deviations=DEVIATIONS, calibration=self.calibration, feasibility=self.feasibility,
-                    rounds=rounds, lineage=self.lineage, halt_reason=self.halt_reason, endpoint=self.endpoint,
+                    rounds=rounds, lineage=self.lineage, stop_reason=self.stop_reason, ablation=self.ablation,
+                    halt_reason=self.halt_reason,
                     time_account=dict(total_wall_s=self.elapsed(),
                                       calibration_s=(self.calibration or {}).get("wall_s"),
                                       rounds=[dict(round=rd["round"], wall_s=rd.get("wall_s"),
                                                    analysis_s=rd.get("analysis_s"), decision_s=rd.get("decision_s"))
                                               for rd in rounds],
-                                      candidate_sums_s=sums),
+                                      candidate_sums_s=sums, stage_seconds_by_cache=by_cache,
+                                      ablation_s=(self.ablation or {}).get("wall_s")),
                     stage_counts=stages, key_generation_log=self.key_generation_log, sessions=self.sessions)
 
     # -- helpers ------------------------------------------------------------
@@ -334,28 +387,37 @@ class V4Run:
         return [{k: v for k, v in e.items() if k != "parent"} for e in self.history
                 if e["parent"] == parent.content_hash]
 
+    def _node(self, h: str) -> Optional[dict]:
+        return next((n for n in self.lineage if n["version"] == h), None)
+
+    def measure_val(self, version: Version, split_of: str, k_val: Optional[int] = None) -> EvalResult:
+        """*version* on the validation set split as *split_of*'s minibatch (k=1) + rest (k_val); replayable."""
+        k_val = k_val or self.calibration["k_val"]
+        key = (version.content_hash, split_of, k_val)
+        if key not in self._val_cache:
+            mb, rest = self.split_for(split_of)
+            self._val_cache[key] = decide.combine(self.adapter.evaluate_subset(version, None, "mb", mb, 1)[0],
+                                                  self.adapter.evaluate_subset(version, None, "rest", rest, k_val)[0])
+        return self._val_cache[key]
+
+    def parent_val(self, version: Version) -> EvalResult:
+        """The cached validation results of a lineage node (the seed: its calibration A/A)."""
+        h = version.content_hash
+        if h == self.seed.content_hash:
+            return decide.combine(self.cal_results["mb"], self.cal_results["rest"])
+        node = self._node(h)
+        if node is None:
+            raise KeyError(f"{h!r} is not a lineage node")
+        return self.measure_val(version, node["parent"], node.get("k_val"))
+
     def _snapshot(self, parent: Version) -> Snapshot:
         cal = self.calibration
-        return Snapshot(cfg=self.cfg, parent=parent, smoke=tuple(self.partitions["smoke"]),
-                        mb=tuple(self.partitions["minibatch"]), rest=tuple(self.partitions["rest"]),
+        mb, rest = self.split_for(parent.content_hash)
+        return Snapshot(cfg=self.cfg, parent=parent, parent_val=self.parent_val(parent),
+                        smoke=tuple(self.partitions["smoke"]), mb=tuple(mb), rest=tuple(rest),
                         k_val=cal["k_val"], rerun_var=cal["rerun_var"],
-                        seed_aa=decide.combine(self.cal_results["mb"], self.cal_results["rest"]))
-
-    def parent_results(self, version: Version) -> tuple[EvalResult, EvalResult]:
-        """(mb, rest) of a lineage node: calibration for the seed, its own paired measurement otherwise."""
-        h = version.content_hash
-        if h in self._parent_cache:
-            return self._parent_cache[h]
-        if h == self.seed.content_hash:
-            out = (self.cal_results["mb"], self.cal_results["rest"])
-        else:
-            node = next(n for n in self.lineage if n["version"] == h)
-            ref = self.versions[node["measured_against"]]
-            mb, rest = self.partitions["minibatch"], self.partitions["rest"]
-            out = (self.adapter.evaluate_subset(version, ref, "mb", mb, 1)[0],
-                   self.adapter.evaluate_subset(version, ref, "rest", rest, self.calibration["k_val"])[0])
-        self._parent_cache[h] = out
-        return out
+                        seed_aa=decide.combine(self.cal_results["mb"], self.cal_results["rest"]),
+                        families=dict(self.families))
 
     def _diagnose(self, version: Version) -> EvalResult:
         if self._prefetch is not None and self._prefetch[0] == version.content_hash:
@@ -370,8 +432,11 @@ class V4Run:
         fut = self._prefetch_pool.submit(self.adapter.evaluate, version, search, k, purpose="diagnose")
         self._prefetch = (version.content_hash, fut)
 
+    def _remaining(self) -> float:
+        return self.cfg.time_budget_hours * 3600 - self.elapsed()
+
     def _out_of_time(self) -> bool:
-        return self.elapsed() >= self.cfg.time_budget_hours * 3600
+        return self._remaining() <= 0
 
     # -- top level ----------------------------------------------------------
 
@@ -394,8 +459,15 @@ class V4Run:
             return self._halt(_failure(exc))
         while True:
             if self.current is None:
-                reason = self._stop_reason()
+                reason = self.stop_reason or self._stop_reason()
                 if reason:
+                    self.stop_reason = reason
+                    self.save()
+                    try:
+                        self._ablate()
+                    except EvaluationUnavailable as exc:
+                        log.error("ablation unavailable: %s", exc)
+                        return self._halt(_failure(exc))
                     return self._halt(reason)
                 self.current = dict(round=len(self.rounds) + 1, parent=self.pointer().content_hash,
                                     started_at=_now(), cards=None, records={}, decision=None,
@@ -430,7 +502,7 @@ class V4Run:
         if self._out_of_time():
             return "time_budget"
         walls = [r["wall_s"] for r in self.rounds if r.get("wall_s")]
-        if walls and self.cfg.time_budget_hours * 3600 - self.elapsed() < sum(walls) / len(walls):
+        if walls and self._remaining() < sum(walls) / len(walls):
             return "time_budget"   # not enough left for a round: the rest is the endpoint's
         return None
 
@@ -438,13 +510,15 @@ class V4Run:
         p = self.partitions
         t0 = self.clock()
         self.cal_results, walls = calibrate.measure(self.adapter, self.seed, self.cfg, p["search"],
-                                                    p["minibatch"], p["rest"])
+                                                    p["seed_minibatch"], p["seed_rest"])
         if self.calibration is not None:
             return   # resumed: derived values are part of the run record and never recomputed
         val = decide.combine(self.cal_results["mb"], self.cal_results["rest"])
         observed = self.adapter.observe_safeguards(val, val)
-        sizes = dict(search=len(p["search"]), mb=len(p["minibatch"]), rest=len(p["rest"]), test=p.get("test_size"))
-        cal = calibrate.derive(self.cal_results, walls, self.cfg, safeguards=observed, sizes=sizes)
+        sizes = dict(search=len(p["search"]), mb=len(p["seed_minibatch"]), rest=len(p["seed_rest"]),
+                     test=p.get("test_size"), smoke=len(p["smoke"]))
+        profiles = {name: _cache(self.adapter, r) for name, r in self.cal_results.items()}
+        cal = calibrate.derive(self.cal_results, walls, self.cfg, safeguards=observed, sizes=sizes, profiles=profiles)
         cal["wall_s"] = self.clock() - t0
         self.calibration = cal
         self.feasibility = calibrate.feasibility(cal, self.cfg)
@@ -466,7 +540,9 @@ class V4Run:
             failures = [t for t, r in roles.items() if r == "failure"]
             self.analyst_shown[parent.content_hash] = list(dict.fromkeys(shown + failures))
             stats = getattr(self.adapter, "last_analysis", None)
+            mb, rest = self.split_for(parent.content_hash)
             rd.update(cards=[ledger_io.card_to_dict(c) for c in cards], analysis_s=self.clock() - t0,
+                      split=dict(minibatch=mb, rest=rest),
                       analysis=dict(failures_shown=len(failures), controls_shown=len(roles) - len(failures),
                                     adapter=dict(stats) if isinstance(stats, dict) else None))
             self.save()
@@ -480,6 +556,8 @@ class V4Run:
     def _pipeline(self, rd: dict, parent: Version) -> Optional[str]:
         cards = [ledger_io.card_from_dict(c) for c in rd["cards"]]
         records: dict = rd["records"]
+        if not cards:
+            return None
         snap = self._snapshot(parent)
         b = self.cfg.b
         timebox = self.cfg.round_timebox_hours
@@ -493,6 +571,12 @@ class V4Run:
         def closed() -> bool:
             return (failure is not None or self._out_of_time()
                     or (timebox is not None and self.elapsed() - rd["started_elapsed"] >= timebox * 3600))
+
+        def new_record(idx: int) -> dict:
+            rec = records[str(idx)] = dict(card_index=idx, title=cards[idx].failure_mode_desc,
+                                           card_ref=cards[idx].ref, parent=parent.content_hash,
+                                           stage="pending", started_at=_now(), timings={})
+            return rec
 
         with ThreadPoolExecutor(max_workers=b, thread_name_prefix="v4-impl") as pool1, \
                 ThreadPoolExecutor(max_workers=b, thread_name_prefix="v4-eval") as pool2:
@@ -511,11 +595,7 @@ class V4Run:
             for rec in rerun:
                 submit1(rec)
             while queue and len(p1) < b and not closed():
-                idx = queue.pop(0)
-                rec = records[str(idx)] = dict(card_index=idx, title=cards[idx].failure_mode_desc,
-                                               card_ref=cards[idx].ref, parent=parent.content_hash,
-                                               stage="pending", started_at=_now(), timings={})
-                submit1(rec)
+                submit1(new_record(queue.pop(0)))
             self.save()
             submit2()
             while p1 or p2:
@@ -538,15 +618,11 @@ class V4Run:
                         records[str(out["card_index"])] = out
                         if cand is not None:
                             self.versions[cand.content_hash] = cand
-                        failure = failure or self._after_stage01(rd, out)
+                        failure = failure or self._after_stage01(out)
                         if out["stage"] == "minibatch_pass":
                             stage2.append(out)
                         if queue and not closed():
-                            idx = queue.pop(0)
-                            nrec = records[str(idx)] = dict(card_index=idx, title=cards[idx].failure_mode_desc,
-                                                            card_ref=cards[idx].ref, parent=parent.content_hash,
-                                                            stage="pending", started_at=_now(), timings={})
-                            submit1(nrec)
+                            submit1(new_record(queue.pop(0)))
                     submit2()
                 self.save()
         if failure is None and stage2 and self._out_of_time():
@@ -554,7 +630,7 @@ class V4Run:
                 rec["unmeasured"] = "time budget"
         return failure
 
-    def _after_stage01(self, rd: dict, rec: dict) -> Optional[str]:
+    def _after_stage01(self, rec: dict) -> Optional[str]:
         if (rec.get("reason") or "").startswith(RUN_FAILURE):
             self.run_failures += 1
             if self.run_failures >= self.cfg.max_consecutive_run_failures:
@@ -573,38 +649,37 @@ class V4Run:
         best = decide.pick_best(qualified, self.cfg.tie_fraction)
         decision = dict(qualified=[r["card_index"] for r in qualified], best=best and best["card_index"],
                         merge=None, adopted=None)
-        adopted, measured_against, delta, se, tier_ = None, parent.content_hash, None, None, None
+        adopted, node = None, None
         if best is not None:
-            best_v = self.versions[best["candidate"]]
-            self._start_prefetch(best_v)
-            adopted, delta, se, tier_ = best_v, best["delta_val"], best["se_val"], best["mechanism"]["tier"]
+            adopted = self.versions[best["candidate"]]
+            node = dict(kind="candidate", components=[best["candidate"]], delta_val=best["delta_val"],
+                        se_val=best["se_val"], tier=best["mechanism"]["tier"], card_indices=[best["card_index"]])
             if self.cfg.merge and len(qualified) >= 2:
                 second = max((r for r in qualified if r is not best), key=lambda r: (r["delta_val"], -r["card_index"]))
-                decision["merge"] = m = self._merge(parent, best, second)
+                decision["merge"] = m = rd.get("merge_progress") or self._merge(rd, parent, best, second)
                 if m.get("adopt"):
                     adopted = self.versions[m["candidate"]]
-                    measured_against, delta, se, tier_ = best["candidate"], m["delta_val"], m["se_val"], None
-                    self._start_prefetch(adopted)
-        merged = bool(decision["merge"] and decision["merge"].get("adopt"))
-        in_lineage = set(decision["merge"]["of"]) if merged else ({best["card_index"]} if best else set())
+                    node = dict(kind="merge", components=[best["candidate"], m["candidate"]],
+                                delta_val=m["delta_val"], se_val=m["se_val"], tier=None,
+                                card_indices=sorted([best["card_index"], second["card_index"]]))
+        in_lineage = set(node["card_indices"]) if node else set()
         for r in records:
             self._label(r, parent, adopted=r["card_index"] in in_lineage)
         if adopted is not None:
-            self.lineage.append(dict(version=adopted.content_hash, parent=parent.content_hash, round=rd["round"],
-                                     kind="merge" if measured_against != parent.content_hash else "candidate",
-                                     measured_against=measured_against, delta_val=delta, se_val=se,
-                                     tier=tier_, card_indices=sorted(in_lineage),
-                                     elapsed_s=self.elapsed()))
+            self._start_prefetch(adopted)       # after the merge decision: never the losing version
+            self.lineage.append(dict(node, version=adopted.content_hash, parent=parent.content_hash,
+                                     round=rd["round"], k_val=self.calibration["k_val"], elapsed_s=self.elapsed()))
             decision["adopted"] = adopted.content_hash
             self.no_adoption = 0
         else:
             self.no_adoption += 1
+        rd.pop("merge_progress", None)
         rd["decision"] = decision
         rd["decision_s"] = self.clock() - t0
         self.save()
 
-    def _merge(self, parent: Version, best: dict, second: dict) -> dict:
-        """§3.3 step 3: second's change rebased onto best, measured on the whole validation set."""
+    def _merge(self, rd: dict, parent: Version, best: dict, second: dict) -> dict:
+        """§3.3 step 3: second's change rebased onto best, measured on the parent's validation split."""
         out = dict(of=[best["card_index"], second["card_index"]], adopt=False)
         try:
             merged = self.adapter.rebase(self.versions[second["candidate"]], self.versions[best["candidate"]])
@@ -615,18 +690,19 @@ class V4Run:
         if merged is None:
             return dict(out, skipped="rebase conflict")
         self.versions[merged.content_hash] = merged
-        best_v = self.versions[best["candidate"]]
-        mb, rest, k_val = self.partitions["minibatch"], self.partitions["rest"], self.calibration["k_val"]
-        mm, _ = self.adapter.evaluate_subset(merged, best_v, "mb", mb, 1)
-        mr, _ = self.adapter.evaluate_subset(merged, best_v, "rest", rest, k_val)
-        pm, pr = self.parent_results(parent)
-        mv, pv = decide.combine(mm, mr), decide.combine(pm, pr)
-        d = decide.paired_delta(mv, pv, mb + rest, rerun_var=self.calibration["rerun_var"])
+        self.save()
+        mv = self.measure_val(merged, parent.content_hash)
+        mb, rest = self.split_for(parent.content_hash)
+        pv = decide.restrict(self.parent_val(parent), mb + rest)
+        d = decide.paired_delta(mv, pv, mb + rest, rerun_var=self.calibration["rerun_var"], families=self.families)
         sg = decide.safeguard_verdict(self.adapter.observe_safeguards(mv, pv), self.cfg.safeguard_tolerances)
         ok = sg["ok"] or (not sg["breached"] and not self.cfg.unobserved_safeguard_blocks)
         adopt = d["delta"] is not None and d["delta"] > best["delta_val"] and ok
-        return dict(out, candidate=merged.content_hash, delta_val=d["delta"], se_val=d["se"], n_val=d["n"],
-                    safeguards=sg, adopt=adopt)
+        result = dict(out, candidate=merged.content_hash, delta_val=d["delta"], se_val=d["se"], n_val=d["n"],
+                      safeguards=sg, adopt=adopt)
+        rd["merge_progress"] = result
+        self.save()
+        return result
 
     def _label(self, rec: dict, parent: Version, *, adopted: bool) -> None:
         """§5 history label (labels and discrete details only)."""
@@ -657,24 +733,136 @@ class V4Run:
             entry["mechanism"] = tier_
         self.history.append(entry)
 
+    # -- ablation pruning (§4.2) --------------------------------------------
+
+    def _rebuild(self, skip: set[int]) -> Optional[Version]:
+        """The final version without the lineage units in *skip* (0 = first adopted node); None on conflict."""
+        units = self.lineage[1:]
+        first = min(skip)
+        base = self.versions[self.lineage[first]["version"]]      # everything before the first skipped unit
+        for j in range(first + 1, len(units)):
+            if j in skip:
+                continue
+            for component in units[j]["components"]:
+                try:
+                    base = self.adapter.rebase(self.versions[component], base)
+                except EvaluationUnavailable:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("ablation rebase failed: %s", exc)
+                    return None
+                if base is None:
+                    return None
+                self.versions[base.content_hash] = base
+        return base
+
+    def _val_of(self, version: Version, split_of: str) -> EvalResult:
+        if self._node(version.content_hash) is not None:
+            return self.parent_val(version)
+        return self.measure_val(version, split_of)
+
+    def _validation_seconds(self) -> float:
+        st = (self.feasibility or {}).get("stage_seconds") or {}
+        return float(st.get("minibatch") or 0.0) + float(st.get("validation_rest") or 0.0)
+
+    def _ablate(self) -> None:
+        if self.ablation is not None and self.ablation.get("status") in ("done", "skipped"):
+            return
+        units = self.lineage[1:]
+        if not self.cfg.ablation:
+            self.ablation = dict(status="skipped", reason="disabled")
+        elif not units:
+            self.ablation = dict(status="skipped", reason="nothing adopted")
+        if self.ablation is not None and self.ablation.get("status") == "skipped":
+            self.save()
+            return
+        final = self.lineage[-1]
+        ab = self.ablation or dict(status="running", units={}, split_of=final["parent"], final=final["version"],
+                                   started_elapsed=self.elapsed())
+        if "budget" not in ab:
+            # One measurement per unit except the last (removing it leaves its parent, already cached),
+            # plus the re-measurement of the pruned version.
+            measured = len(units)
+            needed = measured * self._validation_seconds()
+            ab["budget"] = dict(validation_seconds=self._validation_seconds(), measurements=measured,
+                                needed_s=needed, remaining_s=self._remaining())
+            if needed > self._remaining():
+                self.ablation = dict(status="skipped", reason="time budget", budget=ab["budget"])
+                self.save()
+                return
+        self.ablation = ab
+        self.save()
+        final_v = self.versions[final["version"]]
+        final_val = self.parent_val(final_v)
+        ids = self.partitions["validation"]
+        cal = self.calibration
+        kill = self.cfg.ablation_kill
+        for i, node in enumerate(units):
+            if str(i) in ab["units"]:
+                continue
+            row = dict(index=i + 1, version=node["version"], round=node["round"], kind=node["kind"],
+                       card_indices=node.get("card_indices", []))
+            ablated = self._rebuild({i})
+            if ablated is None:
+                row.update(status="conflict", prune=False)
+            else:
+                val = self._val_of(ablated, ab["split_of"])
+                d = decide.paired_delta(val, final_val, ids, rerun_var=cal["rerun_var"], families=self.families)
+                prune = d["delta"] is not None and d["se"] is not None and d["delta"] >= -kill * d["se"]
+                row.update(status="measured", ablated=ablated.content_hash, delta=d["delta"], se=d["se"], n=d["n"],
+                           prune=prune)
+            ab["units"][str(i)] = row
+            self.save()
+        pruned = sorted(int(k) for k, r in ab["units"].items() if r.get("prune"))
+        ab["pruned"] = [i + 1 for i in pruned]
+        if not pruned:
+            ab.update(status="done", accepted=False, reason="every adopted change contributes")
+        else:
+            version = self._rebuild(set(pruned))
+            if version is None:
+                ab.update(status="done", accepted=False, reason="rebase conflict while removing the pruned changes")
+            else:
+                val = self._val_of(version, ab["split_of"])
+                d = decide.paired_delta(val, final_val, ids, rerun_var=cal["rerun_var"], families=self.families)
+                ok = d["delta"] is not None and d["se"] is not None and d["delta"] >= -kill * d["se"]
+                ab.update(status="done", candidate=version.content_hash,
+                          check=dict(delta=d["delta"], se=d["se"], n=d["n"]), accepted=ok,
+                          reason=None if ok else "the pruned version is worse on the validation set")
+                if ok:
+                    ab["final"] = version.content_hash
+                    for i in pruned:
+                        self._mark_pruned(units[i])
+        ab["wall_s"] = self.elapsed() - ab.get("started_elapsed", self.elapsed())
+        self.ablation = ab
+        self.save()
+
+    def _mark_pruned(self, unit: dict) -> None:
+        for rd in self.rounds:
+            if rd["round"] != unit["round"]:
+                continue
+            for r in (rd.get("records") or {}).values():
+                if r["card_index"] in unit.get("card_indices", []):
+                    r["pruned"] = True
+                    self.history.append(dict(parent=unit["parent"], title=r["title"], label="pruned"))
+
+    def final_version(self) -> str:
+        """The endpoint's final version: the pruned version when ablation accepted one, else the pointer."""
+        return final_version(self.lineage, self.ablation)
+
+
+def final_version(lineage: list[dict], ablation: Optional[dict]) -> str:
+    ab = ablation or {}
+    return ab["final"] if ab.get("status") == "done" and ab.get("accepted") else lineage[-1]["version"]
+
 
 def _failure(exc: EvaluationUnavailable) -> str:
     return "budget_exhausted" if isinstance(exc, BudgetExhausted) else "process_failure"
 
 
-def _asdict(cfg: V4Config) -> dict:
-    import dataclasses
-    return dataclasses.asdict(cfg)
-
-
-# Recorded in every ledger: where this implementation departs from method-v4.md (binding plan §2).
+# Recorded in every ledger: where this implementation departs from method-v4.md.
 DEVIATIONS = [
-    "one fixed minibatch for the whole run, not one per parent (method §3.2; binding plan §2.3)",
-    "SN keeps v2's 60/40 search/validation split; the test set is the iteration's sealed selection",
-    "the seed's calibration A/A stands in for the parent's A/A in the mechanical check and the control pairs",
-    "SE is iid with the A/A floor (no family clustering in the loop); the endpoint reports v2's family-clustered SE",
+    "SN keeps v2's 60/40 search/validation split; the test set is the iteration's registered sealed selection",
+    "the seed's calibration A/A stands in for the parent's A/A in the mechanical check and the reviewer's control pairs",
+    "ablation removes one lineage node at a time; a merge node (two cards) is removed as one unit",
     "the analyst sees the mechanism tier only, never the reviewer's free-text reason",
-    "no ablation pruning (method §4.2 is optional; binding plan W8)",
-    "test-set interval: Δ ± 1.96·SE with v2's paper-clustered SE (normal approximation), not a family bootstrap",
-    "minibatch tasks drawn by hash, not stratified by paper (the SN adapter does not expose task families)",
 ]

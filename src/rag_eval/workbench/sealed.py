@@ -101,6 +101,36 @@ def _holm(pvalues):
     return adjusted
 
 
+BOOTSTRAP_RESAMPLES = 2000
+
+
+def _bootstrap(seed_scores, node_scores, families, *, resamples=BOOTSTRAP_RESAMPLES, key=''):
+    """Two-sided 95% percentile interval of the paired Δ, resampling whole families (cases without one: themselves).
+
+    Deterministic (the generator is seeded by *key*); None when fewer than two units.
+    Aggregate-only: returns bounds, never case values.
+    """
+    import random
+    import hashlib
+    units = {}
+    for cid, value in node_scores.items():
+        if cid in seed_scores and value is not None and seed_scores[cid] is not None:
+            units.setdefault((families or {}).get(cid, cid), []).append(value - seed_scores[cid])
+    groups = list(units.values())
+    if len(groups) < 2:
+        return None
+    rng = random.Random(hashlib.sha256(('bootstrap:' + key).encode()).hexdigest())
+    deltas = []
+    for _ in range(resamples):
+        drawn = [groups[rng.randrange(len(groups))] for _ in groups]
+        total, n = sum(sum(g) for g in drawn), sum(len(g) for g in drawn)
+        deltas.append(total / n)
+    deltas.sort()
+    lo, hi = deltas[int(.025 * resamples)], deltas[min(resamples - 1, int(.975 * resamples))]
+    return dict(lower=lo, upper=hi, resamples=resamples, units=len(groups),
+                unit='family' if families else 'case')
+
+
 def lineage_curve(nodes, *, alpha=.05, families=None):
     """Paired confirmed-change × sealed-score curve; pure, aggregate-only output.
 
@@ -135,6 +165,10 @@ def lineage_curve(nodes, *, alpha=.05, families=None):
             paired = paired_means(seed, node['scores'], z=z, families=families)
             stats[index] = paired
             row.update(delta_vs_seed=paired['delta'], se_delta=paired['se'], lower=paired['lower'], upper=paired['upper'])
+            # method-v4 §4.1: a two-sided 95% bootstrap interval over families, alongside the z interval.
+            boot = _bootstrap(seed, node['scores'], families, key=str(node['candidate_id']))
+            row.update(boot_lower=boot and boot['lower'], boot_upper=boot and boot['upper'],
+                       boot_units=boot and boot['units'], boot_unit=boot and boot['unit'])
             se = paired['se']
             if se:
                 row['p'] = 1 - normal.cdf(paired['delta'] / se)

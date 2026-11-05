@@ -39,10 +39,12 @@ def test_cascade_adoption_and_merge(tmp_path):
     merge = r.rounds[0]["decision"]["merge"]
     assert merge["adopt"] and merge["delta_val"] == pytest.approx(0.16, abs=0.01)
     node = r.lineage[-1]
-    assert node["kind"] == "merge" and node["parent"] == "seed" and node["measured_against"] == "seed+r1-A"
+    assert node["kind"] == "merge" and node["parent"] == "seed" and node["components"][0] == "seed+r1-A"
     assert rec["A"]["label"] == rec["B"]["label"] == "adopted"
-    # The calibration fixed k_val; the minibatch is a fixed quarter (>= 10) of validation.
-    assert r.calibration["k_val"] == 2 and len(r.partitions["minibatch"]) == 10
+    # The calibration fixed k_val; the seed's minibatch is a quarter (>= 10) of validation.
+    assert r.calibration["k_val"] == 2 and len(r.partitions["seed_minibatch"]) == 10
+    # Round 2 ran under the merged parent with its own minibatch (seeded by the parent's hash).
+    assert r.split_for(node["version"]) != r.split_for("seed")
     # Round 2 was analysed on the merged parent with the v4 labels of round 1 (none under it).
     assert mock.calls["analyse"] == 2 and mock.last_history == []
     # Control pairs exist and the reviewer never sees the candidate side or a task id.
@@ -62,7 +64,7 @@ def test_merge_not_adopted_when_rebase_conflicts():
 
 def test_two_tier_threshold_and_untrusted_reviewer():
     # Δ ≈ 0.75 SE: adopted only when the mechanism is confirmed (c_mech = 0.5 < 0.75 < c = 1).
-    small = [[dict(name="S", delta=0.0042, effect=True)]]
+    small = [[dict(name="S", delta=0.003, effect=True)]]
     honest, _ = run(V4Mock(small), cfg())
     rec = records(honest)["S"]
     assert 0.5 < rec["delta_val"] / rec["se_val"] < 1
@@ -74,7 +76,7 @@ def test_two_tier_threshold_and_untrusted_reviewer():
 
 
 def test_mechanical_check_confirms_without_reviewer():
-    mock = V4Mock([[dict(name="P", delta=0.0042, predicate=True)]], reviewer=None)
+    mock = V4Mock([[dict(name="P", delta=0.003, predicate=True)]], reviewer=None)
     r, _ = run(mock, cfg())
     rec = records(r)["P"]
     assert rec["mechanism"]["mechanical"]["status"] == "changed" and rec["mechanism"]["tier"] == "confirmed"
@@ -166,3 +168,45 @@ def test_reviewer_conclusion_rules():
     assert decide.reviewer_conclusion(gaming, pairs, **rules)["conclusion"] == "suspicious"
     assert decide.reviewer_conclusion(None, pairs, **rules)["conclusion"] == "none"
     assert decide.tier("changed", "none") == "confirmed" and decide.tier("changed", "suspicious") == "suspicious"
+
+
+def test_each_parent_has_its_own_minibatch_and_parents_are_never_remeasured():
+    mock = V4Mock([[dict(name="A", delta=0.1)], [dict(name="B", delta=0.1)], []])
+    r, _ = run(mock, cfg(merge=False, ablation=False))
+    assert [n["version"] for n in r.lineage] == ["seed", "seed+r1-A", "seed+r1-A+r2-B"]
+    assert r.rounds[0]["split"]["minibatch"] != r.rounds[1]["split"]["minibatch"]
+    # Distinct measurements: seed calibration + A + B on mb and on rest. Adopted A was never re-measured as
+    # a parent (its parent-side reads replay the same (version, subset, tasks, k) request).
+    assert len(mock.measured) == 6
+    assert {m[0] for m in mock.measured} == {"seed", "seed+r1-A", "seed+r1-A+r2-B"}
+
+
+def test_clustered_se_uses_families():
+    from rag_eval.optimizer.adapter import EvalResult
+    ids = [f"t{i}" for i in range(8)]
+    a = EvalResult(per_task_scores={t: (1.0 if i < 4 else 0.0) for i, t in enumerate(ids)}, trajectories={},
+                   costs={}, error_classes={})
+    b = EvalResult(per_task_scores={t: 0.5 for t in ids}, trajectories={}, costs={}, error_classes={})
+    iid = decide.paired_delta(a, b, ids)
+    clustered = decide.paired_delta(a, b, ids, families={t: ("p0" if i < 4 else "p1") for i, t in enumerate(ids)})
+    assert iid["se_method"] == "iid" and clustered["se_method"] == "cluster_cr1"
+    assert clustered["se_own"] > iid["se_own"]
+
+
+def test_ablation_prunes_a_change_that_does_not_contribute():
+    mock = V4Mock([[dict(name="A", delta=0.1)], [dict(name="Z", delta=0.003, effect=True)], []])
+    r, reason = run(mock, cfg(merge=False))
+    assert reason == "no_adoption" and len(r.lineage) == 3          # Z adopted on mechanism evidence
+    ab = r.ablation
+    assert ab["status"] == "done" and ab["pruned"] == [2] and ab["accepted"]
+    assert r.final_version() == ab["final"] and r.final_version() != r.lineage[-1]["version"]
+    assert mock.chain[r.final_version()] == mock.chain["seed+r1-A"]
+    assert any(h["label"] == "pruned" for h in r.history)
+    assert ab["units"]["0"]["prune"] is False
+
+
+def test_ablation_is_skipped_when_disabled_or_nothing_adopted():
+    r, _ = run(V4Mock([[dict(name="X", delta=-0.2)]]), cfg())
+    assert r.ablation == dict(status="skipped", reason="nothing adopted")
+    r, _ = run(V4Mock([[dict(name="A", delta=0.1)], []]), cfg(ablation=False))
+    assert r.ablation["reason"] == "disabled" and r.final_version() == r.lineage[-1]["version"]

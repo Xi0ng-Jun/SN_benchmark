@@ -334,3 +334,16 @@ def test_v2_lineage_claims_carry_no_node_set_hash(env):
     sealed = SealedService(env['repo'], env['service'], None)
     sealed.run_lineage(tree['id'], budget=BUDGET, actor='human', confirmed=True)
     assert 'node_set_hash' not in sealed.lineage(tree['id'])
+
+
+def test_lineage_curve_adds_a_deterministic_family_bootstrap_interval():
+    from rag_eval.workbench.sealed import lineage_curve
+    seed = {f'c{i}': .5 for i in range(20)}
+    better = {c: .5 + (.2 if int(c[1:]) % 2 else 0) for c in seed}
+    nodes = [dict(candidate_id='s', frozen_commit='a', scores=seed), dict(candidate_id='n', frozen_commit='b', scores=better)]
+    families = {c: f'p{int(c[1:]) // 4}' for c in seed}
+    one = lineage_curve(nodes, families=families)['curve'][1]
+    assert one['boot_unit'] == 'family' and one['boot_units'] == 5
+    assert 0 < one['boot_lower'] <= one['delta_vs_seed'] <= one['boot_upper']
+    assert lineage_curve(nodes, families=families)['curve'][1]['boot_lower'] == one['boot_lower']
+    assert lineage_curve(nodes)['curve'][0].get('boot_lower') is None

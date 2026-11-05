@@ -269,6 +269,15 @@ class SystemAdapter(abc.ABC):
         return {k: dict(direction="lower_is_better", subject=candidate.safeguard_values.get(k),
                         reference=reference.safeguard_values.get(k)) for k in sorted(keys)}
 
+    def task_families(self, task_ids: list[str]) -> dict[str, str]:
+        """method-v4: task -> family label (SN: paper) for stratified minibatches and clustered SE; {} if none."""
+        return {}
+
+    def timing_profile(self, result: EvalResult) -> list[dict]:
+        """method-v4 §6 (optional cost estimate): per execution behind *result*,
+        ``{wall_s, cases, cache_hits, cache_misses, lock_waited_s}``; [] when unknown."""
+        return []
+
     def review(self, card: Card, diff: Optional[Diff], pairs: list[dict], *, candidate: Version,
                key: str) -> Optional[list[dict]]:
         """method-v4 §3.2 stage 3: one independent reviewer reads anonymous trajectory pairs.

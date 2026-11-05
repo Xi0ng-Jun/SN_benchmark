@@ -60,8 +60,19 @@ def _aa(result: EvalResult) -> dict:
                 aa_delta=sum(diffs) / n, constant_fraction=constant / n, mean=statistics.mean(means))
 
 
+def cache_summary(profile: list[dict]) -> Optional[dict]:
+    """Sum of an adapter ``timing_profile``: executions, wall seconds, cache hits / misses; None when empty."""
+    if not profile:
+        return None
+    return dict(executions=len(profile), wall_s=max(p["wall_s"] for p in profile),
+                cases=sum(p.get("cases", 0) for p in profile),
+                cache_hits=sum(p.get("cache_hits", 0) for p in profile),
+                cache_misses=sum(p.get("cache_misses", 0) for p in profile),
+                lock_waited_s=max(p.get("lock_waited_s", 0.0) for p in profile))
+
+
 def derive(results: dict[str, EvalResult], walls: dict[str, float], cfg: V4Config, *, safeguards: Optional[dict],
-           sizes: dict[str, int]) -> dict:
+           sizes: dict[str, int], profiles: Optional[dict] = None) -> dict:
     """Calibrated quantities (§2.3 step 3–4). Pure."""
     val = _aa(combine(results["mb"], results["rest"]))
     search = _aa(results["search"])
@@ -77,7 +88,33 @@ def derive(results: dict[str, EvalResult], walls: dict[str, float], cfg: V4Confi
     return dict(validation=val, search=search, k_val=k_val, k_val_rule=rule,
                 rerun_var=val["rerun_var"], se_floor_rule="sqrt(sum_i rerun_var*(1/k_c,i + 1/k_p,i)) / n",
                 walls=dict(walls), seconds_per_task=per_task, sizes=dict(sizes), safeguards=safeguards,
-                infrastructure_failure_rate=_infra(safeguards))
+                infrastructure_failure_rate=_infra(safeguards), cache=dict(profiles or {}))
+
+
+def _cold_warm(cal: dict, stage: dict, sizes: dict) -> tuple[dict, dict, str]:
+    """(cold, warm, note) per-stage seconds from the calibration's cache profile."""
+    cache = cal.get("cache") or {}
+    known = {s: c for s, c in cache.items() if c and (c.get("cache_hits") or c.get("cache_misses"))}
+    if not known:
+        return dict(stage), dict(stage), "observed calibration walls; no cache profile (cold = warm = observed)"
+    walls, n = cal.get("walls") or {}, dict(search=sizes["search"], mb=sizes["mb"], rest=sizes["rest"])
+    rate = {s: walls.get(s, 0.0) / max(1, n[s]) for s in known}   # seconds per task, as observed
+    warm_rates = [rate[s] for s, c in known.items() if not c.get("cache_misses")]
+    cold_rates = [rate[s] for s, c in known.items() if c.get("cache_misses")]
+    cold_rate = max(cold_rates) if cold_rates else None
+    warm_rate = min(warm_rates) if warm_rates else None
+    scale = (warm_rate / cold_rate) if warm_rate and cold_rate else None
+    cold, warm = dict(stage), dict(stage)
+    for key in ("smoke", "minibatch", "validation_rest"):
+        if scale is not None:
+            warm[key] = stage[key] * min(1.0, scale) if cold_rates else stage[key]
+            cold[key] = stage[key] / min(1.0, scale) if not cold_rates else stage[key]
+    if scale is None:
+        note = ("calibration was all cold: cold = observed, warm unknown (= observed)" if cold_rates
+                else "calibration was all warm: warm = observed, cold unknown (= observed)")
+    else:
+        note = f"cold/warm from calibration cache profile (warm/cold seconds per task {scale:.2f})"
+    return cold, warm, note
 
 
 def _infra(safeguards: Optional[dict]) -> Optional[float]:
@@ -88,18 +125,21 @@ def _infra(safeguards: Optional[dict]) -> Optional[float]:
 def feasibility(cal: dict, cfg: V4Config) -> dict:
     """§2.3 step 5 feasibility card (advice only, never blocks).
 
-    Stage times are the calibration's observed walls (cache state as found:
-    calibration of a new preparation-code version is cold; a candidate that
-    changes preparation code is cold again), scaled to the stage's k when the
-    calibration ran at a larger k. Cold/warm split needs the adapter's cost
-    estimate (§6), which SN does not provide yet: both columns are the observed
-    values and are labelled so.
+    Stage times come from the calibration's observed walls, scaled to the
+    stage's k. Cold / warm: when the adapter reports preparation-cache hits and
+    misses (``timing_profile``), the calibration's stages are classified; a
+    cold stage's wall is the cold estimate and the warm estimate is the cold
+    one minus the preparation share, approximated by the warm stage with the
+    most cases per second when one exists. A candidate that changes
+    preparation code pays the cold column; any other candidate the warm one.
+    Without a profile both columns are the observed values (labelled so).
     """
     sizes, walls, k_cal, k_val = cal["sizes"], cal["walls"], cfg.calibration_k, cal["k_val"]
     smoke_s = walls.get("search", 0.0) * min(1.0, cfg.smoke_size / max(1, sizes["search"]))
     stage = dict(agent=cfg.agent_estimate_minutes * 60, smoke=smoke_s,
                  minibatch=walls.get("mb", 0.0) * (1 / k_cal if walls.get("mb") else 0),
                  validation_rest=walls.get("rest", 0.0) * (k_val / k_cal))
+    cold, warm, note = _cold_warm(cal, stage, sizes)
     per_candidate = sum(stage.values())
     budget = cfg.time_budget_hours * 3600
     # Most candidates stop at stage 0/1; the card assumes every candidate runs through (an upper bound on time).
@@ -110,7 +150,9 @@ def feasibility(cal: dict, cfg: V4Config) -> dict:
     n_test = sizes.get("test")
     half = 1.96 * aa_sd / math.sqrt(n_test) if n_test and aa_sd is not None else None
     card = dict(stage_seconds=stage, per_candidate_seconds=per_candidate,
-                cache_note="observed calibration walls; no cold/warm split (adapter gives no cost estimate)",
+                stage_seconds_cold=cold, stage_seconds_warm=warm,
+                per_candidate_cold=sum(cold.values()), per_candidate_warm=sum(warm.values()),
+                cache_note=note,
                 candidates_in_budget=candidates, rounds_in_budget=rounds,
                 test_half_width_95=half, test_n=n_test,
                 k_val=k_val, rerun_var=cal["rerun_var"], task_var=cal["validation"]["task_var"],
@@ -137,7 +179,9 @@ def render(card: dict, cal: dict) -> str:
         f"  k_val={card['k_val']} ({cal['k_val_rule']}); rerun var {card['rerun_var']:.4g}, "
         f"task var {card['task_var']:.4g}; constant tasks {card['constant_fraction']:.0%}",
         "  per candidate (s): " + ", ".join(f"{k} {v:.0f}" for k, v in st.items())
-        + f" = {card['per_candidate_seconds']:.0f} ({card['cache_note']})",
+        + f" = {card['per_candidate_seconds']:.0f}",
+        f"  cold cache ~{card['per_candidate_cold']:.0f} s, warm ~{card['per_candidate_warm']:.0f} s "
+        f"({card['cache_note']})",
         f"  in budget: ~{card['candidates_in_budget']} candidates, ~{card['rounds_in_budget']} rounds (upper bound)",
         f"  infrastructure failure rate (seed): {card['infrastructure_failure_rate']}",
         "  test 95% half-width ~" + (f"{card['test_half_width_95']:.3f}" if card["test_half_width_95"] else "-"),

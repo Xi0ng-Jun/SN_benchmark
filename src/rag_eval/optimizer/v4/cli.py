@@ -3,6 +3,7 @@
     python -m rag_eval.optimizer.cli v4 run    --v4-config run.json ...   start or resume
     python -m rag_eval.optimizer.cli v4 status --state-dir DIR
     python -m rag_eval.optimizer.cli v4 test   --state-dir DIR [--confirm --budget budget.json]
+    python -m rag_eval.optimizer.cli v4 figure --state-dir DIR --out curve.svg
 
 ``run`` calibrates, prints the feasibility card and runs rounds until a stop
 rule fires. ``test`` without ``--confirm`` only prints the node set and the
@@ -27,7 +28,7 @@ from .. import ledger_io, run_view
 from ..adapter import EvaluationUnavailable, Version
 from . import calibrate, endpoint
 from .config import ConfigError, load
-from .loop import FAILURE_HALTS, LEDGER_FILE, STATE_FILE, V4Run
+from .loop import FAILURE_HALTS, LEDGER_FILE, STATE_FILE, V4Run, final_version
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_HALTED = 0, 1, 2, 3
 IDENTITY_FILE = "cli-run.json"
@@ -239,6 +240,10 @@ def cmd_status(args) -> int:
               f"{(adopted or '-')[:24]}")
     print(f"lineage: {len(st.get('lineage', []))} node(s): " + " -> ".join(
         (n["version"] or "")[:12] for n in st.get("lineage", [])))
+    ab = st.get("ablation")
+    if ab:
+        print(f"ablation: {ab.get('status')} pruned={ab.get('pruned')} accepted={ab.get('accepted')} "
+              f"{ab.get('reason') or ''}".rstrip())
     print(f"elapsed: {st.get('elapsed_s', 0) / 3600:.2f} h; no-adoption rounds: {st.get('no_adoption')}")
     print(f"halt reason: {st.get('halt_reason') or '-'}; key_generation: {st.get('key_generation', 0)}")
     if (state_dir / ENDPOINT_FILE).exists():
@@ -265,7 +270,8 @@ def cmd_test(args) -> int:
         raise UsageError("this run was started without a test set (--no-test-set)")
     resolved = ident["config_resolved"]
     versions = {h: Version(content_hash=h, metadata=m) for h, m in st["versions"].items()}
-    nodes = endpoint.node_set(st["lineage"], versions, resolved["endpoint_nodes"])
+    final = final_version(st["lineage"], st.get("ablation"))
+    nodes = endpoint.node_set(st["lineage"], versions, resolved["endpoint_nodes"], final=final)
     print(f"test set: {st['partitions'].get('test_size')} task(s); node set ({resolved['endpoint_nodes']}):")
     for n in nodes:
         print(f"  {n['index']}. {n['candidate_id']} round {n['round']} ({n['kind']})")
@@ -291,7 +297,8 @@ def cmd_test(args) -> int:
         return EXIT_HALTED
     except ValueError as exc:
         raise UsageError(str(exc)) from None
-    rep = endpoint.report(result, nodes, st["lineage"], k_val=(st.get("calibration") or {}).get("k_val"))
+    rep = endpoint.report(result, nodes, st["lineage"], k_val=(st.get("calibration") or {}).get("k_val"),
+                          ablation=st.get("ablation"))
     ledger_io.atomic_write_json(state_dir / ENDPOINT_FILE, rep)
     print(endpoint.render(rep))
     return EXIT_OK
@@ -327,10 +334,31 @@ def build_parser() -> argparse.ArgumentParser:
     test.add_argument("--confirm", action="store_true", help="human confirmation: claim the test set")
     test.add_argument("--budget", help="JSON object passed to v2 run_lineage(budget=...)")
     test.add_argument("--allow-failure-halt", action="store_true")
+    fig = sub.add_parser("figure", parents=[common], help="figure: wall clock x test score of the endpoint nodes")
+    fig.add_argument("--out", help="output file: .svg, .pdf or .png")
+    fig.add_argument("--lang", choices=("zh", "en"), default="zh")
+    fig.add_argument("--font", help="font file for the labels")
+    fig.add_argument("--width", type=float, default=3.4)
+    fig.add_argument("--height", type=float, default=2.5)
     return parser
 
 
-COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test}
+def cmd_figure(args) -> int:
+    _require(args, "state_dir", "out")
+    if Path(args.out).suffix.lower() not in (".svg", ".pdf", ".png"):
+        raise UsageError("--out must end in .svg, .pdf or .png")
+    rep = _read(Path(args.state_dir) / ENDPOINT_FILE, "endpoint (run v4 test --confirm first)")
+    try:
+        lang = endpoint.figure(rep, args.out, lang=args.lang, font=args.font, width=args.width, height=args.height)
+    except ImportError as exc:
+        raise UsageError(f"the figure needs matplotlib: {exc}") from None
+    except ValueError as exc:
+        raise UsageError(str(exc)) from None
+    print(f"figure: {args.out} ({len(rep['points'])} node(s), labels {lang})")
+    return EXIT_OK
+
+
+COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cmd_figure}
 
 
 def main(argv: Optional[list[str]] = None) -> int:

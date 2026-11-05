@@ -321,6 +321,7 @@ class SNAdapter(SystemAdapter):
     _MEASURE_PURPOSES = ("baseline", "diagnose", "screen")
     _KEY_PREFIX = "v3"   # first segment of every v2 request key (method-v4's adapter uses "v4")
     _HISTORY_VOCABULARY = "v3"   # which history labels analyse() renders (see _history_line)
+    _BRIEF = "method-v3"         # v2 brief selector of every Agent this adapter creates
 
     def _views(self):
         if self._run_views is not None:
@@ -1077,7 +1078,7 @@ class SNAdapter(SystemAdapter):
         stuck = (f"no adoption under this parent for {no_adoption_rounds} consecutive round(s)\n"
                  if no_adoption_rounds else "")
         worktree_map = _render_worktree_map(self._round_ops, parent_cid)
-        content = (f"# method-v3 analyst evidence\nformat: {EVIDENCE_FORMAT}\nround: {round_id}\n"
+        content = (f"# method-{self._KEY_PREFIX} analyst evidence\nformat: {EVIDENCE_FORMAT}\nround: {round_id}\n"
                    f"parent: {parent_cid}\ncases: {len(items)} with a view of {len(search_set_trajectories)} "
                    f"selected; {n_shown} shown, {n_omitted} omitted (budget {budget} chars)\n"
                    + stuck + "\n" + worktree_map + tried + evidence)
@@ -1123,7 +1124,7 @@ class SNAdapter(SystemAdapter):
         # only the root is. Each round's parent gets its own Agent (the key names it).
         # brief=V3_BRIEF: v2 attaches the short v3 analyst brief, not its own.
         call = dict(iteration_id=iteration_id, key=analyst_key, profile=self._analyst_profile,
-                    text=analyst_text, brief=V3_BRIEF)
+                    text=analyst_text, brief=self._BRIEF)
         try:
             self._poll_agent("analyst", parent_cid, call)
         except MessageInputRejected as exc:
@@ -1200,7 +1201,7 @@ class SNAdapter(SystemAdapter):
             f"validation cases."
         )
         call = dict(iteration_id=iteration_id, key=self._request_key("implement", cid),
-                    profile=self._implementer_profile, text=text, hypothesis_id=hypothesis_id, brief=V3_BRIEF)
+                    profile=self._implementer_profile, text=text, hypothesis_id=hypothesis_id, brief=self._BRIEF)
         self._poll_agent("implementer", cid, call)
         return Diff(
             content=_extract_worktree_diff(workspace),
@@ -1289,7 +1290,7 @@ class SNAdapter(SystemAdapter):
                                 message_bytes=len(text.encode("utf-8")))
         call = dict(iteration_id=iteration_id, key=self._request_key("repair-implement", new_cid),
                     profile=self._implementer_profile, text=text, hypothesis_id=workspace["hypothesis_id"],
-                    brief=V3_BRIEF)
+                    brief=self._BRIEF)
         self._poll_agent("implementer", new_cid, call)
         return Diff(
             content=_extract_worktree_diff(workspace),

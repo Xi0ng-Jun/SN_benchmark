@@ -42,6 +42,8 @@ class V4Config:
     no_adoption_rounds: int = 3              # R: halt after R consecutive rounds without adoption
     max_consecutive_run_failures: int = 3
     merge: bool = True
+    ablation: bool = True                    # §4.2 pruning before the endpoint (skipped when time is short)
+    ablation_kill: float = 1.0               # removing a change costs < ablation_kill·SE → pruned
     tie_fraction: float = 0.5                # Δ within tie_fraction·SE of the best: smaller diff wins
     calibration_k: int = 2                   # A/A repetitions (also k of search-set diagnosis)
     k_val: Optional[int] = None              # None: calibration decides (1 or 2)
@@ -126,7 +128,8 @@ def validate(cfg: V4Config) -> V4Config:
         raise ConfigError("time_budget_hours must be > 0")
     if not 0 < cfg.minibatch_fraction < 1:
         raise ConfigError("minibatch_fraction must be in (0, 1)")
-    for name in ("c", "c_mech", "minibatch_kill", "tie_fraction", "smoke_repair_attempts", "review_controls"):
+    for name in ("c", "c_mech", "minibatch_kill", "ablation_kill", "tie_fraction", "smoke_repair_attempts",
+                 "review_controls"):
         if getattr(cfg, name) < 0:
             raise ConfigError(f"{name} must be >= 0")
     if cfg.c_mech > cfg.c:

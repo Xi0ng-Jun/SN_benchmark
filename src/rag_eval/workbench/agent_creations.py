@@ -14,7 +14,7 @@ from .repository import Conflict, _text, now, uid
 
 # Brief selector of Agents created by an automatic method-v3 run (briefs.resolve_brief).
 BRIEF_V3 = 'method-v3'
-# method-v4 reviewer: reads one evidence file, writes one verdict file; no commands, no worktree.
+# method-v4: analyst / implementer briefs of a v4 run, and the reviewer (one evidence file in, one verdict file out).
 BRIEF_V4 = 'method-v4'
 
 
@@ -140,8 +140,8 @@ class AgentCreationStore:
         # 'method-v3': an Agent of an automatic method-v3 run gets the short v3 brief.
         if brief not in (None, BRIEF_V3, BRIEF_V4) or (brief == BRIEF_V3 and role not in ('analyst', 'implementer')):
             raise ValueError('Only an analyst or implementer Agent takes the method-v3 brief')
-        if (brief == BRIEF_V4) != (role == 'reviewer'):
-            raise ValueError('Only a reviewer Agent takes the method-v4 brief')
+        if brief == BRIEF_V4 and role not in ('analyst', 'implementer', 'reviewer'):
+            raise ValueError('Only an analyst, implementer or reviewer Agent takes the method-v4 brief')
         payload = {'profile_id': profile_id, 'title': title}
         if role is not None:
             payload.update(role=role, hypothesis_id=hypothesis_id)
