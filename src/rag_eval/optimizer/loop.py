@@ -990,7 +990,8 @@ class _Run:
         if progress.cards is None:
             parent_v = self.pointer()
             # --- 1. Diagnosis: analyst reads search-set failures ---
-            # Search-set runs share k with screening (one SN measure covers search ∪ validation).
+            # Search-set runs share k with screening but are their own measurement: a screen
+            # runs only the validation pool, so a newly adopted parent is measured here first.
             parent_eval_search = self.adapter.evaluate(parent_v, self.search_set_ids,
                                                        self.config.k_screen, purpose='diagnose')
             # §2.1 逐级加码: rotation over failing tasks not yet shown under this
