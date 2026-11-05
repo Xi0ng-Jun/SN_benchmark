@@ -487,35 +487,6 @@ class SNAdapter(SystemAdapter):
             if len(self._used_batches(completed=True)) == n:
                 return
 
-    def _measure_validation(self, candidate_ids: list[str], completed_batch_ids: list[str]) -> None:
-        """v2 ``validation`` each candidate on validation pool only (validation split + completed batches).
-
-        Used for screening to avoid wasteful measurement of the search set.
-        Decision logic in loop.py:_decide() only uses validation pool, so screening
-        doesn't need search set measurements.
-
-        Key ``v3/{run_id}/validation/{cid}/{n}[/g{generation}]`` with n = number
-        of completed fresh batches at the time of measurement.
-        """
-        ops = self._require_round_ops("evaluate")
-        kwargs = self._v2_run_kwargs()
-        while True:
-            current_batches = [b["batch_id"] for b in self._used_batches(completed=True)]
-            n = len(current_batches)
-            calls, touches = {}, {}
-            for cid in dict.fromkeys(candidate_ids):
-                key = self._request_key("validation", cid, n, *self._generation())
-                calls[f"validation {cid}"] = (
-                    key,
-                    lambda cid=cid, key=key, batches=current_batches:
-                        ops.validation(cid, completed_batch_ids=batches, key=key, **kwargs)
-                )
-                # validation measurements include parent for comparative screening
-                touches[f"validation {cid}"] = (cid, ops.service.candidate(cid).get("parent_candidate_id"))
-            self._await(calls, touches)
-            if len(self._used_batches(completed=True)) == n:
-                return
-
     def _execution_values(self, execution_id: str) -> dict[str, tuple[Optional[float], dict]]:
         """case -> (raw primary score, trajectory stub) for one admitted execution.
 
@@ -738,10 +709,7 @@ class SNAdapter(SystemAdapter):
         if purpose == "screen":
             self._check_k(k, self._k_base(protocol), purpose)
             scopes = self._case_scopes(task_ids, purpose, protocol)
-            # Screen only on validation pool to avoid wasteful search set measurement
-            # Decision logic in loop.py:_decide() only uses validation pool anyway
-            completed_batch_ids = [b["batch_id"] for b in self._used_batches(completed=True)]
-            self._measure_validation([vcid, rcid], completed_batch_ids)
+            self._measure([vcid, rcid])
             return self._read(vcid, scopes), self._read(rcid, scopes)
         if purpose == "smoke":
             from rag_eval.workbench.execution_scopes import smoke_scope_id

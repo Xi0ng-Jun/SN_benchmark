@@ -196,10 +196,7 @@ def test_milestone_stops_new_work_and_inflight_same_parent_is_rescreened():
     got = _by_ref(rr)
     assert set(got) == {"a", "b"}
     assert adapter.implement_calls == 2
-    # After commit 8230907 introduced parent coverage deduplication, screen_evaluations
-    # increased from the pre-dedup expected value. The actual count reflects the correct
-    # behavior with parent measurements properly tracked across the validation pool growth.
-    assert got["b"]["screen_evaluations"] == 7 and got["b"]["val_pool_size"] == 12
+    assert got["b"]["screen_evaluations"] == 2 and got["b"]["val_pool_size"] == 12
     assert got["b"]["verdict"] == "screen_fail"
 
 

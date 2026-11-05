@@ -174,8 +174,6 @@ def install_prepared_seed(seed, run):
 
 def _publish_preparation(cache, key, material, receipt, run, lock):
     """Publishing is best effort: a cache failure never fails the run."""
-    entry = cache._entry(key)
-    preparing_marker = entry.parent / f'.preparing-{entry.name}'
     try:
         state = json.loads((run / 'product-artifacts/state.json').read_text(encoding='utf-8'))
         if not state.get('prepared'):
@@ -185,12 +183,6 @@ def _publish_preparation(cache, key, material, receipt, run, lock):
         stored = dict(status='store_failed', cache_key=key, error_type=type(exc).__name__)
     finally:
         lock.release()
-        # Clean up preparing marker even if store failed or wasn't called
-        try:
-            if preparing_marker.exists():
-                preparing_marker.unlink()
-        except OSError:
-            pass
     save_json(run / 'preparation-cache.json', dict(receipt, store=stored))
 
 

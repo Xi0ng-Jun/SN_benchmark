@@ -137,11 +137,6 @@ class RoundMeasurements:
         with self.repository.connect(write=True) as conn:
             conn.execute('CREATE TABLE IF NOT EXISTS round_measurements '
                          '(key TEXT PRIMARY KEY, payload_json TEXT NOT NULL)')
-            # Track parent top-up coverage to avoid redundant measurements across multiple children
-            conn.execute('CREATE TABLE IF NOT EXISTS round_parent_topup_coverage '
-                         '(iteration_id TEXT NOT NULL, parent_id TEXT NOT NULL, scope_id TEXT, '
-                         'covering_key TEXT NOT NULL, created_at TEXT NOT NULL, '
-                         'PRIMARY KEY(iteration_id,parent_id,scope_id))')
 
     def _read(self, key):
         with self.repository.connect() as conn:
@@ -154,42 +149,16 @@ class RoundMeasurements:
                          'SET payload_json=excluded.payload_json', (key, json.dumps(value)))
 
     @contextmanager
-    def _lock(self, iteration_id, storage_key=None):
-        # Fine-grained locking: separate lock per measurement to allow concurrent planning
-        # of different candidates. Falls back to iteration-wide lock for recovery operations.
+    def _lock(self, iteration_id):
+        # Separate from the engine lock: short planning section, never launch I/O.
         root = Path(self.service.trees.store.root) / 'round-measurement-locks'
         root.mkdir(parents=True, exist_ok=True)
-        if storage_key:
-            # Per-measurement lock: different candidates can plan concurrently
-            lock_suffix = hashlib.sha256(storage_key.encode()).hexdigest()[:16]
-            lock_path = root / f'{iteration_id}-{lock_suffix}.lock'
-        else:
-            # Iteration-wide lock for recovery operations that scan all measurements
-            lock_path = root / f'{iteration_id}.lock'
-        with lock_path.open('a') as stream:
+        with (root / (iteration_id + '.lock')).open('a') as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             try:
                 yield
             finally:
                 fcntl.flock(stream, fcntl.LOCK_UN)
-
-    def cleanup_locks(self, iteration_id):
-        """Clean up lock files for a completed iteration.
-
-        Should be called when an iteration is complete or abandoned to prevent
-        accumulation of lock files over time.
-        """
-        root = Path(self.service.trees.store.root) / 'round-measurement-locks'
-        if not root.exists():
-            return
-
-        # Remove both iteration-wide and per-measurement locks
-        pattern = f'{iteration_id}*.lock'
-        for lock_file in root.glob(pattern):
-            try:
-                lock_file.unlink()
-            except OSError:
-                pass  # File may be in use or already deleted
 
     def _infra(self, attempt):
         if attempt.get('execution_state') == 'running' or not attempt.get('execution_id'):
@@ -251,14 +220,6 @@ class RoundMeasurements:
             scope_id = scope['scope_id']
             scopes = [(scope_id, len(scope['case_ids']))]
             candidates.insert(0, candidate['parent_candidate_id'])
-        elif kind == 'validation':
-            from .execution_scopes import get
-            scope = get(self.repository, tree['id'], candidate['_round_validation_scope'])
-            scope_id = scope['scope_id']
-            scopes = [(scope_id, len(scope['case_ids']))]
-            # validation measurements include the parent for comparative screening
-            if candidate.get('parent_candidate_id'):
-                candidates.insert(0, candidate['parent_candidate_id'])
         elif kind == 'segment':
             # The caller names the batch; planning (never replay) refuses one already claimed.
             start_id, scope_id = candidate['_round_segment']
@@ -280,16 +241,7 @@ class RoundMeasurements:
         for scope, count in scopes:
             sides = list(candidates)
             if scope is not None and kind == 'measure' and candidate.get('parent_candidate_id'):
-                parent_id = candidate['parent_candidate_id']
-                # Atomically check and record parent coverage to prevent race conditions
-                # Try to insert first; if successful (rowcount > 0), we won the race and include parent
-                with self.repository.connect(write=True) as conn:
-                    cursor = conn.execute(
-                        'INSERT OR IGNORE INTO round_parent_topup_coverage VALUES(?,?,?,?,?)',
-                        (tree['id'], parent_id, scope, key, now()))
-                    if cursor.rowcount > 0:
-                        # Successfully inserted: this is the first measurement for this parent+scope
-                        sides.insert(0, parent_id)
+                sides.insert(0, candidate['parent_candidate_id'])
             for cid in sides:
                 existing = [a for a in self.service.candidate(cid)['attempts'] if a.get('batch_id') == scope]
                 watched.extend(dict(candidate_id=cid, attempt=a['attempt'], batch_id=scope, case_count=count,
@@ -461,22 +413,13 @@ class RoundMeasurements:
         return self._advance('smoke', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
                              timeout_seconds=timeout_seconds, case_ids=case_ids, observe_only=observe_only)
 
-    def validation(self, candidate_id, completed_batch_ids, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
-        """Candidate (and optionally parent), k_base attempts each, on validation pool only.
-
-        The validation pool includes validation split + completed fresh batches.
-        Used for screening to avoid wasteful measurement of the search set.
-        """
-        return self._advance('validation', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
-                             timeout_seconds=timeout_seconds, completed_batch_ids=completed_batch_ids, observe_only=observe_only)
-
     def segment(self, start_id, end_id, batch_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
         """End against its ancestor start, k_base each, on a caller-named unused fresh batch."""
         return self._advance('segment', end_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
                              timeout_seconds=timeout_seconds, segment=(start_id, batch_id), observe_only=observe_only)
 
     def _advance(self, kind, candidate_id, *, key, actor, override, infra_retry, timeout_seconds, cluster_id=None,
-                 case_ids=None, segment=None, completed_batch_ids=None, observe_only=False):
+                 case_ids=None, segment=None, observe_only=False):
         if type(infra_retry) is not int or infra_retry < 0:
             raise ValueError('infra_retry must be a nonnegative integer')
         candidate = self.service.candidate(candidate_id)
@@ -492,13 +435,6 @@ class RoundMeasurements:
             if not candidate.get('parent_candidate_id'):
                 raise ValueError('smoke-run requires a child candidate')
             candidate['_round_smoke_scope'] = extra['scope_id'] = smoke_scope_id(tree['protocol'], case_ids)
-        elif kind == 'validation':
-            from .execution_scopes import validation_pool_plan
-            # Register validation pool scope (validation split + completed batches)
-            scope_record = validation_pool_plan(self.service, tree, completed_batch_ids=completed_batch_ids)
-            candidate['_round_validation_scope'] = scope_record['scope_id']
-            extra['scope_id'] = scope_record['scope_id']
-            extra['completed_batch_ids'] = completed_batch_ids or []
         elif kind == 'segment':
             start_id, batch_id = segment
             ancestors, cursor = set(), candidate.get('parent_candidate_id')
@@ -517,7 +453,7 @@ class RoundMeasurements:
             from .execution_scopes import smoke_plan
             smoke_plan(self.service, tree, case_ids)
         storage_key = 'round-measure:' + hashlib.sha256(key.encode()).hexdigest()
-        with self._lock(tree['id'], storage_key):
+        with self._lock(tree['id']):
             self._recover_retry_mappings(tree['id'])
             state = self._read(storage_key)
             if observe_only:
@@ -601,7 +537,7 @@ class RoundMeasurements:
                 return dict(type=type(exc).__name__, transient=transient(exc))
         with ThreadPoolExecutor(max_workers=max(1, len(steps))) as pool:
             errors = list(pool.map(launch, steps))
-        with self._lock(tree['id'], storage_key):
+        with self._lock(tree['id']):
             state = self._read(storage_key)
             if stopped(self.repository, key):
                 return dict(status='stopped')

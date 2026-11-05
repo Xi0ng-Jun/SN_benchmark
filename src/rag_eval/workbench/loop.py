@@ -439,10 +439,7 @@ class RoundService:
             if pending:
                 # Each port observes or dispatches and returns; no waits for Agent
                 # completion. Independent candidates also overlap slow RPC setup.
-                # Allow more workers than candidates to maximize concurrent I/O operations
-                # (Agent RPC, execution dispatch, database reads) while respecting system limits.
-                max_workers = min(len(pending) * 4, 128)
-                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                with ThreadPoolExecutor(max_workers=len(pending)) as pool:
                     futures = [pool.submit(self._candidate_safe_tick, state, c, i) for i, c in pending]
                     for future in futures:
                         future.result()

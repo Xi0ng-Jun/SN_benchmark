@@ -489,78 +489,6 @@ def _screen(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord
     return _stop(rec, 'measured')
 
 
-def _merge_eval_results(old_eval: EvalResult, new_eval: EvalResult) -> EvalResult:
-    """Merge two evaluation results by combining task results and summing costs."""
-    merged_scores = dict(old_eval.per_task_scores)
-    merged_scores.update(new_eval.per_task_scores)
-
-    merged_trajectories = dict(old_eval.trajectories)
-    merged_trajectories.update(new_eval.trajectories)
-
-    merged_costs = dict(old_eval.costs)
-    for model, cost in new_eval.costs.items():
-        merged_costs[model] = merged_costs.get(model, 0.0) + cost
-
-    merged_errors = dict(old_eval.error_classes)
-    merged_errors.update(new_eval.error_classes)
-
-    merged_safeguards = dict(old_eval.safeguard_values)
-    merged_safeguards.update(new_eval.safeguard_values)
-
-    # Merge context dicts (adapter-specific provenance)
-    merged_context = dict(old_eval.context)
-    merged_context.update(new_eval.context)
-
-    return EvalResult(
-        per_task_scores=merged_scores,
-        trajectories=merged_trajectories,
-        costs=merged_costs,
-        error_classes=merged_errors,
-        safeguard_values=merged_safeguards,
-        context=merged_context,
-    )
-
-
-def _incremental_screen(adapter: SystemAdapter, config: ProtocolConfig,
-                       rec: CandidateRecord, ref_parent: Version,
-                       full_pool: list[str]) -> CandidateRecord:
-    """Measure only on newly added pool tasks, merge with existing measurement.
-
-    When the validation pool grows during flight (a confirmation folded in a
-    fresh batch), this avoids re-measuring the entire pool: only the new tasks
-    are evaluated, and results are merged with the existing measurement.
-    """
-    if not rec.started_at:
-        rec.started_at = time.monotonic()
-
-    new_task_ids = full_pool[rec.pool_size:]
-    if not new_task_ids:
-        # Pool didn't actually grow, just use existing measurement
-        rec.pool_size = len(full_pool)
-        return _stop(rec, 'measured')
-
-    t0 = time.monotonic()
-    try:
-        # Measure on new tasks only
-        new_cand_ev, new_ref_ev = adapter.evaluate_pair(
-            rec.candidate, ref_parent, new_task_ids, config.k_screen, purpose='screen')
-
-        # Merge with existing evaluation
-        rec.eval_result = _merge_eval_results(rec.eval_result, new_cand_ev)
-        rec.ref_result = _merge_eval_results(rec.ref_result, new_ref_ev)
-        rec.safeguards = _check_safeguards(adapter, rec.eval_result, rec.ref_result, config)
-    except EvaluationUnavailable:
-        raise
-    except Exception as exc:
-        rec.timings['incremental_screen_s'] = time.monotonic() - t0
-        return _stop(rec, 'error', f"incremental_screen: {type(exc).__name__}: {exc}")
-
-    rec.timings['incremental_screen_s'] = time.monotonic() - t0
-    rec.pool_size = len(full_pool)
-    rec.screen_evaluations += len(new_task_ids) * config.k_screen
-    return _stop(rec, 'measured')
-
-
 def _rebase_and_measure(adapter: SystemAdapter, config: ProtocolConfig, rec: CandidateRecord,
                         new_parent: Version, smoke_ids: list[str],
                         pool: list[str]) -> CandidateRecord:
@@ -1222,10 +1150,6 @@ class _Run:
                         fut = pool_ex.submit(_screen, self.adapter, self.config, rec,
                                              list(self.pool))
                         pending[fut] = rec
-                    elif action == 'incremental_screen':
-                        fut = pool_ex.submit(_incremental_screen, self.adapter, self.config, rec,
-                                             self.pointer(), list(self.pool))
-                        pending[fut] = rec
                     elif action == 'milestone':
                         progress.stop_new = True
                     elif action == 'refill' and not progress.stop_new and queue and len(pending) < b:
@@ -1236,10 +1160,10 @@ class _Run:
     def _decide(self, rec: CandidateRecord, round_res: RoundResult) -> str:
         """Apply the §2.2 A decision to one finished candidate.
 
-        Returns 'refill' (discarded), 'adopted', 'rebase', 'smoke_screen',
-        'rescreen', or 'incremental_screen' (measurement missing or not decidable
-        against the current parent pointer / validation pool). The milestone check
-        follows an adoption in the caller (``_confirm_if_due``).
+        Returns 'refill' (discarded), 'adopted', 'rebase', 'smoke_screen' or
+        'rescreen' (measurement missing or not decidable against the current
+        parent pointer / validation pool). The milestone check follows an
+        adoption in the caller (``_confirm_if_due``).
         """
         if rec.stage == 'built':
             self.versions[rec.candidate.content_hash] = rec.candidate
@@ -1254,8 +1178,7 @@ class _Run:
         if rec.pool_size != len(self.pool):
             # Same parent, but a confirmation grew the pool since the
             # measurement: best and m now refer to the enlarged pool.
-            # Use incremental screening: only measure on new tasks.
-            return 'incremental_screen'
+            return 'rescreen'
 
         cand_ev, ref_ev = rec.eval_result, rec.ref_result
         self.val_cache.setdefault((pointer.content_hash, len(self.pool)), ref_ev)

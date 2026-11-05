@@ -303,158 +303,61 @@ class PreparationCache:
 
         The run's runtime database, storage and product cell must not exist
         yet. A rejected entry leaves nothing behind and raises CacheRejected.
-
-        When another run is preparing the same key (marker exists but entry
-        does not), wait for it to complete and then install the published entry.
         """
         entry = self._entry(key)
-        preparing_marker = entry.parent / f'.preparing-{entry.name}'
-        marker_created_by_us = False
-
+        if not entry.is_dir():
+            return None
+        runtime, cell = run / 'runtime', run / 'product-artifacts'
+        if (runtime / 'database.db').exists() or (runtime / 'storage').exists() or cell.exists():
+            raise ValueError('Cached preparation needs an empty runtime')
         try:
-            # If someone is preparing this entry, wait for them to finish
-            if preparing_marker.exists() and not entry.is_dir():
-                # Poll for the entry to appear, with exponential backoff
-                wait_seconds, max_wait = 0, 3600  # max 1 hour
-                poll_interval = 5
-                while preparing_marker.exists() and not entry.is_dir() and wait_seconds < max_wait:
-                    time.sleep(poll_interval)
-                    wait_seconds += poll_interval
-                    # Exponential backoff up to 60s
-                    if poll_interval < 60:
-                        poll_interval = min(poll_interval * 1.5, 60)
-
-                # If entry appeared while waiting, install it
-                if entry.is_dir():
-                    # Entry was published, proceed to install below
-                    pass
-                elif not preparing_marker.exists():
-                    # Marker was removed but no entry - prep failed, we'll prep
-                    return None
-                else:
-                    # Timeout - marker still exists after max_wait
-                    # Treat as stale marker, remove it and prep ourselves
-                    try:
-                        preparing_marker.unlink()
-                    except OSError:
-                        pass
-                    return None
-
-            if not entry.is_dir():
-                # Cache miss - create preparing marker atomically
-                entry.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                try:
-                    # Use O_EXCL to ensure atomic creation
-                    marker_fd = os.open(preparing_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                    # Write PID and timestamp for debugging
-                    os.write(marker_fd, f"{os.getpid()}\n{time.time()}\n".encode())
-                    os.close(marker_fd)
-                    marker_created_by_us = True
-                except FileExistsError:
-                    # Another process created the marker just now
-                    # Re-enter wait logic
-                    if preparing_marker.exists() and not entry.is_dir():
-                        # Wait for the other process
-                        wait_seconds, max_wait = 0, 3600
-                        poll_interval = 5
-                        while preparing_marker.exists() and not entry.is_dir() and wait_seconds < max_wait:
-                            time.sleep(poll_interval)
-                            wait_seconds += poll_interval
-                            if poll_interval < 60:
-                                poll_interval = min(poll_interval * 1.5, 60)
-
-                        if entry.is_dir():
-                            # Entry was published, proceed to install below
-                            pass
-                        else:
-                            # Entry still doesn't exist after wait
-                            return None
-                    else:
-                        return None
-                except OSError:
-                    # Marker creation failed for other reasons, proceed without marker
-                    pass
-
-                # If we didn't create marker or entry still doesn't exist, return None
-                if not entry.is_dir():
-                    return None
-            runtime, cell = run / 'runtime', run / 'product-artifacts'
-            if (runtime / 'database.db').exists() or (runtime / 'storage').exists() or cell.exists():
-                raise ValueError('Cached preparation needs an empty runtime')
-            try:
-                if entry.is_symlink() or (entry / 'entry.json').is_symlink():
-                    raise CacheRejected('Cache entry must not be a symlink')
-                raw = (entry / 'entry.json').read_bytes()
-                record = json.loads(raw)
-                if (record.get('format') != FORMAT or record.get('key') != key
-                        or record.get('material') != material or fingerprint(record['material']) != key):
-                    raise CacheRejected('Cache entry does not match its key')
-                files = record['files']
-                if 'database.db' not in files or not any(name.startswith('cell/') for name in files):
-                    raise CacheRejected('Cache entry is incomplete')
-                total = 0
-                (runtime / 'storage').mkdir(parents=True)
-                for name, expected in sorted(files.items()):
-                    relative = PurePosixPath(name)
-                    if relative.is_absolute() or '..' in relative.parts:
-                        raise CacheRejected('Cache entry names a path outside itself')
-                    prefix, target = next(((p, t) for p, t in _DESTINATIONS if name == p or name.startswith(p)),
-                                          (None, None))
-                    if prefix is None:
-                        raise CacheRejected('Cache entry names an unknown file')
-                    source = entry / relative
-                    if source.is_symlink():
-                        raise CacheRejected('Cache entry contains a symlink')
-                    total += _copy_verified(source, run / (target + name[len(prefix):] if prefix.endswith('/') else target),
-                                            expected)
-                rewritten = rewrite_storage_paths(runtime / 'database.db', record['storage_prefix'],
-                                                  str(runtime / 'storage') + '/', record['source_run_dir'])
-            except (CacheRejected, OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
-                for path in (runtime / 'database.db', runtime / 'storage', cell):
-                    if path.is_dir() and not path.is_symlink():
-                        shutil.rmtree(path)
-                    elif path.exists() or path.is_symlink():
-                        path.unlink()
-
-                # CRITICAL FIX: Clean up marker if we created it
-                if marker_created_by_us:
-                    try:
-                        preparing_marker.unlink()
-                    except OSError:
-                        pass
-
-                if isinstance(exc, CacheRejected):
-                    raise
-                raise CacheRejected(type(exc).__name__ + ': ' + str(exc)[:200]) from None
-            return dict(format=FORMAT, status='hit', cache_key=key, source_run=record['source_run_id'],
-                        entry_sha256=hashlib.sha256(raw).hexdigest(), files=len(files), verified_bytes=total,
-                        rewritten_source_paths=rewritten)
-
-        finally:
-            # Safety net: clean up marker if we created it and it still exists
-            if marker_created_by_us:
-                try:
-                    if preparing_marker.exists():
-                        preparing_marker.unlink()
-                except OSError:
-                    pass
+            if entry.is_symlink() or (entry / 'entry.json').is_symlink():
+                raise CacheRejected('Cache entry must not be a symlink')
+            raw = (entry / 'entry.json').read_bytes()
+            record = json.loads(raw)
+            if (record.get('format') != FORMAT or record.get('key') != key
+                    or record.get('material') != material or fingerprint(record['material']) != key):
+                raise CacheRejected('Cache entry does not match its key')
+            files = record['files']
+            if 'database.db' not in files or not any(name.startswith('cell/') for name in files):
+                raise CacheRejected('Cache entry is incomplete')
+            total = 0
+            (runtime / 'storage').mkdir(parents=True)
+            for name, expected in sorted(files.items()):
+                relative = PurePosixPath(name)
+                if relative.is_absolute() or '..' in relative.parts:
+                    raise CacheRejected('Cache entry names a path outside itself')
+                prefix, target = next(((p, t) for p, t in _DESTINATIONS if name == p or name.startswith(p)),
+                                      (None, None))
+                if prefix is None:
+                    raise CacheRejected('Cache entry names an unknown file')
+                source = entry / relative
+                if source.is_symlink():
+                    raise CacheRejected('Cache entry contains a symlink')
+                total += _copy_verified(source, run / (target + name[len(prefix):] if prefix.endswith('/') else target),
+                                        expected)
+            rewritten = rewrite_storage_paths(runtime / 'database.db', record['storage_prefix'],
+                                              str(runtime / 'storage') + '/', record['source_run_dir'])
+        except (CacheRejected, OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+            for path in (runtime / 'database.db', runtime / 'storage', cell):
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                elif path.exists() or path.is_symlink():
+                    path.unlink()
+            if isinstance(exc, CacheRejected):
+                raise
+            raise CacheRejected(type(exc).__name__ + ': ' + str(exc)[:200]) from None
+        return dict(format=FORMAT, status='hit', cache_key=key, source_run=record['source_run_id'],
+                    entry_sha256=hashlib.sha256(raw).hexdigest(), files=len(files), verified_bytes=total,
+                    rewritten_source_paths=rewritten)
 
     def store(self, key, material, run):
         """Publish ``run``'s freshly prepared notebook under ``key`` (read-only).
 
         Call after preparation and before asking. An existing entry wins.
-        Removes the preparing marker so waiting runs can proceed.
         """
         entry = self._entry(key)
-        preparing_marker = entry.parent / f'.preparing-{entry.name}'
-
         if entry.exists():
-            # Another run published while we were preparing - clean up our marker
-            try:
-                if preparing_marker.exists():
-                    preparing_marker.unlink()
-            except OSError:
-                pass
             return dict(status='already_cached', cache_key=key)
         runtime, cell = run / 'runtime', run / 'product-artifacts'
         storage = runtime / 'storage'
@@ -498,23 +401,14 @@ class PreparationCache:
             incoming.chmod(0o555)
             try:
                 os.rename(incoming, entry)
-            except OSError as rename_error:
+            except OSError:
                 if entry.is_dir():
                     _remove(incoming)
                     return dict(status='already_cached', cache_key=key)
-                # CRITICAL FIX: Always clean up incoming before re-raising
-                _remove(incoming)
                 raise
         except BaseException:
             _remove(incoming)
             raise
-        finally:
-            # CRITICAL FIX: Always clean up marker in finally
-            try:
-                if preparing_marker.exists():
-                    preparing_marker.unlink()
-            except OSError:
-                pass
         return dict(status='stored', cache_key=key, files=len(files),
                     entry_sha256=_file_digest(entry / 'entry.json'))
 

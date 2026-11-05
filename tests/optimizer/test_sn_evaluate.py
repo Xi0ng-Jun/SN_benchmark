@@ -120,7 +120,7 @@ class _Views:
 
 
 class _Ops:
-    """RoundOperations subset: measure / smoke / segment / validation with scripted v2 statuses."""
+    """RoundOperations subset: measure / smoke / segment with scripted v2 statuses."""
 
     def __init__(self, service, repository, script=None, on_call=None):
         self.service, self.repository = service, repository
@@ -137,12 +137,6 @@ class _Ops:
         if self.on_call:
             self.on_call(self, "measure", candidate_id, kw)
         return dict(status=self._status("measure"), reason="scripted")
-
-    def validation(self, candidate_id, **kw):
-        self.calls.append(("validation", candidate_id, kw))
-        if self.on_call:
-            self.on_call(self, "validation", candidate_id, kw)
-        return dict(status=self._status("validation"), reason="scripted")
 
     def smoke(self, candidate_id, case_ids, **kw):
         self.calls.append(("smoke", candidate_id, dict(kw, case_ids=list(case_ids))))
@@ -323,8 +317,7 @@ def test_screen_pair_measures_candidate_and_reference(env):
         env.views.add(eid, [{"v1": value}])
     adapter, ops = env.build()
     cand, ref = adapter.evaluate_pair(V_CAND, V_ROOT, ["v1"], 2, purpose="screen")
-    # Screening now uses validation() instead of measure() to avoid wasteful search set measurement
-    assert sorted(c[2]["key"] for c in ops.calls) == ["v3/R1/validation/cand1/0", "v3/R1/validation/root/0"]
+    assert sorted(c[2]["key"] for c in ops.calls) == ["v3/R1/measure/cand1/0", "v3/R1/measure/root/0"]
     assert cand.per_task_scores == {"v1": 1.0} and ref.per_task_scores == {"v1": 0.5}
 
 
