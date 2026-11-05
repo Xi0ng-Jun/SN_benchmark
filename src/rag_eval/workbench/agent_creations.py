@@ -14,6 +14,8 @@ from .repository import Conflict, _text, now, uid
 
 # Brief selector of Agents created by an automatic method-v3 run (briefs.resolve_brief).
 BRIEF_V3 = 'method-v3'
+# method-v4 reviewer: reads one evidence file, writes one verdict file; no commands, no worktree.
+BRIEF_V4 = 'method-v4'
 
 
 def _opaque(value, name, limit=200):
@@ -108,7 +110,7 @@ class AgentCreationStore:
         # the earlier rule: bound worktree when present.
         if role == 'implementer' and bound is None:
             raise ValueError('An implementer Agent needs a Task bound to an SN worktree')
-        if bound is not None and role != 'analyst':
+        if bound is not None and role not in ('analyst', 'reviewer'):
             if not bound['paseo_workspace_id']:
                 raise ValueError('Task worktree needs a registered Paseo workspace for agent creation')
             command.update(workspaceId=bound['paseo_workspace_id'], expectedCwd=bound['worktree_path'])
@@ -125,17 +127,21 @@ class AgentCreationStore:
         _text(request_key, 'request key', limit=200)
         if title is not None:
             _opaque(title, 'creation title')
-        if role not in (None, 'analyst', 'implementer'):
+        if role not in (None, 'analyst', 'implementer', 'reviewer'):
             raise ValueError('Invalid Agent role')
         if (role == 'implementer') != (hypothesis_id is not None):
             raise ValueError('An implementer Agent is created for exactly one approved hypothesis card')
-        if candidate_id is not None and role not in ('analyst', 'implementer'):
-            raise ValueError('Only an analyst or implementer Agent is created for a candidate')
+        if candidate_id is not None and role not in ('analyst', 'implementer', 'reviewer'):
+            raise ValueError('Only an analyst, implementer or reviewer Agent is created for a candidate')
+        if role == 'reviewer' and (candidate_id is None or brief != BRIEF_V4 or scope is not None):
+            raise ValueError('A reviewer Agent reviews one candidate of a method-v4 run (brief method-v4)')
         if scope not in (None, 'iteration') or (scope and (role != 'analyst' or candidate_id is not None)):
             raise ValueError('Only an analyst without a candidate is created for the whole iteration')
         # 'method-v3': an Agent of an automatic method-v3 run gets the short v3 brief.
-        if brief not in (None, BRIEF_V3) or (brief and role not in ('analyst', 'implementer')):
+        if brief not in (None, BRIEF_V3, BRIEF_V4) or (brief == BRIEF_V3 and role not in ('analyst', 'implementer')):
             raise ValueError('Only an analyst or implementer Agent takes the method-v3 brief')
+        if (brief == BRIEF_V4) != (role == 'reviewer'):
+            raise ValueError('Only a reviewer Agent takes the method-v4 brief')
         payload = {'profile_id': profile_id, 'title': title}
         if role is not None:
             payload.update(role=role, hypothesis_id=hypothesis_id)
@@ -178,9 +184,9 @@ class AgentCreationStore:
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='candidates'").fetchone() else None
                 # An analyst reads one frozen node (its runs are the evidence it cites);
                 # an implementer changes one candidate that is still being implemented.
-                if candidate is None or (candidate['status'] != 'frozen' if role == 'analyst' else (
+                if candidate is None or (candidate['status'] != 'frozen' if role in ('analyst', 'reviewer') else (
                         candidate['proposal_id'] != hypothesis_id or candidate['status'] != 'ready')):
-                    raise ValueError('The candidate is not frozen for analysis' if role == 'analyst'
+                    raise ValueError('The candidate is not frozen for analysis' if role in ('analyst', 'reviewer')
                                      else 'The candidate is not implementing this proposal')
                 # Evaluated or not admitted: there are runs to read. Frozen-but-unrun and
                 # running nodes have nothing yet (the workbench offers no button there either).

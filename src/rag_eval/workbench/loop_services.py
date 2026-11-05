@@ -147,6 +147,9 @@ class RoundOperations:
     def split(self, candidate_id, split, **kwargs):
         return self.measurements.split(candidate_id, split, **kwargs)
 
+    def subset(self, candidate_id, kind, case_ids, **kwargs):
+        return self.measurements.subset(candidate_id, kind, case_ids, **kwargs)
+
     def segment(self, start_id, end_id, batch_id, **kwargs):
         return self.measurements.segment(start_id, end_id, batch_id, **kwargs)
 
@@ -164,7 +167,7 @@ class RoundOperations:
         if candidate_id is not None and candidate_id not in {c['id'] for c in tree['candidates']}:
             raise ValueError('Agent candidate belongs to another iteration')
         # A merge is still an implementer at the existing role/privacy boundary.
-        stored_role = 'implementer' if role in ('implementer', 'merge') else role
+        stored_role = 'implementer' if role in ('implementer', 'merge') else role  # 'reviewer' stays (method-v4)
         if stored_role == 'implementer' and hypothesis_id is None and candidate_id:
             hypothesis_id = self.service.candidate(candidate_id)['proposal_id']
         creation_key = self._key('agent-create', key)

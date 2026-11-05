@@ -891,7 +891,7 @@ class IterationService:
             if prior_command is None:
                 self.repository._receipt(conn, command_scope, request_key, command, dict(bound=True))
         plan_scope = iteration
-        if batch_id is not None and batch_id.startswith(('cluster:', 'sealed:', 'smoke:', 'split:')):
+        if batch_id is not None and batch_id.startswith(('cluster:', 'sealed:', 'smoke:', 'split:', 'subset:')):
             from .execution_scopes import get
             plan_scope = get(self.repository, iteration['id'], batch_id)
             if adopt:

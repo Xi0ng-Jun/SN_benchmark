@@ -21,6 +21,7 @@ from .repository import Conflict
 from .briefs import V3_ANALYST_COMMANDS, V3_IMPLEMENTER_COMMANDS
 ANALYST_ALLOWED = frozenset(V3_ANALYST_COMMANDS)
 IMPLEMENTER_ALLOWED = frozenset(V3_IMPLEMENTER_COMMANDS)
+REVIEWER_ALLOWED = frozenset()   # method-v4 reviewer: one evidence file in, one verdict file out
 
 
 def _has_table(conn):
@@ -95,8 +96,8 @@ def agent_refusal(repository, task_id, role, command):
     bound = task_binding(repository, task_id)
     if bound is None:
         return None
-    allowed = IMPLEMENTER_ALLOWED if role == 'implementer' else ANALYST_ALLOWED
+    allowed = {'implementer': IMPLEMENTER_ALLOWED, 'reviewer': REVIEWER_ALLOWED}.get(role, ANALYST_ALLOWED)
     if command in allowed:
         return None
     return (f"this iteration is driven by automatic run {bound['run_id']}: a {role} may only use "
-            + ', '.join(sorted(allowed)))
+            + (', '.join(sorted(allowed)) or 'no command'))

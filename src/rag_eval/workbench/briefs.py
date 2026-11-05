@@ -325,6 +325,20 @@ When you finish, reply with the files you changed and why, the test commands and
 '''
 
 
+def v4_reviewer_brief(task, *, candidate_id):
+    return f'''# Method-v4 reviewer · candidate {candidate_id}
+
+You are the independent reviewer of one candidate change of an automatic method-v4 run on iteration task "{task["title"]}". You do not propose or implement changes. Each message names one evidence file (absolute path and sha256) and one verdict file path. The evidence file holds the card (failure mode and change hypothesis), the change's diff, and several anonymous pairs of trajectory views labelled p1, p2, ...; in each pair the two sides are labelled A and B in random order.
+
+For every pair answer three questions: did the change described by the card take effect in this pair (which side shows it), does the pair show a side effect, and does it show score gaming (e.g. a shorter answer with the same content, more refusals, answer text shaped to a metric rather than to the question). Some pairs may show no difference at all; say so.
+
+Write exactly one JSON object to the verdict file named in the message (nothing else in it), then stop:
+{{"pairs": [{{"pair": "p1", "effect": true|false, "changed_side": "A"|"B"|null, "side_effect": true|false, "gaming": true|false, "note": "one or two sentences"}}, ...]}}
+
+Rules: read only the evidence file named in the message and write only the verdict file; run no other command, open no other file or directory, never look for gold answers, scores or case identities. Each message is a new, independent review.
+'''
+
+
 def _creation_brief(conn, task_id, agent_id):
     """The brief selector recorded with the Agent's creation intent (None: workbench brief)."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='agent_creation_intents'").fetchone():
@@ -345,8 +359,14 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
         bound = (conn.execute('SELECT * FROM task_worktrees WHERE task_id=?', (task_id,)).fetchone()
                  if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_worktrees'").fetchone() else None)
         cwd = repository.session_cwd(conn, session, task)
-        from .agent_creations import BRIEF_V3
-        if _creation_brief(conn, task_id, session['agent_id']) == BRIEF_V3:
+        from .agent_creations import BRIEF_V3, BRIEF_V4
+        selected = _creation_brief(conn, task_id, session['agent_id'])
+        if selected == BRIEF_V4:
+            candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
+            refs = {'task_id': task_id, 'session_id': session_id, 'role': 'reviewer', 'brief': BRIEF_V4,
+                    **({'candidate_id': candidate_id} if candidate_id else {})}
+            return ('Method-v4 reviewer brief · ' + str(candidate_id), v4_reviewer_brief(task, candidate_id=candidate_id), refs)
+        if selected == BRIEF_V3:
             candidate_id = session['candidate_id'] if 'candidate_id' in session.keys() else None
             refs = {'task_id': task_id, 'session_id': session_id, 'role': session['role'] or 'analyst',
                     'brief': BRIEF_V3, **({'candidate_id': candidate_id} if candidate_id else {})}

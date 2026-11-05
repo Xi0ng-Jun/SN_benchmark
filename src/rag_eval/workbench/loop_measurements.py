@@ -190,7 +190,9 @@ class RoundMeasurements:
         return (attempt.get('admission') or {}).get('status') == 'admitted' or attempt.get('execution_state') == 'running'
 
     @staticmethod
-    def _k(kind, protocol):
+    def _k(kind, protocol, k=None):
+        if kind == 'subset':
+            return k  # method-v4: the request names its k, frozen with the key
         return 1 if kind == 'smoke' else protocol['k_base']  # a smoke sample is one attempt per side
 
     def _plan(self, candidate, tree, kind, key):
@@ -230,6 +232,12 @@ class RoundMeasurements:
                 for batch in batches(self.repository, tree['id'], completed=True):
                     fresh = next(b for b in protocol['fresh_batches'] if b['batch_id'] == batch['batch_id'])
                     scopes.append((fresh['batch_id'], len(fresh['case_ids'])))
+        elif kind == 'subset':
+            # A registered validation subset at the request's own k (method-v4).
+            from .execution_scopes import get
+            scope = get(self.repository, tree['id'], candidate['_round_subset_scope'])
+            scope_id = scope['scope_id']
+            scopes = [(scope_id, len(scope['case_ids']))]
         elif kind == 'segment':
             # The caller names the batch; planning (never replay) refuses one already claimed.
             start_id, scope_id = candidate['_round_segment']
@@ -251,7 +259,8 @@ class RoundMeasurements:
         for scope, count in scopes:
             sides = list(candidates)
             # A paired read needs the parent on the same scopes; search (diagnosis) is single-sided.
-            paired = kind == 'measure' or (kind == 'split' and candidate.get('_round_split') == 'validation')
+            paired = (kind == 'measure' or (kind == 'split' and candidate.get('_round_split') == 'validation')
+                      or (kind == 'subset' and candidate.get('_round_subset_paired')))
             if scope is not None and paired and candidate.get('parent_candidate_id'):
                 sides.insert(0, candidate['parent_candidate_id'])
             for cid in sides:
@@ -263,7 +272,8 @@ class RoundMeasurements:
                 # Historical failed slots already consumed their initial attempt.
                 # They may receive bounded infra retries below, never a second
                 # independent top-up merely because a new round key is used.
-                missing = 0 if kind == 'cluster' else max(0, self._k(kind, protocol) - len(existing))
+                missing = 0 if kind == 'cluster' else max(
+                    0, self._k(kind, protocol, candidate.get('_round_subset_k')) - len(existing))
                 for index in range(missing):
                     stepkey = 'round-measure:' + hashlib.sha256(f'{key}:{cid}:{scope}:{index}'.encode()).hexdigest()
                     steps.append(dict(candidate_id=cid, request_key=stepkey, batch_id=scope, case_count=count,
@@ -368,7 +378,7 @@ class RoundMeasurements:
             scopes.add(None)
         return all(sum((a.get('admission') or {}).get('status') == 'admitted'
                        for a in self.service.candidate(cid)['attempts'] if a.get('batch_id') == scope)
-                   >= self._k(state['kind'], tree['protocol'])
+                   >= self._k(state['kind'], tree['protocol'], state.get('k'))
                    for cid in candidates for scope in scopes
                    if any(s['candidate_id'] == cid and s.get('batch_id') == scope for s, _ in observed)
                    or (cid == state['candidate_id'] and scope is None))
@@ -434,13 +444,29 @@ class RoundMeasurements:
         return self._advance('split', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
                              timeout_seconds=timeout_seconds, split=split, observe_only=observe_only)
 
+    def subset(self, candidate_id, kind, case_ids, *, k, paired, key, actor, infra_retry=1, timeout_seconds=7200,
+               observe_only=False):
+        """Candidate, k attempts, on one registered validation subset (method-v4 minibatch / rest).
+
+        ``k`` and ``paired`` are part of the frozen request (a replay with other
+        values is refused). ``paired`` tops the parent up to the same k on the
+        same scope; a root candidate (calibration) is measured alone.
+        """
+        if type(k) is not int or k < 1:
+            raise ValueError('k must be a positive integer')
+        if type(paired) is not bool:
+            raise ValueError('paired must be a boolean')
+        return self._advance('subset', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
+                             timeout_seconds=timeout_seconds, subset=(kind, list(case_ids), k, paired),
+                             observe_only=observe_only)
+
     def segment(self, start_id, end_id, batch_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
         """End against its ancestor start, k_base each, on a caller-named unused fresh batch."""
         return self._advance('segment', end_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
                              timeout_seconds=timeout_seconds, segment=(start_id, batch_id), observe_only=observe_only)
 
     def _advance(self, kind, candidate_id, *, key, actor, override, infra_retry, timeout_seconds, cluster_id=None,
-                 case_ids=None, segment=None, split=None, observe_only=False):
+                 case_ids=None, segment=None, split=None, subset=None, observe_only=False):
         if type(infra_retry) is not int or infra_retry < 0:
             raise ValueError('infra_retry must be a nonnegative integer')
         candidate = self.service.candidate(candidate_id)
@@ -460,6 +486,14 @@ class RoundMeasurements:
             from .execution_scopes import split_scope_id
             candidate['_round_split'] = extra['split'] = split
             candidate['_round_split_scope'] = extra['scope_id'] = split_scope_id(tree['protocol'], split)
+        elif kind == 'subset':
+            from .execution_scopes import subset_scope_id
+            subset_kind, subset_ids, subset_k, subset_paired = subset
+            if subset_paired and not candidate.get('parent_candidate_id'):
+                raise ValueError('A paired subset run requires a child candidate')
+            candidate['_round_subset_scope'] = extra['scope_id'] = subset_scope_id(tree['protocol'], subset_kind, subset_ids)
+            candidate['_round_subset_k'] = extra['k'] = subset_k
+            candidate['_round_subset_paired'] = extra['paired'] = subset_paired
         elif kind == 'segment':
             start_id, batch_id = segment
             ancestors, cursor = set(), candidate.get('parent_candidate_id')
@@ -480,6 +514,9 @@ class RoundMeasurements:
         if kind == 'split' and not observe_only:
             from .execution_scopes import split_plan
             split_plan(self.service, tree, split)
+        if kind == 'subset' and not observe_only:
+            from .execution_scopes import subset_plan
+            subset_plan(self.service, tree, subset[0], subset[1])
         storage_key = 'round-measure:' + hashlib.sha256(key.encode()).hexdigest()
         with self._lock(tree['id']):
             self._recover_retry_mappings(tree['id'])

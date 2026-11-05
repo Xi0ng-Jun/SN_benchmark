@@ -721,3 +721,50 @@ def test_search_split_measures_the_candidate_alone(env):
     assert env['service'].candidate(root)['attempts'] == []
     with pytest.raises(ValueError):
         measurements.split(candidate, 'sealed', key='bad', actor='alice')
+
+
+def test_v4_subset_runs_its_own_k_pairs_the_parent_and_refuses_changed_requests(env):
+    import pytest
+    from rag_eval.workbench.execution_scopes import get, subset_scope_id
+    from rag_eval.workbench.repository import Conflict
+    tree = iteration(env, case_ids=['qasper:q', 'qasper:q2', 'qasper:q3'])
+    root, candidate = tree['root_candidate_id'], child(env, tree, 'subset')
+    validation = sorted(tree['protocol']['splits']['validation'])
+    scope = subset_scope_id(tree['protocol'], 'mb', validation)
+    measurements = ports(env)
+    # Calibration: the root alone at k=2 (A/A), unpaired.
+    assert measurements.subset(root, 'mb', validation, k=2, paired=False, key='cal', actor='alice',
+                               infra_retry=0)['status'] == 'running'
+    assert get(env['repo'], tree['id'], scope)['case_ids'] == validation
+    assert [a['batch_id'] for a in env['service'].candidate(root)['attempts']] == [scope, scope]
+    finish(env, env['service'].candidate(root))
+    assert measurements.subset(root, 'mb', validation, k=2, paired=False, key='cal', actor='alice',
+                               infra_retry=0)['status'] == 'complete'
+    # Minibatch: the child at k=1, paired; the parent already has 2 attempts, nothing is topped up.
+    assert measurements.subset(candidate, 'mb', validation, k=1, paired=True, key='mb', actor='alice',
+                               infra_retry=0)['status'] == 'running'
+    assert [a['batch_id'] for a in env['service'].candidate(candidate)['attempts']] == [scope]
+    assert len(env['service'].candidate(root)['attempts']) == 2
+    with pytest.raises(Conflict):
+        measurements.subset(candidate, 'mb', validation, k=2, paired=True, key='mb', actor='alice', infra_retry=0)
+    finish(env, env['service'].candidate(candidate))
+    assert ports(env).subset(candidate, 'mb', validation, k=1, paired=True, key='mb', actor='alice',
+                             infra_retry=0)['status'] == 'complete'
+    with pytest.raises(ValueError):
+        measurements.subset(root, 'mb', validation, k=1, paired=True, key='bad', actor='alice')
+    with pytest.raises(ValueError):
+        subset_scope_id(tree['protocol'], 'mb', sorted(tree['protocol']['splits']['search']))
+    with pytest.raises(ValueError):
+        subset_scope_id(tree['protocol'], 'other', validation)
+
+
+def test_v4_paired_subset_tops_the_parent_up_to_the_requested_k(env):
+    from rag_eval.workbench.execution_scopes import subset_scope_id
+    tree = iteration(env, case_ids=['qasper:q', 'qasper:q2', 'qasper:q3'])
+    root, candidate = tree['root_candidate_id'], child(env, tree, 'rest')
+    validation = sorted(tree['protocol']['splits']['validation'])
+    scope = subset_scope_id(tree['protocol'], 'rest', validation)
+    assert ports(env).subset(candidate, 'rest', validation, k=1, paired=True, key='rest', actor='alice',
+                             infra_retry=0)['status'] == 'running'
+    for cid in (root, candidate):
+        assert [a['batch_id'] for a in env['service'].candidate(cid)['attempts']] == [scope]

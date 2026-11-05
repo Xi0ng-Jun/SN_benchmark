@@ -167,3 +167,20 @@ def test_only_v3_analysts_and_implementers_take_the_v3_brief(tmp_path):
     intent = store.prepare(task['id'], 'allowed', actor='alice', request_key='k3', role='analyst', brief='method-v3')
     assert intent['brief'] == 'method-v3'
     assert 'brief' not in store.prepare(task['id'], 'allowed', actor='alice', request_key='k4', role='analyst')
+
+
+def test_method_v4_reviewer_brief_and_creation_rules(tmp_path):
+    import pytest
+    from rag_eval.workbench import auto_runs
+    from rag_eval.workbench.briefs import v4_reviewer_brief
+    from test_workbench_agent_creations import setup
+    text = v4_reviewer_brief(dict(id='t', title='SN · method-v4'), candidate_id='c' * 32)
+    assert 'verdict file' in text and '"gaming"' in text and 'evidence file' in text
+    assert auto_runs.REVIEWER_ALLOWED == frozenset()
+    _, task, _, store = setup(tmp_path)
+    with pytest.raises(ValueError, match='method-v4'):
+        store.prepare(task['id'], 'allowed', actor='alice', request_key='r1', role='analyst', brief='method-v4')
+    with pytest.raises(ValueError):
+        store.prepare(task['id'], 'allowed', actor='alice', request_key='r2', role='reviewer', brief='method-v4')
+    with pytest.raises(ValueError, match='method-v4'):
+        store.prepare(task['id'], 'allowed', actor='alice', request_key='r3', role='reviewer', brief='method-v3')

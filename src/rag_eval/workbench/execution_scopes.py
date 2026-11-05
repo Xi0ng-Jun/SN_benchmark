@@ -141,6 +141,47 @@ def split_plan(service, iteration, split):
     return get(service.repository, iteration['id'], scope_id)
 
 
+SUBSET_KINDS = ('mb', 'rest')
+
+
+def subset_scope_id(protocol, kind, case_ids):
+    """Content-addressed id of a validation subset (method-v4 minibatch / rest); refuses other splits."""
+    if kind not in SUBSET_KINDS:
+        raise ValueError('Unknown subset kind')
+    if (not isinstance(case_ids, (list, tuple)) or not case_ids or any(type(c) is not str for c in case_ids)
+            or len(set(case_ids)) != len(case_ids)):
+        raise ValueError('Subset cases must be a non-empty list of unique case ids')
+    if not set(case_ids) <= set(((protocol or {}).get('splits') or {}).get('validation', ())):
+        raise ValueError('Subset cases must be validation cases')
+    import hashlib
+    return f'subset:{kind}:' + hashlib.sha256('\n'.join(sorted(case_ids)).encode()).hexdigest()[:16]
+
+
+def subset_plan(service, iteration, kind, case_ids):
+    """Register (idempotently) the frozen plan of one validation subset, as split_plan does."""
+    from .splits import Policy
+    scope_id = subset_scope_id(iteration['protocol'], kind, case_ids)
+    try:
+        return get(service.repository, iteration['id'], scope_id)
+    except UnknownIdentity:
+        pass
+    task, protocol, members = iteration['task_id'], iteration['protocol'], sorted(case_ids)
+    policy = Policy(service.repository, task)
+    for cid in members:
+        policy.refuse_sealed(cid)
+    p = service.plans.save(task_id=task, input_id=protocol['input']['input_id'],
+        expected_bundle_id=protocol['input']['bundle_id'], case_ids=members,
+        title=f'Subset {scope_id}', mode=protocol['mode'], actor='scope',
+        request_key=scope_id, roles={c: 'validation' for c in members})
+    scope = dict(scope_id=scope_id, kind='subset', subset=kind, case_ids=members,
+                 plan_id=p['plan_id'], plan_revision=p['revision'], plan_content_hash=p['content_hash'],
+                 selection_hash=p['content']['selection']['selection_hash'])
+    with service.repository.connect(write=True) as conn:
+        conn.execute('INSERT OR IGNORE INTO iteration_scopes VALUES(?,?,?,?,?)',
+                     (iteration['id'], scope_id, 'subset', json.dumps(scope), now()))
+    return get(service.repository, iteration['id'], scope_id)
+
+
 def dispatch_steps(service, record):
     """Freeze an explicit request's entire footprint, including parent top-ups."""
     repository = service.repository
