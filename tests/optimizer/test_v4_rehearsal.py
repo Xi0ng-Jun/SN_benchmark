@@ -193,3 +193,28 @@ def test_v4_kill_during_stage2_resumes_without_new_agents_or_duplicate_runs(rig4
     assert len(rig4.intents('implementer')) == 1 and len(rig4.intents('reviewer')) == 1
     assert len(rig4.intents('analyst')) == 2 and len(rig4.creator.commands) - agents <= 2
     rig4.assert_no_duplicate_measurements()
+
+
+def test_v4_run_is_served_by_the_workbench_auto_run_route(rig4, capsys):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    rig4.effects = {'Fix empty retrievals': GOOD, 'Break synthesis': BAD}
+    rig4.analyst_cards = first_round_only([card('Fix empty retrievals'), card('Break synthesis', predicate=False)])
+    with rig4:
+        assert rig4.run4() == 0
+    app = FastAPI()
+    app.include_router(rig4.api.router())
+    listed = TestClient(app).get('/api/iterations').json()
+    assert next(i for i in listed if i['id'] == rig4.tree['id'])['auto']['run_id'] == 'r4'
+    view = TestClient(app).get(f"/api/iterations/{rig4.tree['id']}/auto-run").json()
+    assert view['method'] == 'v4' and view['run']['status'] == 'halted' and view['next_action'] == 'test'
+    assert view['calibration']['k_val'] in (1, 2) and view['feasibility']['per_candidate_seconds'] >= 0
+    assert [n['kind'] for n in view['lineage']] == ['seed', 'candidate']
+    stages = {r['title']: r for r in view['rounds'][0]['records']}
+    good = stages['Fix empty retrievals']
+    assert good['label'] == 'adopted' and good['mechanism']['tier'] == 'confirmed'
+    assert {v['kind'] for v in good['mechanism']['reviewer']['verdicts']} == {'candidate', 'control'}
+    assert stages['Break synthesis']['stage'] == 'minibatch_fail'
+    assert view['rounds'][0]['minibatch_size'] >= 2 and view['ablation']['status'] in ('done', 'skipped')
+    # Counts only: no case id anywhere in the projection.
+    assert 'qasper:' not in json.dumps(view)

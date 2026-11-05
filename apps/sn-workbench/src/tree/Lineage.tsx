@@ -6,7 +6,7 @@ import { adoptedUnattributed, Candidate, decisionLabels, DeltaSummary, Iteration
 import { Delta, Mono } from './parts';
 import { ITERATION_MIN_EVALUATED, iterationBlockedReason, Step } from './next';
 
-export type AgentMark = { sessionId: string; role: 'analyst' | 'implementer'; status: string | null };
+export type AgentMark = { sessionId: string; role: 'analyst' | 'implementer' | 'reviewer'; status: string | null };
 // The row shows one Agent mark: a working one before the latest idle one.
 const working = (mark: AgentMark) => mark.status === 'running' || mark.status === 'initializing';
 
@@ -151,8 +151,8 @@ export function Lineage({ tree, labels, titles, selectedId, onSelect, onSelectPr
               <StepLine step={steps[c.id]} />
             </View>
             {[...(agents[c.id] ?? [])].sort((x, y) => Number(working(x)) - Number(working(y))).slice(-1).map(mark => <Pressable key={mark.sessionId} accessibilityRole="button" testID={'lineage-agent-' + c.id}
-              accessibilityLabel={`打开 ${labels[c.id]} 的${mark.role === 'analyst' ? '分析' : '实现'} Agent 对话`} onPress={() => onOpenAgent(mark.sessionId)}
-              {...({ title: `${mark.role === 'analyst' ? '分析' : '实现'} Agent · ${mark.status === 'running' || mark.status === 'initializing' ? '正在工作' : mark.status ?? '状态未知'}` } as object)}
+              accessibilityLabel={`打开 ${labels[c.id]} 的${mark.role === 'analyst' ? '分析' : mark.role === 'reviewer' ? '审查' : '实现'} Agent 对话`} onPress={() => onOpenAgent(mark.sessionId)}
+              {...({ title: `${mark.role === 'analyst' ? '分析' : mark.role === 'reviewer' ? '审查' : '实现'} Agent · ${mark.status === 'running' || mark.status === 'initializing' ? '正在工作' : mark.status ?? '状态未知'}` } as object)}
               style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
               <Bot size={14} strokeWidth={1.75} color={mark.status === 'running' || mark.status === 'initializing' ? theme.primary : theme.muted} />
             </Pressable>)}

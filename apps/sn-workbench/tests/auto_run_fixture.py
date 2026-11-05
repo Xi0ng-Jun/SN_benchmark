@@ -145,6 +145,46 @@ def seed_iteration(repository, workspace_id, iteration_id, title):
                      (root, iteration_id, 'root', 'frozen', '[]', '[]', '{}', 'fixture', NOW, NOW))
 
 
+def v4_run(run_dir, script, *, endpoint=False, interrupt=False, **config):
+    """A real method-v4 run over the v4 mock adapter, its cli-run.json, and optionally a test-set endpoint."""
+    from rag_eval.optimizer.v4 import endpoint as v4_endpoint
+    from rag_eval.optimizer.v4.config import V4Config
+    from rag_eval.optimizer.v4.loop import V4Run
+    from tests.optimizer.v4_mock import V4Mock
+    mock = V4Mock(script)
+    cfg = V4Config(**dict(dict(time_budget_hours=12.0, b=2, no_adoption_rounds=1), **config))
+    run = V4Run(mock, mock.seed, cfg, search=mock.search, validation=mock.validation, test_size=60,
+                families={t: f'paper{i // 4}' for i, t in enumerate(mock.validation)}, state_dir=run_dir)
+    run.run()
+    atomic_write_json(run_dir / 'cli-run.json', dict(method='v4', run_id=run_dir.name, iteration_id=run_dir.name,
+        actor='operator', created_at=NOW, config_sha256='0' * 64, config_resolved=dataclasses.asdict(cfg), test_set=True))
+    if endpoint:
+        nodes = v4_endpoint.node_set(run.lineage, run.versions, cfg.endpoint_nodes, final=run.final_version())
+        curve = [dict(candidate_id=n['candidate_id'], score=.42 + .03 * i, delta_vs_seed=.03 * i, se_delta=.012 if i else 0.,
+                      boot_lower=(.03 * i - .022) if i else None, boot_upper=(.03 * i + .024) if i else None,
+                      boot_units=15 if i else None, boot_unit='family' if i else None) for i, n in enumerate(nodes)]
+        rep_ = v4_endpoint.report(dict(status='finished', metric='str_em', n=60, k=1, curve=curve), nodes, run.lineage,
+                                  k_val=run.calibration['k_val'], ablation=run.ablation)
+        atomic_write_json(run_dir / 'endpoint.json', rep_)
+    if interrupt:
+        import json as _json
+        state = _json.loads((run_dir / 'state.json').read_text())
+        last = state['rounds'].pop()
+        last.pop('finished_at', None)
+        last['decision'] = None
+        for r in last['records'].values():
+            if r['stage'] == 'measured':
+                r.update(stage='minibatch_pass', mechanism=None, qualification=None, label=None)
+        state['lineage'] = [n for n in state['lineage'] if n.get('round') != last['round']]
+        state.update(current_round=last, halt_reason=None, stop_reason=None, ablation=None)
+        atomic_write_json(run_dir / 'state.json', state)
+
+
+V4_SCRIPT = [[dict(name='检索为空时重试一次扩展查询', delta=.10, effect=True), dict(name='答案引用对齐段落', delta=.06),
+              dict(name='缩短综合提示', delta=-.2), dict(name='拒答阈值调整', implement_error=True)],
+             [dict(name='澄清歧义问题', delta=.003, effect=True), dict(name='合并重复检索', delta=-.01)], []]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8097)
@@ -162,6 +202,9 @@ def main():
     for name in ('auto-running', 'auto-interrupted'):
         state = real_run(runs / name, ROUNDS + [LAST_ROUND], **in_flight)
         atomic_write_json(runs / name / 'state.json', still_running(state))
+    v4_run(runs / 'v4-done', V4_SCRIPT, endpoint=True)
+    v4_run(runs / 'v4-interrupted', V4_SCRIPT[:1] + [[dict(name='澄清歧义问题', delta=.05)]], interrupt=True,
+           no_adoption_rounds=3, max_rounds=2)
     (runs / 'auto-new').mkdir()
     atomic_write_json(runs / 'auto-new' / 'cli-run.json', dict(run_id='auto-new', iteration_id='auto-new', actor='operator', created_at=NOW))
 
@@ -173,6 +216,7 @@ def main():
     seed_iteration(repository, workspace_id, 'manual', '手动迭代')
     titles = dict(zip(('auto-new', 'auto-budget', 'auto-interrupted', 'auto-sealed', 'auto-done', 'auto-running'),
                       ('自动 · 未开始', '自动 · 预算用尽', '自动 · 已中断', '自动 · 封存集已评', '自动 · 已结束', '自动 · 运行中')))
+    titles.update({'v4-done': 'v4 · 已结束', 'v4-interrupted': 'v4 · 已中断'})
     for name, title in titles.items():
         seed_iteration(repository, workspace_id, name, title)
         auto_runs.register(repository, name, run_id=name, state_dir=str(runs / name), actor='operator')

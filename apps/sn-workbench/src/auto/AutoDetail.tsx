@@ -37,7 +37,7 @@ function AgentList({ title, ids, props }: { title: string; ids: TaskSession[]; p
   if (!ids.length) return null;
   return <Section title={title} testID="auto-agents">
     {ids.map(s => <View key={s.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-      <Copy small style={{ flex: 1 }}>{s.role === 'implementer' ? '实现' : '分析'} Agent · {short(s.agent_id)} · {agentStatusLabels[props.live[s.id]?.status ?? ''] ?? '状态未知'}</Copy>
+      <Copy small style={{ flex: 1 }}>{s.role === 'implementer' ? '实现' : s.role === 'reviewer' ? '审查' : '分析'} Agent · {short(s.agent_id)} · {agentStatusLabels[props.live[s.id]?.status ?? ''] ?? '状态未知'}</Copy>
       <Button label="查看" onPress={() => props.onOpenAgent(s.id)} testID={'auto-open-agent-' + s.id} />
     </View>)}
   </Section>;

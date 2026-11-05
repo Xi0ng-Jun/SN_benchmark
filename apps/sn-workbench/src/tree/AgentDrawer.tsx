@@ -25,7 +25,7 @@ export type AgentTarget = { role: 'analyst' | 'implementer'; candidateId?: strin
 // The candidate selected in the main view: what the menu's "new" creates for.
 export type NodeContext = { candidateId: string; label: string; state: string; hypothesisId?: string };
 
-const roleLabels: Record<string, string> = { analyst: '分析', implementer: '实现' };
+const roleLabels: Record<string, string> = { analyst: '分析', implementer: '实现', reviewer: '审查' };
 // Each Agent's header states what it can see (design §7). The isolation is
 // information not sent plus a leak scan, not a filesystem sandbox.
 const autoScopes: Record<string, string> = {

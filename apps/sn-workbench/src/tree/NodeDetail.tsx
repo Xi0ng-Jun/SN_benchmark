@@ -8,7 +8,7 @@ import { Badge, Delta, Eyebrow, KeyValue, Mono, RemoveConfirm, Section } from '.
 import { agentStatusLabels } from '../agents/AgentPicker';
 import type { Step } from './next';
 
-export type NodeAgent = { sessionId: string; role: 'analyst' | 'implementer'; label: string; status: string | null };
+export type NodeAgent = { sessionId: string; role: 'analyst' | 'implementer' | 'reviewer'; label: string; status: string | null };
 import { ActionRequest, adoptedUnattributed, Attribution, attributionLabels, Candidate, CandidateChanges, CandidateComparisons, ChangedFile,
   ComparisonRecord, decisionLabels, IterationTree, isV2, Proposal, requestStatusLabels, Safeguard, short, signed, stateLabels,
   V2Verdict, v2Stages, v2VerdictLabels, verbLabels } from './contracts';

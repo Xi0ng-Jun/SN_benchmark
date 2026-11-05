@@ -220,6 +220,40 @@ for (const [id, width] of [['auto-done', 1440], ['auto-done', 1280], ['auto-done
   assert.equal(await page.getByTestId('auto-run').count(), 0);
   await page.close();
 }
+// method-v4: finished run with ablation and a test-set endpoint.
+{
+  const page = await open('v4-done');
+  assert.equal(await status(page), '已停机');
+  assert.match(await page.getByTestId('auto-next-action').innerText(), /测试集已评测/);
+  assert.match(await page.getByTestId('v4-endpoint').innerText(), /Δ_test/);
+  assert.match(await page.getByTestId('v4-lineage').innerText(), /合并/);
+  assert.match(await page.getByTestId('v4-ablation').innerText(), /剪除/);
+  await shot(page, 'v4-done-light');
+  // Nothing on the page writes.
+  for (const manual of ['act-run', 'act-derive', 'act-adopt', 'act-freeze', 'trigger-sealed-btn']) assert.equal(await page.getByTestId(manual).count(), 0, manual);
+  await page.getByTestId('v4-detail-run').waitFor();
+  assert.match(await page.getByTestId('v4-detail-run').innerText(), /与方法文档的偏离/);
+  // A candidate: cascade, mechanism with control pairs, safeguards.
+  await page.getByTestId('v4-record-1-0').click();
+  await page.getByTestId('v4-detail-record').waitFor();
+  const detail = await page.getByTestId('v4-mechanism').innerText();
+  assert.match(detail, /对照/);
+  assert.match(await page.getByTestId('v4-detail-record').innerText(), /采纳门槛/);
+  await shot(page, 'v4-record-light', false);
+  // An eliminated candidate stays visible with its stage.
+  assert.match(await page.getByTestId('v4-record-1-2').innerText(), /小批淘汰/);
+  await page.getByTestId('v4-node-1').click();
+  await page.getByTestId('v4-detail-node').waitFor();
+  await page.close();
+}
+{
+  const page = await open('v4-interrupted', { scheme: 'dark', width: 820 });
+  assert.equal(await status(page), '已中断');
+  assert.match(await page.getByTestId('auto-next-action').innerText(), /续跑/);
+  assert.match(await page.getByTestId('v4-round-2').innerText(), /等待全验证集/);
+  await shot(page, 'v4-interrupted-dark');
+  await page.close();
+}
 await browser.close();
 assert.deepEqual(failures, []);
 console.log('auto-run browser checks passed');

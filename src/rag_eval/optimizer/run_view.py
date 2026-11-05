@@ -343,8 +343,12 @@ def _optional_json(path: Path) -> Any:
 
 
 def read_run(state_dir: str | Path) -> dict:
-    """Project a run directory."""
+    """Project a run directory (a method-v4 run, marked in ``cli-run.json``, by ``v4.run_view``)."""
     state_dir = Path(state_dir)
+    identity = _optional_json(state_dir / IDENTITY_FILE)
+    if isinstance(identity, dict) and identity.get("method") == "v4":
+        from .v4.run_view import read_run as read_v4
+        return read_v4(state_dir, alive=run_alive(state_dir))
     return project(_optional_json(state_dir / ledger_io.STATE_FILE),
                    identity=_optional_json(state_dir / IDENTITY_FILE),
                    ledger=_optional_json(state_dir / ledger_io.LEDGER_FILE),

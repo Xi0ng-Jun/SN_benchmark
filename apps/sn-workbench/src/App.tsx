@@ -21,6 +21,8 @@ import { AgentDrawer, AgentTarget } from './tree/AgentDrawer';
 import { agentsOf, analystsOf, iterationAnalystsOf, stepsOf } from './tree/next';
 import { useLive } from './tree/useLive';
 import { actionTexts, AutoRunView } from './auto/contracts';
+import { isV4, V4RunView, v4ActionTexts } from './auto/v4contracts';
+import { V4Detail, V4RunPage } from './auto/V4RunPage';
 import { AutoRunPage } from './auto/AutoRunPage';
 import { AutoDetail } from './auto/AutoDetail';
 
@@ -64,7 +66,7 @@ export default function App() {
   // An automatic run's page reads the run's own state; the candidate tree (and its comparisons) is never built for it.
   const auto = current?.auto ?? null;
   const [autoTick, setAutoTick] = useState(0);
-  const autoRun = useResource<AutoRunView>(auto ? `/iterations/${iterationId}/auto-run` : null, refresh + autoTick);
+  const autoRun = useResource<AutoRunView | V4RunView>(auto ? `/iterations/${iterationId}/auto-run` : null, refresh + autoTick);
   const treeState = useResource<IterationTree>(boot && current && !auto ? `/iterations/${iterationId}` : null, refresh);
   const tree = treeState.data?.id === iterationId ? treeState.data : undefined;
   const taskId = current?.task_id ?? tree?.task_id;
@@ -183,7 +185,7 @@ export default function App() {
         kind: step.action === 'request' ? 'request' as const : step.action === 'proposal' ? 'proposal' as const : 'step' as const,
         onPress: () => { setReader(null); setNav(false); step.action === 'proposal' && step.proposalId ? update({ proposal: step.proposalId, node: null }) : update({ node: c.id, proposal: null }); } }];
     }).sort((a, b) => a.rank - b.rank),
-    ...(auto && autoRun.data?.next_action ? [{ id: 'auto-action', label: actionTexts[autoRun.data.next_action].title, detail: current?.title ?? '',
+    ...(auto && autoRun.data?.next_action ? [{ id: 'auto-action', label: isV4(autoRun.data) ? v4ActionTexts[autoRun.data.next_action!].title : actionTexts[autoRun.data.next_action].title, detail: current?.title ?? '',
       kind: 'step' as const, onPress: () => { setNav(false); update({ node: null, proposal: null }); } }] : []),
     ...allRequests.filter(r => r.status === 'pending' && (r.task_id !== tree?.task_id || !r.target_id)).map(r => ({ id: 'request-' + r.id,
       label: `${verbLabels[r.verb] ?? r.verb}请求`, detail: iterations.data?.find(i => i.task_id === r.task_id)?.title ?? '其他迭代', kind: 'request' as const, onPress: () => openRequest(r) })),
@@ -236,7 +238,8 @@ export default function App() {
     selection={{ runId: reader.runId, caseId: reader.caseId, panel: 'run-cases', needsRead: false, against: null, provenance: false }}
     onClose={() => setReader(null)} onChange={changes => setReader(prev => prev && ({ runId: changes.runId ?? prev.runId, caseId: changes.caseId !== undefined ? changes.caseId : prev.caseId }))} />
     : reader ? <Copy small muted>正在读取运行…</Copy>
-    : auto ? (autoRun.data ? <AutoDetail view={autoRun.data} selected={route.node} proposals={proposalById} sessions={task?.sessions ?? []} live={live}
+    : auto && isV4(autoRun.data) ? <V4Detail view={autoRun.data} selected={route.node} sessions={task?.sessions ?? []} live={live} onOpenAgent={openAgent} />
+    : auto ? (autoRun.data ? <AutoDetail view={autoRun.data as AutoRunView} selected={route.node} proposals={proposalById} sessions={task?.sessions ?? []} live={live}
       onOpenAgent={openAgent} onSelect={selectNode} /> : <Copy small muted>正在读取运行…</Copy>)
     : tree && actions && proposal ? <ProposalDetail proposal={proposal} labels={labels} actions={actions} onConfirm={setConfirm} />
     : tree && actions && candidate ? <CandidateDetail key={candidate.id} tree={tree} candidate={candidate} labels={labels} refreshKey={refresh}
@@ -287,7 +290,8 @@ export default function App() {
                   {!iterations.data ? <Copy small muted>正在读取迭代…</Copy>
                     : !iterations.data.length ? <View style={{ gap: 10, alignItems: 'flex-start' }}><Copy muted>还没有迭代。迭代固定一个起点 commit 和冻结题单，候选从这里派生成树。</Copy>
                       <Button label="新建迭代" primary onPress={() => setNewIteration(true)} testID="empty-new-iteration" /></View>
-                    : auto ? (autoRun.data ? <AutoRunPage view={autoRun.data} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} onTriggerSealed={triggerSealed} />
+                    : auto && isV4(autoRun.data) ? <V4RunPage view={autoRun.data} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} />
+                    : auto ? (autoRun.data ? <AutoRunPage view={autoRun.data as AutoRunView} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} onTriggerSealed={triggerSealed} />
                       : <Copy small muted>{autoRun.error ?? '正在读取自动运行…'}</Copy>)
                     : !tree ? <Copy small muted>正在读取迭代树…</Copy>
                       : route.matrix ? <CompareMatrix tree={tree} labels={labels} picked={picked} onClose={() => update({ matrix: false })}
