@@ -144,6 +144,9 @@ class RoundOperations:
     def smoke(self, candidate_id, case_ids, **kwargs):
         return self.measurements.smoke(candidate_id, case_ids, **kwargs)
 
+    def split(self, candidate_id, split, **kwargs):
+        return self.measurements.split(candidate_id, split, **kwargs)
+
     def segment(self, start_id, end_id, batch_id, **kwargs):
         return self.measurements.segment(start_id, end_id, batch_id, **kwargs)
 

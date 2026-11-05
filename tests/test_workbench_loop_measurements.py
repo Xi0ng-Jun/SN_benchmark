@@ -687,3 +687,37 @@ def test_pending_segment_manual_confirmation_claims_the_named_batch(env):
     k = tree['protocol']['k_base']
     for cid in (root, end):
         assert [a['batch_id'] for a in env['service'].candidate(cid)['attempts']] == [batch] * k
+
+
+def test_validation_split_pairs_parent_and_never_runs_search(env):
+    # Two papers: one becomes search, the other validation (completed fresh batches are
+    # covered end to end in tests/optimizer/test_sn_rehearsal.py).
+    from rag_eval.workbench.execution_scopes import get, split_scope_id
+    tree = iteration(env, case_ids=['qasper:q', 'qasper:q2', 'qasper:q3'])
+    root, candidate = tree['root_candidate_id'], child(env, tree, 'validation-split')
+    scope = split_scope_id(tree['protocol'], 'validation')
+    measurements = ports(env)
+    assert measurements.split(candidate, 'validation', key='screen', actor='alice', infra_retry=0)['status'] == 'running'
+    assert get(env['repo'], tree['id'], scope)['case_ids'] == sorted(tree['protocol']['splits']['validation'])
+    for cid in (root, candidate):
+        assert [a['batch_id'] for a in env['service'].candidate(cid)['attempts']] == [scope, scope]
+    # Another key (a second child of the same parent, or a later round) tops up nothing already there.
+    assert measurements.split(candidate, 'validation', key='screen-again', actor='alice', infra_retry=0)['status'] == 'running'
+    assert len(env['service'].candidate(root)['attempts']) == len(env['service'].candidate(candidate)['attempts']) == 2
+    for cid in (root, candidate):
+        finish(env, env['service'].candidate(cid))
+    assert ports(env).split(candidate, 'validation', key='screen', actor='alice', infra_retry=0)['status'] == 'complete'
+
+
+def test_search_split_measures_the_candidate_alone(env):
+    import pytest
+    from rag_eval.workbench.execution_scopes import split_scope_id
+    tree = iteration(env)
+    root, candidate = tree['root_candidate_id'], child(env, tree, 'search-split')
+    scope = split_scope_id(tree['protocol'], 'search')
+    measurements = ports(env)
+    assert measurements.split(candidate, 'search', key='diagnose', actor='alice', infra_retry=0)['status'] == 'running'
+    assert [a['batch_id'] for a in env['service'].candidate(candidate)['attempts']] == [scope, scope]
+    assert env['service'].candidate(root)['attempts'] == []
+    with pytest.raises(ValueError):
+        measurements.split(candidate, 'sealed', key='bad', actor='alice')

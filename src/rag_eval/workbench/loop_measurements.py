@@ -220,6 +220,16 @@ class RoundMeasurements:
             scope_id = scope['scope_id']
             scopes = [(scope_id, len(scope['case_ids']))]
             candidates.insert(0, candidate['parent_candidate_id'])
+        elif kind == 'split':
+            # One whole split; the validation pool also holds every completed fresh batch.
+            from .execution_scopes import get
+            scope = get(self.repository, tree['id'], candidate['_round_split_scope'])
+            scope_id = scope['scope_id']
+            scopes = [(scope_id, len(scope['case_ids']))]
+            if scope['split'] == 'validation':
+                for batch in batches(self.repository, tree['id'], completed=True):
+                    fresh = next(b for b in protocol['fresh_batches'] if b['batch_id'] == batch['batch_id'])
+                    scopes.append((fresh['batch_id'], len(fresh['case_ids'])))
         elif kind == 'segment':
             # The caller names the batch; planning (never replay) refuses one already claimed.
             start_id, scope_id = candidate['_round_segment']
@@ -240,7 +250,9 @@ class RoundMeasurements:
                 if BudgetLedger._available(conn) else {})
         for scope, count in scopes:
             sides = list(candidates)
-            if scope is not None and kind == 'measure' and candidate.get('parent_candidate_id'):
+            # A paired read needs the parent on the same scopes; search (diagnosis) is single-sided.
+            paired = kind == 'measure' or (kind == 'split' and candidate.get('_round_split') == 'validation')
+            if scope is not None and paired and candidate.get('parent_candidate_id'):
                 sides.insert(0, candidate['parent_candidate_id'])
             for cid in sides:
                 existing = [a for a in self.service.candidate(cid)['attempts'] if a.get('batch_id') == scope]
@@ -413,13 +425,22 @@ class RoundMeasurements:
         return self._advance('smoke', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
                              timeout_seconds=timeout_seconds, case_ids=case_ids, observe_only=observe_only)
 
+    def split(self, candidate_id, split, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+        """Candidate, k_base each, on one whole split instead of the base plan's search ∪ validation.
+
+        'validation' also covers every completed fresh batch and tops up the parent
+        on all of them (a paired read); 'search' measures the candidate alone.
+        """
+        return self._advance('split', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
+                             timeout_seconds=timeout_seconds, split=split, observe_only=observe_only)
+
     def segment(self, start_id, end_id, batch_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
         """End against its ancestor start, k_base each, on a caller-named unused fresh batch."""
         return self._advance('segment', end_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
                              timeout_seconds=timeout_seconds, segment=(start_id, batch_id), observe_only=observe_only)
 
     def _advance(self, kind, candidate_id, *, key, actor, override, infra_retry, timeout_seconds, cluster_id=None,
-                 case_ids=None, segment=None, observe_only=False):
+                 case_ids=None, segment=None, split=None, observe_only=False):
         if type(infra_retry) is not int or infra_retry < 0:
             raise ValueError('infra_retry must be a nonnegative integer')
         candidate = self.service.candidate(candidate_id)
@@ -435,6 +456,10 @@ class RoundMeasurements:
             if not candidate.get('parent_candidate_id'):
                 raise ValueError('smoke-run requires a child candidate')
             candidate['_round_smoke_scope'] = extra['scope_id'] = smoke_scope_id(tree['protocol'], case_ids)
+        elif kind == 'split':
+            from .execution_scopes import split_scope_id
+            candidate['_round_split'] = extra['split'] = split
+            candidate['_round_split_scope'] = extra['scope_id'] = split_scope_id(tree['protocol'], split)
         elif kind == 'segment':
             start_id, batch_id = segment
             ancestors, cursor = set(), candidate.get('parent_candidate_id')
@@ -452,6 +477,9 @@ class RoundMeasurements:
         if kind == 'smoke' and not observe_only:
             from .execution_scopes import smoke_plan
             smoke_plan(self.service, tree, case_ids)
+        if kind == 'split' and not observe_only:
+            from .execution_scopes import split_plan
+            split_plan(self.service, tree, split)
         storage_key = 'round-measure:' + hashlib.sha256(key.encode()).hexdigest()
         with self._lock(tree['id']):
             self._recover_retry_mappings(tree['id'])

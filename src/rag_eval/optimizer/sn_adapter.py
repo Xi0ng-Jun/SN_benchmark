@@ -145,7 +145,8 @@ class SNAdapter(SystemAdapter):
         self._agent_timeout = agent_timeout
         self._worktree_timeout = worktree_timeout
         # Evaluation polling (binding plan §2.5): interval and deadline of one
-        # evaluate call. infra_retry and execution_timeout_seconds are forwarded
+        # evaluate call (the deadline is raised to what v2 needs to settle, see
+        # _await). infra_retry and execution_timeout_seconds are forwarded
         # to v2 and frozen with each request key: keep them constant per run.
         self._eval_poll_interval = eval_poll_interval
         self._eval_timeout = eval_timeout
@@ -306,9 +307,11 @@ class SNAdapter(SystemAdapter):
     # ------------------------------------------------------------------
     #
     # Binding plan §2.2/§2.3/§2.5. Every v3 task set maps to one v2 scope:
-    #   search set / validation pool  -> scope None (one v2 execution covers
-    #                                    search ∪ validation), plus each completed
-    #                                    fresh batch's own scope (merged pool)
+    #   search set                    -> registered scope ``split:search:<hash>``
+    #   validation pool               -> ``split:validation:<hash>`` plus each
+    #                                    completed fresh batch's own scope
+    # (v2's base plan, scope None, runs search ∪ validation in one execution; a
+    # screen reads only the validation pool, so it measures only that.)
     #   smoke sample                  -> registered scope ``smoke:<hash>``
     #   i-th fresh batch              -> its batch id (v2 ``segment``)
     # v2 measurements are asynchronous and idempotent per request key: the same
@@ -376,11 +379,14 @@ class SNAdapter(SystemAdapter):
         if not task_ids:
             raise ValueError(f"{purpose} evaluation needs at least one task id")
         splits = protocol["splits"]
+        from rag_eval.workbench.execution_scopes import split_scope_id
         if purpose == "diagnose":
-            allowed: dict[str, Optional[str]] = {c: None for c in splits["search"]}
+            search_scope = split_scope_id(protocol, "search")
+            allowed: dict[str, Optional[str]] = {c: search_scope for c in splits["search"]}
             where = "the search set"
         else:
-            allowed = {c: None for c in splits["validation"]}
+            validation_scope = split_scope_id(protocol, "validation")
+            allowed = {c: validation_scope for c in splits["validation"]}
             completed = {b["batch_id"] for b in self._used_batches(completed=True)}
             for batch in protocol.get("fresh_batches", []):
                 if batch["batch_id"] in completed:
@@ -425,10 +431,18 @@ class SNAdapter(SystemAdapter):
         BudgetExhausted (the frozen footprint waits for human confirmation);
         failed / exhausted / stopped / anything else, or the poll deadline ->
         EvaluationUnavailable. Missing measurements are never evidence.
+
+        The poll deadline never ends before v2 itself must settle: v2 stops an
+        execution at execution_timeout_seconds and runs at most infra_retry
+        retry generations one after another. A shorter deadline (R3 had both at
+        4 h) halts the whole run while v2 is legitimately retrying a timed-out
+        execution, leaving it idle until someone reruns it.
         """
         pending = dict(calls)
         planned: set[str] = set()
-        deadline = time.monotonic() + self._eval_timeout
+        retries = self._infra_retry * (self.key_generation + 1)
+        settle = 1.25 * self._execution_timeout_seconds * (retries + 1)
+        deadline = time.monotonic() + max(self._eval_timeout, settle)
         while True:
             for label, (key, call) in list(pending.items()):
                 if label in planned:
@@ -460,31 +474,33 @@ class SNAdapter(SystemAdapter):
                 )
             time.sleep(self._eval_poll_interval)
 
-    def _measure(self, candidate_ids: list[str]) -> None:
-        """v2 ``measure`` each candidate on search ∪ validation ∪ completed fresh batches.
+    def _measure(self, candidate_ids: list[str], split: str) -> None:
+        """v2 ``split`` each candidate on one whole split ('search' or 'validation').
 
-        Key ``v3/{run_id}/measure/{cid}/{n}[/g{generation}]`` with n = completed
-        fresh batches (generation suffix only when key_generation > 0).
-        v2 ``RoundMeasurements._plan`` freezes the measure footprint at the
-        first call of a key, with the completed fresh batches known AT THAT
-        TIME; replays never re-plan. Once another batch is folded into the
-        pool the old key cannot top up the new scope, so n is part of the key.
-        If a batch completes while we wait, measure again under the new n.
-        The same candidate measured for different purposes shares one key
-        (v2 replays the receipt), so diagnose and screen cost one footprint.
+        'validation' is the validation pool: the validation split plus every
+        completed fresh batch, with the parent topped up on the same scopes.
+        Key ``v3/{run_id}/split/{split}/{cid}/{n}[/g{generation}]``; for
+        'validation' n = completed fresh batches (0 for 'search'). v2 freezes a
+        footprint at the first call of a key with the batches completed AT THAT
+        TIME and replays never re-plan, so once another batch is folded into the
+        pool the new n gives a new key, which tops up only that batch. If a batch
+        completes while we wait, measure again under the new n. The same
+        candidate measured for different purposes on one split shares one key.
         """
         ops = self._require_round_ops("evaluate")
         kwargs = self._v2_run_kwargs()
+        pooled = split == "validation"
         while True:
-            n = len(self._used_batches(completed=True))
+            n = len(self._used_batches(completed=True)) if pooled else 0
             calls, touches = {}, {}
             for cid in dict.fromkeys(candidate_ids):
-                key = self._request_key("measure", cid, n, *self._generation())
-                calls[f"measure {cid}"] = (key, lambda cid=cid, key=key: ops.measure(cid, key=key, **kwargs))
-                # A child's measure also tops up its parent on completed fresh batches.
-                touches[f"measure {cid}"] = (cid, ops.service.candidate(cid).get("parent_candidate_id"))
+                key = self._request_key("split", split, cid, n, *self._generation())
+                calls[f"{split} {cid}"] = (key, lambda cid=cid, key=key: ops.split(cid, split, key=key, **kwargs))
+                # A validation measurement also tops up the parent on the same scopes.
+                touches[f"{split} {cid}"] = (cid, ops.service.candidate(cid).get("parent_candidate_id")
+                                              if pooled else None)
             self._await(calls, touches)
-            if len(self._used_batches(completed=True)) == n:
+            if not pooled or len(self._used_batches(completed=True)) == n:
                 return
 
     def _execution_values(self, execution_id: str) -> dict[str, tuple[Optional[float], dict]]:
@@ -522,7 +538,7 @@ class SNAdapter(SystemAdapter):
 
         Attempt set: v2 ``ComparisonService.admitted(ComparisonService.scoped(c, scope))``,
         exactly the attempts a v2 comparison averages (every admitted execution
-        on that scope; scope None also includes legacy links). Attempts that
+        on that scope; only scope None would include legacy links). Attempts that
         failed admission (infrastructure failures, cancelled, incomplete
         scoring) are excluded, as in v2. Per-case mean: v2 ``noise.estimate``
         (mean over attempts with a value; None when no attempt scored it).
@@ -667,8 +683,9 @@ class SNAdapter(SystemAdapter):
     ) -> EvalResult:
         """Measure *version* through v2 ``measure`` and read its admitted scores.
 
-        purpose: 'diagnose' (task_ids ⊆ search set) or 'baseline' / 'screen'
-        (task_ids ⊆ validation pool). k must equal the protocol's ``k_base``;
+        purpose: 'diagnose' (task_ids ⊆ search set, v2 ``split`` search) or
+        'baseline' / 'screen' (task_ids ⊆ validation pool, v2 ``split``
+        validation). k must equal the protocol's ``k_base``;
         v2 tops each scope up to k_base admitted attempts (only the missing
         ones run). Fresh batches and smoke samples are pair-only
         (``evaluate_pair``); the sealed set is the end step's.
@@ -682,7 +699,7 @@ class SNAdapter(SystemAdapter):
         protocol = self._protocol()
         self._check_k(k, self._k_base(protocol), purpose)
         scopes = self._case_scopes(list(task_ids), purpose, protocol)
-        self._measure([cid])
+        self._measure([cid], "search" if purpose == "diagnose" else "validation")
         return self._read(cid, scopes)
 
     def evaluate_pair(
@@ -698,7 +715,7 @@ class SNAdapter(SystemAdapter):
 
         smoke   : k=1, task_ids ⊆ search, reference = version's parent; v2
                   ``smoke`` (one attempt per side on the registered sample).
-        screen  : k=k_base on the validation pool; v2 ``measure`` on both.
+        screen  : k=k_base on the validation pool; v2 ``split`` validation on both.
         confirm : k=k_base; task_ids must be exactly one unused protocol fresh
                   batch; v2 ``segment(start=reference, end=version)`` consumes it.
         """
@@ -709,7 +726,7 @@ class SNAdapter(SystemAdapter):
         if purpose == "screen":
             self._check_k(k, self._k_base(protocol), purpose)
             scopes = self._case_scopes(task_ids, purpose, protocol)
-            self._measure([vcid, rcid])
+            self._measure([vcid, rcid], "validation")
             return self._read(vcid, scopes), self._read(rcid, scopes)
         if purpose == "smoke":
             from rag_eval.workbench.execution_scopes import smoke_scope_id

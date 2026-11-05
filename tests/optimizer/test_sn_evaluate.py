@@ -10,7 +10,7 @@ import pytest
 
 from rag_eval.optimizer.adapter import BudgetExhausted, EvaluationUnavailable, Version
 from rag_eval.optimizer.sn_adapter import SNAdapter
-from rag_eval.workbench.execution_scopes import smoke_scope_id
+from rag_eval.workbench.execution_scopes import smoke_scope_id, split_scope_id
 from rag_eval.workbench.splits import initialize as initialize_batches
 
 CONFIG = {"iteration_id": "I", "task_id": "T", "run_id": "R1", "actor": "v3-test"}
@@ -21,6 +21,7 @@ PROTOCOL = dict(
     fresh_batches=[dict(batch_id="F1", case_ids=["f1a", "f1b"]),
                    dict(batch_id="F2", case_ids=["f2a", "f2b"])],
 )
+SEARCH, VALIDATION = split_scope_id(PROTOCOL, "search"), split_scope_id(PROTOCOL, "validation")
 
 
 class _Repo:
@@ -52,7 +53,7 @@ class _Repo:
                          ("k-" + action_id, json.dumps(dict(action_id=action_id, kind="segment", start_id=start_id))))
 
 
-def _attempt(n, execution_id, batch_id=None, admitted=True):
+def _attempt(n, execution_id, batch_id=VALIDATION, admitted=True):
     return dict(attempt=n, execution_id=execution_id, batch_id=batch_id, execution_state="finished",
                 job_id="j" + execution_id,
                 admission=dict(status="admitted" if admitted else "not_admitted", reason=None))
@@ -120,23 +121,25 @@ class _Views:
 
 
 class _Ops:
-    """RoundOperations subset: measure / smoke / segment with scripted v2 statuses."""
+    """RoundOperations subset: split / smoke / segment with scripted v2 statuses."""
 
     def __init__(self, service, repository, script=None, on_call=None):
         self.service, self.repository = service, repository
         self.script = dict(script or {})   # kind -> list of statuses, last one repeats
         self.calls = []
+        self.splits = []    # split name of each split call, in call order
         self.on_call = on_call
 
     def _status(self, kind):
         seq = self.script.get(kind, ["complete"])
         return seq.pop(0) if len(seq) > 1 else seq[0]
 
-    def measure(self, candidate_id, **kw):
-        self.calls.append(("measure", candidate_id, kw))
+    def split(self, candidate_id, split, **kw):
+        self.calls.append(("split", candidate_id, kw))
+        self.splits.append(split)
         if self.on_call:
-            self.on_call(self, "measure", candidate_id, kw)
-        return dict(status=self._status("measure"), reason="scripted")
+            self.on_call(self, "split", candidate_id, kw)
+        return dict(status=self._status("split"), reason="scripted")
 
     def smoke(self, candidate_id, case_ids, **kw):
         self.calls.append(("smoke", candidate_id, dict(kw, case_ids=list(case_ids))))
@@ -205,10 +208,34 @@ def test_pair_only_purposes_refused_by_evaluate(env):
 # -- measure dispatch and polling ---------------------------------------------
 
 def test_measure_polled_until_complete_with_deterministic_key(env):
-    adapter, ops = env.build(script={"measure": ["running", "running", "complete"]})
+    adapter, ops = env.build(script={"split": ["running", "running", "complete"]})
     adapter.evaluate(V_CAND, ["v1", "v2"], 2, purpose="screen")
-    assert [c[0] for c in ops.calls] == ["measure"] * 3
-    assert all(c[1] == "cand1" and c[2] == dict(KW, key="v3/R1/measure/cand1/0") for c in ops.calls)
+    assert [c[0] for c in ops.calls] == ["split"] * 3
+    assert all(c[1] == "cand1" and c[2] == dict(KW, key="v3/R1/split/validation/cand1/0") for c in ops.calls)
+
+
+def test_diagnose_measures_only_the_search_split_alone(env):
+    """A screen reads only the validation pool, a diagnosis only the search set: neither runs the other."""
+    env.repo.claim("F1", "cand0", "action:x", completed=True)
+    adapter, ops = env.build()
+    adapter.evaluate(V_CAND, ["s1"], 2, purpose="diagnose")
+    adapter.evaluate(V_CAND, ["v1"], 2, purpose="screen")
+    assert ops.splits == ["search", "validation"]
+    # The search set is single-sided and fixed: its key never counts fresh batches.
+    assert [c[2]["key"] for c in ops.calls] == ["v3/R1/split/search/cand1/0", "v3/R1/split/validation/cand1/1"]
+
+
+def test_poll_deadline_outlasts_v2_execution_timeout_and_its_retries(env, monkeypatch):
+    """R3 had eval_timeout == execution_timeout: one v2 infra retry of a timed-out execution halted the run."""
+    import rag_eval.optimizer.sn_adapter as module
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + 80))
+    # infra_retry 1 -> up to 2 sequential executions of 100 s each; complete after 230 s.
+    adapter, ops = env.build(script={"split": ["running"] * 3 + ["complete"]},
+                             eval_timeout=100, execution_timeout_seconds=100, infra_retry=1)
+    adapter.evaluate(V_CAND, ["v1"], 2, purpose="screen")
+    assert len(ops.calls) == 4
 
 
 def test_measure_key_counts_completed_fresh_batches(env):
@@ -216,7 +243,7 @@ def test_measure_key_counts_completed_fresh_batches(env):
     env.repo.claim("F2", "cand9", "action:y", completed=False)   # used, not yet reconciled
     adapter, ops = env.build()
     adapter.evaluate(V_CAND, ["v1", "f1a"], 2, purpose="screen")  # completed batch joins the pool
-    assert ops.calls[0][2]["key"] == "v3/R1/measure/cand1/1"
+    assert ops.calls[0][2]["key"] == "v3/R1/split/validation/cand1/1"
     with pytest.raises(ValueError):
         adapter.evaluate(V_CAND, ["f2a"], 2, purpose="screen")
 
@@ -227,18 +254,18 @@ def test_batch_completing_during_measure_triggers_new_key(env):
             env.repo.claim("F1", "other", "action:z", completed=True)
     adapter, ops = env.build(on_call=complete_batch_once)
     adapter.evaluate(V_CAND, ["v1"], 2, purpose="screen")
-    assert [c[2]["key"] for c in ops.calls] == ["v3/R1/measure/cand1/0", "v3/R1/measure/cand1/1"]
+    assert [c[2]["key"] for c in ops.calls] == ["v3/R1/split/validation/cand1/0", "v3/R1/split/validation/cand1/1"]
 
 
 def test_budget_exhausted_raises_budget_exhausted(env):
-    adapter, _ = env.build(script={"measure": ["running", "budget_exhausted"]})
+    adapter, _ = env.build(script={"split": ["running", "budget_exhausted"]})
     with pytest.raises(BudgetExhausted):
         adapter.evaluate(V_CAND, ["v1"], 2, purpose="screen")
 
 
 @pytest.mark.parametrize("status", ["failed", "exhausted", "stopped"])
 def test_failed_raises_evaluation_unavailable(env, status):
-    adapter, _ = env.build(script={"measure": [status]})
+    adapter, _ = env.build(script={"split": [status]})
     with pytest.raises(EvaluationUnavailable) as info:
         adapter.evaluate(V_CAND, ["v1"], 2, purpose="screen")
     assert not isinstance(info.value, BudgetExhausted)
@@ -246,7 +273,7 @@ def test_failed_raises_evaluation_unavailable(env, status):
 
 
 def test_poll_timeout_raises_evaluation_unavailable(env):
-    adapter, _ = env.build(script={"measure": ["running"]}, eval_timeout=0)
+    adapter, _ = env.build(script={"split": ["running"]}, eval_timeout=0, execution_timeout_seconds=0)
     with pytest.raises(EvaluationUnavailable, match="not complete"):
         adapter.evaluate(V_CAND, ["v1"], 2, purpose="screen")
 
@@ -258,21 +285,27 @@ def test_per_case_means_over_admitted_attempts_only(env):
         _attempt(1, "e1"), _attempt(2, "e2"),
         _attempt(3, "e3", admitted=False),          # infrastructure failure: excluded
         _attempt(4, "e4", batch_id="smoke:x"),      # another scope: excluded
+        _attempt(5, "e5", batch_id=None),           # v2 base plan (search ∪ validation): not read
+        _attempt(6, "d1", batch_id=SEARCH), _attempt(7, "d2", batch_id=SEARCH),
     ]
-    env.views.add("e1", [{"v1": 1.0, "s1": 0.2}, {"v2": 0.0}])
-    env.views.add("e2", [{"v1": 0.0, "s1": 0.4}, {"v2": 1.0}])
-    env.views.add("e3", [{"v1": 1.0, "s1": 1.0}, {"v2": 1.0}])
+    env.views.add("e1", [{"v1": 1.0}, {"v2": 0.0}])
+    env.views.add("e2", [{"v1": 0.0}, {"v2": 1.0}])
+    env.views.add("e3", [{"v1": 1.0}, {"v2": 1.0}])
     env.views.add("e4", [{"v1": 1.0}])
+    env.views.add("e5", [{"v1": 1.0, "s1": 1.0}, {"v2": 1.0}])
+    env.views.add("d1", [{"s1": 0.2}])
+    env.views.add("d2", [{"s1": 0.4}])
     adapter, _ = env.build()
     res = adapter.evaluate(V_CAND, ["v1", "v2"], 2, purpose="screen")
     assert res.per_task_scores == {"v1": 0.5, "v2": 0.5}
     assert set(res.trajectories) == {"v1", "v2"}            # restricted to task_ids
     assert [s["execution_id"] for s in res.trajectories["v1"]] == ["e1", "e2"]
     stub = res.trajectories["v2"][0]
-    assert stub["run_dir"] == "/runs/e1-1" and stub["run_id"] == "e1-1" and stub["batch_id"] is None
+    assert stub["run_dir"] == "/runs/e1-1" and stub["run_id"] == "e1-1" and stub["batch_id"] == VALIDATION
     assert res.costs == {"v1": 0.0, "v2": 0.0} and res.error_classes == {"v1": None, "v2": None}
     diag = adapter.evaluate(V_CAND, ["s1"], 2, purpose="diagnose")
     assert diag.per_task_scores == pytest.approx({"s1": 0.3})
+    assert {s["batch_id"] for s in diag.trajectories["s1"]} == {SEARCH}
 
 
 def test_completed_fresh_batch_cases_read_from_their_batch_scope(env):
@@ -317,7 +350,7 @@ def test_screen_pair_measures_candidate_and_reference(env):
         env.views.add(eid, [{"v1": value}])
     adapter, ops = env.build()
     cand, ref = adapter.evaluate_pair(V_CAND, V_ROOT, ["v1"], 2, purpose="screen")
-    assert sorted(c[2]["key"] for c in ops.calls) == ["v3/R1/measure/cand1/0", "v3/R1/measure/root/0"]
+    assert sorted(c[2]["key"] for c in ops.calls) == ["v3/R1/split/validation/cand1/0", "v3/R1/split/validation/root/0"]
     assert cand.per_task_scores == {"v1": 1.0} and ref.per_task_scores == {"v1": 0.5}
 
 
@@ -455,13 +488,13 @@ def test_key_generation_suffixes_measure_and_smoke_but_not_segment(env):
     adapter.evaluate_pair(V_CAND, V_ROOT, ["s1"], 1, purpose="smoke")
     adapter.evaluate_pair(V_CAND, V_ROOT, ["f1a", "f1b"], 2, purpose="confirm")
     keys = {c[0]: c[2]["key"] for c in ops.calls}
-    assert keys["measure"] == "v3/R1/measure/cand1/0/g2"
+    assert keys["split"] == "v3/R1/split/validation/cand1/0/g2"
     assert keys["smoke"] == "v3/R1/smoke/cand1/" + smoke_scope_id(PROTOCOL, ["s1"]) + "/g2"
     assert keys["segment"] == "v3/R1/segment/root/cand1/F1"      # a claimed batch is never re-keyed
     # Regression (rehearsal): v2 re-runs a failed slot only via its bounded infra-retry chain,
     # under any key; a retry generation grants infra_retry more (segment keeps its frozen request).
     retries = {c[0]: c[2]["infra_retry"] for c in ops.calls}
-    assert retries == {"measure": 3, "smoke": 3, "segment": 1}
+    assert retries == {"split": 3, "smoke": 3, "segment": 1}
 
 
 def test_key_generation_from_config_and_validation(env):

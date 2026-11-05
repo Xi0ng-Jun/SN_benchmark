@@ -32,6 +32,7 @@ import test_workbench_plan_inputs
 from rag_eval.optimizer import cli, ledger_io, run_view, sn_adapter
 from rag_eval.workbench import agent_tools, auto_runs
 from rag_eval.workbench.context import resolve_context
+from rag_eval.workbench.execution_scopes import split_scope_id
 from rag_eval.workbench.creation_api import CreationAPI
 from rag_eval.workbench.iterations_api import IterationAPI
 from rag_eval.workbench.loop_services import RoundOperations
@@ -686,14 +687,15 @@ def test_retry_failed_after_a_baseline_process_failure_measures_again(rig, capsy
         assert st['key_generation'] == 1 and st['baseline_done'] and st['halt_reason'] == 'max_rounds'
         # k_base slots, each re-run only along v2's bounded infra-retry chain: infra_retry=1 per generation.
         root = next(c for c in rig.candidates() if c['id'] == rig.tree['root_candidate_id'])
-        base = [a for a in root['attempts'] if a.get('batch_id') is None]
+        # Baseline and screen measure the validation pool only (its own split scope, not v2's base plan).
+        base = [a for a in root['attempts'] if a.get('batch_id') == split_scope_id(rig.protocol, 'validation')]
         assert [a['execution_state'] for a in base] == ['failed'] * 4 + ['finished'] * 2
         # v3 rule (user decision; v2 would call it unobserved -> unmeasurable): the root's four dead
         # attempts count every case their plan scheduled as failed, so the screen decides normally.
         cards, _ = records(rig)
         check = cards['Plain prompt tweak']['safeguards']
         assert cards['Plain prompt tweak']['verdict'] == 'screen_fail' and check['ok']
-        planned = len(rig.protocol['splits']['search']) + len(rig.protocol['splits']['validation'])
+        planned = len(rig.protocol['splits']['validation'])     # a screen plans the validation split only
         ref = check['infrastructure']['reference']
         dead = [a for a in ref['attempts'] if a['counted_from_plan']]
         assert len(dead) == 4 and all(a['total'] == a['failed'] == planned and a['state'] == 'failed' for a in dead)
@@ -711,7 +713,8 @@ def test_a_candidate_whose_own_attempt_died_breaches_infrastructure_failure_rate
     died = set()
 
     def first_screen_attempt_dies(cid, attempt):
-        if rig.chain(cid) == ['Retry empty retrievals'] and attempt.get('batch_id') is None and not died:
+        if (rig.chain(cid) == ['Retry empty retrievals'] and not died
+                and attempt.get('batch_id') == split_scope_id(rig.protocol, 'validation')):
             died.add(attempt['execution_id'])
         return attempt['execution_id'] in died
     rig.fail = first_screen_attempt_dies
@@ -720,7 +723,7 @@ def test_a_candidate_whose_own_attempt_died_breaches_infrastructure_failure_rate
         cards, rounds = records(rig)
         rec = cards['Retry empty retrievals']
         check = rec['safeguards']
-        planned = len(rig.protocol['splits']['search']) + len(rig.protocol['splits']['validation'])
+        planned = len(rig.protocol['splits']['validation'])     # a screen plans the validation split only
         sub = check['infrastructure']['subject']
         assert [a['execution_id'] for a in sub['attempts'] if a['counted_from_plan']] == sorted(died)
         assert (sub['total'], sub['failed']) == (3 * planned, planned)       # v2 retried the dead slot once
