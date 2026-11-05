@@ -12,6 +12,7 @@ analyse-only Server validation stage 1: one analyst dispatch on the root's
 status       Read ``state.json`` / ``ledger.json`` of a run directory.
 sealed       End step: one sealed evaluation of seed + every lineage node.
 curve        Figure of ``sealed-curve.json``: round x sealed score (.svg/.pdf/.png).
+v4 ...       method-v4: ``v4 run`` / ``v4 status`` / ``v4 test`` (see ``rag_eval.optimizer.v4.cli``).
 
 Services are built exactly as the workbench server builds them: the same
 ``load_config`` and ``create_app`` (``rag_eval.workbench.api``); the v2
@@ -675,6 +676,10 @@ COMMANDS = {"run": cmd_run, "analyse-only": cmd_analyse_only, "status": cmd_stat
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["v4"]:   # method-v4 subcommands (run / status / test)
+        from .v4.cli import main as v4_main
+        return v4_main(argv[1:])
     args = build_parser().parse_args(argv)
     try:
         return COMMANDS[args.command](args)

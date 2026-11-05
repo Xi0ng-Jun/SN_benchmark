@@ -47,7 +47,7 @@ def test_cascade_adoption_and_merge(tmp_path):
     assert mock.calls["analyse"] == 2 and mock.last_history == []
     # Control pairs exist and the reviewer never sees the candidate side or a task id.
     pairs = mock.reviews[0]["pairs"]
-    assert len(pairs) == 8 and set(pairs[0]) == {"pair", "A", "B"}
+    assert len(pairs) == 8 and set(pairs[0]) == {"pair", "task", "A", "B"}
     ledger = r.ledger()
     assert ledger["stage_counts"]["measured"] == 2 and ledger["deviations"]
 

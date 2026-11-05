@@ -675,4 +675,6 @@ DEVIATIONS = [
     "SE is iid with the A/A floor (no family clustering in the loop); the endpoint reports v2's family-clustered SE",
     "the analyst sees the mechanism tier only, never the reviewer's free-text reason",
     "no ablation pruning (method §4.2 is optional; binding plan W8)",
+    "test-set interval: Δ ± 1.96·SE with v2's paper-clustered SE (normal approximation), not a family bootstrap",
+    "minibatch tasks drawn by hash, not stratified by paper (the SN adapter does not expose task families)",
 ]

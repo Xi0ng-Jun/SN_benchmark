@@ -273,9 +273,10 @@ class SystemAdapter(abc.ABC):
                key: str) -> Optional[list[dict]]:
         """method-v4 §3.2 stage 3: one independent reviewer reads anonymous trajectory pairs.
 
-        *pairs*: ``{"pair": "p1", "A": [trajectory refs], "B": [trajectory refs]}``,
-        already shuffled and blinded by the accountant (the reviewer must not
-        learn which side is the candidate, task ids, scores or gold). *candidate*
+        *pairs*: ``{"pair": "p1", "task": id, "A": [trajectory refs], "B": [trajectory refs]}``,
+        shuffled by the accountant; which side is the candidate is not passed.
+        ``task`` is for loading the trajectories only: the reviewer must not
+        learn task ids, scores, gold or which side is the candidate. *candidate*
         is the version under review (the system may bind the reviewer to it). *key* is a
         restart-stable identity of this review. Returns one dict per pair
         ``{pair, effect, changed_side ('A'|'B'|None), side_effect, gaming, note}``,

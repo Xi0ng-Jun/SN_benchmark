@@ -111,7 +111,8 @@ def sample_pairs(candidate: EvalResult, parent: EvalResult, seed_aa: Optional[Ev
 
 
 def public(records: list[dict]) -> list[dict]:
-    return [dict(pair=r["pair"], A=r["A"], B=r["B"]) for r in records]
+    """What the adapter gets: no side key, no Δ. ``task`` lets it load the rows; it must never render it."""
+    return [dict(pair=r["pair"], task=r["task"], A=r["A"], B=r["B"]) for r in records]
 
 
 def ledger_view(records: list[dict]) -> list[dict]:
