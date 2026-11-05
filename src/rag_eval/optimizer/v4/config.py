@@ -50,6 +50,7 @@ class V4Config:
     max_rounds: int = 50
     max_concurrent_executions: Optional[int] = 3      # per optimisation run; None uses the default cap (3)
     round_timebox_hours: Optional[float] = 3.0
+    predictive_time_stop: bool = True          # stop if a historical average round would not fit
     # Diagnosis: the parent on a search sample (0 = whole search set) at diagnose_k; the analyst
     # sees at most analyst_max_failures + analyst_n_controls cases of it.
     diagnose_size: int = 40
@@ -88,6 +89,7 @@ class V4Config:
 ADAPTER_DEFAULTS: dict[str, Any] = dict(
     analyst_profile="pi-flash", implementer_profile="pi-flash", reviewer_profile=None,
     agent_poll_interval=10.0, agent_timeout=3600.0, worktree_timeout=600.0,
+    wait_for_running=False,  # optional positive-status waiting under the run's total deadline
     analyst_view_budget=12000, reviewer_view_budget=30000,
     eval_poll_interval=30.0, eval_timeout=7200.0, infra_retry=1, execution_timeout_seconds=7200,
     max_concurrent_measurements=3,   # v2 measurements in flight at once (prep CPU and model-gate slots are shared)
@@ -207,4 +209,9 @@ def load(path: str | Path) -> LoadedConfig:
 
 
 def digest(cfg: V4Config) -> str:
-    return hashlib.sha256(json.dumps(dataclasses.asdict(cfg), sort_keys=True).encode()).hexdigest()
+    values = dataclasses.asdict(cfg)
+    # This default preserves historical behaviour and existing v4-state-3 identities.
+    # A changed policy is still frozen into the run identity.
+    if values["predictive_time_stop"]:
+        values.pop("predictive_time_stop")
+    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()

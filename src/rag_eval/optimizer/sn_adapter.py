@@ -79,6 +79,12 @@ class SNAdapter(SystemAdapter):
     round_operations:
         v2 ``RoundOperations`` (``rag_eval.workbench.loop_services``); its
         ``.service`` is the ``IterationService`` that owns candidates.
+    wait_for_running:
+        Allow confirmed running evaluations/Agents to exceed local polling
+        deadlines when ``configure_runtime`` supplies the overall deadline.
+        Continuous unknown Agent outcomes get an ``agent_timeout`` window,
+        reset by confirmed running observations; the global deadline still
+        bounds all waits. Execution and bridge request timeouts are unchanged.
 
     A v3 Version is a v2 iteration-tree candidate (binding plan §2.1):
         content_hash = the candidate's ``frozen_commit``
@@ -132,6 +138,7 @@ class SNAdapter(SystemAdapter):
         infra_retry: int = 1,
         execution_timeout_seconds: int = 7200,
         evidence_dir=None,
+        wait_for_running: bool = False,
     ) -> None:
         self._config = config
         self._repository = repository
@@ -153,6 +160,7 @@ class SNAdapter(SystemAdapter):
         self._eval_timeout = eval_timeout
         self._infra_retry = infra_retry
         self._execution_timeout_seconds = execution_timeout_seconds
+        self._wait_for_running = wait_for_running
         # Characters of history + diagnostic views in the analyst's evidence file
         # (analyse). The file, not the message, carries them: v2's message caps
         # (8 KiB text, 16384 UTF-16 units with the brief) do not limit evidence.
@@ -552,6 +560,9 @@ class SNAdapter(SystemAdapter):
         retry generations one after another. A shorter deadline (R3 had both at
         4 h) halts the whole run while v2 is legitimately retrying a timed-out
         execution, leaving it idle until someone reruns it.
+
+        With wait_for_running and a configured runtime budget, pending running
+        evaluations instead wait until completion, failure, or global cancellation.
         """
         pending = dict(calls)
         planned: set[str] = set()
@@ -566,6 +577,7 @@ class SNAdapter(SystemAdapter):
                 else:
                     planned.add(label)
                     result = self._first_call(tuple((touches or {}).get(label, ())), call) or {}
+                self.check_runtime()
                 status = result.get("status")
                 if status == "complete":
                     del pending[label]
@@ -583,7 +595,8 @@ class SNAdapter(SystemAdapter):
                     )
             if not pending:
                 return
-            if time.monotonic() >= deadline:
+            if (time.monotonic() >= deadline
+                    and not (self._wait_for_running and self._runtime_remaining is not None)):
                 raise EvaluationUnavailable(
                     f"{', '.join(pending)} not complete within {self._eval_timeout}s "
                     f"(keys={[k for k, _ in pending.values()]!r}); rerun resumes the same keys"
@@ -1538,11 +1551,28 @@ class SNAdapter(SystemAdapter):
         result = self._round_ops.agent(role, candidate_id, **call)
         self._track_agent(key, result)
         deadline = time.monotonic() + self._agent_timeout
+        wait_for_running = self._wait_for_running and self._runtime_remaining is not None
+        unconfirmed_deadline = None
         while result.get("status") in ("running", "unknown"):
-            if time.monotonic() >= deadline:
+            # Failed observations are reported as running by RoundOperations,
+            # without proof of activity. Give each continuous observation gap
+            # a bounded window, including gaps after long confirmed activity.
+            confirmed_running = (result.get("status") == "running"
+                                 and result.get("reason") != "agent_observation_unavailable")
+            now = time.monotonic()
+            if wait_for_running:
+                if confirmed_running:
+                    unconfirmed_deadline = None
+                elif unconfirmed_deadline is None:
+                    unconfirmed_deadline = now + self._agent_timeout
+                expired = unconfirmed_deadline is not None and now >= unconfirmed_deadline
+            else:
+                expired = now >= deadline
+            if expired:
+                reason = (f"remained unconfirmed for {self._agent_timeout}s" if wait_for_running
+                          else f"did not finish within {self._agent_timeout}s")
                 raise TimeoutError(
-                    f"{role} agent did not finish within {self._agent_timeout}s "
-                    f"(key={call['key']!r})"
+                    f"{role} agent {reason} (key={call['key']!r})"
                 )
             self._runtime_wait(self._agent_poll_interval)
             result = self._round_ops.agent(role, candidate_id, **call)

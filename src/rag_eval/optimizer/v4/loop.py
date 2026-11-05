@@ -413,7 +413,7 @@ class V4Run:
         if len(self.rounds) >= self.cfg.max_rounds:
             return "max_rounds"
         walls = [r["wall_s"] for r in self.rounds if r.get("wall_s")]
-        if walls and self._remaining() < sum(walls) / len(walls):
+        if self.cfg.predictive_time_stop and walls and self._remaining() < sum(walls) / len(walls):
             return "time_budget"   # not enough left for a round: the rest is the endpoint's
         return None
 
