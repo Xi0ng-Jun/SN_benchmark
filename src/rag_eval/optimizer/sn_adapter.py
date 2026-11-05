@@ -208,7 +208,7 @@ class SNAdapter(SystemAdapter):
         run_id = self._config.get("run_id")
         if not run_id:
             raise ValueError("config must contain 'run_id' to derive v2 request keys")
-        key = "/".join(["v3", str(run_id), *(str(p) for p in parts)])
+        key = "/".join([self._KEY_PREFIX, str(run_id), *(str(p) for p in parts)])
         if len(key) > 200:
             key = key[:135] + "/" + hashlib.sha256(key.encode()).hexdigest()
         return key
@@ -319,6 +319,8 @@ class SNAdapter(SystemAdapter):
     # replays the stored footprint instead of dispatching again.
 
     _MEASURE_PURPOSES = ("baseline", "diagnose", "screen")
+    _KEY_PREFIX = "v3"   # first segment of every v2 request key (method-v4's adapter uses "v4")
+    _HISTORY_VOCABULARY = "v3"   # which history labels analyse() renders (see _history_line)
 
     def _views(self):
         if self._run_views is not None:
@@ -562,6 +564,8 @@ class SNAdapter(SystemAdapter):
                     rows.append(dict(case_id=case_id, family=stub["run_id"], value=value))
                 attempts.append(dict(execution_id=admitted["execution_id"], rows=rows))
         cases = estimate(dict(attempts=attempts))["cases"] if attempts else {}
+        attempt_scores = [{r["case_id"]: r["value"] for r in a["rows"] if r["value"] is not None}
+                          for a in attempts]
         per_task_scores = {t: cases[t]["mean"] for t in case_scopes
                            if t in cases and cases[t]["mean"] is not None}
         return EvalResult(
@@ -575,6 +579,7 @@ class SNAdapter(SystemAdapter):
                            ("no_admitted_attempt" if not trajectories[t] else "unscored")
                            for t in case_scopes},
             context=dict(candidate_id=candidate_id, scopes=dict(case_scopes)),
+            attempt_scores=attempt_scores,
         )
 
     # ------------------------------------------------------------------
@@ -1066,7 +1071,8 @@ class SNAdapter(SystemAdapter):
             raise ValueError(f"no_adoption_rounds must be a non-negative int, got {no_adoption_rounds!r}")
         budget = min(MAX_ANALYST_VIEW_BUDGET,
                      self._analyst_view_budget + no_adoption_rounds * self._analyst_view_budget_step)
-        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], budget // 4)
+        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], budget // 4,
+                                                              vocabulary=self._HISTORY_VOCABULARY)
         evidence, n_shown, n_omitted = render_views(items, budget - len(tried))
         stuck = (f"no adoption under this parent for {no_adoption_rounds} consecutive round(s)\n"
                  if no_adoption_rounds else "")
@@ -1383,6 +1389,10 @@ def _instant(stamp: str):
 
 _HISTORY_LABELS = ("smoke_fail", "screen_fail", "provisional_adopted", "confirmed",
                    "rejected", "insufficient", "unmeasurable")
+# method-v4 §5 vocabulary (SNAdapterV4 renders only these).
+V4_MECHANISM_TIERS = ("confirmed", "unconfirmed", "suspicious")
+V4_HISTORY_LABELS = ("smoke_fail", "minibatch_fail", "below_threshold", "qualified_not_adopted",
+                     "adopted", "safeguard_breached", "pruned")
 _ATTRIBUTION_LABELS = ("supported", "refuted", "insufficient", "unattributed")
 _HISTORY_TITLE_CHARS = 160
 # §2.1 失败后的处理 details: whitelisted tokens only (never values).
@@ -1391,23 +1401,25 @@ _SMOKE_DETAILS = {"behaviour_changed": "smoke: behaviour changed as predicted",
 _SAFEGUARD_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 
 
-def _history_line(entry: dict) -> Optional[str]:
+def _history_line(entry: dict, vocabulary: str = "v3") -> Optional[str]:
     """``- <title> -> <label>[; smoke: ...][; breached safeguards: k1, k2][; after repair]
     [; tried in a rolled-back segment][; attribution: <label>[ (possibly biased)]]``; None if not whitelisted."""
     label = entry.get("label") if isinstance(entry, dict) else None
-    if label not in _HISTORY_LABELS:
+    if label not in (V4_HISTORY_LABELS if vocabulary == "v4" else _HISTORY_LABELS):
         return None
     title = " ".join(str(entry.get("title") or "(untitled)").split())[:_HISTORY_TITLE_CHARS]
     line = f"- {title} -> {label}"
     if label == "screen_fail" and entry.get("smoke") in _SMOKE_DETAILS:
         line += "; " + _SMOKE_DETAILS[entry["smoke"]]
-    names = entry.get("safeguards_breached") if label == "unmeasurable" else None
+    names = entry.get("safeguards_breached") if label in ("unmeasurable", "safeguard_breached") else None
     names = [n for n in names if isinstance(n, str) and _SAFEGUARD_NAME.fullmatch(n)] \
         if isinstance(names, (list, tuple)) else []
     if names:
         line += "; breached safeguards: " + ", ".join(names)
     if entry.get("repaired") is True:
         line += "; after repair"
+    if vocabulary == "v4" and entry.get("mechanism") in V4_MECHANISM_TIERS:
+        line += f"; mechanism: {entry['mechanism']}"
     if entry.get("rolled_back_segment") is True:
         line += "; tried in a rolled-back segment"
     attribution = entry.get("attribution")
@@ -1456,7 +1468,7 @@ def _render_worktree_map(round_ops: Any, candidate_id: str) -> str:
         return ""
 
 
-def _render_history(history: list[dict], budget_chars: int) -> tuple[str, int, int]:
+def _render_history(history: list[dict], budget_chars: int, vocabulary: str = "v3") -> tuple[str, int, int]:
     """Labels-only section of hypotheses already tried under this parent (§2.3).
 
     Returns (text, n_shown, n_omitted). Only whitelisted labels and details
@@ -1464,7 +1476,7 @@ def _render_history(history: list[dict], budget_chars: int) -> tuple[str, int, i
     When the section exceeds *budget_chars* the oldest entries are dropped
     first; "" if none fit.
     """
-    lines = [line for line in map(_history_line, history) if line is not None]
+    lines = [line for line in (_history_line(e, vocabulary) for e in history) if line is not None]
     total = len(lines)
 
     def section(kept: list[str]) -> str:

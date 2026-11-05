@@ -58,6 +58,9 @@ class EvalResult:
     # Adapter-private provenance of the result (SN: candidate id and the scope of
     # each task), read back by the same adapter, e.g. by ``safeguards``.
     context: dict = field(default_factory=dict, compare=False)
+    # Per admitted attempt, task_id -> score (method-v4 calibration reads rerun noise
+    # from it; the per-task mean above is the mean over these). Empty when unknown.
+    attempt_scores: list = field(default_factory=list, compare=False)
 
 
 @dataclass
@@ -232,6 +235,52 @@ class SystemAdapter(abc.ABC):
         Returns the Diff of that child, which the loop freezes with
         ``materialize(diff, parent)`` and smokes again; None when the system
         does not support repairs (the smoke failure then stands).
+        """
+        return None
+
+    # -- method-v4 capabilities (method-v4.md §3.2, §6) ------------------------
+
+    def evaluate_subset(
+        self,
+        version: Version,
+        reference: Optional[Version],
+        subset: str,
+        task_ids: list[str],
+        k: int,
+    ) -> tuple[EvalResult, Optional[EvalResult]]:
+        """method-v4: *version* on a fixed validation subset ('mb' or 'rest'), k attempts.
+
+        With a *reference* (the version's parent) the reference is topped up to
+        the same k on the same tasks and both results come back for a paired
+        read; without one (calibration of the seed) only *version* runs. Results
+        must be cacheable per (version, task, attempt): an existing attempt is
+        reused, never repeated.
+        """
+        raise NotImplementedError("this adapter does not implement method-v4 subsets")
+
+    def observe_safeguards(self, candidate: EvalResult, reference: EvalResult) -> dict:
+        """method-v4: point observations of the safeguards of one pair, no verdict.
+
+        Returns ``{key: {"direction": "higher_is_better" | "lower_is_better",
+        "subject": float | None, "reference": float | None}}``; None = unobserved.
+        Default: ``safeguard_values`` of both results, lower is better.
+        """
+        keys = set(candidate.safeguard_values) | set(reference.safeguard_values)
+        return {k: dict(direction="lower_is_better", subject=candidate.safeguard_values.get(k),
+                        reference=reference.safeguard_values.get(k)) for k in sorted(keys)}
+
+    def review(self, card: Card, diff: Optional[Diff], pairs: list[dict], *, candidate: Version,
+               key: str) -> Optional[list[dict]]:
+        """method-v4 §3.2 stage 3: one independent reviewer reads anonymous trajectory pairs.
+
+        *pairs*: ``{"pair": "p1", "A": [trajectory refs], "B": [trajectory refs]}``,
+        already shuffled and blinded by the accountant (the reviewer must not
+        learn which side is the candidate, task ids, scores or gold). *candidate*
+        is the version under review (the system may bind the reviewer to it). *key* is a
+        restart-stable identity of this review. Returns one dict per pair
+        ``{pair, effect, changed_side ('A'|'B'|None), side_effect, gaming, note}``,
+        or None when the system has no reviewer (the mechanism tier then rests
+        on the mechanical check alone).
         """
         return None
 
