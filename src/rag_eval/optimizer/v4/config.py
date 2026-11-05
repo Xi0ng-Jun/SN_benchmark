@@ -28,7 +28,7 @@ class V4Config:
     cards_per_analysis: Optional[int] = None  # None: 2b
     smoke_size: int = 3
     smoke_repair_attempts: int = 1
-    smoke_behaviour_check: bool = True
+    smoke_behaviour_check: bool = False
     minibatch_fraction: float = 0.25
     minibatch_min: int = 10
     c: float = 1.0                           # adoption threshold, mechanism not confirmed
@@ -45,10 +45,18 @@ class V4Config:
     ablation: bool = True                    # §4.2 pruning before the endpoint (skipped when time is short)
     ablation_kill: float = 1.0               # removing a change costs < ablation_kill·SE → pruned
     tie_fraction: float = 0.5                # Δ within tie_fraction·SE of the best: smaller diff wins
-    calibration_k: int = 2                   # A/A repetitions (also k of search-set diagnosis)
+    calibration_k: int = 2                   # validation A/A repetitions
     k_val: Optional[int] = None              # None: calibration decides (1 or 2)
     max_rounds: int = 50
-    round_timebox_hours: Optional[float] = None
+    max_concurrent_executions: Optional[int] = 3      # per optimisation run; None uses the default cap (3)
+    round_timebox_hours: Optional[float] = 3.0
+    # Diagnosis: the parent on a search sample (0 = whole search set) at diagnose_k; the analyst
+    # sees at most analyst_max_failures + analyst_n_controls cases of it.
+    diagnose_size: int = 40
+    diagnose_k: int = 1
+    speculative_prefetches: int = 2              # per round: diagnosis prefetches of the current best
+    speculative_analysis: bool = True
+    ablation_parallel: int = 3                   # ablated versions measured at once
     safeguard_tolerances: dict = field(default_factory=lambda: dict(DEFAULT_TOLERANCES))
     unobserved_safeguard_blocks: bool = True  # an unobserved safeguard blocks adoption (never kills a minibatch)
     endpoint_nodes: str = "seed_final"       # or "lineage": every adopted node
@@ -82,6 +90,7 @@ ADAPTER_DEFAULTS: dict[str, Any] = dict(
     agent_poll_interval=10.0, agent_timeout=3600.0, worktree_timeout=600.0,
     analyst_view_budget=12000, reviewer_view_budget=30000,
     eval_poll_interval=30.0, eval_timeout=7200.0, infra_retry=1, execution_timeout_seconds=7200,
+    max_concurrent_measurements=3,   # v2 measurements in flight at once (prep CPU and model-gate slots are shared)
 )
 
 
@@ -120,10 +129,16 @@ def _check(name: str, value: Any, default: Any, kind: Any) -> None:
 
 def validate(cfg: V4Config) -> V4Config:
     positive = ("b", "smoke_size", "minibatch_min", "review_pairs", "no_adoption_rounds",
-                "max_consecutive_run_failures", "calibration_k", "max_rounds")
+                "max_consecutive_run_failures", "calibration_k", "max_rounds", "diagnose_k", "ablation_parallel")
     for name in positive:
         if getattr(cfg, name) < 1:
             raise ConfigError(f"{name} must be >= 1")
+    if cfg.diagnose_size < 0 or cfg.speculative_prefetches < 0:
+        raise ConfigError("diagnose_size and speculative_prefetches must be >= 0")
+    if cfg.max_concurrent_executions is not None and cfg.max_concurrent_executions < 1:
+        raise ConfigError("max_concurrent_executions must be >= 1 or null")
+    if cfg.round_timebox_hours is not None and cfg.round_timebox_hours <= 0:
+        raise ConfigError("round_timebox_hours must be > 0 or null")
     if cfg.time_budget_hours <= 0:
         raise ConfigError("time_budget_hours must be > 0")
     if not 0 < cfg.minibatch_fraction < 1:

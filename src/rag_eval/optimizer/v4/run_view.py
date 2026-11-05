@@ -25,6 +25,7 @@ CONFIG_SHOWN = ("time_budget_hours", "b", "cards_per_analysis", "smoke_size", "m
                 "merge", "ablation", "ablation_kill", "k_val", "calibration_k", "endpoint_nodes",
                 "safeguard_tolerances", "max_rounds", "round_timebox_hours")
 _RECORD_COPIED = ("card_index", "title", "card_ref", "stage", "label", "reason", "attempt", "repaired", "pruned",
+                  "touches_preparation", "carried_to", "parent", "preflight",
                   "halted", "unmeasured", "delta_mb", "se_mb", "n_mb", "delta_val", "se_val", "se_own", "se_floor",
                   "se_method", "n_val", "dropped_val", "diff_lines", "timings", "started_at", "finished_at")
 
@@ -64,7 +65,7 @@ def _mechanism(mech: Optional[dict]) -> Optional[dict]:
 
 def _record(rec: dict, versions: dict) -> dict:
     out = {k: rec.get(k) for k in _RECORD_COPIED}
-    out.update(candidate=rec.get("candidate"), candidate_id=_cid(versions, rec.get("candidate")),
+    out.update(candidate=rec.get("candidate"), candidate_id=(_cid(versions, rec.get("candidate")) or (rec.get("preflight") or {}).get("candidate_id")),
                smoke=(rec.get("smoke") or {}).get("verdict"), smoke_reason=(rec.get("smoke") or {}).get("reason"),
                safeguards=_safeguards(rec.get("safeguards") or rec.get("safeguards_mb")),
                mechanism=_mechanism(rec.get("mechanism")),
@@ -95,6 +96,8 @@ def _round(rd: dict, versions: dict, *, open_: bool) -> dict:
                 cards=None if cards is None else len(cards),
                 cards_with_expectation=sum(c.get("predicate") is not None for c in cards or []),
                 minibatch_size=len(split.get("minibatch") or []), rest_size=len(split.get("rest") or []),
+                diagnosis_s=rd.get("diagnosis_s"), diagnosis_prefetched=rd.get("diagnosis_prefetched"),
+                timeboxed=bool(rd.get("timeboxed")), not_started=len(rd.get("not_started") or []),
                 open=open_, records=[_record(r, versions) for r in records], queued=queued, decision=decision)
 
 
@@ -111,7 +114,8 @@ def _phase(state: dict, alive: bool) -> str:
     if cur.get("cards") is None:
         return "analysing"
     if cur.get("decision") is None and any(r.get("stage") == "measured" for r in (cur.get("records") or {}).values()) \
-            and not any(r.get("stage") in ("pending", "minibatch_pass") for r in (cur.get("records") or {}).values()):
+            and not any(r.get("stage") in ("pending", "built", "repair", "rebase", "smoke_pass", "minibatch_pass", "validated")
+                        and not r.get("unmeasured") and not r.get("carried_to") for r in (cur.get("records") or {}).values()):
         return "deciding"
     return "building"
 

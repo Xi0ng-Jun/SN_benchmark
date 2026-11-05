@@ -4,8 +4,8 @@
 export type V4Status = 'running' | 'interrupted' | 'halted' | 'not_started';
 export type V4Phase = 'calibrating' | 'analysing' | 'building' | 'deciding' | 'between_rounds' | 'ablating' | 'halted';
 export type V4NextAction = 'resume' | 'retry' | 'budget' | 'test' | 'review' | 'no_test';
-export type V4Stage = 'pending' | 'error' | 'smoke_fail' | 'minibatch_fail' | 'minibatch_pass' | 'measured';
-export type V4Label = 'smoke_fail' | 'minibatch_fail' | 'below_threshold' | 'qualified_not_adopted' | 'adopted' | 'safeguard_breached' | 'pruned';
+export type V4Stage = 'pending' | 'built' | 'repair' | 'rebase' | 'smoke_pass' | 'minibatch_pass' | 'validated' | 'error' | 'smoke_fail' | 'minibatch_fail' | 'run_failed' | 'preflight_skipped' | 'measured';
+export type V4Label = 'preflight_skipped' | 'implementation_failed' | 'smoke_fail' | 'minibatch_fail' | 'run_failed' | 'below_threshold' | 'qualified_not_adopted' | 'adopted' | 'safeguard_breached' | 'pruned';
 export type V4Tier = 'confirmed' | 'unconfirmed' | 'suspicious';
 
 export type V4SafeguardRow = { key: string; direction: string | null; subject: number | null; reference: number | null;
@@ -23,12 +23,14 @@ export type V4Mechanism = {
 export type V4Cache = { executions: number; wall_s: number; cases: number; cache_hits: number; cache_misses: number; lock_waited_s: number } | null;
 export type V4Record = {
   card_index: number; title: string | null; card_ref: string | null; stage: V4Stage; label: V4Label | null; reason: string | null;
-  attempt: number | null; repaired: boolean | null; pruned: boolean | null; halted: string | null; unmeasured: string | null;
+  carried_to: number | null; parent: string | null; attempt: number | null; repaired: boolean | null; pruned: boolean | null; halted: string | null; unmeasured: string | null;
   delta_mb: number | null; se_mb: number | null; n_mb: number | null; delta_val: number | null; se_val: number | null;
   se_own: number | null; se_floor: number | null; se_method: string | null; n_val: number | null; dropped_val: number | null;
-  diff_lines: number | null; timings: Record<string, number> | null; started_at: string | null; finished_at: string | null;
+  diff_lines: number | null; touches_preparation: boolean | null; timings: Record<string, number> | null; started_at: string | null; finished_at: string | null;
   candidate: string | null; candidate_id: string | null; smoke: string | null; smoke_reason: string | null;
   safeguards: V4Safeguards | null; mechanism: V4Mechanism | null;
+  preflight?: { decision: string; reason: string; summary: string;
+    checks: { kind: string; target: string; observation: string }[] } | null;
   qualification: { qualified: boolean; coefficient: number; threshold: number | null; reasons: string[] } | null;
   cache: { minibatch: V4Cache; rest: V4Cache };
 };
@@ -36,7 +38,8 @@ export type V4Decision = { qualified: number[]; best: number | null; adopted: st
   merge: { of: number[]; adopt: boolean; skipped: string | null; delta_val: number | null; se_val: number | null; candidate_id: string | null } | null };
 export type V4Round = { round: number; parent: string | null; parent_id: string | null; started_at: string | null; finished_at: string | null;
   wall_s: number | null; analysis_s: number | null; decision_s: number | null; cards: number | null; cards_with_expectation: number;
-  minibatch_size: number; rest_size: number; open: boolean; records: V4Record[];
+  minibatch_size: number; rest_size: number; diagnosis_s: number | null; diagnosis_prefetched: boolean | null;
+  timeboxed: boolean; not_started: number; open: boolean; records: V4Record[];
   queued: { card_index: number; title: string | null; has_expectation: boolean }[]; decision: V4Decision | null };
 export type V4Node = { index: number; version: string; candidate_id: string | null; kind: 'seed' | 'candidate' | 'merge'; round: number | null;
   parent: string | null; delta_val: number | null; se_val: number | null; tier: V4Tier | null; elapsed_s: number | null;
@@ -96,10 +99,12 @@ export const v4ActionTexts: Record<V4NextAction, { title: string; detail: string
   no_test: { title: '这次运行没有测试集', detail: '用 --no-test-set 启动的演练，不做终点评测。' },
 };
 export const stageLabels: Record<V4Stage, string> = {
-  pending: '进行中', error: '出错', smoke_fail: '冒烟未过', minibatch_fail: '小批淘汰', minibatch_pass: '等待全验证集', measured: '已测完',
+  pending: '等待实现', built: '等待冒烟', repair: '等待修复', rebase: '等待适配新父版本', smoke_pass: '等待小批', minibatch_pass: '等待全验证集', validated: '等待审查', error: '出错', smoke_fail: '冒烟未过',
+  minibatch_fail: '小批淘汰', run_failed: '运行失败', preflight_skipped: '检查后跳过', measured: '已测完',
 };
 export const labelTexts: Record<V4Label, string> = {
-  smoke_fail: '冒烟未过', minibatch_fail: '小批淘汰', below_threshold: '未达门槛', qualified_not_adopted: '合格未采纳',
+  preflight_skipped: '检查后跳过', implementation_failed: '实现未完成',
+  smoke_fail: '冒烟未过', minibatch_fail: '小批淘汰', run_failed: '运行失败', below_threshold: '未达门槛', qualified_not_adopted: '合格未采纳',
   adopted: '已采纳', safeguard_breached: '保护指标越界', pruned: '消融中被剪除',
 };
 export const tierLabels: Record<V4Tier, string> = { confirmed: '已确认', unconfirmed: '未确认', suspicious: '可疑' };

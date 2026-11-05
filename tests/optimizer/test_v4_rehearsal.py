@@ -19,7 +19,7 @@ from rag_eval.optimizer import ledger_io
 from rag_eval.optimizer.v4 import cli as v4cli
 from rag_eval.optimizer.v4.loop import STATE_FILE
 
-from .test_sn_rehearsal import GOOD, WAIT, Rig, card, eight_papers  # noqa: F401  (autouse fixture)
+from .test_sn_rehearsal import Crash, GOOD, WAIT, Rig, card, eight_papers  # noqa: F401  (autouse fixture)
 from test_workbench_iterations import env  # noqa: F401  (fixture)
 
 BAD = dict(val=-.3, fresh=-.3)
@@ -28,12 +28,21 @@ BAD = dict(val=-.3, fresh=-.3)
 class V4Rig(Rig):
     def __init__(self, env, tmp_path, monkeypatch):
         super().__init__(env, tmp_path, monkeypatch)
+        from rag_eval.optimizer.sn_adapter import SNAdapter
+        runtime_wait = SNAdapter._runtime_wait
+        def crash_at_poll(adapter, seconds):
+            if self.crashed.is_set():
+                raise Crash('process killed')
+            return runtime_wait(adapter, seconds)
+        monkeypatch.setattr(SNAdapter, '_runtime_wait', crash_at_poll)
         self.review_mode = 'none'          # 'none': no pair changed; 'gaming': every pair flagged
         self.reviews: list[dict] = []
+        self.preflight_outcomes: dict[str, str] = {}
         self.run_dir = tmp_path / 'v4run'
         self.v4_config = tmp_path / 'v4.json'
         self.v4_config.write_text(json.dumps(dict(
             time_budget_hours=10, b=2, no_adoption_rounds=1, smoke_size=2, minibatch_min=2,
+            smoke_behaviour_check=True,
             adapter=dict(agent_poll_interval=.01, eval_poll_interval=.01, agent_timeout=WAIT,
                          eval_timeout=WAIT, worktree_timeout=WAIT))))
         monkeypatch.setattr(v4cli, 'build_services', self._build4)
@@ -77,18 +86,36 @@ class V4Rig(Rig):
             pairs = re.search(r'^pairs: (.*)$', text, re.M).group(1).split(', ')
 
             def block(ref):
-                body = text.split(f'### {ref} ', 1)[1]
-                return re.split(r'\n### ', body, maxsplit=1)[0].split('\n', 1)[1]   # without the header line
+                body = text.split(f'### {ref}\n', 1)[1]
+                return re.split(r'\n### ', body, maxsplit=1)[0]   # without the header line
             rows = []
             for p in pairs:
                 # A blind reviewer: it only sees whether the two sides differ (A/A controls never do).
-                differs = block(f'{p}-A') != block(f'{p}-B')
+                body = block(p)
+                differs = 'A | comparison: identical' not in body
                 gaming = self.review_mode == 'gaming' and differs
                 rows.append(dict(pair=p, effect=gaming, changed_side='A' if gaming else None, side_effect=False,
                                  gaming=gaming, note='shorter answers, same content' if gaming else ''))
             Path(verdict).write_text(json.dumps(dict(pairs=rows)))
             self.reviews.append(dict(candidate=review.group(1), evidence=text, verdict=verdict))
             self.reads.done.add(command['agentId'])
+
+    def _implementer(self, candidate_id, *, repair=False):
+        candidate = self.api.service.candidate(candidate_id)
+        title = self.api.hypotheses.get(self.task_id, candidate['proposal_id'])['card']['title']
+        skip_reason = self.preflight_outcomes.get(title)
+        if not skip_reason:
+            super()._implementer(candidate_id, repair=repair)
+        message = self.messenger.commands[self.handled - 1]['text']
+        named = re.search(r'Write the preflight report to (\S+)\. JSON fields:', message)
+        assert named, 'v4 implementer needs a bounded preflight report path'
+        Path(named.group(1)).write_text(json.dumps(dict(
+            candidate_id=candidate_id, hypothesis_id=candidate['proposal_id'],
+            parent_candidate_id=candidate['parent_candidate_id'],
+            decision='skip' if skip_reason else 'implement', reason=skip_reason or 'supported',
+            summary='Local synthetic source check completed.',
+            checks=[dict(kind='source', target='backend/app', observation='Synthetic fixture has a known guard.')],
+        )))
 
     def state4(self):
         return json.loads((self.run_dir / STATE_FILE).read_text())
@@ -131,7 +158,8 @@ def test_v4_adopts_reviews_blind_and_evaluates_the_test_set_once(rig4, capsys):
     # Blind review: one reviewer Agent bound to the candidate, its evidence names no case id or score.
     assert len(rig4.reviews) == 1 and rig4.reviews[0]['candidate'] == st['versions'][good['candidate']]['candidate_id']
     evidence = rig4.reviews[0]['evidence']
-    assert len(re.findall(r'^### p\d+-[AB] ', evidence, re.M)) == 16     # 6 candidate + 2 control pairs, both sides
+    assert len(re.findall(r'^### p\d+$', evidence, re.M)) == 8     # 6 candidate + 2 control pairs
+    assert len(re.findall(r'^[AB] \| ', evidence, re.M)) >= 16
     assert 'qasper:' not in evidence and 'score' not in evidence.lower()
     assert [i['brief'] for i in rig4.intents('reviewer')] == ['method-v4']
     # Measurements: validation subsets only (no base plan, no fresh batch), never above k_base per scope.
@@ -189,9 +217,12 @@ def test_v4_kill_during_stage2_resumes_without_new_agents_or_duplicate_runs(rig4
     with rig4:
         assert rig4.run4() == 0
     assert len(rig4.state4()['lineage']) == 2
-    # No Agent of the killed round is created again; new after the kill: its reviewer and the next round's analyst.
+    # The old-parent round-2 speculative analyst is distinct from the adopted-parent round-2 analyst.
+    # Restart reuses both existing request identities; it creates no second implementer.
     assert len(rig4.intents('implementer')) == 1 and len(rig4.intents('reviewer')) == 1
-    assert len(rig4.intents('analyst')) == 2 and len(rig4.creator.commands) - agents <= 2
+    analysts = rig4.intents('analyst')
+    assert len(analysts) == 3 and len({i['request_key'] for i in analysts}) == 3
+    assert len(rig4.creator.commands) - agents <= 2
     rig4.assert_no_duplicate_measurements()
 
 
@@ -218,3 +249,17 @@ def test_v4_run_is_served_by_the_workbench_auto_run_route(rig4, capsys):
     assert view['rounds'][0]['minibatch_size'] >= 2 and view['ablation']['status'] in ('done', 'skipped')
     # Counts only: no case id anywhere in the projection.
     assert 'qasper:' not in json.dumps(view)
+
+
+def test_v4_preflight_skip_keeps_unfrozen_candidate_and_no_execution(rig4):
+    rig4.effects = {'Already handled': GOOD, 'Useful fix': GOOD}
+    rig4.preflight_outcomes = {'Already handled': 'already_satisfied'}
+    rig4.analyst_cards = first_round_only([card('Already handled'), card('Useful fix')])
+    with rig4:
+        assert rig4.run4() == 0
+    rec = rig4.records4()['Already handled']
+    assert rec['stage'] == 'preflight_skipped' and rec['label'] == 'preflight_skipped'
+    candidate = rig4.api.service.candidate(rec['preflight']['candidate_id'])
+    assert candidate['status'] != 'frozen' and not candidate['attempts']
+    assert len(rig4.state4()['lineage']) == 2
+    assert any(e['label'] == 'preflight_skipped' for e in rig4.state4()['history'])

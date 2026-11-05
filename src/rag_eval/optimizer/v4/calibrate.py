@@ -1,7 +1,7 @@
 """method-v4 §2.3 calibration: seed A/A runs, derived quantities and the feasibility card.
 
 ``measure`` runs (or, on resume, replays) the seed's A/A measurements:
-search set (k = calibration_k, the diagnosis measurement), minibatch and rest
+search sample (k = diagnose_k, the diagnosis measurement), minibatch and rest
 (subset measurements at calibration_k, unpaired). ``derive`` turns them into
 the run's calibrated quantities; ``feasibility`` into the card printed before
 the first round. The test set is never touched here (§4.1).
@@ -11,20 +11,23 @@ from __future__ import annotations
 import math
 import statistics
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional
 
-from ..adapter import EvalResult, SystemAdapter, Version
+from ..adapter import BudgetExhausted, EvaluationCancelled, EvalResult, SystemAdapter, Version
 from .config import V4Config
 from .decide import attempts_by_task, combine
 
 
 def measure(adapter: SystemAdapter, seed: Version, cfg: V4Config, search: list[str], mb: list[str],
             rest: list[str]) -> tuple[dict[str, EvalResult], dict[str, float]]:
-    """Seed A/A on search, minibatch and rest, concurrently; (results, wall seconds per stage)."""
+    """Seed A/A on minibatch and rest, and the seed's diagnosis sample (k = diagnose_k), concurrently.
+
+    Returns (results, wall seconds per stage). The diagnosis sample is round 1's diagnosis.
+    """
     k = cfg.calibration_k
     jobs = dict(
-        search=lambda: adapter.evaluate(seed, search, k, purpose="diagnose"),
+        search=lambda: adapter.evaluate_search(seed, search, cfg.diagnose_k),
         mb=lambda: adapter.evaluate_subset(seed, None, "mb", mb, k)[0],
         rest=lambda: adapter.evaluate_subset(seed, None, "rest", rest, k)[0],
     )
@@ -38,7 +41,22 @@ def measure(adapter: SystemAdapter, seed: Version, cfg: V4Config, search: list[s
             walls[name] = time.monotonic() - t0
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="v4-cal") as pool:
         futures = {name: pool.submit(timed, name) for name in jobs}
-        results = {name: f.result() for name, f in futures.items()}
+        results = {}
+        pending = {f: name for name, f in futures.items()}
+        try:
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    results[pending.pop(future)] = future.result()
+        except BaseException as exc:
+            # Wake sibling pollers before joining; a hard interruption keeps durable work replayable.
+            if isinstance(exc, (BudgetExhausted, EvaluationCancelled)):
+                adapter.cancel_pending()
+            else:
+                adapter.stop_polling()
+            for future in futures.values():
+                future.cancel()
+            raise
     return results, walls
 
 

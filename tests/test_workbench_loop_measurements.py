@@ -768,3 +768,18 @@ def test_v4_paired_subset_tops_the_parent_up_to_the_requested_k(env):
                              infra_retry=0)['status'] == 'running'
     for cid in (root, candidate):
         assert [a['batch_id'] for a in env['service'].candidate(cid)['attempts']] == [scope]
+
+
+def test_v4_diagnosis_subset_runs_search_cases_alone_at_its_own_k(env):
+    import pytest
+    from rag_eval.workbench.execution_scopes import get, subset_scope_id
+    tree = iteration(env, case_ids=['qasper:q', 'qasper:q2', 'qasper:q3'])
+    root = tree['root_candidate_id']
+    search = sorted(tree['protocol']['splits']['search'])
+    scope = subset_scope_id(tree['protocol'], 'diag', search)
+    assert ports(env).subset(root, 'diag', search, k=1, paired=False, key='diag', actor='alice',
+                             infra_retry=0)['status'] == 'running'
+    assert get(env['repo'], tree['id'], scope)['case_ids'] == search
+    assert [a['batch_id'] for a in env['service'].candidate(root)['attempts']] == [scope]
+    with pytest.raises(ValueError, match='search cases'):
+        subset_scope_id(tree['protocol'], 'diag', sorted(tree['protocol']['splits']['validation']))

@@ -141,18 +141,21 @@ def split_plan(service, iteration, split):
     return get(service.repository, iteration['id'], scope_id)
 
 
-SUBSET_KINDS = ('mb', 'rest')
+# method-v4 subsets: minibatch / rest of the validation split, diagnosis sample of the search split.
+SUBSET_KINDS = ('mb', 'rest', 'diag')
+SUBSET_SPLIT = dict(mb='validation', rest='validation', diag='search')
 
 
 def subset_scope_id(protocol, kind, case_ids):
-    """Content-addressed id of a validation subset (method-v4 minibatch / rest); refuses other splits."""
+    """Content-addressed id of a method-v4 subset of one split; refuses cases of any other split."""
     if kind not in SUBSET_KINDS:
         raise ValueError('Unknown subset kind')
     if (not isinstance(case_ids, (list, tuple)) or not case_ids or any(type(c) is not str for c in case_ids)
             or len(set(case_ids)) != len(case_ids)):
         raise ValueError('Subset cases must be a non-empty list of unique case ids')
-    if not set(case_ids) <= set(((protocol or {}).get('splits') or {}).get('validation', ())):
-        raise ValueError('Subset cases must be validation cases')
+    split = SUBSET_SPLIT[kind]
+    if not set(case_ids) <= set(((protocol or {}).get('splits') or {}).get(split, ())):
+        raise ValueError(f'Subset cases must be {split} cases')
     import hashlib
     return f'subset:{kind}:' + hashlib.sha256('\n'.join(sorted(case_ids)).encode()).hexdigest()[:16]
 
@@ -172,7 +175,7 @@ def subset_plan(service, iteration, kind, case_ids):
     p = service.plans.save(task_id=task, input_id=protocol['input']['input_id'],
         expected_bundle_id=protocol['input']['bundle_id'], case_ids=members,
         title=f'Subset {scope_id}', mode=protocol['mode'], actor='scope',
-        request_key=scope_id, roles={c: 'validation' for c in members})
+        request_key=scope_id, roles={c: SUBSET_SPLIT[kind] for c in members})
     scope = dict(scope_id=scope_id, kind='subset', subset=kind, case_ids=members,
                  plan_id=p['plan_id'], plan_revision=p['revision'], plan_content_hash=p['content_hash'],
                  selection_hash=p['content']['selection']['selection_hash'])

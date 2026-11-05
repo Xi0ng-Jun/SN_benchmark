@@ -20,7 +20,7 @@ CAUSES = ('supported', 'refuted', 'undecided')
 # -> verified (predictions checked) -> concluded.
 STATUSES = ('draft', 'approved', 'rejected', 'implementing', 'verified', 'concluded')
 _REQUIRED = ('title', 'component', 'mechanism', 'predictions', 'falsification', 'implementer_brief')
-_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract', 'cluster_id')
+_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract', 'cluster_id', 'search_refs')
 
 
 def _str(value, name, limit=4000):
@@ -39,6 +39,13 @@ def validate_card(card, rule=None):
             out[key] = _str(card[key], key)
     out['alternatives'] = [_str(v, 'alternatives', 1000) for v in card.get('alternatives', [])]
     out['change_scope'] = [_str(v, 'change_scope', 300) for v in card.get('change_scope', [])]
+    if 'search_refs' in card:
+        refs = card['search_refs']
+        if (not isinstance(refs, list) or len(refs) > 200
+                or any(not isinstance(ref, str) or not re.fullmatch(r'c[1-9][0-9]{0,5}', ref) for ref in refs)
+                or len(set(refs)) != len(refs)):
+            raise ValueError('search_refs must be a unique list of opaque c1, c2, ... references')
+        out['search_refs'] = list(refs)
     out['evidence'] = []
     for item in card.get('evidence', []):
         if not isinstance(item, dict) or not {'run_id', 'case_id'} <= set(item) or not set(item) <= {'run_id', 'case_id', 'note'}:

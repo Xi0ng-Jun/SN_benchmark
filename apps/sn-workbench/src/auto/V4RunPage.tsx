@@ -15,7 +15,8 @@ import { kindLabels, labelTexts, reasonTexts, stageLabels, tierLabels, V4Node, V
 
 const tierTone = (tier: V4Tier | null | undefined) => tier === 'confirmed' ? 'success' as const : tier === 'suspicious' ? 'danger' as const : undefined;
 const labelTone = (r: V4Record) => r.label === 'adopted' ? 'success' as const : r.label === 'qualified_not_adopted' ? 'primary' as const
-  : r.stage === 'error' || r.label === 'safeguard_breached' ? 'danger' as const : r.stage === 'pending' || r.stage === 'minibatch_pass' ? 'running' as const : undefined;
+  : r.stage === 'error' || r.stage === 'run_failed' || r.label === 'safeguard_breached' ? 'danger' as const
+  : ['pending', 'built', 'repair', 'rebase', 'smoke_pass', 'minibatch_pass', 'validated'].includes(r.stage) ? 'running' as const : undefined;
 const recordKey = (round: number, card: number) => `rec:${round}:${card}`;
 const pct = (value: number | null | undefined) => typeof value === 'number' ? `${Math.round(value * 100)}%` : '—';
 
@@ -113,14 +114,16 @@ function RoundView({ round, selected, onSelect }: { round: V4Round; selected: st
   const meta = round.open ? '进行中' : d?.adopted ? (d.merge?.adopt ? '采纳合并候选' : '有采纳') : '无采纳';
   return <Section title={`第 ${round.round} 轮`} meta={`${meta} · 卡片 ${round.cards ?? '—'}`} testID={`v4-round-${round.round}`} defaultOpen={round.open || !!d?.adopted}>
     <Copy small muted>父版本 {short(round.parent_id ?? round.parent ?? '')} · 小批 {round.minibatch_size} 题 · 其余 {round.rest_size} 题
-      {round.cards !== null ? ` · 带行为预期 ${round.cards_with_expectation}/${round.cards}` : ''}{round.wall_s ? ` · 用时 ${duration(round.wall_s)}` : ''}</Copy>
+      {round.cards !== null ? ` · 带行为预期 ${round.cards_with_expectation}/${round.cards}` : ''}{round.wall_s ? ` · 用时 ${duration(round.wall_s)}` : ''}
+      {round.diagnosis_s !== null ? ` · 诊断 ${round.diagnosis_prefetched ? '已预取' : duration(round.diagnosis_s)}` : ''}
+      {round.not_started ? ` · ${round.not_started} 张卡${round.timeboxed ? '因轮时间盒' : ''}未开始` : ''}</Copy>
     {round.records.map(r => <Row key={r.card_index} testID={`v4-record-${round.round}-${r.card_index}`} selected={selected === recordKey(round.round, r.card_index)}
       onPress={() => onSelect(recordKey(round.round, r.card_index))}>
       <Mono size={11} muted>#{r.card_index + 1}</Mono>
       <Copy small style={{ flex: 1 }}>{r.title ?? '—'}</Copy>
       {r.mechanism?.tier && <Badge label={`机制${tierLabels[r.mechanism.tier]}`} tone={tierTone(r.mechanism.tier)} />}
       <Mono size={11}>{r.delta_val !== null ? `Δval ${num(r.delta_val)} ± ${num(r.se_val)}` : r.delta_mb !== null ? `Δmb ${num(r.delta_mb)}` : ''}</Mono>
-      <Badge label={r.halted ? '停机时在途' : r.label ? labelTexts[r.label] : stageLabels[r.stage]} tone={r.halted ? 'warning' : labelTone(r)} />
+      <Badge label={r.carried_to ? `转入第 ${r.carried_to} 轮` : r.halted ? '停机时在途' : r.label ? labelTexts[r.label] : stageLabels[r.stage]} tone={r.halted ? 'warning' : labelTone(r)} />
     </Row>)}
     {round.queued.map(q => <Row key={'q' + q.card_index} onPress={() => onSelect(null)}>
       <Mono size={11} muted>#{q.card_index + 1}</Mono><Copy small muted style={{ flex: 1 }}>{q.title ?? '—'}</Copy><Badge label="排队" />
@@ -225,6 +228,13 @@ function RecordDetail({ view, round, record, agents }: { view: V4RunView; round:
       {record.reason && !q && <KeyValue label="原因"><Copy small>{record.reason}</Copy></KeyValue>}
       {record.halted && <Copy small style={{ color: theme.warning }}>停机时在途：{record.halted}。续跑后重做这一阶段。</Copy>}
     </Section>
+    {record.preflight && <Section title="实现前检查（实现者报告）">
+      <KeyValue label="决定"><Copy small>{record.preflight.decision === 'skip' ? '跳过本卡' : '继续实现'} · {({ supported: '假设得到支持', refuted: '假设不成立', already_satisfied: '现有代码已满足', inconclusive: '尚无法判断' } as Record<string, string>)[record.preflight.reason] ?? record.preflight.reason}</Copy></KeyValue>
+      <Copy small>{record.preflight.summary}</Copy>
+      {record.preflight.checks.map((check, index) => <KeyValue key={index} label={check.target}>
+        <Copy small>{check.observation}</Copy>
+      </KeyValue>)}
+    </Section>}
     {m && m.tier && <Section title="3 机制检查" meta={tierLabels[m.tier]} testID="v4-mechanism">
       <KeyValue label="机械检查"><Copy small>{!m.mechanical || m.mechanical.status === null ? '卡片没有行为预期'
         : `${m.mechanical.status}：父 ${pct(m.mechanical.parent_rate)} → 候选 ${pct(m.mechanical.candidate_rate)}（预测 ${m.mechanical.direction}，A/A 差距 ${pct(m.mechanical.aa_gap)}）`}</Copy></KeyValue>
@@ -244,6 +254,7 @@ function RecordDetail({ view, round, record, agents }: { view: V4RunView; round:
       {(['minibatch', 'rest'] as const).map(k => record.cache[k] && <KeyValue key={k} label={`${k} 准备缓存`}>
         <Copy small>命中 {record.cache[k]!.cache_hits} · 未命中 {record.cache[k]!.cache_misses}</Copy></KeyValue>)}
       {record.diff_lines !== null && <KeyValue label="diff 行数"><Mono>{record.diff_lines}</Mono></KeyValue>}
+      {record.touches_preparation !== null && <KeyValue label="改动准备阶段代码"><Copy small>{record.touches_preparation ? '涉及准备代码（可能需要重新准备）' : '否'}</Copy></KeyValue>}
     </Section>
     <Agents candidateId={record.candidate_id} agents={agents} />
     {record.candidate_id && <Changes candidateId={record.candidate_id} />}

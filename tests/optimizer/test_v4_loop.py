@@ -33,7 +33,9 @@ def test_cascade_adoption_and_merge(tmp_path):
     assert reason == "no_adoption"          # round 2 has no cards
     rec = records(r)
     assert rec["C"]["stage"] == "minibatch_fail" and rec["C"]["label"] == "minibatch_fail"
-    assert rec["D"]["stage"] == "error" and "label" not in rec["D"]
+    assert rec["D"]["stage"] == "error" and rec["D"]["label"] == "implementation_failed"
+    failed = next(e for e in r.history if e['title'] == 'D')
+    assert failed['outcome'] == 'implementation_failed' and 'reason' not in failed
     assert rec["A"]["mechanism"]["tier"] == "confirmed" and rec["B"]["mechanism"]["tier"] == "unconfirmed"
     assert rec["A"]["qualification"]["qualified"] and rec["B"]["qualification"]["qualified"]
     merge = r.rounds[0]["decision"]["merge"]
@@ -45,8 +47,9 @@ def test_cascade_adoption_and_merge(tmp_path):
     assert r.calibration["k_val"] == 2 and len(r.partitions["seed_minibatch"]) == 10
     # Round 2 ran under the merged parent with its own minibatch (seeded by the parent's hash).
     assert r.split_for(node["version"]) != r.split_for("seed")
-    # Round 2 was analysed on the merged parent with the v4 labels of round 1 (none under it).
-    assert mock.calls["analyse"] == 2 and mock.last_history == []
+    # Speculative old-parent analysis is discarded; the adopted parent receives full history.
+    assert mock.calls["analyse"] >= 2
+    assert any(e.get("earlier_parent") and e["label"] == "adopted" for e in mock.last_history)
     # Control pairs exist and the reviewer never sees the candidate side or a task id.
     pairs = mock.reviews[0]["pairs"]
     assert len(pairs) == 8 and set(pairs[0]) == {"pair", "task", "A", "B"}
@@ -80,7 +83,7 @@ def test_mechanical_check_confirms_without_reviewer():
     r, _ = run(mock, cfg())
     rec = records(r)["P"]
     assert rec["mechanism"]["mechanical"]["status"] == "changed" and rec["mechanism"]["tier"] == "confirmed"
-    assert rec["smoke"]["verdict"] == "pass" and len(r.lineage) == 2
+    assert rec["smoke"]["verdict"] == "unchecked" and len(r.lineage) == 2
 
 
 def test_suspicious_reviewer_vetoes_a_large_gain():
@@ -93,7 +96,7 @@ def test_suspicious_reviewer_vetoes_a_large_gain():
 def test_smoke_repair_then_pass_and_unrepairable_fail():
     mock = V4Mock([[dict(name="R", delta=0.1, predicate=True, smoke_behaviour_fails=True, repairable=True),
                     dict(name="U", delta=0.1, predicate=True, smoke_behaviour_fails=True)]])
-    r, _ = run(mock, cfg(merge=False))
+    r, _ = run(mock, cfg(merge=False, smoke_behaviour_check=True))
     rec = records(r)
     assert rec["R"]["repaired"] and rec["R"]["attempt"] == 2 and rec["R"]["stage"] == "measured"
     assert rec["R"]["prior_attempts"][0]["smoke"]["verdict"] == "fail"
@@ -113,10 +116,10 @@ def test_kill_and_resume_replays_only_unfinished_work(tmp_path):
     script = [[dict(name="A", delta=0.1), dict(name="B", delta=-0.3), dict(name="C", delta=0.05)]]
     mock = V4Mock(script)
     mock.fail_once["rest:A"] = EvaluationUnavailable("server went away")
-    r, reason = run(mock, cfg(b=1, merge=False), tmp_path)
+    r, reason = run(mock, cfg(b=1, merge=False, max_consecutive_run_failures=1), tmp_path)
     assert reason == "process_failure" and r.current is not None
     implemented = mock.calls["implement"]
-    r2, reason2 = run(mock, cfg(b=1, merge=False), tmp_path)
+    r2, reason2 = run(mock, cfg(b=1, merge=False, max_consecutive_run_failures=1), tmp_path)
     assert reason2 == "no_adoption"
     assert r2.lineage[-1]["version"] == "seed+r1-A"
     # A's stage 2 was rerun from its persisted minibatch_pass record: nothing re-implemented except unstarted cards.

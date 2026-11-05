@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 from pathlib import Path
 
 from .ingest import read_case, read_result
@@ -58,7 +59,11 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
     if kind == 'brief':
         from .briefs import resolve_brief
         workspace = next(w for w in repository.workspaces() if w['id'] == task['workspace_id'])
-        tool = f'{Path(workspace["location"]) / "scripts/sn-eval"} --state {repository.root}'
+        command = [str(Path(workspace['location']) / 'scripts/sn-eval'), '--state', str(repository.root)]
+        config_path = getattr(run_views, 'command_config_path', None)
+        if config_path is not None:
+            command.extend(['--config', str(config_path)])
+        tool = shlex.join(command)
         title, text, source_refs = resolve_brief(repository, task_id, reference['session_id'], tool=tool,
                                                   run_views=run_views)
         return _snapshot(reference, title, policy.project(text), source_refs)

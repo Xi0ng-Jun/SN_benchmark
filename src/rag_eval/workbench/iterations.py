@@ -849,7 +849,7 @@ class IterationService:
                     candidate_id=candidate_id, attempt=attempt, frozen_commit=candidate['frozen_commit'],
                     preparation_id=row['preparation_id'])
 
-    def run(self, candidate_id, *, budget, actor, request_key, adopt=False, batch_id=None, _sealed_capability=None):
+    def run(self, candidate_id, *, budget, actor, request_key, adopt=False, batch_id=None, _sealed_capability=None, execution_admission=None):
         """Prepare a Job on the iteration plan with the frozen capture, then dispatch.
 
         A new request key is a new attempt; failures and cancellations stay.
@@ -859,6 +859,8 @@ class IterationService:
         reused through the content-addressed preparation cache, keyed by the
         candidate's own preparation code and settings, not by tree position.
         """
+        if execution_admission is not None:
+            execution_admission.check()
         actor = _text(actor, 'actor', limit=200)
         _text(request_key, 'request key', limit=200)
         from ..artifact_store import ArtifactStore
@@ -977,8 +979,16 @@ class IterationService:
             spec = self.build_spec(self.jobs, task_id, job['job_id'], prepared['preparation_id'], config,
                                    request_key=key, budget=budget)
             spec['budget'] = budget
-            prior = self.executions.run(task_id, job['job_id'], job['state_version'], execution_spec=spec,
-                                        actor=actor, request_key=key, **capability_args)
+            if execution_admission is None:
+                prior = self.executions.run(task_id, job['job_id'], job['state_version'], execution_spec=spec,
+                                            actor=actor, request_key=key, **capability_args)
+            else:
+                with execution_admission.dispatch() as track:
+                    prior = self.executions.run(task_id, job['job_id'], job['state_version'], execution_spec=spec,
+                                                actor=actor, request_key=key, **capability_args)
+                    track(self.executions, task_id, prior)
+        elif execution_admission is not None:
+            execution_admission.track(self.executions, task_id, prior)
         if protocol.get('budget'):
             ledger.attach(iteration['id'], candidate_id, request_key, prior['execution_id'])
             ledger.settle_execution(prior)

@@ -143,9 +143,6 @@ def cmd_run(args) -> int:
         raise UsageError("workbench config does not set task_worktrees.create_candidates=true")
     parts = adapter.partitions()
     cfg = loaded.config
-    if parts["k_base"] != cfg.calibration_k:
-        raise UsageError(f"the iteration's k_base={parts['k_base']} must equal calibration_k={cfg.calibration_k} "
-                         "(search-set diagnosis runs at k_base; binding plan §2.2: create the iteration with k_base=2)")
     if not parts.get("safeguards"):
         raise UsageError("the iteration protocol has no pre-registered safeguards")
     search, validation = parts["search"], parts["validation"]
@@ -187,7 +184,7 @@ def _run_locked(args, loaded, services, seed, search, validation, test_ids, stat
     if services.repository is not None:
         try:
             auto_runs.register(services.repository, args.iteration, run_id=args.run_id,
-                               state_dir=str(state_dir.resolve()), actor=args.actor)
+                               state_dir=str(state_dir.resolve()), actor=args.actor, method="method-v4")
         except Conflict as exc:
             raise UsageError(str(exc)) from None
     if identity is None:

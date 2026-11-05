@@ -93,7 +93,7 @@ class V4Mock(SystemAdapter):
 
     # -- agents ---------------------------------------------------------------
     def analyse(self, search_set_trajectories, n_cards, *, case_roles=None, parent=None, round_id=None,
-                history=None, no_adoption_rounds=0):
+                history=None, no_adoption_rounds=0, **kwargs):
         self._count("analyse")
         self.last_history = list(history or [])
         specs = self.rounds[round_id - 1] if round_id - 1 < len(self.rounds) else []

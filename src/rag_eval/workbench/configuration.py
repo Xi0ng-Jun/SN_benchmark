@@ -74,6 +74,8 @@ def load_config(path):
             trees[key] = str((path.parent / trees[key]).resolve())
     for entry in trees.get('registrations', []):
         entry['path'] = str((path.parent / entry['path']).resolve())
+    # Producer-owned location: role tools must not inherit another daemon's config.
+    config['_config_path'] = str(path)
     return config
 
 

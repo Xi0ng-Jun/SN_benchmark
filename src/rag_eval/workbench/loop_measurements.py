@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 from pathlib import Path
+import time
 
 from .action_requests import ActionRequestStore
 from .budgets import BudgetLedger, subject_roles, is_subject
@@ -138,6 +139,38 @@ class RoundMeasurements:
             conn.execute('CREATE TABLE IF NOT EXISTS round_measurements '
                          '(key TEXT PRIMARY KEY, payload_json TEXT NOT NULL)')
 
+    def restore_admission(self, admission, request_prefix):
+        """Charge this run's durable, previously dispatched execution receipts.
+
+        Keys own the scope. Unrelated work in this iteration is neither counted
+        nor cancelled. Watched attempts can belong to other runs and stay out.
+        """
+        with self.repository.connect() as conn:
+            states = [json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM round_measurements')]
+        for state in states:
+            if not state.get('original_key', '').startswith(request_prefix):
+                continue
+            if state.get('exhausted'):
+                continue  # No footprint was admitted or dispatched.
+            tree = self.service.iteration(state['iteration_id'])
+            task_id = tree['task_id']
+            for generation in state['generations']:
+                for step in generation:
+                    actor = state.get('step_actors', {}).get(step['request_key'], state['actor'])
+                    key = 'candidate:' + step['candidate_id'] + ':' + step['request_key']
+                    receipt = self.service.jobs.preparation_receipt(task_id, actor=actor, request_key=key)
+                    if receipt is None:
+                        continue
+                    job = receipt['job_snapshot']
+                    # The execution receipt precedes candidate attachment. Do
+                    # not depend on the latter surviving a coordinator crash.
+                    record = self.service.executions.run_receipt(task_id, job['job_id'], job['state_version'],
+                        receipt['preparation']['preparation_id'], dict(timeout_seconds=state['timeout_seconds']),
+                        actor=actor, request_key=key)
+                    if record is not None:
+                        record = self.service.executions.get(task_id, record['execution_id'])
+                        admission.track(self.service.executions, task_id, record)
+
     def _read(self, key):
         with self.repository.connect() as conn:
             row = conn.execute('SELECT payload_json FROM round_measurements WHERE key=?', (key,)).fetchone()
@@ -149,12 +182,21 @@ class RoundMeasurements:
                          'SET payload_json=excluded.payload_json', (key, json.dumps(value)))
 
     @contextmanager
-    def _lock(self, iteration_id):
+    def _lock(self, iteration_id, admission=None):
         # Separate from the engine lock: short planning section, never launch I/O.
         root = Path(self.service.trees.store.root) / 'round-measurement-locks'
         root.mkdir(parents=True, exist_ok=True)
         with (root / (iteration_id + '.lock')).open('a') as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
+            if admission is None:
+                fcntl.flock(stream, fcntl.LOCK_EX)
+            else:
+                while True:
+                    admission.check()
+                    try:
+                        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(.02)
             try:
                 yield
             finally:
@@ -418,34 +460,34 @@ class RoundMeasurements:
         return dict(status='complete' if self._complete(state, tree, observed) else 'failed',
                     attempts=len(observed), observation_only=True)
 
-    def measure(self, candidate_id, *, key, actor, override=False, infra_retry=1, timeout_seconds=7200, observe_only=False):
+    def measure(self, candidate_id, *, key, actor, override=False, infra_retry=1, timeout_seconds=7200, observe_only=False, execution_admission=None):
         return self._advance('measure', candidate_id, key=key, actor=actor, override=override,
-                             infra_retry=infra_retry, timeout_seconds=timeout_seconds, observe_only=observe_only)
+                             infra_retry=infra_retry, timeout_seconds=timeout_seconds, observe_only=observe_only, execution_admission=execution_admission)
 
-    def fresh(self, candidate_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+    def fresh(self, candidate_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False, execution_admission=None):
         return self._advance('fresh', candidate_id, key=key, actor=actor, override=False,
-                             infra_retry=infra_retry, timeout_seconds=timeout_seconds, observe_only=observe_only)
+                             infra_retry=infra_retry, timeout_seconds=timeout_seconds, observe_only=observe_only, execution_admission=execution_admission)
 
-    def cluster(self, candidate_id, cluster_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+    def cluster(self, candidate_id, cluster_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False, execution_admission=None):
         return self._advance('cluster', candidate_id, key=key, actor=actor, override=False,
-                             infra_retry=infra_retry, timeout_seconds=timeout_seconds, cluster_id=cluster_id, observe_only=observe_only)
+                             infra_retry=infra_retry, timeout_seconds=timeout_seconds, cluster_id=cluster_id, observe_only=observe_only, execution_admission=execution_admission)
 
-    def smoke(self, candidate_id, case_ids, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+    def smoke(self, candidate_id, case_ids, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False, execution_admission=None):
         """Candidate and parent, one attempt each, on a registered search-only sample."""
         return self._advance('smoke', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
-                             timeout_seconds=timeout_seconds, case_ids=case_ids, observe_only=observe_only)
+                             timeout_seconds=timeout_seconds, case_ids=case_ids, observe_only=observe_only, execution_admission=execution_admission)
 
-    def split(self, candidate_id, split, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+    def split(self, candidate_id, split, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False, execution_admission=None):
         """Candidate, k_base each, on one whole split instead of the base plan's search ∪ validation.
 
         'validation' also covers every completed fresh batch and tops up the parent
         on all of them (a paired read); 'search' measures the candidate alone.
         """
         return self._advance('split', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
-                             timeout_seconds=timeout_seconds, split=split, observe_only=observe_only)
+                             timeout_seconds=timeout_seconds, split=split, observe_only=observe_only, execution_admission=execution_admission)
 
     def subset(self, candidate_id, kind, case_ids, *, k, paired, key, actor, infra_retry=1, timeout_seconds=7200,
-               observe_only=False):
+               observe_only=False, execution_admission=None):
         """Candidate, k attempts, on one registered validation subset (method-v4 minibatch / rest).
 
         ``k`` and ``paired`` are part of the frozen request (a replay with other
@@ -458,15 +500,17 @@ class RoundMeasurements:
             raise ValueError('paired must be a boolean')
         return self._advance('subset', candidate_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
                              timeout_seconds=timeout_seconds, subset=(kind, list(case_ids), k, paired),
-                             observe_only=observe_only)
+                             observe_only=observe_only, execution_admission=execution_admission)
 
-    def segment(self, start_id, end_id, batch_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False):
+    def segment(self, start_id, end_id, batch_id, *, key, actor, infra_retry=1, timeout_seconds=7200, observe_only=False, execution_admission=None):
         """End against its ancestor start, k_base each, on a caller-named unused fresh batch."""
         return self._advance('segment', end_id, key=key, actor=actor, override=False, infra_retry=infra_retry,
-                             timeout_seconds=timeout_seconds, segment=(start_id, batch_id), observe_only=observe_only)
+                             timeout_seconds=timeout_seconds, segment=(start_id, batch_id), observe_only=observe_only, execution_admission=execution_admission)
 
     def _advance(self, kind, candidate_id, *, key, actor, override, infra_retry, timeout_seconds, cluster_id=None,
-                 case_ids=None, segment=None, split=None, subset=None, observe_only=False):
+                 case_ids=None, segment=None, split=None, subset=None, observe_only=False, execution_admission=None):
+        if execution_admission is not None:
+            execution_admission.check()
         if type(infra_retry) is not int or infra_retry < 0:
             raise ValueError('infra_retry must be a nonnegative integer')
         candidate = self.service.candidate(candidate_id)
@@ -518,7 +562,7 @@ class RoundMeasurements:
             from .execution_scopes import subset_plan
             subset_plan(self.service, tree, subset[0], subset[1])
         storage_key = 'round-measure:' + hashlib.sha256(key.encode()).hexdigest()
-        with self._lock(tree['id']):
+        with self._lock(tree['id'], execution_admission):
             self._recover_retry_mappings(tree['id'])
             state = self._read(storage_key)
             if observe_only:
@@ -590,19 +634,24 @@ class RoundMeasurements:
         # Every step was frozen and the whole group reserved before any launch.
         # Replaying run uses its durable preparation/execution receipts.
         def launch(step):
+            if execution_admission is not None:
+                execution_admission.check()
             if stopped(self.repository, key):
                 return 'stopped'
             try:
                 self.service.run(step['candidate_id'], request_key=step['request_key'], batch_id=step['batch_id'],
                                  budget=dict(timeout_seconds=timeout_seconds),
-                                 actor=state.get('step_actors', {}).get(step['request_key'], actor))
+                                 actor=state.get('step_actors', {}).get(step['request_key'], actor),
+                                 **(dict(execution_admission=execution_admission) if execution_admission is not None else {}))
                 return None
             except Exception as exc:
+                if execution_admission is not None:
+                    execution_admission.check()
                 from .loop import transient
                 return dict(type=type(exc).__name__, transient=transient(exc))
         with ThreadPoolExecutor(max_workers=max(1, len(steps))) as pool:
             errors = list(pool.map(launch, steps))
-        with self._lock(tree['id']):
+        with self._lock(tree['id'], execution_admission):
             state = self._read(storage_key)
             if stopped(self.repository, key):
                 return dict(status='stopped')

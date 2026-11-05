@@ -17,9 +17,10 @@ import re
 import subprocess
 import threading
 import time
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Any, Callable, Optional
 
-from .adapter import (BudgetExhausted, Card, Diff, EvalResult, EvaluationUnavailable, Predicate,
+from .adapter import (BudgetExhausted, Card, Diff, EvalResult, EvaluationCancelled, EvaluationUnavailable, Predicate,
                       SmokeResult, SystemAdapter, Version)
 
 
@@ -187,6 +188,115 @@ class SNAdapter(SystemAdapter):
         # it up. The first call plans AND launches, so later plans see the attempts.
         self._plan_locks: dict[str, threading.Lock] = {}
         self._plan_locks_guard = threading.Lock()
+        self._runtime_remaining = None
+        self._runtime_cancel = threading.Event()
+        self._cancel_remote_requested = threading.Event()
+        self._execution_admission = None
+        self._agent_requests = {}
+        self._agent_requests_lock = threading.Lock()
+        self.cancellation_report = []
+
+    def configure_runtime(self, *, remaining: Callable[[], float],
+                          max_concurrent_executions: int) -> None:
+        from rag_eval.workbench.execution_admission import ExecutionAdmission
+        if not callable(remaining):
+            raise ValueError("remaining must be callable")
+        if type(max_concurrent_executions) is not int or max_concurrent_executions < 1:
+            raise ValueError("max_concurrent_executions must be a positive int")
+        self._runtime_remaining = remaining
+        self._runtime_cancel.clear()
+        self._cancel_remote_requested.clear()
+        self.cancellation_report = []
+        self._execution_admission = ExecutionAdmission(max_concurrent_executions, self.check_runtime,
+                                                       reports=self.cancellation_report)
+        measurements = getattr(self._round_ops, "measurements", None)
+        if measurements is not None:
+            measurements.restore_admission(self._execution_admission,
+                                           self._request_key(""))
+
+    def check_runtime(self) -> None:
+        if self._runtime_remaining is None:
+            return
+        if self._runtime_cancel.is_set():
+            raise EvaluationCancelled("optimisation work cancelled; original request identities retained")
+        if self._runtime_remaining() <= 0:
+            raise EvaluationCancelled("optimisation deadline exceeded; original request identities retained")
+
+    def _runtime_wait(self, seconds: float) -> None:
+        self.check_runtime()
+        if self._runtime_remaining is None:
+            time.sleep(seconds)
+            return
+        self._runtime_cancel.wait(max(0, min(seconds, self._runtime_remaining())))
+        self.check_runtime()
+
+    @contextmanager
+    def _runtime_slot(self, slot):
+        acquired = False
+        try:
+            self.check_runtime()
+            if self._runtime_remaining is None:
+                slot.acquire()
+                acquired = True
+            else:
+                while not acquired:
+                    self.check_runtime()
+                    acquired = slot.acquire(timeout=max(0, min(.05, self._runtime_remaining())))
+            self.check_runtime()
+            yield
+        finally:
+            if acquired:
+                slot.release()
+
+    def stop_polling(self) -> None:
+        if self._runtime_remaining is not None:
+            self._runtime_cancel.set()
+
+    def cancel_pending(self) -> None:
+        """Request local execution stop and remote archive; neither is a join.
+
+        Receipts and sessions stay available for recovery. Archive uncertainty
+        is reported explicitly; a remote Agent can outlive the local deadline.
+        """
+        if self._runtime_remaining is None:
+            return
+        self._cancel_remote_requested.set()
+        self._runtime_cancel.set()
+        if self._execution_admission is not None:
+            self._execution_admission.cancel(actor=self._actor())
+        with self._agent_requests_lock:
+            requests = dict(self._agent_requests)
+        for key, session_id in requests.items():
+            self._cancel_agent(key, session_id)
+
+    def _cancel_agent(self, key, session_id):
+        ops = self._round_ops
+        try:
+            if session_id is None:
+                creation_key = ops._key("agent-create", key)
+                task_id = self._config.get("task_id")
+                intent = next((r for r in ops.creations.store.list(task_id, actor=ops._agent_actor(key))
+                               if r["request_key"] == creation_key), {})
+                session_id = intent.get("session_id")
+            if not session_id:
+                self.cancellation_report.append(dict(key=key, status="remote_creation_unknown"))
+                return
+            session, _ = ops.sessions.scope(self._config["task_id"], session_id)
+            response = ops.sessions.bridge.call(dict(op="archiveAgent", agentId=session["agent_id"]))
+            self.cancellation_report.append(dict(key=key, session_id=session_id,
+                archive=response.get("result"), remote_stop_confirmed=False))
+        except Exception as exc:
+            self.cancellation_report.append(dict(key=key, status="cancel_unavailable", error=type(exc).__name__))
+
+    def _track_agent(self, key, result):
+        if self._runtime_remaining is None:
+            return
+        session_id = result.get('session_id')
+        with self._agent_requests_lock:
+            self._agent_requests[key] = session_id
+        if self._cancel_remote_requested.is_set():
+            self._cancel_agent(key, session_id)
+        self.check_runtime()
 
     def set_evidence_dir(self, directory) -> None:
         """Where analyse() writes the analyst's evidence files (inside the v3 run directory)."""
@@ -225,6 +335,7 @@ class SNAdapter(SystemAdapter):
         return actor
 
     def _require_round_ops(self, what: str):
+        self.check_runtime()
         if self._round_ops is None:
             raise RuntimeError(
                 f"{what}() requires round_operations service; "
@@ -408,21 +519,22 @@ class SNAdapter(SystemAdapter):
         # Generation-keyed requests (measure, smoke) get infra_retry * (g + 1);
         # segment keys never change, so they keep the pre-registered value.
         g = self.key_generation if generational else 0
+        runtime = (dict(execution_admission=self._execution_admission)
+                   if self._execution_admission is not None else {})
         return dict(actor=self._actor(), infra_retry=self._infra_retry * (g + 1),
-                    timeout_seconds=self._execution_timeout_seconds)
+                    timeout_seconds=self._execution_timeout_seconds, **runtime)
 
     def _first_call(self, candidate_ids: tuple, call):
         """Run the planning (first) call of a key while holding every touched candidate's lock."""
         with self._plan_locks_guard:
             locks = [self._plan_locks.setdefault(c, threading.Lock())
                      for c in sorted({c for c in candidate_ids if c})]
-        for lock in locks:          # sorted order: no deadlock between two callers
-            lock.acquire()
-        try:
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for lock in locks:  # sorted order: no deadlock between two callers
+                stack.enter_context(self._runtime_slot(lock))
+            self.check_runtime()
             return call()
-        finally:
-            for lock in reversed(locks):
-                lock.release()
 
     def _await(self, calls: dict[str, tuple[str, Any]], touches: Optional[dict[str, tuple]] = None) -> None:
         """Re-issue each keyed v2 call until all report ``complete``.
@@ -448,6 +560,7 @@ class SNAdapter(SystemAdapter):
         deadline = time.monotonic() + max(self._eval_timeout, settle)
         while True:
             for label, (key, call) in list(pending.items()):
+                self.check_runtime()
                 if label in planned:
                     result = call() or {}
                 else:
@@ -475,7 +588,7 @@ class SNAdapter(SystemAdapter):
                     f"{', '.join(pending)} not complete within {self._eval_timeout}s "
                     f"(keys={[k for k, _ in pending.values()]!r}); rerun resumes the same keys"
                 )
-            time.sleep(self._eval_poll_interval)
+            self._runtime_wait(self._eval_poll_interval)
 
     def _measure(self, candidate_ids: list[str], split: str) -> None:
         """v2 ``split`` each candidate on one whole split ('search' or 'validation').
@@ -808,6 +921,7 @@ class SNAdapter(SystemAdapter):
 
     def _apply_source(self, candidate_id: str, key: str, what: str) -> dict:
         """v2 ``RoundOperations.rebase``: apply the source's frozen diff uncommitted; poll while not ready."""
+        self.check_runtime()
         ops, actor = self._round_ops, self._actor()
         deadline = time.monotonic() + self._worktree_timeout
         result = ops.rebase(candidate_id, key=key, actor=actor)
@@ -815,7 +929,7 @@ class SNAdapter(SystemAdapter):
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"{what} not applied within {self._worktree_timeout}s "
                                    f"({result.get('reason')!r})")
-            time.sleep(self._agent_poll_interval)
+            self._runtime_wait(self._agent_poll_interval)
             result = ops.rebase(candidate_id, key=key, actor=actor)
         return result
 
@@ -977,6 +1091,7 @@ class SNAdapter(SystemAdapter):
                     parent_commit=candidate.get("parent_commit"))
 
     def _await_worktree(self, candidate_id: str) -> dict:
+        self.check_runtime()
         service = self._round_ops.service
         candidate = service.candidate(candidate_id)
         deadline = time.monotonic() + self._worktree_timeout
@@ -986,7 +1101,7 @@ class SNAdapter(SystemAdapter):
                     f"Worktree of candidate {candidate_id!r} not ready within "
                     f"{self._worktree_timeout}s (worktree={candidate.get('worktree')!r})"
                 )
-            time.sleep(self._agent_poll_interval)
+            self._runtime_wait(self._agent_poll_interval)
             candidate = service.provision(candidate_id)
         return candidate
 
@@ -1004,6 +1119,7 @@ class SNAdapter(SystemAdapter):
         round_id: Optional[int] = None,
         history: Optional[list[dict]] = None,
         no_adoption_rounds: int = 0,
+        case_scores: Optional[dict[str, float]] = None,
     ) -> list[Card]:
         """Dispatch an analyst agent on accountant-selected search cases; return its new Cards.
 
@@ -1064,7 +1180,10 @@ class SNAdapter(SystemAdapter):
         views = self.diagnostic_views(search_set_trajectories)
         ordered = sorted(views, key=lambda t: (roles.get(t, "failure") != "failure",
                                                list(search_set_trajectories).index(t)))
-        items = [(f"c{i + 1}", roles.get(t, "failure"), views[t]) for i, t in enumerate(ordered)]
+        # method-v4 §5: the analyst may see search-set scores (never validation or test scores).
+        scored = case_scores or {}
+        items = [(f"c{i + 1}", roles.get(t, "failure") + (f" score={scored[t]:.2f}" if t in scored else ""), views[t])
+                 for i, t in enumerate(ordered)]
         if self.evidence_dir is None:
             raise RuntimeError("analyse() needs an evidence directory (set_evidence_dir): the analyst reads "
                                "its evidence from a file in the v3 run directory")
@@ -1072,8 +1191,7 @@ class SNAdapter(SystemAdapter):
             raise ValueError(f"no_adoption_rounds must be a non-negative int, got {no_adoption_rounds!r}")
         budget = min(MAX_ANALYST_VIEW_BUDGET,
                      self._analyst_view_budget + no_adoption_rounds * self._analyst_view_budget_step)
-        tried, n_hist_shown, n_hist_omitted = _render_history(history or [], budget // 4,
-                                                              vocabulary=self._HISTORY_VOCABULARY)
+        tried, n_hist_shown, n_hist_omitted = self._analysis_history(history or [], budget // 4, parent_cid)
         evidence, n_shown, n_omitted = render_views(items, budget - len(tried))
         stuck = (f"no adoption under this parent for {no_adoption_rounds} consecutive round(s)\n"
                  if no_adoption_rounds else "")
@@ -1081,31 +1199,29 @@ class SNAdapter(SystemAdapter):
         content = (f"# method-{self._KEY_PREFIX} analyst evidence\nformat: {EVIDENCE_FORMAT}\nround: {round_id}\n"
                    f"parent: {parent_cid}\ncases: {len(items)} with a view of {len(search_set_trajectories)} "
                    f"selected; {n_shown} shown, {n_omitted} omitted (budget {budget} chars)\n"
-                   + stuck + "\n" + worktree_map + tried + evidence)
-        path, digest, reused = self._write_evidence(f"round-{round_id}-{parent_cid[:12]}.md", content)
+                   + stuck + "\n" + worktree_map + self._evidence_extra() + tried + evidence)
+        path, digest, reused = self._write_analysis_evidence(
+            f"round-{round_id}-{parent_cid[:12]}.md", content, items, ordered, n_shown)
+        self._analysis_evidence_ready(path, digest, items, ordered, n_shown, reused)
         analyst_text = (
             f"Diagnose the parent version's failures and draft up to {n_cards} legal lcd-v2 mechanism cards, "
             f"one per distinct failure mode. Your evidence is the file {path} (sha256 {digest}). Read it in "
             f"full: it holds the search cases selected by a fixed rule as c1, c2, ... ([failure] cases, and "
             f"[control] cases for contrast) and the outcome labels of hypotheses already tried under this "
-            f"parent. It is your only input: do not request more evidence and do not read any other file "
-            f"under var/. Each card needs title, component, mechanism, implementer_brief, falsification, "
+            f"parent. " + self._analyst_input_text() +
+            f"Each card needs title, component, mechanism, implementer_brief, falsification, "
             f"predictions (may be []), and a contract with slice_predicate, manipulation and slice_effect. "
             f"A slice_predicate may read behaviour fields and trace.* step features (e.g. "
             f"trace.n_empty_retrievals, trace.clarification_requested). Draft each card under the parent "
             f"node with `proposal draft --parent {parent_cid} --file <card.json>`; "
-            "Each card's implementer_brief must name the specific file(s) to change, the exact "
-            "pattern or logic to modify, and the pytest command(s) for verification (e.g. "
-            "`pytest tests/test_ask_service.py -k test_language`); a brief that only restates "
-            "the failure mode is not acceptable. "
+            + self._analyst_implementation_guidance() +
             "IMPORTANT: the implementer edits only the SN product worktree (backend/, frontend/, etc.). "
             "If the root cause is in a file whose path starts with src/rag_eval/ (the evaluation harness), "
             "the implementer_brief must identify the EQUIVALENT file in the SN product repo that controls "
             "the same behaviour (e.g. the answerer prompt in backend/app/services/), not the harness file. "
             "Never write a brief that names src/rag_eval/ paths as the files to change. "
-            + (f"No hypothesis has been adopted under this parent for {no_adoption_rounds} consecutive "
-               "round(s): change direction. Target failure modes or components different from every "
-               "hypothesis listed as already tried in the evidence file. " if no_adoption_rounds else "")
+            + self._analyst_stuck_text(no_adoption_rounds)
+            + self._analyst_extra_text()
             + "Draft the cards now."
         )
         from rag_eval.workbench.agent_messages import MAX_MESSAGE_BYTES, MessageInputRejected
@@ -1134,7 +1250,54 @@ class SNAdapter(SystemAdapter):
         fresh = [r for r in self._hypotheses.list(task_id)
                  if r.get("parent_candidate_id") == parent_cid and r.get("status") in ("draft", "approved")
                  and r.get("author") == ANALYST_AUTHOR and _instant(r["created_at"]) >= since]
-        return [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
+        cards = [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
+        self._cards_analysed(cards, path, digest)
+        return cards
+
+    # Hooks for subclasses (method-v4); the v3 adapter adds nothing.
+    def _analysis_history(self, history, budget, parent_id):
+        return _render_history(history, budget, vocabulary=self._HISTORY_VOCABULARY)
+
+    def _write_analysis_evidence(self, name, content, items, ordered, shown):
+        return self._write_evidence(name, content)
+
+    def _analysis_evidence_ready(self, path, digest, items, ordered, shown, reused):
+        return None
+
+    def _analyst_input_text(self):
+        return "It is your only input: do not request more evidence and do not read any other file under var/. "
+
+    def _analyst_implementation_guidance(self):
+        return ("Each card's implementer_brief must name the specific file(s) to change, the exact "
+                "pattern or logic to modify, and the pytest command(s) for verification (e.g. "
+                "`pytest tests/test_ask_service.py -k test_language`); a brief that only restates "
+                "the failure mode is not acceptable. ")
+
+    def _analyst_stuck_text(self, no_adoption_rounds):
+        return (f"No hypothesis has been adopted under this parent for {no_adoption_rounds} consecutive "
+                "round(s): change direction. Target failure modes or components different from every "
+                "hypothesis listed as already tried in the evidence file. " if no_adoption_rounds else "")
+
+    def _implementation_metadata(self, card, workspace, *, frozen=False):
+        return {}
+
+    def _implementation_order(self, *, repair=False):
+        return ("fix" if repair else "implementation") + " -> only relevant SN tests -> leak-check. "
+
+    def _repair_input_text(self):
+        return "read it in full and read no other file under var/. "
+
+    def _evidence_extra(self) -> str:
+        return ""
+
+    def _analyst_extra_text(self) -> str:
+        return ""
+
+    def _cards_analysed(self, cards: list[Card], path, digest: str) -> None:
+        return None
+
+    def _implementer_extra_text(self, card: Card, workspace: dict) -> str:
+        return ""
 
     def _write_evidence(self, name: str, content: str):
         """Write the evidence file once (atomic); a replay keeps the file a message may already name.
@@ -1190,24 +1353,36 @@ class SNAdapter(SystemAdapter):
             raise ValueError(f"workspace does not contain a candidate_id: {workspace!r}")
         cid = workspace["candidate_id"]
         hypothesis_id = workspace.get("hypothesis_id") or card.ref
+        candidate = ops.service.candidate(cid)
+        if candidate.get("status") == "frozen":
+            # A crash may follow freeze but precede coordinator persistence.
+            # The worktree is clean now: reconstruct the immutable change,
+            # without waking the implementer on an already frozen candidate.
+            parent_id = workspace.get("parent_candidate_id")
+            if parent_id and candidate.get("parent_candidate_id") != parent_id:
+                raise ValueError("frozen implementation belongs to another parent")
+            extra = self._implementation_metadata(card, workspace, frozen=True)
+            return Diff(content=_extract_frozen_diff(candidate), metadata=dict(candidate_id=cid,
+                hypothesis_id=hypothesis_id, parent_candidate_id=candidate.get("parent_candidate_id"), **extra))
         text = (
             f"Implement the approved card (hypothesis {hypothesis_id}) in candidate {cid}, "
             f"Card failure mode: {card.failure_mode_desc}. Implementer brief: {card.change_hypothesis}. "
-            f"editing only that candidate's worktree. Required order: implementation -> only "
-            f"relevant SN tests -> leak-check. Leave your changes uncommitted. Do not commit, "
+            f"editing only that candidate's worktree. Required order: " + self._implementation_order() +
+            f"Leave your changes uncommitted. Do not commit, "
             f"do not freeze the candidate, and do not run or request any evaluation (no node, "
             f"cluster or fresh runs): the coordinator freezes and evaluates the candidate after "
             f"you finish. Use only approved implementer material; never inspect gold or "
             f"validation cases."
-        )
+        ) + self._implementer_extra_text(card, workspace)
         call = dict(iteration_id=iteration_id, key=self._request_key("implement", cid),
                     profile=self._implementer_profile, text=text, hypothesis_id=hypothesis_id, brief=self._BRIEF)
         self._poll_agent("implementer", cid, call)
+        extra = self._implementation_metadata(card, workspace)
         return Diff(
             content=_extract_worktree_diff(workspace),
             test_refs=(),
             metadata=dict(candidate_id=cid, hypothesis_id=hypothesis_id,
-                          parent_candidate_id=workspace.get("parent_candidate_id")),
+                          parent_candidate_id=workspace.get("parent_candidate_id"), **extra),
         )
 
     # ------------------------------------------------------------------
@@ -1264,6 +1439,13 @@ class SNAdapter(SystemAdapter):
         new_cid = ops.derive(parent_cid, hypothesis_id=hypothesis_id, key=self._request_key("repair", failed_cid, attempt),
                              actor=actor, rebase_from=failed_cid)
         candidate = self._await_worktree(new_cid)
+        workspace = dict(candidate_id=new_cid, parent_candidate_id=parent_cid,
+                         hypothesis_id=candidate.get("proposal_id"), path=(candidate.get("worktree") or {}).get("path"))
+        if candidate.get("status") == "frozen":
+            extra = self._implementation_metadata(card, workspace, frozen=True)
+            return Diff(content=_extract_frozen_diff(candidate), metadata=dict(candidate_id=new_cid,
+                hypothesis_id=candidate.get("proposal_id"), parent_candidate_id=parent_cid,
+                repair_of=failed_cid, attempt=attempt, **extra))
         applied = self._apply_source(new_cid, self._request_key("repair-apply", new_cid),
                                      f"repair start (diff of {failed_cid!r}) in {new_cid!r}")
         if applied.get("status") != "applied":
@@ -1279,12 +1461,14 @@ class SNAdapter(SystemAdapter):
             f"behaviour change did not happen (the card's trajectory predicate did not move in the predicted "
             f"direction), so the change most likely did not take effect. The file {path} (sha256 {digest}) "
             f"holds, per smoke case, the predicate's value on the parent and on the previous attempt and both "
-            f"diagnostic views; read it in full and read no other file under var/. Find why the change did "
-            f"not take effect and fix it, editing only this candidate's worktree. Required order: fix -> only "
-            f"relevant SN tests -> leak-check. Leave your changes uncommitted. Do not commit, do not freeze "
+            f"diagnostic views; " + self._repair_input_text() + "Find why the change did "
+            f"not take effect and fix it, editing only this candidate's worktree. Required order: "
+            + self._implementation_order(repair=True) +
+            f"Leave your changes uncommitted. Do not commit, do not freeze "
             f"the candidate, and do not run or request any evaluation: the coordinator freezes and smokes the "
             f"candidate again after you finish. Never inspect gold or validation cases."
         )
+        text += self._implementer_extra_text(card, workspace)
         self.last_repair = dict(stats, feedback_path=str(path), feedback_sha256=digest, feedback_reused=reused,
                                 candidate_id=new_cid, repair_of=failed_cid, attempt=attempt,
                                 message_bytes=len(text.encode("utf-8")))
@@ -1292,11 +1476,12 @@ class SNAdapter(SystemAdapter):
                     profile=self._implementer_profile, text=text, hypothesis_id=workspace["hypothesis_id"],
                     brief=self._BRIEF)
         self._poll_agent("implementer", new_cid, call)
+        extra = self._implementation_metadata(card, workspace)
         return Diff(
             content=_extract_worktree_diff(workspace),
             test_refs=(),
             metadata=dict(candidate_id=new_cid, hypothesis_id=workspace["hypothesis_id"],
-                          parent_candidate_id=parent_cid, repair_of=failed_cid, attempt=attempt),
+                          parent_candidate_id=parent_cid, repair_of=failed_cid, attempt=attempt, **extra),
         )
 
     def _repair_feedback(self, card: Card, failed_cid: str, attempt: int,
@@ -1345,7 +1530,13 @@ class SNAdapter(SystemAdapter):
 
     def _poll_agent(self, role: str, candidate_id: Optional[str], call: dict) -> dict:
         """Call ``RoundOperations.agent`` with one key until the agent is idle."""
+        self.check_runtime()
+        key = call['key']
+        if self._runtime_remaining is not None:
+            with self._agent_requests_lock:
+                self._agent_requests.setdefault(key, None)
         result = self._round_ops.agent(role, candidate_id, **call)
+        self._track_agent(key, result)
         deadline = time.monotonic() + self._agent_timeout
         while result.get("status") in ("running", "unknown"):
             if time.monotonic() >= deadline:
@@ -1353,8 +1544,12 @@ class SNAdapter(SystemAdapter):
                     f"{role} agent did not finish within {self._agent_timeout}s "
                     f"(key={call['key']!r})"
                 )
-            time.sleep(self._agent_poll_interval)
+            self._runtime_wait(self._agent_poll_interval)
             result = self._round_ops.agent(role, candidate_id, **call)
+            self._track_agent(key, result)
+        if self._runtime_remaining is not None and result.get('status') == 'idle':
+            with self._agent_requests_lock:
+                self._agent_requests.pop(key, None)
         if result.get("status") != "idle":
             raise RuntimeError(
                 f"{role} agent ended with status {result.get('status')!r}: "
@@ -1393,7 +1588,8 @@ _HISTORY_LABELS = ("smoke_fail", "screen_fail", "provisional_adopted", "confirme
 # method-v4 §5 vocabulary (SNAdapterV4 renders only these).
 V4_MECHANISM_TIERS = ("confirmed", "unconfirmed", "suspicious")
 V4_HISTORY_LABELS = ("smoke_fail", "minibatch_fail", "below_threshold", "qualified_not_adopted",
-                     "adopted", "safeguard_breached", "pruned")
+                     "adopted", "safeguard_breached", "pruned", "run_failed", "in_progress",
+                     "preflight_skipped", "implementation_failed")
 _ATTRIBUTION_LABELS = ("supported", "refuted", "insufficient", "unattributed")
 _HISTORY_TITLE_CHARS = 160
 # §2.1 失败后的处理 details: whitelisted tokens only (never values).
@@ -1421,6 +1617,13 @@ def _history_line(entry: dict, vocabulary: str = "v3") -> Optional[str]:
         line += "; after repair"
     if vocabulary == "v4" and entry.get("mechanism") in V4_MECHANISM_TIERS:
         line += f"; mechanism: {entry['mechanism']}"
+    if vocabulary == "v4":
+        from .v4.agent_context import feedback_text
+        feedback = feedback_text(entry)
+        if feedback:
+            line += "; " + feedback
+    if vocabulary == "v4" and entry.get("earlier_parent") is True:
+        line += "; tried on an earlier parent (that parent's change may already be in this one)"
     if entry.get("rolled_back_segment") is True:
         line += "; tried in a rolled-back segment"
     attribution = entry.get("attribution")
@@ -1483,7 +1686,11 @@ def _render_history(history: list[dict], budget_chars: int, vocabulary: str = "v
     def section(kept: list[str]) -> str:
         note = f"[{total - len(kept)} older entr(ies) omitted]\n" if len(kept) < total else ""
         return ("Hypotheses already tried under this parent (outcome labels only, oldest first; "
-                "do not re-propose these unchanged):\n" + note + "".join(kept) + "\n")
+                "do not re-propose these unchanged):\n" + note + "".join(kept) + "\n") if vocabulary != "v4" else (
+                "Hypotheses already tried in this run, on this parent and on earlier ones (outcome labels only, "
+                "oldest first). Do not duplicate adopted or in-progress changes. Refuted hypotheses need new evidence; "
+                "implementation/run failures and inconclusive checks do not refute a direction. "
+                "A qualified_not_adopted card may be reconsidered on this parent:\n" + note + "".join(kept) + "\n")
 
     while lines and len(section(lines)) > budget_chars:
         lines.pop(0)   # oldest first
@@ -1512,6 +1719,22 @@ def _lookup(observation: dict, field: str) -> Any:
 def _worktree_ready(candidate: dict) -> bool:
     tree = candidate.get("worktree") or {}
     return tree.get("status") == "ready" and bool(tree.get("path"))
+
+
+def _extract_frozen_diff(candidate: dict) -> str:
+    """Recover the exact parent-to-candidate change; mutable worktree edits stay out."""
+    path = (candidate.get("worktree") or {}).get("path")
+    parent, commit = candidate.get("parent_commit"), candidate.get("frozen_commit")
+    if not path or not parent or not commit:
+        raise EvaluationUnavailable("frozen candidate diff provenance is unavailable")
+    try:
+        result = subprocess.run(["git", "-C", str(path), "diff", "--binary", parent, commit],
+                                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EvaluationUnavailable("frozen candidate diff could not be recovered") from exc
+    if result.returncode:
+        raise EvaluationUnavailable("frozen candidate diff could not be recovered")
+    return result.stdout
 
 
 def _extract_worktree_diff(workspace: Any) -> str:

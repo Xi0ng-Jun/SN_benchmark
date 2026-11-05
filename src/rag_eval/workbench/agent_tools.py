@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 REQUEST_COMMANDS = ('node derive', 'node freeze', 'node run', 'node fresh-run', 'node cluster-run', 'node adopt', 'node reject', 'iteration create', 'iteration sealed-run', 'iteration sealed-lineage-run')
-ANALYST_COMMANDS = ('task', 'evidence', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
+ANALYST_COMMANDS = ('source', 'task', 'evidence', 'runs', 'cases', 'case', 'execution-cases', 'flips', 'hypotheses', 'hypothesis-draft', 'docs', 'leak-check',
                     'iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
                     'request withdraw', 'cluster preview', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
 IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'node cluster-run', 'requests', 'request withdraw', 'cluster list', 'cluster show', 'cluster result')
@@ -42,6 +42,7 @@ def build(state, config_path):
                                  execution_config=config.get('job_execution'),
                                  execution_records=lambda: JobExecutionStore(repository).records(workspace['id']))
     views._command_config = config
+    views.command_config_path = config.get('_config_path')
     return repository, views
 
 
@@ -108,6 +109,10 @@ def main(argv=None):
     parser.add_argument('--needs-read', action='store_true')
     parser.add_argument('--status')
     parser.add_argument('--file')
+    parser.add_argument('--path', help='source: product source file relative to repository root')
+    parser.add_argument('--query', help='source: literal text to match')
+    parser.add_argument('--start', type=int, default=1, help='source: first line (1-based)')
+    parser.add_argument('--lines', type=int, default=80, help='source: maximum lines (1..200)')
     parser.add_argument('--fields', help='evidence: comma-separated columns (default: all but response.answer)')
     parser.add_argument('--failed-only', action='store_true',
                         help='evidence: only cases with an attempt that failed (error, missing or below the success threshold)')
@@ -186,7 +191,13 @@ def dispatch(options, repository, views, store, policy):
     """The command's output before the analyst projection."""
     task_id, a, command = options.task, options.args, options.command
     from .hypotheses import leak_check
-    if command.startswith('cluster '):
+    if command == 'source':
+        from .frozen_source import candidate_source
+        if options.role != 'analyst' or options.parent or options.candidate or a:
+            raise ValueError('source requires only the analyst --node binding')
+        out = candidate_source(iteration_service(repository, views, initialize=False), task_id, options.node,
+                               path=options.path, query=options.query, start=options.start, lines=options.lines)
+    elif command.startswith('cluster '):
         from .clusters import ClusterStore
         service = iteration_service(repository, views)
         clusters = ClusterStore(repository, service, views)

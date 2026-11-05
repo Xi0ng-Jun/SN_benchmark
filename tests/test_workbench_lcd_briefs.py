@@ -173,7 +173,7 @@ def test_method_v4_briefs_and_creation_rules(tmp_path):
     import re
     import pytest
     from rag_eval.workbench import auto_runs
-    from rag_eval.workbench.briefs import (V3_ANALYST_COMMANDS, v4_analyst_brief, v4_implementer_brief,
+    from rag_eval.workbench.briefs import (V4_ANALYST_COMMANDS, v4_analyst_brief, v4_implementer_brief,
                                            v4_reviewer_brief)
     from test_workbench_agent_creations import setup
     task = dict(id='t', title='SN · method-v4')
@@ -182,7 +182,7 @@ def test_method_v4_briefs_and_creation_rules(tmp_path):
     assert auto_runs.REVIEWER_ALLOWED == frozenset()
     analyst = v4_analyst_brief(task, tool='sn-eval', candidate_id='c' * 32)
     named = set(re.findall(r'`\$S ([a-z-]+(?: draft)?)', analyst))
-    assert named == set(V3_ANALYST_COMMANDS) == auto_runs.ANALYST_ALLOWED
+    assert named == set(V4_ANALYST_COMMANDS) == auto_runs.V4_ANALYST_ALLOWED
     assert 'qualified_not_adopted' in analyst and 'reviewer' in analyst and 'method-v3' not in analyst
     implementer = v4_implementer_brief(task, tool='sn-eval', hypothesis_id='h' * 32, candidate_id='c' * 32,
                                        worktree='/w')

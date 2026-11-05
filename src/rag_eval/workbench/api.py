@@ -198,6 +198,7 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
                                  execution_enabled=isinstance(config.get('job_execution'), dict),
                                  execution_config=config.get('job_execution'),
                                  execution_records=lambda: job_api.execution.records(workspace['id']))
+    views.command_config_path = config.get('_config_path')
     from .iterations_api import IterationAPI
     iteration_api = IterationAPI(repository, workspace, worktree_service, plans=plans, job_api=job_api,
                                  actor=actor, config=config, run_views=views, creator=hypothesis_worktree_creator)

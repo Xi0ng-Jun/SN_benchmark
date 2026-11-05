@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,14 @@ class SmokeResult:
 PURPOSES = ("baseline", "diagnose", "screen", "smoke", "confirm", "sealed")
 
 
+class ImplementationDeclined(RuntimeError):
+    """The implementer reported an evidenced preflight skip, before measurement."""
+
+    def __init__(self, report: dict):
+        self.report = report
+        super().__init__(report.get("summary", "implementation declined"))
+
+
 class EvaluationUnavailable(RuntimeError):
     """An evaluation could not produce results (infrastructure, timeout, refusal).
 
@@ -89,11 +97,32 @@ class BudgetExhausted(EvaluationUnavailable):
     """The frozen run budget does not admit the requested evaluation."""
 
 
+class EvaluationCancelled(EvaluationUnavailable):
+    """Cooperative cancellation or the optimisation deadline stopped work."""
+
+
 class SystemAdapter(abc.ABC):
     """Four-capability interface the method-core package depends on (§2.6).
 
     All SN-specific, model-client, and filesystem concerns live in subclasses.
     """
+
+    def configure_runtime(self, *, remaining: Callable[[], float],
+                          max_concurrent_executions: int) -> None:
+        """Optional per-run deadline and actual execution admission contract.
+
+        Simple adapters may finish their synchronous calls normally. Runtime
+        adapters check ``remaining`` before dispatch and during bounded waits.
+        """
+
+    def check_runtime(self) -> None:
+        """Raise EvaluationCancelled when configured work must stop (optional)."""
+
+    def cancel_pending(self) -> None:
+        """Request cancellation of this run's owned work (optional, idempotent)."""
+
+    def stop_polling(self) -> None:
+        """Stop local waiters after process interruption; preserve remote receipts."""
 
     @abc.abstractmethod
     def materialize(self, diff: Diff, parent: Version) -> Version:
@@ -268,6 +297,14 @@ class SystemAdapter(abc.ABC):
         keys = set(candidate.safeguard_values) | set(reference.safeguard_values)
         return {k: dict(direction="lower_is_better", subject=candidate.safeguard_values.get(k),
                         reference=reference.safeguard_values.get(k)) for k in sorted(keys)}
+
+    def evaluate_search(self, version: Version, task_ids: list[str], k: int) -> EvalResult:
+        """method-v4 diagnosis: *version* alone on a search-set sample, k attempts (default: ``evaluate``)."""
+        return self.evaluate(version, task_ids, k, purpose="diagnose")
+
+    def touches_preparation(self, diff: Optional[Diff]) -> Optional[bool]:
+        """method-v4 §6 cost estimate: whether *diff* invalidates the system's preparation cache; None if unknown."""
+        return None
 
     def task_families(self, task_ids: list[str]) -> dict[str, str]:
         """method-v4: task -> family label (SN: paper) for stratified minibatches and clustered SE; {} if none."""

@@ -1,29 +1,15 @@
-"""method-v4 loop (method-v4.md §2.3, §3, §4.2): calibration, rounds under one parent, ablation.
+"""Method-v4 coordinator: calibration, pipelined rounds, carry-over and ablation.
 
-A round: (prefetched) search-set diagnosis of the parent → one analysis (2b
-cards) → up to b implementations in parallel, each through stage 0 (smoke,
-one repair) and stage 1 (the parent's minibatch, paired with the parent's
-cached validation results) → survivors queued by Δ_mb into stage 2 (rest of
-the validation set at k_val) and stage 3 (mechanism: mechanical check +
-blinded reviewer) → one decision at the end of the round: qualified
-candidates, the best adopted, the two best merged (rebase) and the merge
-adopted if it beats the best; then the new parent's search set is prefetched.
+Workers in stages.py receive snapshots and return records. Only this coordinator
+updates versions, persistent stage records and the adopted pointer. Implementation,
+measurement and review pools are independent. Diagnostics and next-round analysis
+are speculative and consumed only under the matching version/round identity.
 
-Each parent has its own minibatch (§3.2), drawn by a seed derived from its
-hash and stratified by paper. Candidates are measured alone; the parent's
-side of every pair is its cache: the seed's calibration (k = calibration_k on
-the whole validation set) or, for an adopted node, the measurement that got it
-adopted. Nothing is measured twice for a parent.
-
-When a stop rule fires, the adopted changes are ablated one at a time on the
-validation set (§4.2); changes whose removal costs less than one SE are
-pruned, and the pruned version is checked once more before it becomes the
-endpoint's final version.
-
-Workers never touch loop state: they get an immutable snapshot and return a
-JSON record. Every decision runs on the main thread. ``state.json`` is
-rewritten atomically after every transition; a rerun resumes (adapter calls
-replay under deterministic keys; decided records are kept).
+A timeboxed round uses finished current-parent evidence and carries unfinished
+cards forward. Carried candidates finish against their source parent; qualifying
+ones must rebase and repeat the cascade against the new parent before adoption.
+The adapter owns deadline checks and actual execution admission; shutdown wakes
+pollers before joining and publishes completed materializations for recovery.
 """
 from __future__ import annotations
 
@@ -39,17 +25,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import ledger_io
-from ..adapter import BudgetExhausted, Card, Diff, EvalResult, EvaluationUnavailable, SmokeResult, SystemAdapter, Version
+from ..adapter import BudgetExhausted, EvalResult, EvaluationUnavailable, SystemAdapter, Version
 from ..loop import select_analysis_cases
-from . import calibrate, decide, mechanism
+from . import agent_context, calibrate, decide, stages
 from .config import V4Config, digest
 
 log = logging.getLogger(__name__)
 
-SCHEMA = "v4-state-2"
+SCHEMA = "v4-state-3"
 STATE_FILE, LEDGER_FILE = "state.json", "ledger.json"
-RUN_FAILURE = "smoke_run_failed"
-DIFF_EXCERPT_CHARS = 20000
 FAILURE_HALTS = ("process_failure", "budget_exhausted")
 
 
@@ -70,158 +54,6 @@ class Snapshot:
     rerun_var: float
     seed_aa: Optional[EvalResult]
     families: dict
-
-
-# ---------------------------------------------------------------------------
-# Workers (thread pool; JSON records in, JSON records out)
-# ---------------------------------------------------------------------------
-
-def _finish(rec: dict, stage: str, reason: Optional[str] = None, **extra) -> dict:
-    rec.update(stage=stage, reason=reason, finished_at=_now(), **extra)
-    return rec
-
-
-def _timed(rec: dict, name: str, t0: float) -> None:
-    rec.setdefault("timings", {})[name] = rec.get("timings", {}).get(name, 0.0) + time.monotonic() - t0
-
-
-def _smoke(adapter: SystemAdapter, snap: Snapshot, card: Card, cand: Version) -> dict:
-    """Stage 0 on the smoke sample: run check, then the behaviour check."""
-    try:
-        ce, pe = adapter.evaluate_pair(cand, snap.parent, list(snap.smoke), 1, purpose="smoke")
-    except BudgetExhausted:
-        raise
-    except EvaluationUnavailable as exc:
-        return dict(verdict="run_failed", reason=f"{RUN_FAILURE}: {exc}")
-    except Exception as exc:  # noqa: BLE001 - candidate-induced
-        return dict(verdict="error", reason=f"smoke: {type(exc).__name__}: {exc}")
-    if not all(ce.trajectories.get(t) for t in snap.smoke):
-        return dict(verdict="run_failed", reason=f"{RUN_FAILURE}: smoke tasks without a trajectory")
-    if not snap.cfg.smoke_behaviour_check:
-        return dict(verdict="unchecked", reason="behaviour check disabled", _evals=(ce, pe))
-    check = mechanism.smoke_behaviour(adapter, card.predicate, ce, pe)
-    return dict(check, _evals=(ce, pe))
-
-
-def _cache(adapter: SystemAdapter, result: EvalResult) -> Optional[dict]:
-    try:
-        return calibrate.cache_summary(adapter.timing_profile(result))
-    except Exception:  # noqa: BLE001 - a profile is a record field, never a failure
-        return None
-
-
-def stage01(adapter: SystemAdapter, snap: Snapshot, rec: dict, card: Card) -> tuple[dict, Optional[Version], Any]:
-    """workspace → implement → materialize → stage 0 (smoke, ≤1 repair) → stage 1 (minibatch)."""
-    cfg, parent = snap.cfg, snap.parent
-    t0 = time.monotonic()
-    try:
-        ws = adapter.workspace(parent, card)
-        diff = adapter.implement(card, ws)
-        cand = adapter.materialize(diff, parent)
-    except EvaluationUnavailable:
-        raise
-    except Exception as exc:  # noqa: BLE001 - per-card failure
-        _timed(rec, "agent_s", t0)
-        return _finish(rec, "error", f"implement: {type(exc).__name__}: {exc}"), None, None
-    _timed(rec, "agent_s", t0)
-    attempt = 1
-    while True:
-        rec.update(attempt=attempt, candidate=cand.content_hash, **_diff_fields(diff))
-        t0 = time.monotonic()
-        smoke = _smoke(adapter, snap, card, cand)
-        _timed(rec, "smoke_s", t0)
-        evals = smoke.pop("_evals", None)
-        rec["smoke"] = smoke
-        if smoke["verdict"] == "run_failed":
-            return _finish(rec, "smoke_fail", smoke["reason"]), cand, diff
-        if smoke["verdict"] == "error":
-            return _finish(rec, "error", smoke["reason"]), cand, diff
-        if smoke["verdict"] != "fail":
-            break
-        if attempt > cfg.smoke_repair_attempts:
-            return _finish(rec, "smoke_fail", "behaviour did not change as predicted"), cand, diff
-        t0 = time.monotonic()
-        try:
-            result = SmokeResult(candidate_version=cand.content_hash, card_ref=card.ref or "",
-                                 behavioral_check_ran=True, feature_present_before=None,
-                                 feature_present_after=None, verdict="fail")
-            repaired = adapter.repair(card, parent, cand, smoke=result, candidate_smoke=evals[0],
-                                      parent_smoke=evals[1], attempt=attempt + 1)
-            if repaired is not None:
-                rec.setdefault("prior_attempts", []).append(dict(attempt=attempt, candidate=cand.content_hash,
-                                                                 smoke=smoke))
-                cand, diff = adapter.materialize(repaired, parent), repaired
-        except EvaluationUnavailable:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            _timed(rec, "agent_s", t0)
-            return _finish(rec, "error", f"repair: {type(exc).__name__}: {exc}", repair_failed=True), cand, diff
-        _timed(rec, "agent_s", t0)
-        if repaired is None:
-            return _finish(rec, "smoke_fail", "behaviour did not change as predicted (no repair)"), cand, diff
-        rec["repaired"] = True
-        attempt += 1
-    # --- stage 1: the parent's minibatch, k=1, paired with the parent's cache ---
-    t0 = time.monotonic()
-    cm, _ = adapter.evaluate_subset(cand, None, "mb", list(snap.mb), 1)
-    _timed(rec, "minibatch_s", t0)
-    rec["cache_mb"] = _cache(adapter, cm)
-    pm = decide.restrict(snap.parent_val, snap.mb)
-    d = decide.paired_delta(cm, pm, snap.mb, rerun_var=snap.rerun_var, families=snap.families)
-    sg = decide.safeguard_verdict(adapter.observe_safeguards(cm, pm), cfg.safeguard_tolerances)
-    rec.update(delta_mb=d["delta"], se_mb=d["se"], n_mb=d["n"], safeguards_mb=sg)
-    if d["delta"] is None:
-        return _finish(rec, "minibatch_fail", "no task scored on both sides"), cand, diff
-    if sg["breached"]:
-        return _finish(rec, "minibatch_fail", "safeguard_breached", label="safeguard_breached"), cand, diff
-    if d["se"] is not None and d["delta"] < -cfg.minibatch_kill * d["se"]:
-        return _finish(rec, "minibatch_fail", "delta_mb below -kill*SE_mb"), cand, diff
-    rec.update(stage="minibatch_pass", reason=None)
-    return rec, cand, diff
-
-
-def _diff_fields(diff: Optional[Diff]) -> dict:
-    text = (diff.content if diff is not None else "") or ""
-    lines = sum(1 for ln in text.splitlines() if ln[:1] in "+-" and not ln.startswith(("+++", "---")))
-    return dict(diff_lines=lines, diff_excerpt=text[:DIFF_EXCERPT_CHARS], diff_truncated=len(text) > DIFF_EXCERPT_CHARS)
-
-
-def stage23(adapter: SystemAdapter, snap: Snapshot, rec: dict, card: Card, cand: Version) -> dict:
-    """Stage 2 (rest at k_val; the minibatch result is reused) and stage 3 (mechanism, Δ_val > 0 only)."""
-    cfg = snap.cfg
-    t0 = time.monotonic()
-    cm, _ = adapter.evaluate_subset(cand, None, "mb", list(snap.mb), 1)        # replay, nothing new runs
-    cr, _ = adapter.evaluate_subset(cand, None, "rest", list(snap.rest), snap.k_val)
-    _timed(rec, "validation_s", t0)
-    rec["cache_rest"] = _cache(adapter, cr)
-    ids = list(snap.mb) + list(snap.rest)
-    cv, pv = decide.combine(cm, cr), decide.restrict(snap.parent_val, ids)
-    d = decide.paired_delta(cv, pv, ids, rerun_var=snap.rerun_var, families=snap.families)
-    sg = decide.safeguard_verdict(adapter.observe_safeguards(cv, pv), cfg.safeguard_tolerances)
-    rec.update(delta_val=d["delta"], se_val=d["se"], se_own=d["se_own"], se_floor=d["se_floor"],
-               se_method=d["se_method"], n_val=d["n"], dropped_val=d["dropped"], safeguards=sg)
-    mech = dict(mechanical=None, reviewer=dict(conclusion="none", reason="not reviewed"), tier=None)
-    if d["delta"] is not None and d["delta"] > 0:
-        t0 = time.monotonic()
-        mech["mechanical"] = mechanism.mechanical(adapter, card.predicate, cv, pv, snap.seed_aa)
-        if cfg.review:
-            pairs = mechanism.sample_pairs(cv, pv, snap.seed_aa, ids, key=f"review/{cand.content_hash}",
-                                           n_pairs=cfg.review_pairs, n_controls=cfg.review_controls)
-            diff = Diff(content=rec.get("diff_excerpt") or "")
-            verdicts, error = mechanism.review(adapter, card, diff, cand, pairs, key=f"review/{cand.content_hash}")
-            conclusion = decide.reviewer_conclusion(verdicts, pairs, min_effect=cfg.review_min_effect,
-                                                    max_control_effect=cfg.review_max_control_effect)
-            if error:
-                conclusion = dict(conclusion, conclusion="none", reason=f"review failed: {error}")
-            mech["reviewer"] = dict(conclusion, pairs=mechanism.ledger_view(pairs), verdicts=verdicts)
-        mech["tier"] = decide.tier(mech["mechanical"].get("status"), mech["reviewer"]["conclusion"])
-        _timed(rec, "mechanism_s", t0)
-    else:
-        mech["tier"] = decide.tier(None, "none")
-    q = decide.qualification(d["delta"], d["se"], mech["tier"], sg, c=cfg.c, c_mech=cfg.c_mech,
-                             unobserved_blocks=cfg.unobserved_safeguard_blocks)
-    return _finish(rec, "measured", None if q["qualified"] else ",".join(q["reasons"]), mechanism=mech,
-                   qualification=q)
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +99,16 @@ class V4Run:
         # In memory only (replayed on resume): calibration results, validation caches, prefetch.
         self.cal_results: Optional[dict] = None
         self._val_cache: dict[tuple, EvalResult] = {}
-        self._prefetch: Optional[tuple[str, Future]] = None
+        self._diagnostics: dict[str, EvalResult] = {}
+        self._prefetch: dict[str, Future] = {}
         self._prefetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v4-prefetch")
+        self._analysis_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v4-analysis")
+        self._analyses: dict[tuple, Future] = {}
+        self._pools = {name: ThreadPoolExecutor(max_workers=cfg.b, thread_name_prefix=f"v4-{name}")
+                       for name in ("implementation", "measurement", "review")}
+        self._jobs: dict[Future, dict] = {}
+        self._results: dict[str, EvalResult] = {}
+        self.carry: list[dict] = []
         self._session_start = clock()
         resumed = self.state_dir is not None and (self.state_dir / STATE_FILE).exists()
         if resumed:
@@ -293,7 +133,7 @@ class V4Run:
                     partitions=self.partitions, family_of=self.families, calibration=self.calibration,
                     feasibility=self.feasibility,
                     versions={h: ledger_io.version_metadata(v) for h, v in self.versions.items()},
-                    lineage=self.lineage, rounds=self.rounds, current_round=self.current, history=self.history,
+                    lineage=self.lineage, rounds=self.rounds, current_round=self.current, history=self.history, carry=self.carry,
                     analyst_shown=self.analyst_shown, no_adoption=self.no_adoption, run_failures=self.run_failures,
                     stop_reason=self.stop_reason, ablation=self.ablation, halt_reason=self.halt_reason,
                     elapsed_s=self.elapsed(), sessions=self.sessions, key_generation=self.key_generation,
@@ -317,7 +157,7 @@ class V4Run:
         self.partitions = recorded
         self.versions = {h: Version(content_hash=h, metadata=m) for h, m in st["versions"].items()}
         for name in ("calibration", "feasibility", "lineage", "rounds", "history", "analyst_shown", "sessions",
-                     "key_generation_log", "started_at", "stop_reason", "ablation"):
+                     "key_generation_log", "started_at", "stop_reason", "ablation", "carry"):
             setattr(self, name, st.get(name, getattr(self, name)))
         self.current = st.get("current_round")
         self.no_adoption, self.run_failures = st.get("no_adoption", 0), st.get("run_failures", 0)
@@ -346,7 +186,7 @@ class V4Run:
         rounds = self.rounds + ([self.current] if self.current else [])
         cand = [r for rd in rounds for r in (rd.get("records") or {}).values()]
         sums = {k: sum((r.get("timings") or {}).get(k, 0.0) for r in cand)
-                for k in ("agent_s", "smoke_s", "minibatch_s", "validation_s", "mechanism_s")}
+                for k in ("agent_s", "smoke_s", "minibatch_s", "validation_s", "mechanism_s", "safeguards_s", "rebase_s")}
         stages: dict = {}
         for r in cand:
             stages[r.get("stage")] = stages.get(r.get("stage"), 0) + 1
@@ -372,7 +212,7 @@ class V4Run:
                     time_account=dict(total_wall_s=self.elapsed(),
                                       calibration_s=(self.calibration or {}).get("wall_s"),
                                       rounds=[dict(round=rd["round"], wall_s=rd.get("wall_s"),
-                                                   analysis_s=rd.get("analysis_s"), decision_s=rd.get("decision_s"))
+                                                   analysis_s=rd.get("analysis_s"), diagnosis_s=rd.get("diagnosis_s"), decision_s=rd.get("decision_s"))
                                               for rd in rounds],
                                       candidate_sums_s=sums, stage_seconds_by_cache=by_cache,
                                       ablation_s=(self.ablation or {}).get("wall_s")),
@@ -384,8 +224,26 @@ class V4Run:
         return self.versions[self.lineage[-1]["version"]]
 
     def history_for(self, parent: Version) -> list[dict]:
-        return [{k: v for k, v in e.items() if k != "parent"} for e in self.history
-                if e["parent"] == parent.content_hash]
+        """History for the analyst: all hypotheses tried in this run (§5), including earlier parents."""
+        out = []
+        for e in self.history:
+            row = {k: v for k, v in e.items() if k != "parent"}
+            # Mark entries from earlier parents so the analyst knows this parent may already contain that change.
+            if e["parent"] != parent.content_hash:
+                row["earlier_parent"] = True
+            out.append(row)
+        for node in self.lineage:
+            if node.get("parent") is not None:
+                rd = next((r for r in self.rounds + ([self.current] if self.current else [])
+                           if r["round"] == node["round"]), None)
+                if rd is not None:
+                    for index in node.get("card_indices", []):
+                        card = rd["cards"][index]
+                        out.append(dict(label="current_change", title=card["failure_mode_desc"],
+                                        change=card["change_hypothesis"], version=node["version"]))
+            if node["version"] == parent.content_hash:
+                break
+        return out
 
     def _node(self, h: str) -> Optional[dict]:
         return next((n for n in self.lineage if n["version"] == h), None)
@@ -419,18 +277,44 @@ class V4Run:
                         seed_aa=decide.combine(self.cal_results["mb"], self.cal_results["rest"]),
                         families=dict(self.families))
 
-    def _diagnose(self, version: Version) -> EvalResult:
-        if self._prefetch is not None and self._prefetch[0] == version.content_hash:
-            return self._prefetch[1].result()
-        return self.adapter.evaluate(version, self.partitions["search"], self.cfg.calibration_k, purpose="diagnose")
+    def diagnosis_sample(self, version: Version) -> list[str]:
+        search = self.partitions["search"]
+        ranked = sorted(search, key=lambda t: hashlib.sha256(f"diag:{version.content_hash}:{t}".encode()).hexdigest())
+        return sorted(ranked[:self.cfg.diagnose_size] if self.cfg.diagnose_size else ranked)
 
-    def _start_prefetch(self, version: Version) -> None:
-        """§3.4: the new parent's search set measured in the background for the next analysis."""
-        if self._prefetch is not None and self._prefetch[0] == version.content_hash:
-            return
-        search, k = self.partitions["search"], self.cfg.calibration_k
-        fut = self._prefetch_pool.submit(self.adapter.evaluate, version, search, k, purpose="diagnose")
-        self._prefetch = (version.content_hash, fut)
+    def _diagnose(self, version: Version) -> EvalResult:
+        h = version.content_hash
+        if h not in self._diagnostics:
+            future = self._prefetch.pop(h, None)
+            if future is not None:
+                try:
+                    self._diagnostics[h] = future.result()
+                except EvaluationUnavailable:
+                    # Speculation is optional, but an actual required diagnosis must succeed.
+                    self.adapter.check_runtime()
+            if h not in self._diagnostics:
+                self._diagnostics[h] = self.adapter.evaluate_search(version, self.diagnosis_sample(version),
+                                                                     self.cfg.diagnose_k)
+        return self._diagnostics[h]
+
+    def _start_prefetch(self, version: Version) -> bool:
+        h = version.content_hash
+        if self._out_of_time() or h in self._prefetch or h in self._diagnostics:
+            return False
+        self._prefetch[h] = self._prefetch_pool.submit(self.adapter.evaluate_search, version,
+                                                      self.diagnosis_sample(version), self.cfg.diagnose_k)
+        return True
+
+    def _analysis(self, parent, round_id, history, shown, no_adoption):
+        start = time.monotonic()
+        search_eval = self._diagnostics[parent.content_hash]
+        selected, roles = select_analysis_cases(search_eval, self.cfg, shown=shown)
+        cards = self.adapter.analyse(selected, self.cfg.n_cards, case_roles=roles, parent=parent,
+                                     round_id=round_id, history=history, no_adoption_rounds=no_adoption,
+                                     case_scores={t: search_eval.per_task_scores[t] for t in selected
+                                                  if t in search_eval.per_task_scores})
+        return dict(cards=[ledger_io.card_to_dict(c) for c in cards], roles=roles,
+                    wall_s=time.monotonic() - start)
 
     def _remaining(self) -> float:
         return self.cfg.time_budget_hours * 3600 - self.elapsed()
@@ -441,22 +325,49 @@ class V4Run:
     # -- top level ----------------------------------------------------------
 
     def run(self) -> str:
+        self.adapter.configure_runtime(remaining=self._remaining,
+                                       max_concurrent_executions=self.cfg.max_concurrent_executions or 3)
         self.sessions.append(dict(started_at=_now(), key_generation=self.key_generation, rounds=len(self.rounds)))
+        if self.halt_reason == "process_failure" and self.current:
+            for rec in self.current["records"].values():
+                if rec.get("halted"):
+                    rec["stage"] = rec.pop("failed_stage", rec["stage"])
+                    rec.pop("halted", None)
+                    rec.pop("label", None)
+            self.run_failures = 0
         self.halt_reason = None
+        interrupted = False
         try:
             return self._run()
+        except BaseException as exc:
+            interrupted = not isinstance(exc, Exception)
+            raise
         finally:
+            # Wake pollers before joining. A resumable failure preserves durable remote work;
+            # completed runs and exhausted budgets request cancellation of owned work.
+            if interrupted or self.halt_reason == "process_failure":
+                self.adapter.stop_polling()
+            else:
+                self.adapter.cancel_pending()
+            for pool in [*self._pools.values(), self._prefetch_pool, self._analysis_pool]:
+                pool.shutdown(wait=True, cancel_futures=True)
+            for future, job in self._jobs.items():
+                if future.done() and not future.cancelled() and future.exception() is None:
+                    self._complete_job(job, future)
+            self._jobs.clear()
             self.sessions[-1]["ended_at"] = _now()
+            report = getattr(self.adapter, "cancellation_report", None)
+            if report:
+                self.sessions[-1]["cancellation"] = copy.deepcopy(report)
             self.save()
             self.write_ledger()
-            self._prefetch_pool.shutdown(wait=False, cancel_futures=True)
 
     def _run(self) -> str:
         try:
             self._calibrate()
         except EvaluationUnavailable as exc:
             log.error("calibration unavailable: %s", exc)
-            return self._halt(_failure(exc))
+            return self._halt("time_budget" if self._out_of_time() else _failure(exc))
         while True:
             if self.current is None:
                 reason = self.stop_reason or self._stop_reason()
@@ -467,7 +378,7 @@ class V4Run:
                         self._ablate()
                     except EvaluationUnavailable as exc:
                         log.error("ablation unavailable: %s", exc)
-                        return self._halt(_failure(exc))
+                        return self._halt("time_budget" if self._out_of_time() else _failure(exc))
                     return self._halt(reason)
                 self.current = dict(round=len(self.rounds) + 1, parent=self.pointer().content_hash,
                                     started_at=_now(), cards=None, records={}, decision=None,
@@ -477,7 +388,7 @@ class V4Run:
                 failure = self._round(self.current)
             except EvaluationUnavailable as exc:
                 log.error("evaluation unavailable in round %s: %s", self.current["round"], exc)
-                failure = _failure(exc)
+                failure = "time_budget" if self._out_of_time() else _failure(exc)
             if failure is not None:
                 return self._halt(failure)
             rd = self.current
@@ -495,12 +406,12 @@ class V4Run:
 
     def _stop_reason(self) -> Optional[str]:
         """§3.5 (process failures halt where they happen)."""
-        if self.no_adoption >= self.cfg.no_adoption_rounds:
+        if self._out_of_time():
+            return "time_budget"
+        if self.no_adoption >= self.cfg.no_adoption_rounds and not self.carry:
             return "no_adoption"
         if len(self.rounds) >= self.cfg.max_rounds:
             return "max_rounds"
-        if self._out_of_time():
-            return "time_budget"
         walls = [r["wall_s"] for r in self.rounds if r.get("wall_s")]
         if walls and self._remaining() < sum(walls) / len(walls):
             return "time_budget"   # not enough left for a round: the rest is the endpoint's
@@ -509,15 +420,16 @@ class V4Run:
     def _calibrate(self) -> None:
         p = self.partitions
         t0 = self.clock()
-        self.cal_results, walls = calibrate.measure(self.adapter, self.seed, self.cfg, p["search"],
+        self.cal_results, walls = calibrate.measure(self.adapter, self.seed, self.cfg, self.diagnosis_sample(self.seed),
                                                     p["seed_minibatch"], p["seed_rest"])
+        self._diagnostics[self.seed.content_hash] = self.cal_results["search"]
         if self.calibration is not None:
             return   # resumed: derived values are part of the run record and never recomputed
         val = decide.combine(self.cal_results["mb"], self.cal_results["rest"])
         observed = self.adapter.observe_safeguards(val, val)
-        sizes = dict(search=len(p["search"]), mb=len(p["seed_minibatch"]), rest=len(p["seed_rest"]),
+        sizes = dict(search=len(self.diagnosis_sample(self.seed)), mb=len(p["seed_minibatch"]), rest=len(p["seed_rest"]),
                      test=p.get("test_size"), smoke=len(p["smoke"]))
-        profiles = {name: _cache(self.adapter, r) for name, r in self.cal_results.items()}
+        profiles = {name: stages.cache(self.adapter, r) for name, r in self.cal_results.items()}
         cal = calibrate.derive(self.cal_results, walls, self.cfg, safeguards=observed, sizes=sizes, profiles=profiles)
         cal["wall_s"] = self.clock() - t0
         self.calibration = cal
@@ -531,121 +443,230 @@ class V4Run:
         parent = self.versions[rd["parent"]]
         if rd["cards"] is None:
             t0 = self.clock()
-            search_eval = self._diagnose(parent)
+            prefetched = parent.content_hash in self._prefetch or parent.content_hash in self._diagnostics
+            self._diagnose(parent)
+            rd.update(diagnosis_s=self.clock() - t0, diagnosis_prefetched=prefetched)
+            key = (parent.content_hash, rd["round"])
+            future = self._analyses.pop(key, None)
+            if future is not None:
+                try:
+                    result = future.result()
+                except EvaluationUnavailable:
+                    self.adapter.check_runtime()
+                    result = None
+            else:
+                result = None
+            if result is None:
+                result = self._analysis(parent, rd["round"], self.history_for(parent),
+                                        self.analyst_shown.get(parent.content_hash, []), self.no_adoption)
             shown = self.analyst_shown.get(parent.content_hash, [])
-            selected, roles = select_analysis_cases(search_eval, self.cfg, shown=shown)
-            cards = self.adapter.analyse(selected, self.cfg.n_cards, case_roles=roles, parent=parent,
-                                         round_id=rd["round"], history=self.history_for(parent),
-                                         no_adoption_rounds=self.no_adoption)
-            failures = [t for t, r in roles.items() if r == "failure"]
+            failures = [t for t, role in result["roles"].items() if role == "failure"]
             self.analyst_shown[parent.content_hash] = list(dict.fromkeys(shown + failures))
-            stats = getattr(self.adapter, "last_analysis", None)
             mb, rest = self.split_for(parent.content_hash)
-            rd.update(cards=[ledger_io.card_to_dict(c) for c in cards], analysis_s=self.clock() - t0,
+            rd.update(cards=result["cards"], analysis_s=result["wall_s"], analysis_prefetched=future is not None,
                       split=dict(minibatch=mb, rest=rest),
-                      analysis=dict(failures_shown=len(failures), controls_shown=len(roles) - len(failures),
-                                    adapter=dict(stats) if isinstance(stats, dict) else None))
+                      analysis=dict(failures_shown=len(failures), controls_shown=len(result["roles"]) - len(failures)))
+            # Transfer unfinished records, preserving their source parent and deterministic Agent identity.
+            for item in self.carry:
+                idx = len(rd["cards"])
+                rd["cards"].append(item["card"])
+                rec = copy.deepcopy(item["record"])
+                rec.update(card_index=idx)
+                rec.pop("carried_to", None)
+                rd["records"][str(idx)] = rec
+                for job in self._jobs.values():
+                    if job.get("uid") == rec["uid"]:
+                        job["record"] = rec
+            self.carry = []
             self.save()
         if rd.get("decision") is None:
             failure = self._pipeline(rd, parent)
-            if failure is not None:
+            if failure:
                 return failure
             self._decide(rd, parent)
         return None
 
     def _pipeline(self, rd: dict, parent: Version) -> Optional[str]:
         cards = [ledger_io.card_from_dict(c) for c in rd["cards"]]
-        records: dict = rd["records"]
-        if not cards:
-            return None
-        snap = self._snapshot(parent)
-        b = self.cfg.b
+        records = rd["records"]
+        for i, card in enumerate(cards):
+            records.setdefault(str(i), dict(card_index=i, uid=f"{rd['round']}:{i}", title=card.failure_mode_desc,
+                                            card_ref=card.ref, parent=parent.content_hash, stage="pending", timings={}))
+        snapshots = {}
+        def snapshot(h):
+            if h not in snapshots:
+                snapshots[h] = self._snapshot(self.versions[h])
+            return snapshots[h]
+        failure = None
+        prefetched = set(rd.get("prefetched", []))
+        merges = rd.setdefault("merges", {})
         timebox = self.cfg.round_timebox_hours
-        queue = [i for i in range(len(cards)) if str(i) not in records]
-        stage2 = [r for r in records.values() if r["stage"] == "minibatch_pass"]
-        rerun = [r for r in records.values() if r["stage"] == "pending"]
-        failure: Optional[str] = None
-        p1: dict[Future, dict] = {}
-        p2: dict[Future, dict] = {}
-
-        def closed() -> bool:
-            return (failure is not None or self._out_of_time()
-                    or (timebox is not None and self.elapsed() - rd["started_elapsed"] >= timebox * 3600))
-
-        def new_record(idx: int) -> dict:
-            rec = records[str(idx)] = dict(card_index=idx, title=cards[idx].failure_mode_desc,
-                                           card_ref=cards[idx].ref, parent=parent.content_hash,
-                                           stage="pending", started_at=_now(), timings={})
-            return rec
-
-        with ThreadPoolExecutor(max_workers=b, thread_name_prefix="v4-impl") as pool1, \
-                ThreadPoolExecutor(max_workers=b, thread_name_prefix="v4-eval") as pool2:
-            def submit1(rec: dict) -> None:
-                # Workers get a copy: the main thread serialises `records` while they run.
-                p1[pool1.submit(stage01, self.adapter, snap, copy.deepcopy(rec), cards[rec["card_index"]])] = rec
-
-            def submit2() -> None:
-                stage2.sort(key=lambda r: (-(r.get("delta_mb") or 0.0), r["card_index"]))
-                while stage2 and len(p2) < b and failure is None and not self._out_of_time():
-                    rec = stage2.pop(0)
-                    cand = self.versions[rec["candidate"]]
-                    p2[pool2.submit(stage23, self.adapter, snap, copy.deepcopy(rec), cards[rec["card_index"]],
-                                    cand)] = rec
-
-            for rec in rerun:
-                submit1(rec)
-            while queue and len(p1) < b and not closed():
-                submit1(new_record(queue.pop(0)))
-            self.save()
-            submit2()
-            while p1 or p2:
-                done, _ = wait(list(p1) + list(p2), return_when=FIRST_COMPLETED)
-                for fut in done:
-                    first = fut in p1
-                    rec = (p1 if first else p2).pop(fut)
-                    exc = fut.exception()
-                    if exc is not None:
-                        if not isinstance(exc, EvaluationUnavailable):
-                            raise exc
-                        log.error("evaluation unavailable for card %s: %s", rec["card_index"], exc)
-                        failure = failure or _failure(exc)
-                        rec["halted"] = f"{type(exc).__name__}: {exc}"   # stage stays; a resume reruns it
-                        continue
-                    if not first:
-                        records[str(rec["card_index"])] = fut.result()
-                    else:
-                        out, cand, _ = fut.result()
-                        records[str(out["card_index"])] = out
-                        if cand is not None:
-                            self.versions[cand.content_hash] = cand
-                        failure = failure or self._after_stage01(out)
-                        if out["stage"] == "minibatch_pass":
-                            stage2.append(out)
-                        if queue and not closed():
-                            submit1(new_record(queue.pop(0)))
-                    submit2()
+        def expired():
+            return timebox is not None and self.elapsed() - rd["started_elapsed"] >= timebox * 3600
+        def active_uids():
+            return {j.get("uid") for j in self._jobs.values()}
+        def count(pool):
+            return sum(j["pool"] == pool for j in self._jobs.values())
+        def submit(rec, pool, fn, *args):
+            rec.setdefault("started_at", _now())
+            fut = self._pools[pool].submit(fn, self.adapter, *args)
+            self._jobs[fut] = dict(uid=rec["uid"], record=rec, stage=rec["stage"], pool=pool)
+        terminal = {"measured", "minibatch_fail", "smoke_fail", "run_failed", "error", "preflight_skipped"}
+        while True:
+            # Drain completions before checking the timebox so finished evidence is eligible.
+            for fut in [f for f in self._jobs if f.done()]:
+                job = self._jobs.pop(fut)
+                rec = job.get('record')
+                try:
+                    completed = self._complete_job(job, fut)
+                    if completed is not None and completed['stage'] in terminal:
+                        self.run_failures = 0
+                except Exception as exc:
+                    unavailable = exc if isinstance(exc, EvaluationUnavailable) else EvaluationUnavailable(
+                        f"{type(exc).__name__}: {exc}")
+                    failure = self._record_failure(unavailable) or failure
+                    if rec is not None:
+                        rec['failed_stage'] = job['stage']
+                        if failure:
+                            rec['halted'] = f"{type(exc).__name__}: {exc}"
+                        else:
+                            stages.finish(rec, 'run_failed', str(exc), label='run_failed')
+                    elif job.get('merge_key') and job['round'] == rd['round']:
+                        merges[job['merge_key']] = dict(of=job["of"], adopt=False, skipped=f"measurement: {exc}")
                 self.save()
-        if failure is None and stage2 and self._out_of_time():
-            for rec in stage2:     # never measured on the rest: recorded, not decided
-                rec["unmeasured"] = "time budget"
-        return failure
+            if self._out_of_time():
+                self.adapter.cancel_pending()
+                for rec in records.values():
+                    if rec['stage'] not in terminal:
+                        rec['unmeasured'] = 'time budget'
+                rd['not_started'] = [r['card_index'] for r in records.values() if 'started_at' not in r]
+                return None
+            if failure:
+                return failure
+            if expired():
+                rd['timeboxed'] = True
+                for rec in records.values():
+                    if rec['stage'] not in terminal or (rec['stage'] == 'measured' and rec['parent'] != parent.content_hash
+                                                       and rec['qualification']['qualified']):
+                        self.carry.append(dict(card=ledger_io.card_to_dict(cards[rec['card_index']]),
+                                               record=copy.deepcopy(rec)))
+                        rec['carried_to'] = rd['round'] + 1
+                rd['not_started'] = [r['card_index'] for r in records.values() if 'started_at' not in r]
+                self.save()
+                return None
+            active = active_uids()
+            ordered = sorted(records.values(), key=lambda r: (-(r.get('delta_mb') or 0), r['card_index']))
+            for rec in ordered:
+                if rec['uid'] in active or rec.get('unmeasured'):
+                    continue
+                stage = rec['stage']
+                if stage == 'measured' and rec['parent'] != parent.content_hash and rec['qualification']['qualified']:
+                    rec['stage'] = stage = 'rebase'
+                if stage in terminal:
+                    continue
+                card = cards[rec['card_index']]
+                cand = self.versions.get(rec.get('candidate'))
+                if stage in ('pending', 'repair', 'rebase'):
+                    if count('implementation') >= self.cfg.b:
+                        continue
+                    if stage == 'rebase':
+                        submit(rec, 'implementation', stages.rebase, copy.deepcopy(rec), cand, parent)
+                    else:
+                        submit(rec, 'implementation', stages.build, snapshot(rec['parent']), copy.deepcopy(rec), card, cand)
+                elif stage in ('built', 'smoke_pass', 'minibatch_pass', 'validated'):
+                    if stage == 'validated' and cand.content_hash in self._results:
+                        if count('review') < self.cfg.b:
+                            submit(rec, 'review', stages.review, snapshot(rec['parent']), copy.deepcopy(rec), card, cand,
+                                   self._results[cand.content_hash])
+                    elif count('measurement') < self.cfg.b:
+                        fn = {'built': stages.smoke, 'smoke_pass': stages.minibatch,
+                              'minibatch_pass': stages.validation, 'validated': stages.validation}[stage]
+                        submit(rec, 'measurement', fn, snapshot(rec['parent']), copy.deepcopy(rec), card, cand)
+            qualified = [r for r in records.values() if r['stage'] == 'measured'
+                         and r['parent'] == parent.content_hash and r['qualification']['qualified']]
+            best = decide.pick_best(qualified, self.cfg.tie_fraction)
+            if best and len(prefetched) < self.cfg.speculative_prefetches:
+                if self._start_prefetch(self.versions[best['candidate']]):
+                    prefetched.add(best['candidate'])
+                    rd['prefetched'] = sorted(prefetched)
+            if self.cfg.merge and len(qualified) >= 2 and count('measurement') < self.cfg.b:
+                second = max((r for r in qualified if r is not best), key=lambda r: (r['delta_val'], -r['card_index']))
+                key = f"{best['candidate']}|{second['candidate']}"
+                if key not in merges and not any(j.get('merge_key') == key for j in self._jobs.values()):
+                    fut = self._pools['measurement'].submit(stages.merge, self.adapter, snapshot(parent.content_hash),
+                            copy.deepcopy(best), copy.deepcopy(second), self.versions[best['candidate']],
+                            self.versions[second['candidate']])
+                    self._jobs[fut] = dict(merge_key=key, pool='measurement', parent=parent.content_hash, round=rd['round'],
+                                           of=[best['card_index'], second['card_index']])
+            # Next analysis is speculative: only the same parent and exact next round may consume it.
+            key = (parent.content_hash, rd['round'] + 1)
+            if (self.cfg.speculative_analysis and cards and key not in self._analyses
+                    and rd['round'] < self.cfg.max_rounds
+                    and all(r['stage'] != 'pending' or r['uid'] in active_uids() for r in records.values())):
+                history = self.history_for(parent)
+                for rec in records.values():
+                    known = self._history_entry(rec, adopted=False)
+                    if known is not None and known['label'] != 'qualified_not_adopted':
+                        history.append({k: v for k, v in known.items() if k != 'parent'})
+                    else:
+                        history.append(dict(title=rec['title'], label='in_progress'))
+                self._analyses[key] = self._analysis_pool.submit(self._analysis, parent, rd['round'] + 1,
+                    history, list(self.analyst_shown.get(parent.content_hash, [])), self.no_adoption)
+            unfinished = [r for r in records.values() if r['stage'] not in terminal]
+            current_merges = any(j.get('merge_key') and j['round'] == rd['round'] for j in self._jobs.values())
+            if not unfinished and not current_merges:
+                return None
+            self.save()
+            if self._jobs:
+                wait(list(self._jobs), timeout=.02, return_when=FIRST_COMPLETED)
+            else:
+                raise RuntimeError('unfinished v4 records have no runnable stage')
 
-    def _after_stage01(self, rec: dict) -> Optional[str]:
-        if (rec.get("reason") or "").startswith(RUN_FAILURE):
-            self.run_failures += 1
-            if self.run_failures >= self.cfg.max_consecutive_run_failures:
-                log.error("%d consecutive smoke run failures; halting", self.run_failures)
-                return "process_failure"
-        elif rec.get("smoke") is not None:
-            self.run_failures = 0
-        return None
+    def _complete_job(self, job, future):
+        """Publish a worker result on the coordinator, including results received during shutdown."""
+        result = future.result()
+        if job.get('merge_key'):
+            row, version, val = result
+            if version is not None:
+                self.versions[version.content_hash] = version
+                if val is not None:
+                    self._val_cache[(version.content_hash, job['parent'], self.calibration['k_val'])] = val
+            for rd in self.rounds + ([self.current] if self.current else []):
+                if rd['round'] == job['round']:
+                    rd.setdefault('merges', {})[job['merge_key']] = row
+            return None
+        rec = next((item['record'] for item in self.carry if item['record']['uid'] == job['uid']), job['record'])
+        if job['stage'] in ('pending', 'repair', 'rebase'):
+            result, version = result
+            if version is not None:
+                self.versions[version.content_hash] = version
+        elif job['stage'] in ('minibatch_pass', 'validated') and job['pool'] == 'measurement':
+            result, val = result
+            self._results[result['candidate']] = val
+            self._val_cache[(result['candidate'], result['parent'], self.calibration['k_val'])] = val
+        result['card_index'] = rec['card_index']
+        if rec.get('unmeasured'):
+            result['unmeasured'] = rec['unmeasured']
+        rec.clear()
+        rec.update(result)
+        return rec
+
+    def _record_failure(self, exc):
+        from ..adapter import EvaluationCancelled
+        if isinstance(exc, EvaluationCancelled):
+            return 'time_budget' if self._out_of_time() else 'process_failure'
+        if isinstance(exc, BudgetExhausted):
+            return 'budget_exhausted'
+        self.run_failures += 1
+        return 'process_failure' if self.run_failures >= self.cfg.max_consecutive_run_failures else None
 
     # -- round-end decision (§3.3) ------------------------------------------
 
     def _decide(self, rd: dict, parent: Version) -> None:
         t0 = self.clock()
         records = list(rd["records"].values())
-        qualified = [r for r in records if r["stage"] == "measured" and r["qualification"]["qualified"]]
+        qualified = [r for r in records if r["stage"] == "measured" and r["parent"] == parent.content_hash
+                     and not r.get("carried_to") and r["qualification"]["qualified"]]
         best = decide.pick_best(qualified, self.cfg.tie_fraction)
         decision = dict(qualified=[r["card_index"] for r in qualified], best=best and best["card_index"],
                         merge=None, adopted=None)
@@ -656,7 +677,8 @@ class V4Run:
                         se_val=best["se_val"], tier=best["mechanism"]["tier"], card_indices=[best["card_index"]])
             if self.cfg.merge and len(qualified) >= 2:
                 second = max((r for r in qualified if r is not best), key=lambda r: (r["delta_val"], -r["card_index"]))
-                decision["merge"] = m = rd.get("merge_progress") or self._merge(rd, parent, best, second)
+                key = f"{best['candidate']}|{second['candidate']}"
+                decision["merge"] = m = rd.get("merges", {}).get(key) or dict(of=[best["card_index"], second["card_index"]], adopt=False, skipped="not complete before round deadline")
                 if m.get("adopt"):
                     adopted = self.versions[m["candidate"]]
                     node = dict(kind="merge", components=[best["candidate"], m["candidate"]],
@@ -666,7 +688,6 @@ class V4Run:
         for r in records:
             self._label(r, parent, adopted=r["card_index"] in in_lineage)
         if adopted is not None:
-            self._start_prefetch(adopted)       # after the merge decision: never the losing version
             self.lineage.append(dict(node, version=adopted.content_hash, parent=parent.content_hash,
                                      round=rd["round"], k_val=self.calibration["k_val"], elapsed_s=self.elapsed()))
             decision["adopted"] = adopted.content_hash
@@ -678,38 +699,24 @@ class V4Run:
         rd["decision_s"] = self.clock() - t0
         self.save()
 
-    def _merge(self, rd: dict, parent: Version, best: dict, second: dict) -> dict:
-        """§3.3 step 3: second's change rebased onto best, measured on the parent's validation split."""
-        out = dict(of=[best["card_index"], second["card_index"]], adopt=False)
-        try:
-            merged = self.adapter.rebase(self.versions[second["candidate"]], self.versions[best["candidate"]])
-        except EvaluationUnavailable:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            return dict(out, skipped=f"rebase: {type(exc).__name__}: {exc}")
-        if merged is None:
-            return dict(out, skipped="rebase conflict")
-        self.versions[merged.content_hash] = merged
-        self.save()
-        mv = self.measure_val(merged, parent.content_hash)
-        mb, rest = self.split_for(parent.content_hash)
-        pv = decide.restrict(self.parent_val(parent), mb + rest)
-        d = decide.paired_delta(mv, pv, mb + rest, rerun_var=self.calibration["rerun_var"], families=self.families)
-        sg = decide.safeguard_verdict(self.adapter.observe_safeguards(mv, pv), self.cfg.safeguard_tolerances)
-        ok = sg["ok"] or (not sg["breached"] and not self.cfg.unobserved_safeguard_blocks)
-        adopt = d["delta"] is not None and d["delta"] > best["delta_val"] and ok
-        result = dict(out, candidate=merged.content_hash, delta_val=d["delta"], se_val=d["se"], n_val=d["n"],
-                      safeguards=sg, adopt=adopt)
-        rd["merge_progress"] = result
-        self.save()
-        return result
-
     def _label(self, rec: dict, parent: Version, *, adopted: bool) -> None:
-        """§5 history label (labels and discrete details only)."""
+        """Publish the outcome once the round's decision is final."""
+        entry = self._history_entry(rec, adopted=adopted)
+        if entry is not None:
+            rec["label"] = entry["label"]
+            self.history.append(entry)
+
+    def _history_entry(self, rec: dict, *, adopted: bool) -> Optional[dict]:
         stage = rec["stage"]
-        if stage == "error" or rec.get("unmeasured"):
-            return
-        if stage == "smoke_fail":
+        if rec.get("unmeasured") or rec.get("carried_to") or stage not in ("smoke_fail", "minibatch_fail", "measured", "run_failed", "error", "preflight_skipped"):
+            return None
+        if stage == "preflight_skipped":
+            label = "preflight_skipped"
+        elif stage == "error":
+            label = "implementation_failed"
+        elif stage == "run_failed":
+            label = "run_failed"
+        elif stage == "smoke_fail":
             label = "smoke_fail"
         elif stage == "minibatch_fail":
             label = rec.get("label") or "minibatch_fail"
@@ -721,8 +728,8 @@ class V4Run:
             label = "safeguard_breached"
         else:
             label = "below_threshold"
-        rec["label"] = label
-        entry = dict(parent=parent.content_hash, title=rec["title"], label=label)
+        entry = dict(parent=rec["parent"], title=rec["title"], label=label)
+        entry.update(agent_context.feedback(rec, label))
         sg = rec.get("safeguards") or rec.get("safeguards_mb") or {}
         if label == "safeguard_breached" and sg.get("breached"):
             entry["safeguards_breached"] = list(sg["breached"])
@@ -731,7 +738,7 @@ class V4Run:
         tier_ = ((rec.get("mechanism") or {}).get("tier"))
         if stage == "measured" and tier_:
             entry["mechanism"] = tier_
-        self.history.append(entry)
+        return entry
 
     # -- ablation pruning (§4.2) --------------------------------------------
 
@@ -744,6 +751,7 @@ class V4Run:
             if j in skip:
                 continue
             for component in units[j]["components"]:
+                self.adapter.check_runtime()
                 try:
                     base = self.adapter.rebase(self.versions[component], base)
                 except EvaluationUnavailable:
@@ -783,7 +791,7 @@ class V4Run:
             # One measurement per unit except the last (removing it leaves its parent, already cached),
             # plus the re-measurement of the pruned version.
             measured = len(units)
-            needed = measured * self._validation_seconds()
+            needed = ((measured + self.cfg.ablation_parallel - 1) // self.cfg.ablation_parallel + 1) * self._validation_seconds()
             ab["budget"] = dict(validation_seconds=self._validation_seconds(), measurements=measured,
                                 needed_s=needed, remaining_s=self._remaining())
             if needed > self._remaining():
@@ -797,41 +805,112 @@ class V4Run:
         ids = self.partitions["validation"]
         cal = self.calibration
         kill = self.cfg.ablation_kill
+        # Build the independent versions on the coordinator; workers only measure immutable versions.
+        jobs = []
         for i, node in enumerate(units):
             if str(i) in ab["units"]:
                 continue
+            if self._out_of_time():
+                ab.update(status="skipped", reason="time budget")
+                self.save()
+                return
             row = dict(index=i + 1, version=node["version"], round=node["round"], kind=node["kind"],
                        card_indices=node.get("card_indices", []))
-            ablated = self._rebuild({i})
+            try:
+                ablated = self._rebuild({i})
+            except Exception as exc:
+                failure = self._record_failure(exc)
+                if failure:
+                    raise (exc if isinstance(exc, EvaluationUnavailable)
+                           else EvaluationUnavailable(f"ablation: {type(exc).__name__}: {exc}"))
+                ab["units"][str(i)] = dict(row, status="run_failed", reason=str(exc), prune=False)
+                continue
             if ablated is None:
-                row.update(status="conflict", prune=False)
+                ab["units"][str(i)] = dict(row, status="conflict", prune=False)
             else:
-                val = self._val_of(ablated, ab["split_of"])
-                d = decide.paired_delta(val, final_val, ids, rerun_var=cal["rerun_var"], families=self.families)
-                prune = d["delta"] is not None and d["se"] is not None and d["delta"] >= -kill * d["se"]
-                row.update(status="measured", ablated=ablated.content_hash, delta=d["delta"], se=d["se"], n=d["n"],
-                           prune=prune)
-            ab["units"][str(i)] = row
-            self.save()
+                jobs.append((i, row, ablated))
+        mb, rest = self.split_for(ab["split_of"])
+        def evaluate(version):
+            self.adapter.check_runtime()
+            # Known lineage results are captured on the coordinator, not read through a shared mutable cache.
+            return decide.combine(self.adapter.evaluate_subset(version, None, "mb", mb, 1)[0],
+                                  self.adapter.evaluate_subset(version, None, "rest", rest, cal["k_val"])[0])
+        with ThreadPoolExecutor(max_workers=self.cfg.ablation_parallel, thread_name_prefix="v4-ablation") as pool:
+            pending = {}
+            try:
+                for i, row, version in jobs:
+                    if self._node(version.content_hash) is not None:
+                        fut = Future()
+                        fut.set_result(self.parent_val(version))
+                    else:
+                        fut = pool.submit(evaluate, version)
+                    pending[fut] = (i, row, version)
+                while pending:
+                    done, _ = wait(pending, timeout=.05, return_when=FIRST_COMPLETED)
+                    if self._out_of_time():
+                        self.adapter.cancel_pending()
+                        for fut in pending:
+                            fut.cancel()
+                        ab.update(status="skipped", reason="time budget")
+                        self.save()
+                        return
+                    for fut in done:
+                        i, row, version = pending.pop(fut)
+                        try:
+                            val = fut.result()
+                            d = decide.paired_delta(val, final_val, ids, rerun_var=cal["rerun_var"], families=self.families)
+                            row.update(status="measured", ablated=version.content_hash, delta=d["delta"], se=d["se"],
+                                       n=d["n"], prune=d["delta"] is not None and d["se"] is not None
+                                       and d["delta"] >= -kill * d["se"])
+                            self.run_failures = 0
+                        except Exception as exc:
+                            failure = self._record_failure(exc)
+                            row.update(status="run_failed", reason=str(exc), prune=False)
+                            if failure:
+                                # Leave this unit retryable; completed units remain in the ledger.
+                                raise (exc if isinstance(exc, EvaluationUnavailable)
+                                       else EvaluationUnavailable(f"ablation: {type(exc).__name__}: {exc}"))
+                        ab["units"][str(i)] = row
+                        self.save()
+            except BaseException as exc:
+                # Context-manager shutdown joins workers; wake them before leaving the block.
+                if self._out_of_time() or isinstance(exc, BudgetExhausted):
+                    self.adapter.cancel_pending()
+                else:
+                    self.adapter.stop_polling()
+                for fut in pending:
+                    fut.cancel()
+                raise
         pruned = sorted(int(k) for k, r in ab["units"].items() if r.get("prune"))
         ab["pruned"] = [i + 1 for i in pruned]
         if not pruned:
             ab.update(status="done", accepted=False, reason="every adopted change contributes")
         else:
-            version = self._rebuild(set(pruned))
-            if version is None:
-                ab.update(status="done", accepted=False, reason="rebase conflict while removing the pruned changes")
-            else:
-                val = self._val_of(version, ab["split_of"])
-                d = decide.paired_delta(val, final_val, ids, rerun_var=cal["rerun_var"], families=self.families)
-                ok = d["delta"] is not None and d["se"] is not None and d["delta"] >= -kill * d["se"]
-                ab.update(status="done", candidate=version.content_hash,
-                          check=dict(delta=d["delta"], se=d["se"], n=d["n"]), accepted=ok,
-                          reason=None if ok else "the pruned version is worse on the validation set")
-                if ok:
-                    ab["final"] = version.content_hash
-                    for i in pruned:
-                        self._mark_pruned(units[i])
+            if self._out_of_time():
+                ab.update(status="done", accepted=False, reason="time budget before prune validation")
+                self.save()
+                return
+            try:
+                version = self._rebuild(set(pruned))
+                if version is None:
+                    ab.update(status="done", accepted=False, reason="rebase conflict while removing the pruned changes")
+                else:
+                    val = self._val_of(version, ab["split_of"])
+                    d = decide.paired_delta(val, final_val, ids, rerun_var=cal["rerun_var"], families=self.families)
+                    ok = d["delta"] is not None and d["se"] is not None and d["delta"] >= -kill * d["se"]
+                    ab.update(status="done", candidate=version.content_hash,
+                              check=dict(delta=d["delta"], se=d["se"], n=d["n"]), accepted=ok,
+                              reason=None if ok else "the pruned version is worse on the validation set")
+                    if ok:
+                        ab["final"] = version.content_hash
+                        for i in pruned:
+                            self._mark_pruned(units[i])
+            except Exception as exc:
+                failure = self._record_failure(exc)
+                if failure:
+                    raise (exc if isinstance(exc, EvaluationUnavailable)
+                           else EvaluationUnavailable(f"ablation: {type(exc).__name__}: {exc}"))
+                ab.update(status="done", accepted=False, reason=f"pruned version unavailable: {exc}")
         ab["wall_s"] = self.elapsed() - ab.get("started_elapsed", self.elapsed())
         self.ablation = ab
         self.save()
@@ -864,5 +943,5 @@ DEVIATIONS = [
     "SN keeps v2's 60/40 search/validation split; the test set is the iteration's registered sealed selection",
     "the seed's calibration A/A stands in for the parent's A/A in the mechanical check and the reviewer's control pairs",
     "ablation removes one lineage node at a time; a merge node (two cards) is removed as one unit",
-    "the analyst sees the mechanism tier only, never the reviewer's free-text reason",
+    "the analyst sees categorical validation outcomes and mechanism tiers, never validation scores/cases or reviewer prose",
 ]

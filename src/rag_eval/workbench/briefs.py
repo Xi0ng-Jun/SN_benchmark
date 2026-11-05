@@ -288,6 +288,7 @@ worktree 起点已有这些未提交改动，它们属于用户，不要覆盖�
 # (auto_runs.ANALYST_ALLOWED / IMPLEMENTER_ALLOWED list exactly what these allow).
 V3_ANALYST_COMMANDS = ('docs', 'leak-check', 'proposal draft')
 V3_IMPLEMENTER_COMMANDS = ('card', 'leak-check')
+V4_ANALYST_COMMANDS = (*V3_ANALYST_COMMANDS, 'source')
 
 
 def v3_analyst_brief(task, *, tool, candidate_id):
@@ -325,36 +326,66 @@ When you finish, reply with the files you changed and why, the test commands and
 '''
 
 
-V4_HISTORY_LABELS_TEXT = ('smoke_fail (did not run, or the predicted behaviour did not change on the smoke cases), '
+V4_HISTORY_LABELS_TEXT = ('preflight_skipped (implementer reported a source/local-check reason to stop before evaluation; '
+                          'not an independently proved rejection), smoke_fail (did not run, or the predicted behaviour did not change on the smoke cases), '
                           'minibatch_fail (clearly worse on the first validation slice), below_threshold (validation '
                           'gain too small for its mechanism evidence), qualified_not_adopted (good enough, another '
                           'card was better this round: you may propose it again on the new parent), adopted, '
-                          'safeguard_breached (with the safeguard names), pruned (adopted, then removed by ablation)')
+                          'safeguard_breached (with the safeguard names), pruned (adopted, then removed by ablation), '
+                          'run_failed (the candidate failed to run on the validation cases), in_progress (still being '
+                          'implemented or measured: do not propose it again); entries from an earlier parent are marked')
 
 
 def v4_analyst_brief(task, *, tool, candidate_id):
     s = f'{tool} --task {task["id"]} --role analyst --node {candidate_id}'
     return f'''# Method-v4 analyst · node {candidate_id}
 
-You are the analyst of an automatic method-v4 run on iteration task "{task["title"]}", bound to candidate `{candidate_id}` (the round's parent). Each round's message names one evidence file (absolute path and sha256): diagnostic views of the parent's search cases, as c1, c2, ... marked [failure] or [control], and the outcome labels of hypotheses already tried under this parent. That file is your only input.
+You are the analyst of an automatic method-v4 run on iteration task "{task["title"]}", bound to candidate `{candidate_id}` (the round's parent). Each round's message names one evidence file (absolute path and sha256): diagnostic views of the parent's search cases, as c1, c2, ... marked [failure] or [control], search scores when supplied, and outcome labels of hypotheses tried under this or earlier parents (earlier parents are marked). Read that file and the preparation-source and adopted-change inventory files it explicitly names. The adopted inventory preserves the current lineage beyond the bounded recent history. You may also inspect the frozen parent product source through the source command below.
 
 Commands (`$S` = `{s}`):
+- `$S source --path <path> [--query literal] [--start N --lines N]`: bounded frozen-parent product source/tests (one file; 1-based lines, default 80, maximum 200); backend/app/, backend/tests/, frontend/src/, frontend/tests/ or frontend/__tests__/ source files only. Query is literal text, not regex. Never read the dirty checkout as parent evidence.
 - `$S docs`: evaluation documents
 - `$S leak-check`: benchmark-text leak scan
 - `$S proposal draft --parent {candidate_id} --file card.json`: save one card under this node (it is leak-scanned and validated)
 Nothing else. Never request runs, freezes, derivations, adoptions or other decisions; the coordinator does all of that.
 
-Card (lcd-v2): JSON with title, component, mechanism, implementer_brief, falsification, predictions (may be []), optional change_scope, and contract = {{slice_predicate, manipulation: {{direction: decrease|increase, threshold in [0, 1]}}, slice_effect: {{direction: positive}}}}. The slice_predicate is the card's behaviour expectation: a closed signature (kind regex or range on one field; all_of / any_of / not) over behaviour fields or trace.* step features such as trace.n_empty_retrievals; never case ids, scores or gold. The coordinator checks it mechanically (smoke cases, then the validation pairs) and an independent reviewer judges whether the change took effect: a change whose mechanism is confirmed is adopted with a smaller validation gain, so make the expectation specific. One card per distinct failure mode.
+Card (lcd-v2): JSON with title, component, mechanism, implementer_brief, falsification, predictions (may be []), optional change_scope and search_refs (opaque references such as ["c1", "c3"] from this exact round evidence), and contract = {{slice_predicate, manipulation: {{direction: decrease|increase, threshold in [0, 1]}}, slice_effect: {{direction: positive}}}}. The slice_predicate is the card's behaviour expectation: a closed signature (kind regex or range on one field; all_of / any_of / not) over behaviour fields or trace.* step features such as trace.n_empty_retrievals; never case ids, scores or gold. The coordinator checks it mechanically on validation pairs (and on smoke cases when the optional behaviour smoke gate is enabled) and an independent reviewer judges whether the change took effect: a change whose mechanism is confirmed is adopted with a smaller validation gain, so make the expectation specific. One card per distinct failure mode; draft the most promising card first (cards are implemented in the order you draft them).
+
+Before drafting: distinguish observed search evidence, the code fact in a named frozen path/line, and the causal hypothesis. Check whether current code already meets the proposed guarantee. In falsification, name the cheapest discriminating source check, synthetic test or local probe and the result that would refute the hypothesis; do not require an expensive suite by default. Use search_refs to cite only the cases actually supporting this card; do not invent references or copy raw case IDs. Missing references on historical cards mean legacy context, not verified exact citations.
+
+Cost: the preparation cache source list is named in the evidence file. A ::symbol entry covers only that definition or assignment, not the entire file. Covered changes may require a new preparation snapshot; matching snapshots can be reused across evaluations. Answer-path prompts outside those symbols do not by themselves invalidate preparation. Prefer answer-path changes when suitable; identify required preparation changes in implementer_brief.
 
 Outcome labels you may see: {V4_HISTORY_LABELS_TEXT}; with a mechanism tier (confirmed / unconfirmed / suspicious) when the candidate was fully measured.
 
-Rules: you see no gold answers, scores, validation or test cases and must not look for them. Do not read files under var/ except the evidence file named in the message; do not open other iterations or run directories; do not edit SN code.
+Rules: you may use the search scores supplied in this evidence file to diagnose search failures. Never seek gold answers, benchmark validation or test cases, or their scores; never put case ids, scores or gold into card predicates. Do not read files under var/ except the evidence file named in the message and its explicitly named preparation-source/adopted-change files; do not open other iterations or run directories; do not edit SN code. The source command enforces a narrow read boundary, not a filesystem sandbox.
 '''
 
 
 def v4_implementer_brief(task, *, tool, hypothesis_id, candidate_id, worktree):
-    return v3_implementer_brief(task, tool=tool, hypothesis_id=hypothesis_id, candidate_id=candidate_id,
-                                worktree=worktree).replace('Method-v3', 'Method-v4').replace('method-v3', 'method-v4')
+    s = f'{tool} --task {task["id"]} --role implementer --hypothesis {hypothesis_id} --candidate {candidate_id}'
+    return f'''# Method-v4 implementer · candidate {candidate_id}
+
+You implement one approved card (hypothesis `{hypothesis_id}`) in candidate `{candidate_id}` of an automatic method-v4 run. Your worktree: `{worktree or "not ready"}` — this is the SN product repo (backend/, frontend/, etc.). Edit product files ONLY inside this worktree path; the sole outside-worktree write exception is the coordinator-named preflight report file. If the card names a path that does not exist here (e.g. src/rag_eval/), find the equivalent SN product file (e.g. the answerer prompt in backend/app/services/) and change that instead.
+
+Commands (`$S` = `{s}`):
+- `$S card`: the approved card (what to change and why)
+- `$S leak-check`: benchmark-text leak scan of your change
+Nothing else.
+
+Order: read the approved card and the cited search evidence file named in the message -> inspect relevant product source and relevant tests -> perform the cheapest useful preflight check of the hypothesis. Separate observations from the causal claim. A source check alone can be enough; use a small synthetic test or local probe when it resolves an uncertainty. No costly suite or extra Agent is required.
+
+If the hypothesis is refuted or already satisfied, stop before editing product code and report decision=skip with the actual checks and reason. If checks remain inconclusive, skip when no change is justified, or use implement/inconclusive for a bounded, justified experiment with the uncertainty explicitly recorded; never invent support. When proceeding, implement the change, run checks proportionate to its risk (only relevant SN tests when needed), and leak-check. Leave changes uncommitted. Never commit, freeze, run or request evaluations: the coordinator handles these after an implement decision.
+
+Write exactly one JSON object to the preflight report path supplied in the dispatch message, using its candidate_id, hypothesis_id and parent_candidate_id identity values:
+{{"candidate_id": "<from message>", "hypothesis_id": "<from message>", "parent_candidate_id": "<from message>", "decision": "implement|skip", "reason": "supported|refuted|already_satisfied|inconclusive", "summary": "short conclusion", "checks": [{{"kind": "source|test|probe", "target": "path:line or command", "observation": "what was actually observed"}}]}}
+Respect the report byte, text and check-count limits in the dispatch message. Select one value for each enum, not the pipe-separated text. Both implement and skip require 1–32 concrete checks actually attempted. Use implement with reason supported or inconclusive; use skip with reason refuted, already_satisfied or inconclusive. Missing or invalid reports are failures, never inferred skips. Reports are implementer claims, not independent proof. A repair message names the same required report and current identities; refresh it after the repair checks.
+
+Cost: the message names the preparation cache source list. A ::symbol entry covers only that definition or assignment, not the entire file. Covered changes may require a new snapshot, which later evaluations can reuse. Prefer answer-path changes when suitable.
+
+For evidence, read only the files the message names (the analyst's search evidence, the preparation source list and, in a repair, the feedback file); read no other file under var/. Search scores may appear in the named search evidence. Never seek gold answers, benchmark validation or test cases, or their scores. You may inspect product source and relevant tests inside your worktree.
+
+When you finish, reply with the files you changed and why, the test commands and their results, and remaining risks.
+'''
 
 
 def v4_reviewer_brief(task, *, candidate_id):
@@ -362,7 +393,7 @@ def v4_reviewer_brief(task, *, candidate_id):
 
 You are the independent reviewer of one candidate change of an automatic method-v4 run on iteration task "{task["title"]}". You do not propose or implement changes. Each message names one evidence file (absolute path and sha256) and one verdict file path. The evidence file holds the card (failure mode and change hypothesis), the change's diff, and several anonymous pairs of trajectory views labelled p1, p2, ...; in each pair the two sides are labelled A and B in random order.
 
-For every pair answer three questions: did the change described by the card take effect in this pair (which side shows it), does the pair show a side effect, and does it show score gaming (e.g. a shorter answer with the same content, more refusals, answer text shaped to a metric rather than to the question). Some pairs may show no difference at all; say so.
+For every pair answer three questions: did the change described by the card take effect in this pair (which side shows it), does the pair show a side effect, and does it show score gaming (e.g. a shorter answer with the same content, more refusals, answer text shaped to a metric rather than to the question). Some pairs may show no difference at all; say so. Identical structured fields are named once; changed fields show both A and B. A [truncated] value is incomplete evidence: do not infer equality from matching prefixes. If the visible evidence cannot establish the mechanism, use effect=false and changed_side=null and explain the missing evidence in note.
 
 Write exactly one JSON object to the verdict file named in the message (nothing else in it), then stop:
 {{"pairs": [{{"pair": "p1", "effect": true|false, "changed_side": "A"|"B"|null, "side_effect": true|false, "gaming": true|false, "note": "one or two sentences"}}, ...]}}
