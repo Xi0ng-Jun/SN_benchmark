@@ -236,6 +236,8 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
                 next_action=_next_action(status, halt, endpoint, run["test_set"]),
                 progress=progress, config=config, variants=(ledger or {}).get("variants") or {},
                 calibration=_calibration(state.get("calibration")), feasibility=state.get("feasibility"),
+                forecast=state.get('forecast'),
+                parameter_sources=((ledger or {}).get('frozen_config') or {}).get('sources'),
                 cumulative=state.get("cumulative"),
                 lineage=lineage, rounds=rounds, ablation=_ablation(state.get("ablation"), versions),
                 time_account=(ledger or {}).get("time_account"), endpoint=endpoint,
@@ -246,9 +248,16 @@ def read_run(state_dir: str | Path, *, alive: bool) -> dict:
     from ..run_view import IDENTITY_FILE, _optional_json
     from .loop import LEDGER_FILE, STATE_FILE
     state_dir = Path(state_dir)
-    return project(_optional_json(state_dir / STATE_FILE), identity=_optional_json(state_dir / IDENTITY_FILE),
+    view = project(_optional_json(state_dir / STATE_FILE), identity=_optional_json(state_dir / IDENTITY_FILE),
                    ledger=_optional_json(state_dir / LEDGER_FILE), endpoint=_optional_json(state_dir / ENDPOINT_FILE),
                    alive=alive)
+    from .calibration_session import CALIBRATION_FILE, load_bundle, public_summary
+    if (state_dir / CALIBRATION_FILE).exists():
+        try:
+            view['calibration_detail'] = public_summary(load_bundle(state_dir / CALIBRATION_FILE))
+        except (OSError, ValueError, KeyError, TypeError):
+            view['calibration_detail'] = dict(complete=False)
+    return view
 
 
 def is_v4(identity: Optional[dict[str, Any]]) -> bool:

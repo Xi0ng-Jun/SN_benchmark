@@ -69,19 +69,23 @@ class CalibrationSummary:
     per_task_s: float            # t
     p95_exec_s: float
     infra_fail_rate: float
-    tokens_per_task: float
+    tokens_per_task: Optional[float]
     safeguard_var: dict = dataclasses.field(default_factory=dict)
     cold_wall_s: Optional[float] = None
     warm_wall_s: Optional[float] = None
     concurrency_probe: Optional[tuple] = None
     pool_size: int = 0
     test_size: int = 0
+    n_diagnosis: int = 0
+    remaining_paper_sizes: Optional[tuple] = None
 
     def __post_init__(self):
         if self.n_probe < 1 or self.k < 1 or self.pool_size < 0 or self.test_size < 0:
             raise ValueError("calibration needs n_probe ≥ 1, k ≥ 1 and nonnegative pool / test sizes")
         for name in ("rerun_var", "exec_overhead_s", "per_task_s", "p95_exec_s", "tokens_per_task"):
-            if not isinstance(getattr(self, name), (int, float)) or getattr(self, name) < 0:
+            if name == 'tokens_per_task' and self.tokens_per_task is None:
+                continue
+            if type(getattr(self, name)) not in (int, float) or not math.isfinite(getattr(self, name)) or getattr(self, name) < 0:
                 raise ValueError(f"calibration {name} must be a nonnegative number")
         for name in ("seed_fail_rate", "constant_fraction", "infra_fail_rate"):
             if not 0 <= getattr(self, name) <= 1:
@@ -96,6 +100,8 @@ class CalibrationSummary:
         out["safeguard_var"] = dict(sorted((self.safeguard_var or {}).items()))
         if self.concurrency_probe is not None:
             out["concurrency_probe"] = [list(p) for p in self.concurrency_probe]
+        if self.remaining_paper_sizes is not None:
+            out['remaining_paper_sizes'] = list(self.remaining_paper_sizes)
         return out
 
     @classmethod
@@ -332,9 +338,11 @@ def _scenario(p: dict, cal: CalibrationSummary, agent: float, agent_hi: float, a
     top_up = cal.t_meas(max(0, n_val - cal.n_probe))
     available = max(0.0, budget_s - top_up)
     rounds = int(available // per_round) if per_round > 0 else 0
-    top_up_tokens = cal.tokens_per_task * max(0, n_val - cal.n_probe)
-    round_tokens = cal.tokens_per_task * (b * tasks + (n_val if p["remeasure"] else 0))
+    top_up_tokens = (cal.tokens_per_task or 0) * max(0, n_val - cal.n_probe)
+    round_tokens = (cal.tokens_per_task or 0) * (b * tasks + (n_val if p["remeasure"] else 0))
     if p["spend_budget"] is not None:
+        if cal.tokens_per_task is None:
+            raise ValueError('spend_budget needs measured token usage; missing usage cannot be zero')
         unit_price = p["price_per_1k_tokens"] / 1000
         remaining = p["spend_budget"] - top_up_tokens * unit_price
         round_cost = round_tokens * unit_price
@@ -394,11 +402,11 @@ def simulate(params: dict, calibration: Any, history: Any = None) -> dict:
     def iv(key):
         return _interval([s[key] for s in scen])
     se, detectable = iv("se"), iv("detectable")
-    tokens = iv("tokens")
+    tokens = iv("tokens") if cal.tokens_per_task is not None else None
     spend = dict(tokens=tokens, scope="measurement_only", agent_cost_included=False,
                  includes=["seed_validation_top_up", "forecast_round_measurements"],
                  excludes=["prior_calibration", "implementation_agents", "analysis_agents"])
-    if p["price_per_1k_tokens"] is not None:
+    if p["price_per_1k_tokens"] is not None and tokens is not None:
         spend["cost"] = {k: v * p["price_per_1k_tokens"] / 1000 for k, v in tokens.items()}
         if p["spend_budget"] is not None:
             spend["within_budget"] = spend["cost"]["high"] <= p["spend_budget"]

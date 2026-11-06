@@ -81,8 +81,11 @@ class V4Run:
     def __init__(self, adapter: SystemAdapter, seed: Version, cfg: V4Config, *, search: list[str],
                  validation: list[str], test_size: Optional[int] = None, families: Optional[dict] = None,
                  state_dir: Optional[str | Path] = None, key_generation: Optional[int] = None,
-                 clock=time.monotonic) -> None:
+                 clock=time.monotonic, calibration_bundle: Optional[dict] = None, frozen_config: Optional[dict] = None) -> None:
         self.adapter, self.seed, self.cfg = adapter, seed, cfg
+        self.calibration_bundle = calibration_bundle
+        self.frozen_config = frozen_config
+        self.forecast = None
         observable = getattr(adapter, "observable_safeguards", None)
         if callable(observable):
             missing = sorted(set(cfg.safeguards) - set(observable()))
@@ -158,7 +161,7 @@ class V4Run:
     def _state(self) -> dict:
         return dict(schema_version=SCHEMA, config_sha256=digest(self.cfg), seed=self.seed.content_hash,
                     partitions=self.partitions, family_of=self.families, calibration=self.calibration,
-                    feasibility=self.feasibility,
+                    feasibility=self.feasibility, forecast=self.forecast,
                     versions={h: ledger_io.version_metadata(v) for h, v in self.versions.items()},
                     lineage=self.lineage, rounds=self.rounds, current_round=self.current, history=self.history,
                     analyst_shown=self.analyst_shown, no_adoption=self.no_adoption, run_failures=self.run_failures,
@@ -185,7 +188,7 @@ class V4Run:
             raise ValueError("search/validation/smoke ids or task families differ from the ones this run started with")
         self.partitions = recorded
         self.versions = {h: Version(content_hash=h, metadata=m) for h, m in st["versions"].items()}
-        for name in ("calibration", "feasibility", "lineage", "rounds", "history", "analyst_shown", "sessions",
+        for name in ("calibration", "feasibility", "forecast", "lineage", "rounds", "history", "analyst_shown", "sessions",
                      "key_generation_log", "started_at", "stop_reason", "ablation", "cumulative", "failure_detail"):
             setattr(self, name, st.get(name, getattr(self, name)))
         self.current = st.get("current_round")
@@ -250,7 +253,9 @@ class V4Run:
                     config_sha256=digest(self.cfg),
                     variants=self.cfg.variants(), seed=self.seed.content_hash,
                     partitions={k: (len(v) if isinstance(v, list) else v) for k, v in self.partitions.items()},
-                    deviations=DEVIATIONS, calibration=self.calibration, feasibility=self.feasibility,
+                    deviations=[d for d in DEVIATIONS if not (self.calibration_bundle and "calibration still runs" in d)],
+                    calibration=self.calibration, feasibility=self.feasibility, forecast=self.forecast,
+                    frozen_config=self.frozen_config,
                     rounds=rounds, lineage=self.lineage, stop_reason=self.stop_reason, ablation=self.ablation,
                     halt_reason=self.halt_reason, failure_detail=self.failure_detail, cumulative=self.cumulative,
                     remeasures=remeasures, implementation_failures=failures, flagged=flagged,
@@ -507,6 +512,10 @@ class V4Run:
             rd = self.current
             rd["finished_at"], rd["wall_s"] = _now(), self.elapsed() - rd["started_elapsed"]
             self.rounds.append(rd)
+            if self.calibration_bundle and self.frozen_config:
+                from .calibration_session import forecast
+                self.forecast = forecast(self.frozen_config, self.calibration_bundle, self.ledger())
+                rd["forecast"] = self.forecast
             self.current = None
             self.save()
             self.write_ledger()
@@ -551,6 +560,22 @@ class V4Run:
             self.cumulative = dict(status="unavailable", reason=f"{type(exc).__name__}: {exc}"[:300])
 
     def _calibrate(self) -> None:
+        if self.calibration_bundle is not None:
+            from .calibration_session import import_baseline, forecast
+            self.cal_results = import_baseline(self.adapter, self.seed, self.cfg, self.partitions,
+                                               self.calibration_bundle, self.state_dir)
+            self._diagnostics[self.seed.content_hash] = self.cal_results["search"]
+            if self.calibration is None:
+                self.calibration = copy.deepcopy(self.calibration_bundle["calibration"])
+                self.calibration["sizes"] = dict(search=len(self.calibration_bundle["diagnosis"]),
+                    mb=len(self.partitions["seed_minibatch"]), rest=len(self.partitions["seed_rest"]),
+                    test=self.partitions.get("test_size"))
+                self.calibration["validation_size"] = len(self.partitions["validation"])
+                self.calibration["summary"] = self.calibration_bundle["summary"]
+            if self.frozen_config:
+                self.forecast = forecast(self.frozen_config, self.calibration_bundle)
+            self.save()
+            return
         p = self.partitions
         t0 = self.clock()
         self.cal_results, walls = calibrate.measure(self.adapter, self.seed, self.cfg, self.diagnosis_sample(self.seed),

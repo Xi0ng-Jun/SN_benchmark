@@ -125,7 +125,7 @@ def allowed_ranges(calibration: CalibrationSummary, inputs: dict) -> dict:
         "safeguard_z": _float(0, 5),
         "safeguards": TOLERANCES,
         "adapter.agent_timeout": _float(300, 4 * 3600),
-        "adapter.execution_timeout_seconds": _float(60, max(60.0, budget_s)),
+        "adapter.execution_timeout_seconds": _int(1, min(86400, max(1, budget_s))),
         "adapter.infra_retry": _int(0, 3),
     }
 
@@ -163,6 +163,17 @@ def _cross(values: dict, calibration: CalibrationSummary, *, include_dependencie
         out["cards_per_analysis"] = "cards_per_analysis must be at least b"
         if include_dependencies:
             out["b"] = out["cards_per_analysis"]
+    if values.get("diagnose_size", 0) < calibration.n_diagnosis:
+        out['diagnose_size'] = 'diagnose_size cannot shrink the already observed whole-paper D'
+    if calibration.remaining_paper_sizes is not None:
+        reachable = {0}
+        for size in calibration.remaining_paper_sizes:
+            reachable |= {n + size for n in tuple(reachable)}
+        feasible = sorted(calibration.n_probe + n for n in reachable)
+        requested = values.get('validation_size', 0)
+        if requested not in feasible:
+            nearest = sorted(feasible, key=lambda n: (abs(n - requested), n))[:2]
+            out['validation_size'] = f'whole-paper validation_size required; nearest feasible sizes: {nearest}'
     return out
 
 
@@ -253,6 +264,9 @@ def rule_defaults(calibration: Any, user_inputs: dict, history: Any = None) -> P
     else:
         diag = max(1, min(room - 1, DIAG_FAILURES + DIAG_CONTROLS) if room > 1 else room)
         reason = f"the seed failed no probe task: {diag} tasks (failures cannot be targeted)"
+    if cal.n_diagnosis:
+        diag = cal.n_diagnosis
+        reason = "already measured whole-paper D; exposed diagnosis never shrinks"
     put("diagnose_size", diag, "rule", reason, "medium" if fail > 0 else "low")
 
     # n_val: largest n with o + n·t ≤ ρ·T_agent, in [|P|, pool − test − |D|].
@@ -263,6 +277,13 @@ def rule_defaults(calibration: Any, user_inputs: dict, history: Any = None) -> P
         n_fit = upper
     n_val = max(cal.n_probe, min(upper, n_fit))
     bound = " (raised to |P|)" if n_fit < cal.n_probe else " (capped by the pool)" if n_fit > upper else ""
+    if cal.remaining_paper_sizes is not None:
+        reachable = {0}
+        for size in cal.remaining_paper_sizes:
+            reachable |= {n + size for n in tuple(reachable)}
+        feasible = [cal.n_probe + n for n in reachable if cal.n_probe + n <= n_val]
+        n_val = max(feasible)
+        bound += "; rounded down to a realizable whole-paper count"
     put("validation_size", n_val, "rule",
         f"largest n with {cal.exec_overhead_s:.0f}+n·{cal.per_task_s:.1f} s ≤ {RHO}·{agent_note}: {n_fit}{bound}",
         "medium" if agent_src == "history" else "low")
@@ -302,8 +323,8 @@ def rule_defaults(calibration: Any, user_inputs: dict, history: Any = None) -> P
     put("adapter.agent_timeout", float(timeout), "rule",
         f"max(15 min, 2 × history p90 {p90:.0f} s)" if p90 is not None else "no history: 30 min",
         "medium" if p90 is not None else "low")
-    exec_timeout = min(max(60.0, 2.5 * cal.p95_exec_s), budget_s)
-    put("adapter.execution_timeout_seconds", float(exec_timeout), "rule",
+    exec_timeout = min(max(60, math.ceil(2.5 * cal.p95_exec_s)), max(1, int(budget_s)), 86400)
+    put("adapter.execution_timeout_seconds", exec_timeout, "rule",
         f"2.5 × p95 {cal.p95_exec_s:.0f} s, bounded by the budget", "medium")
     retries = _retries(cal.infra_fail_rate)
     put("adapter.infra_retry", retries, "rule",

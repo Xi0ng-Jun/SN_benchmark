@@ -20,11 +20,14 @@ receipts written and the run halts ``stopped`` (final; next step ``v4 test``).
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
+import json
 import os
 import signal
 import sys
 import traceback
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,6 +132,8 @@ def _settings(adapter_settings: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def cmd_run(args) -> int:
+    if getattr(args, 'from_proposal', None):
+        return cmd_calibrated_run(args)
     _require(args, "iteration", "actor", "run_id", "state_dir", "v4_config")
     try:
         loaded = load(args.v4_config)
@@ -141,6 +146,8 @@ def cmd_run(args) -> int:
     if identity is None and st is not None:
         raise UsageError(f"{state_dir} holds a state not started by this CLI; use a new --state-dir")
     if identity is not None:
+        if identity.get('frozen_config_sha256') and not getattr(args, '_frozen_config', None):
+            raise UsageError('this calibrated run must resume with --from-proposal')
         if identity["config_sha256"] != loaded.sha256:
             raise UsageError("the v4 config file changed since the run started; it is pre-registered and read-only")
         for key, flag, value in (("iteration_id", "--iteration", args.iteration), ("run_id", "--run-id", args.run_id),
@@ -217,9 +224,13 @@ def _run_locked(args, loaded, services, seed, search, validation, test_ids, stat
             task_id=services.task_id, root_candidate_id=services.root_candidate_id, seed=seed.content_hash,
             config_file=str(Path(args.v4_config).resolve()), config_sha256=loaded.sha256,
             config_resolved=loaded.resolved, test_set=bool(test_ids) and not args.no_test_set,
+            frozen_config_sha256=(getattr(args, '_frozen_config', None) or {}).get('payload_sha256'),
+            calibration_sha256=(getattr(args, '_calibration_bundle', None) or {}).get('payload_sha256'),
             created_at=_now()))
     run = V4Run(services.adapter, seed, loaded.config, search=search, validation=validation,
-                test_size=len(test_ids) or None, state_dir=state_dir, key_generation=key_generation)
+                test_size=len(test_ids) or None, state_dir=state_dir, key_generation=key_generation,
+                calibration_bundle=getattr(args, '_calibration_bundle', None),
+                frozen_config=getattr(args, '_frozen_config', None))
     with stop_on_sigterm():
         reason = run.run()
     if run.feasibility is not None and run.calibration is not None:
@@ -239,6 +250,104 @@ def _run_locked(args, loaded, services, seed, search, validation, test_ids, stat
     elif reason not in FAILURE_HALTS:
         print("next: v4 test (preview), then v4 test --confirm --budget <file> with the user's consent")
     return EXIT_HALTED if reason in FAILURE_HALTS else EXIT_OK
+
+
+def _bind(services, args):
+    from rag_eval.workbench import auto_runs
+    if not services.writable:
+        raise UsageError('workbench config does not enable candidate creation')
+    if services.repository is not None:
+        auto_runs.register(services.repository, args.iteration, run_id=args.run_id,
+            state_dir=str(Path(args.state_dir).resolve()), actor=args.actor, method='method-v4')
+
+
+def cmd_calibrate(args):
+    from . import calibration_session as session
+    from .simulate import read_history
+    _require(args, 'iteration', 'actor', 'run_id', 'state_dir', 'v4_config')
+    loaded = load(args.v4_config)
+    inputs = dict(time_budget_hours=loaded.config.time_budget_hours,
+                  calibration_k=args.calibration_k or loaded.config.calibration_k,
+                  safeguards=loaded.config.safeguards, delta=loaded.config.min_meaningful_improvement)
+    for key in ('spend_budget', 'price_per_1k_tokens'):
+        if getattr(args, key, None) is not None:
+            inputs[key] = getattr(args, key)
+    services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
+                              adapter_settings=loaded.adapter_settings)
+    root = Path(args.state_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    with run_view.hold_run_lock(root):
+        _bind(services, args)
+        adapter = services.adapter
+        adapter.set_evidence_dir(root / EVIDENCE_DIR)
+        started = time.monotonic()
+        adapter.configure_runtime(remaining=lambda: inputs['time_budget_hours'] * 3600 - (time.monotonic() - started),
+                                  max_concurrent_executions=1)
+        try:
+            with stop_on_sigterm():
+                bundle = session.run_calibration(adapter, adapter.version_for(services.root_candidate_id),
+                    adapter._round_ops.service, args.iteration, args.actor, root, inputs,
+                    loaded.adapter_settings, read_history(args.history or []))
+        except RunStopRequested:
+            adapter.cancel_pending()
+            raise
+        except BaseException:
+            adapter.stop_polling()
+            raise
+    print(json.dumps(session.public_summary(bundle), ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_proposal(args):
+    from . import calibration_session as session, proposal
+    _require(args, 'state_dir')
+    root = Path(args.state_dir)
+    with run_view.hold_run_lock(root):
+        bundle = session.load_bundle(root / session.CALIBRATION_FILE)
+        proposed = proposal.Proposal.from_dict(_read(root / session.PROPOSAL_FILE, 'proposal'))
+        if args.action == 'set':
+            if (root / session.RUN_CONFIG_FILE).exists():
+                raise UsageError('run configuration is frozen; proposal cannot be changed')
+            if not args.assignment or '=' not in args.assignment:
+                raise UsageError('proposal set requires KEY=JSON')
+            key, raw = args.assignment.split('=', 1)
+            proposed = proposal.apply_user_edit(proposed, key, json.loads(raw))
+        checked = proposal.validate(proposed, bundle['summary'], bundle['history'])
+        if not checked['ok']:
+            raise UsageError(str(checked['fatal']))
+        if args.action == 'set':
+            ledger_io.atomic_write_json(root / session.PROPOSAL_FILE, checked['proposal'].to_dict())
+    print(json.dumps(checked['proposal'].to_dict(), ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
+def cmd_calibrated_run(args):
+    from . import calibration_session as session, proposal
+    _require(args, 'iteration', 'actor', 'run_id', 'state_dir')
+    root = Path(args.state_dir)
+    if Path(args.from_proposal).resolve() != (root / session.PROPOSAL_FILE).resolve():
+        raise UsageError('--from-proposal must name proposal.json in this --state-dir')
+    bundle = session.load_bundle(root / session.CALIBRATION_FILE)
+    settings = bundle['identity']['adapter_settings']
+    services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
+                              adapter_settings=settings)
+    with run_view.hold_run_lock(root):
+        _bind(services, args)
+        seed = services.adapter.version_for(services.root_candidate_id)
+        if seed.content_hash != bundle['identity']['seed']:
+            raise UsageError('calibration seed differs from current frozen root')
+        frozen, bundle = session.freeze_run(services.adapter._round_ops.service, args.iteration, args.actor, root)
+        runtime = session.runtime_config(frozen, bundle)
+        path = root / 'resolved-config.json'
+        if path.exists() and _read(path, 'resolved config') != runtime:
+            raise UsageError('resolved run configuration changed')
+        if not path.exists():
+            ledger_io.atomic_write_json(path, runtime)
+    resolved = copy.copy(args)
+    resolved.from_proposal = None
+    resolved.v4_config = str(path)
+    resolved._calibration_bundle, resolved._frozen_config = bundle, frozen
+    return cmd_run(resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +464,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
     run = sub.add_parser("run", parents=[common], help="calibrate and run rounds (start or resume)")
     run.add_argument("--v4-config", help="pre-registered v4 config JSON")
+    run.add_argument('--from-proposal', help='freeze a completed calibration proposal and run without recalibrating')
     run.add_argument("--retry-failed", action="store_true", help="after process_failure: new measurement keys")
     run.add_argument("--no-test-set", action="store_true", help="rehearsal: run without an endpoint")
+    calibration = sub.add_parser('calibrate', parents=[common], help='measure seed P/D on a deferred iteration')
+    calibration.add_argument('--v4-config', required=True)
+    calibration.add_argument('--calibration-k', type=int, choices=range(2, 6))
+    calibration.add_argument('--history', action='append')
+    calibration.add_argument('--spend-budget', type=float)
+    calibration.add_argument('--price-per-1k-tokens', type=float)
+    proposed = sub.add_parser('proposal', parents=[common], help='show or edit the calibration proposal')
+    proposed.add_argument('action', choices=('show', 'set'))
+    proposed.add_argument('assignment', nargs='?')
     sub.add_parser("status", parents=[common], help="print the run's state")
     test = sub.add_parser("test", parents=[common], help="endpoint: preview; --confirm evaluates the test set once")
     test.add_argument("--confirm", action="store_true", help="human confirmation: claim the test set")
@@ -386,7 +505,8 @@ def cmd_figure(args) -> int:
     return EXIT_OK
 
 
-COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cmd_figure}
+COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cmd_figure,
+            'calibrate': cmd_calibrate, 'proposal': cmd_proposal}
 
 
 def main(argv: Optional[list[str]] = None) -> int:

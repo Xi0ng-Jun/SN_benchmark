@@ -63,13 +63,14 @@ def measure(adapter: SystemAdapter, seed: Version, cfg: V4Config, search: list[s
 def _aa(result: EvalResult) -> dict:
     """Rerun noise and task variance from tasks with at least two attempts."""
     per_task = {t: v for t, v in attempts_by_task(result).items() if len(v) >= 2}
-    diffs = [v[0] - v[1] for v in per_task.values()]
+    diffs = [v[0] - statistics.mean(v[1:]) for v in per_task.values()]
     means = [sum(v) / len(v) for v in per_task.values()]
     n = len(diffs)
     if n < 2:
         return dict(n=n, rerun_var=None, task_var=None, aa_sd=None, aa_se=None, constant_fraction=None,
                     mean=None)
-    rerun_var = sum(d * d for d in diffs) / (2 * n)          # per-attempt variance, E[d] = 0
+    # All k attempts contribute; with k=2 this equals mean(d²/2).
+    rerun_var = statistics.mean(statistics.variance(v) for v in per_task.values())
     k_mean = statistics.mean(len(v) for v in per_task.values())
     task_var = max(0.0, statistics.variance(means) - rerun_var / k_mean)
     constant = sum(1 for v in per_task.values() if len(set(v)) == 1 and v[0] in (0.0, 1.0))
@@ -142,6 +143,9 @@ def _infra(safeguards: Optional[dict]) -> Optional[float]:
 
 def validation_seconds(cal: Optional[dict], cfg: V4Config) -> float:
     """One k=1 measurement of the whole validation set, from the calibration walls (k attempts)."""
+    summary = (cal or {}).get("summary")
+    if summary:
+        return summary["exec_overhead_s"] + (cal or {}).get("validation_size", summary["n_probe"]) * summary["per_task_s"]
     walls = (cal or {}).get("walls") or {}
     return (float(walls.get("mb") or 0.0) + float(walls.get("rest") or 0.0)) / max(1, cfg.calibration_k)
 
