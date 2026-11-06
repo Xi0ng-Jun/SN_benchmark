@@ -105,15 +105,13 @@ def attempts_by_task(result: EvalResult) -> dict[str, list[float]]:
 # Paired Δ and SE (§1, §2.3: SE = max(own SE, A/A floor))
 # ---------------------------------------------------------------------------
 
-UNSCORED = "unscored"     # error class: an admitted attempt without a successful (scored) answer
-
-
 def own_score(result: EvalResult, task: str) -> Optional[float]:
-    """The task's score; 0 for the version's own failure to answer (``unscored``); None if never run."""
-    x = result.per_task_scores.get(task)
-    if x is None and (result.error_classes or {}).get(task) == UNSCORED:
-        return 0.0
-    return x
+    """Return only an observed scorer value; a missing judge result stays missing.
+
+    Answer production is measured separately by the safeguard. An admitted output
+    (including no_answer/error) does not establish the primary metric's value.
+    """
+    return result.per_task_scores.get(task)
 
 
 def paired_delta(candidate: EvalResult, reference: EvalResult, task_ids: Iterable[str], *,
@@ -127,10 +125,8 @@ def paired_delta(candidate: EvalResult, reference: EvalResult, task_ids: Iterabl
     sqrt(Σ_i rerun_var·(1/k_c,i + 1/k_p,i)) / n, with k_·,i the attempts actually
     averaged for task i (nominal k when attempts are not reported).
 
-    A task the system ran but answered with no score (error class ``unscored``:
-    an admitted attempt without a successful answer) counts as 0 on that side
-    (``own_failures``): it is the version's own failure, not infrastructure.
-    Only tasks without an admitted attempt are ``dropped`` (method-v4.1 §4.5).
+    Missing primary scores are excluded from pairing, including admitted outputs
+    without a judge result. Answer production is a separate safeguard.
     """
     ids = list(task_ids)
     ca, ra = attempts_by_task(candidate), attempts_by_task(reference)
@@ -191,6 +187,26 @@ def _values(values, log: bool) -> list[float]:
         else:
             out.append(float(v))
     return out
+
+
+def paired_safeguard_means(detail: dict) -> tuple[dict, Optional[float], Optional[float]]:
+    """Equal task weights after pairing, regardless of each task's attempt count.
+
+    Retain raw attempts on the shared observable tasks for the A/A SE estimate.
+    """
+    paired = {}
+    means = {"subject": [], "reference": []}
+    for task, row in detail.items():
+        subject, reference = _values(row.get("subject"), False), _values(row.get("reference"), False)
+        if not subject or not reference:
+            continue
+        paired[task] = dict(subject=subject, reference=reference)
+        means["subject"].append(sum(subject) / len(subject))
+        means["reference"].append(sum(reference) / len(reference))
+    def mean(side):
+        values = means[side]
+        return sum(values) / len(values) if values else None
+    return paired, mean("subject"), mean("reference")
 
 
 def safeguard_noise(observed: Optional[dict]) -> dict:

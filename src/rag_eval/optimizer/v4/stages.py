@@ -156,8 +156,8 @@ def minibatch(adapter, snap, rec, card, candidate):
 def validation(adapter, snap, rec, card, candidate):
     """Stage 2 (k=1 on the whole validation set) and, when it cannot change the outcome, stage 3 without review.
 
-    The reviewer is needed only for c_mech·SE <= Δ < c·SE: below that even a confirmed
-    mechanism cannot qualify, above it the candidate qualifies unconfirmed.
+    Review all candidates that can qualify with mechanism evidence, including
+    those above c·SE: their review can still reveal gaming and require a flag.
     """
     start = time.monotonic()
     cm, _ = adapter.evaluate_subset(candidate, None, 'mb', list(snap.mb), 1)
@@ -177,8 +177,8 @@ def validation(adapter, snap, rec, card, candidate):
     kw = dict(c=snap.cfg.c, c_mech=snap.cfg.c_mech)
     confirmed = decide.qualification(d['delta'], d['se'], 'confirmed', sg, **kw)
     unconfirmed = decide.qualification(d['delta'], d['se'], 'unconfirmed', sg, **kw)
-    if confirmed['qualified'] and not unconfirmed['qualified'] and snap.cfg.review:
-        return rec, cv                      # stage 3 review can lower the threshold
+    if confirmed['qualified'] and snap.cfg.review:
+        return rec, cv                      # stage 3 can relax the threshold or flag gaming
     # The local check reuses measured trajectories; it costs no new evaluation or reviewer.
     start = time.monotonic()
     mechanical = mechanism.mechanical(adapter, card.predicate, cv, snap.parent_val, snap.seed_aa)

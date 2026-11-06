@@ -580,17 +580,16 @@ class SNAdapterV4(SNAdapter):
             infra[side] = dict(total=sum(r["total"] for r in rows), failed=sum(r["failed"] for r in rows),
                                unobserved=sum(r["unobserved"] for r in rows))
 
-        def mean(detail, side):
-            values = [v for row in detail.values() for v in row[side]]
-            return sum(values) / len(values) if values else None
-        ts, tr = mean(tokens, "subject"), mean(tokens, "reference")
+        from .decide import paired_safeguard_means
+        tokens, ts, tr = paired_safeguard_means(tokens)
+        produced, ps, pr = paired_safeguard_means(produced)
         ratio = ts / tr if ts is not None and tr else None
         return dict(
             tokens_per_task_ratio=dict(kind="ratio", direction="lower_is_better", subject=ratio,
                                        reference=1.0 if ratio is not None else None, tasks=tokens,
                                        means=dict(subject=ts, reference=tr)),
             answer_produced_rate=dict(kind="proportion", direction="higher_is_better",
-                                      subject=mean(produced, "subject"), reference=mean(produced, "reference"),
+                                      subject=ps, reference=pr,
                                       tasks=produced),
             infrastructure=infra)
 

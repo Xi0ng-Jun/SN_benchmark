@@ -321,7 +321,10 @@ class V4Run:
                     return self.adapter.evaluate_subset(v, None, subset, ids, 2)[0]
             futures = [self._pools["measurement"].submit(remeasure, version, subset, ids)
                        for subset, ids in (("mb", mb), ("rest", rest))]
-            self._val_cache[key] = decide.combine(*[f.result() for f in futures])
+            merged = decide.combine(*[f.result() for f in futures])
+            eligible = [t for t, values in decide.attempts_by_task(merged).items() if len(values) >= 2]
+            # Reconstructed caches after resume obey the same two-score contract.
+            self._val_cache[key] = decide.restrict(merged, eligible)
         return self._val_cache[key]
 
     def parent_val(self, version: Version) -> EvalResult:
@@ -794,11 +797,12 @@ class V4Run:
         cand = self.versions[rec["candidate"]]
         try:
             merged = self.remeasured_val(cand, parent.content_hash)
+            attempts = decide.attempts_by_task(merged)
+            eligible = [t for t in ids if len(attempts.get(t, ())) >= 2]
+            single = len(ids) - len(eligible)
             d = decide.paired_delta(merged, snap.parent_val, ids, rerun_var=snap.rerun_var, families=snap.families)
             stages.check_dropped(d, len(ids), "re-measurement")
-            attempts = decide.attempts_by_task(merged)
-            single = sum(1 for t in ids if len(attempts.get(t, ())) < 2)   # recorded; the SE floor uses actual k
-            sg, _ = stages.observe(self.adapter, merged, snap.parent_val, snap)
+            sg, _ = stages.observe(self.adapter, merged, decide.restrict(snap.parent_val, eligible), snap)
         except Exception as exc:
             unavailable = exc if isinstance(exc, EvaluationUnavailable) else EvaluationUnavailable(
                 f"{type(exc).__name__}: {exc}")

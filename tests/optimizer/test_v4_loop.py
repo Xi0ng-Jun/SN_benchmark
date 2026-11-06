@@ -50,8 +50,8 @@ def test_cascade_remeasures_the_best_and_adopts_the_merged_baseline(tmp_path):
     assert rec["D"]["failure_kind"] == "workspace_error"
     failed = next(e for e in r.history if e["title"] == "D")
     assert failed["outcome"] == "implementation_workspace_error" and "reason" not in failed
-    # Δ >= c·SE qualifies unconfirmed without any reviewer.
-    assert mock.calls.get("review", 0) == 0
+    # All potentially qualifying candidates are reviewed, including Δ >= c·SE.
+    assert mock.calls.get("review", 0) == 2
     assert rec["A"]["qualification"]["qualified"] and rec["B"]["qualification"]["qualified"]
     decision = r.rounds[0]["decision"]
     assert decision["order"] == [0, 1] and decision["remeasured"] == [0]
@@ -151,10 +151,11 @@ def test_gaming_report_cancels_the_relaxation_and_flags_but_never_vetoes():
     assert "mechanism_suspicious" not in rec["qualification"]["reasons"]
     assert rec["label"] == "below_threshold" and len(band.lineage) == 1
     assert next(e for e in band.history if e["title"] == "G")["needs_human_review"] is True
-    # A gain above c·SE is never reviewed, so a reviewer cannot block it.
+    # A gain above c·SE is reviewed and flagged; gaming still cannot veto it.
     mock = V4Mock([[dict(name="L", delta=0.2)]], reviewer="gaming")
     large, _ = run(mock, cfg())
-    assert mock.calls.get("review", 0) == 0 and records(large)["L"]["label"] == "adopted"
+    assert mock.calls["review"] == 1 and records(large)["L"]["label"] == "adopted"
+    assert records(large)["L"]["flags"] == [decide.NEEDS_HUMAN_REVIEW]
 
 
 def test_smoke_repair_then_pass_and_unrepairable_fail():

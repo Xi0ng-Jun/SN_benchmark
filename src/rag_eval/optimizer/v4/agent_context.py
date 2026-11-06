@@ -105,7 +105,7 @@ def analysis_history(adapter, history: list[dict], budget: int, parent_id: str):
 # ---------------------------------------------------------------------------
 
 def normalise_direction(text: str) -> str:
-    words = re.findall(r'[a-z0-9]+', str(text or '').lower())
+    words = re.findall(r'[^\W_]+', str(text or '').casefold(), flags=re.UNICODE)
     return '-'.join(words)[:DIRECTION_CHARS].strip('-') or 'unnamed'
 
 

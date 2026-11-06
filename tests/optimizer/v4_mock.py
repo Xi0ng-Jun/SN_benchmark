@@ -108,15 +108,14 @@ class V4Mock(SystemAdapter):
                     produced.setdefault(t, dict(subject=[], reference=[]))[side].append(
                         self.produced(tr["version"], t, tr["attempt"]))
 
-        def mean(detail, side):
-            vals = [v for row in detail.values() for v in row[side]]
-            return sum(vals) / len(vals) if vals else None
-        ts, tr = mean(tokens, "subject"), mean(tokens, "reference")
+        from rag_eval.optimizer.v4.decide import paired_safeguard_means
+        tokens, ts, tr = paired_safeguard_means(tokens)
+        produced, ps, pr = paired_safeguard_means(produced)
         return dict(tokens_per_task_ratio=dict(kind="ratio", direction="lower_is_better",
                                                subject=ts / tr if ts and tr else None, reference=1.0 if tr else None,
                                                tasks=tokens),
                     answer_produced_rate=dict(kind="proportion", direction="higher_is_better",
-                                              subject=mean(produced, "subject"), reference=mean(produced, "reference"),
+                                              subject=ps, reference=pr,
                                               tasks=produced))
 
     def card_direction(self, card):
