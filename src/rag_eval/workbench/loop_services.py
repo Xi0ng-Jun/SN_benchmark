@@ -242,7 +242,8 @@ class RoundOperations:
     def _search_executions(self, tree, baseline_id):
         baseline = next(c for c in tree['candidates'] if c['id'] == baseline_id)
         measurements = ComparisonService.terminal(ComparisonService.scoped(baseline, None))
-        search = set(tree['protocol']['splits']['search'])
+        from .splits import require_frozen
+        search = set(require_frozen(tree['protocol'], 'Reading search evidence')['search'])
         return [dict(execution_id=m['execution_id'], cases=[self.api.views.observation(r.id, cid)
                     for r in self.api.views.execution_runs(m['execution_id']) for cid in r.case_ids if cid in search])
                 for m in measurements]

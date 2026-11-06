@@ -47,6 +47,88 @@ def partition(partitions, selected, *, sealed=(), seed=0, batches=0, papers_per_
     return dict(search=search, validation=validation, batches=fresh)
 
 
+class SplitPending(ValueError):
+    """A deferred split is not frozen yet: search/validation do not exist."""
+
+
+def pending(protocol):
+    """True while a deferred split (method-v4.1) waits for its freeze."""
+    split = (protocol or {}).get('splits')
+    return isinstance(split, dict) and split.get('status') == 'pending'
+
+
+def require_frozen(protocol, what='This operation'):
+    """The protocol's splits, refusing a pending deferred split with a clear error."""
+    if pending(protocol):
+        raise SplitPending(f'{what} needs a frozen split; the iteration split is not frozen yet')
+    return (protocol or {}).get('splits')
+
+
+def _owned(partitions):
+    return {c: p['partition_id'] for p in partitions for c in p['case_ids']}
+
+
+def _unique_ids(value, field):
+    if (not isinstance(value, (list, tuple)) or not value or any(type(c) is not str for c in value)
+            or len(set(value)) != len(value)):
+        raise ValueError(f'{field} must be a non-empty list of unique case ids')
+    return set(value)
+
+
+def register_pool(partitions, selected, *, sealed=()):
+    """The deferred-split pool: the same bundle and sealed-paper checks as ``partition``, no roles."""
+    owned = _owned(partitions)
+    selected, sealed = set(selected), set(sealed)
+    if not selected or not selected | sealed <= owned.keys():
+        raise ValueError('Split cases are outside the registered bundle')
+    if {owned[c] for c in selected} & {owned[c] for c in sealed}:
+        raise ValueError('Selection overlaps sealed papers')
+    return sorted(selected)
+
+
+def _whole_papers(owned, pool, groups):
+    """Each paper's pool cases lie entirely inside one group, or outside every group."""
+    for name, members in groups.items():
+        for paper in {owned[c] for c in members}:
+            cases = {c for c in pool if owned[c] == paper}
+            if not cases <= members:
+                raise ValueError(f'{name} must contain whole papers: a paper is split across sets')
+
+
+def check_samples(partitions, split, probe, diagnosis):
+    """Validate the calibration samples P and D of a pending split; returns them sorted."""
+    owned, pool = _owned(partitions), set(split['pool'])
+    probe, diagnosis = _unique_ids(probe, 'Probe sample'), _unique_ids(diagnosis, 'Diagnosis sample')
+    if probe & diagnosis:
+        raise ValueError('Probe and diagnosis samples must be disjoint')
+    if not (probe | diagnosis) <= pool:
+        raise ValueError('Calibration samples must be inside the registered pool')
+    sealed = set(split.get('sealed') or ())
+    if (probe | diagnosis) & sealed or {owned[c] for c in probe | diagnosis} & {owned[c] for c in sealed if c in owned}:
+        raise ValueError('Calibration samples overlap sealed papers')
+    _whole_papers(owned, pool, dict(Probe=probe, Diagnosis=diagnosis))
+    return sorted(probe), sorted(diagnosis)
+
+
+def check_freeze(partitions, split, search, validation):
+    """Validate the final split of a pending deferred split with registered samples."""
+    owned, pool = _owned(partitions), set(split['pool'])
+    search, validation = _unique_ids(search, 'Search split'), _unique_ids(validation, 'Validation split')
+    if search & validation:
+        raise ValueError('Search and validation must be disjoint')
+    if search | validation != pool:
+        raise ValueError('Search and validation must together cover exactly the registered pool')
+    if not set(split['probe']) <= validation:
+        raise ValueError('The probe sample must lie inside the validation split')
+    if not set(split['diagnosis']) <= search:
+        raise ValueError('The diagnosis sample must lie inside the search split')
+    sealed = set(split.get('sealed') or ())
+    if pool & sealed or {owned[c] for c in pool} & {owned[c] for c in sealed if c in owned}:
+        raise ValueError('The split overlaps sealed papers')
+    _whole_papers(owned, pool, dict(Search=search, Validation=validation))
+    return dict(search=sorted(search), validation=sorted(validation))
+
+
 def add_roles(selection, roles, partitions=None):
     """Add roles without replacing case identities or weakening selection hashing."""
     from ..identity import fingerprint
@@ -137,8 +219,8 @@ def claim(repository, iteration, candidate_id, request_key, *, conn=None, expect
 
 def roles(protocol, completed=()):
     split = (protocol or {}).get('splits')
-    if not split:
-        return None
+    if not split or pending(protocol):
+        return None  # a pending deferred split has no roles yet
     out = {c: role for role in ('search', 'validation') for c in split[role]}
     for b in protocol.get('fresh_batches', []):
         if b['batch_id'] in completed:
@@ -159,7 +241,12 @@ class Policy:
                 if not split:
                     continue
                 self.sealed.update(split.get('sealed', []))
-                if row['task_id'] == task_id:
+                if row['task_id'] == task_id and split.get('status') == 'pending':
+                    # Before the freeze only the diagnosis sample D is visible; the rest
+                    # of the pool (including the probe sample P) stays hidden.
+                    self.search = set(split.get('diagnosis') or ())
+                    self.hidden.update(set(split.get('pool') or ()) - self.search)
+                elif row['task_id'] == task_id:
                     self.search = set(split['search'])
                     self.hidden.update(split['validation'])
                     self.hidden.update(c for b in protocol.get('fresh_batches', []) for c in b['case_ids'])

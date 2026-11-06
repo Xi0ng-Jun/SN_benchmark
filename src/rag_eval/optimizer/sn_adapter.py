@@ -474,7 +474,8 @@ class SNAdapter(SystemAdapter):
         the validation pool, in v2 completion order.
         """
         protocol = self._protocol()
-        splits = protocol.get("splits") or {}
+        from rag_eval.workbench.splits import require_frozen
+        splits = require_frozen(protocol, "Reading the iteration partitions") or {}
         fresh = [dict(batch_id=b["batch_id"], case_ids=list(b["case_ids"]))
                  for b in protocol.get("fresh_batches", [])]
         return dict(search=list(splits.get("search", ())),
@@ -500,7 +501,8 @@ class SNAdapter(SystemAdapter):
         """
         if not task_ids:
             raise ValueError(f"{purpose} evaluation needs at least one task id")
-        splits = protocol["splits"]
+        from rag_eval.workbench.splits import require_frozen
+        splits = require_frozen(protocol, f"A {purpose} evaluation")
         from rag_eval.workbench.execution_scopes import split_scope_id
         if purpose == "diagnose":
             search_scope = split_scope_id(protocol, "search")

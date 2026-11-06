@@ -65,6 +65,8 @@ def smoke_scope_id(protocol, case_ids):
     if (not isinstance(case_ids, (list, tuple)) or not case_ids or any(type(c) is not str for c in case_ids)
             or len(set(case_ids)) != len(case_ids)):
         raise ValueError('Smoke cases must be a non-empty list of unique case ids')
+    from .splits import require_frozen
+    require_frozen(protocol, 'A smoke sample')
     if not set(case_ids) <= set(((protocol or {}).get('splits') or {}).get('search', ())):
         raise ValueError('Smoke cases must be search cases')
     import hashlib
@@ -104,6 +106,8 @@ def split_scope_id(protocol, split):
     """Content-addressed id of one whole protocol split (search or validation)."""
     if split not in SPLITS:
         raise ValueError('Unknown split')
+    from .splits import require_frozen
+    require_frozen(protocol, 'A split scope')
     members = ((protocol or {}).get('splits') or {}).get(split)
     if not members:
         raise ValueError(f'The protocol has no {split} split')
@@ -142,20 +146,39 @@ def split_plan(service, iteration, split):
 
 
 # method-v4 subsets: minibatch / rest of the validation split, diagnosis sample of the search split.
-SUBSET_KINDS = ('mb', 'rest', 'diag')
-SUBSET_SPLIT = dict(mb='validation', rest='validation', diag='search')
+# method-v4.1 adds the probe sample P (validation after the freeze).
+SUBSET_KINDS = ('mb', 'rest', 'diag', 'probe')
+SUBSET_SPLIT = dict(mb='validation', rest='validation', diag='search', probe='validation')
+# While a deferred split is pending only the calibration samples run: probe ⊆ P, diag ⊆ D.
+PENDING_SAMPLE = dict(probe='probe', diag='diagnosis')
 
 
 def subset_scope_id(protocol, kind, case_ids):
-    """Content-addressed id of a method-v4 subset of one split; refuses cases of any other split."""
+    """Content-addressed id of a method-v4 subset of one split; refuses cases of any other split.
+
+    The id is ``subset:<kind>:<hash of the sorted cases>`` and never depends on
+    the split's state, so a probe / diag measured while a deferred split is
+    pending keeps its scope (and its measurements) after the freeze.
+    """
     if kind not in SUBSET_KINDS:
         raise ValueError('Unknown subset kind')
     if (not isinstance(case_ids, (list, tuple)) or not case_ids or any(type(c) is not str for c in case_ids)
             or len(set(case_ids)) != len(case_ids)):
         raise ValueError('Subset cases must be a non-empty list of unique case ids')
-    split = SUBSET_SPLIT[kind]
-    if not set(case_ids) <= set(((protocol or {}).get('splits') or {}).get(split, ())):
-        raise ValueError(f'Subset cases must be {split} cases')
+    from .splits import SplitPending, pending
+    splits = (protocol or {}).get('splits') or {}
+    if pending(protocol):
+        sample = PENDING_SAMPLE.get(kind)
+        if sample is None:
+            raise SplitPending(f'A {kind} subset needs a frozen split; the iteration split is not frozen yet')
+        if sample not in splits:
+            raise SplitPending('Register the calibration samples before measuring a pending split')
+        if not set(case_ids) <= set(splits[sample]):
+            raise ValueError(f'Subset cases must be {sample} sample cases')
+    else:
+        split = SUBSET_SPLIT[kind]
+        if not set(case_ids) <= set(splits.get(split, ())):
+            raise ValueError(f'Subset cases must be {split} cases')
     import hashlib
     return f'subset:{kind}:' + hashlib.sha256('\n'.join(sorted(case_ids)).encode()).hexdigest()[:16]
 
@@ -200,6 +223,8 @@ def dispatch_steps(service, record):
     candidate = service.candidate(record['target_id'])
     tree = service.iteration(candidate['iteration_id'])
     k = tree['protocol']['k_base']
+    from .splits import require_frozen
+    require_frozen(tree['protocol'], 'A dispatched action')
     base_count = len(tree['protocol']['splits']['search']) + len(tree['protocol']['splits']['validation'])
     key, steps = 'action:' + record['id'], []
     def add(cid, request_key, scope=None, count=base_count):

@@ -422,8 +422,14 @@ class IterationService:
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
                          split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None,
                          execution=None, round_settings=None, case_retry=None, gate_rule='lcd-v1', safeguards=None,
-                         k_base=2, k_sealed=None):
+                         k_base=2, k_sealed=None, split_mode='eager'):
         """Create the backing Task, freeze its plan, then provision root C0.
+
+        ``split_mode='eager'`` (default) splits the selected papers 60/40 now.
+        ``split_mode='deferred'`` (method-v4.1) registers only the pool:
+        ``protocol.splits`` is ``{status: 'pending', pool, sealed_ref, sealed,
+        seed}`` and the plan carries no roles until ``register_calibration_samples``
+        and ``freeze_split`` run.
 
         ``k_base`` is the frozen rerun count for every paired measurement
         (validation, screening, fresh confirmation); ``k_sealed`` pins the
@@ -457,6 +463,10 @@ class IterationService:
             raise ValueError('Round settings must be an object')
         if case_retry is not None and not isinstance(case_retry, dict):
             raise ValueError('case_retry must be an object or null')
+        if split_mode not in ('eager', 'deferred'):
+            raise ValueError("split_mode is 'eager' or 'deferred'")
+        if split_mode == 'deferred' and fresh_batch_count:
+            raise ValueError('A deferred split draws no fresh batches')
         case_retry_frozen = validate_case_retry(case_retry if case_retry is not None
                                                 else {'max_retries_per_case': 1})
         binding = ((self.preparation_config or {}).get('inputs') or {}).get(input_id)
@@ -481,6 +491,8 @@ class IterationService:
             payload['k_base'] = k_base
         if k_sealed is not None:
             payload['k_sealed'] = k_sealed
+        if split_mode != 'eager':
+            payload['split_mode'] = split_mode
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -497,16 +509,24 @@ class IterationService:
                 raise ValueError('An iteration is seeded only from a frozen candidate of that iteration')
             if source['frozen_commit'] != start_commit:
                 raise ValueError("A seeded iteration starts at the source candidate's frozen commit")
-        from .splits import partition
+        from .splits import partition, register_pool
         ref = sealed_ref or (self.preparation_config or {}).get('sealed_ref', 'selection:20261013:holdout')
         registered = (self.preparation_config or {}).get('sealed_selections', {}).get(ref)
         if (not isinstance(registered, dict) or registered.get('bundle_id') != expected_bundle_id
                 or not isinstance(registered.get('case_ids'), list)):
             raise ValueError('Unknown or mismatched trusted sealed selection')
         catalogue = self.plans.inputs.describe(input_id)
-        split = partition(catalogue['partitions'], case_ids, sealed=registered['case_ids'], seed=split_seed,
-                          batches=fresh_batch_count, papers_per_batch=fresh_papers_per_batch)
-        role_map = {c: r for r in ('search', 'validation') for c in split[r]}
+        if split_mode == 'deferred':
+            pool = register_pool(catalogue['partitions'], case_ids, sealed=registered['case_ids'])
+            split, role_map = dict(batches=[]), None
+            frozen_split = dict(status='pending', pool=pool, sealed_ref=ref, sealed=registered['case_ids'],
+                                seed=split_seed)
+        else:
+            split = partition(catalogue['partitions'], case_ids, sealed=registered['case_ids'], seed=split_seed,
+                              batches=fresh_batch_count, papers_per_batch=fresh_papers_per_batch)
+            role_map = {c: r for r in ('search', 'validation') for c in split[r]}
+            frozen_split = dict(search=split['search'], validation=split['validation'],
+                                sealed_ref=ref, sealed=registered['case_ids'], seed=split_seed)
         self._project_commit(start_commit)
         task = self.repository.create_task(workspace_id, title, '迭代：起点 ' + start_commit[:12] + '，冻结题单',
                                            request_key='iteration:' + request_key)
@@ -527,8 +547,7 @@ class IterationService:
                         reasoning_protocol='reasoning-v1', input=content['input'],
                         bundle_ref=binding['bundle_ref'], index_ref=binding['index_ref'],
                         scorer='recorded-per-run', k_base=k_base, success_threshold=.5,
-                        splits=dict(search=split['search'], validation=split['validation'],
-                                    sealed_ref=ref, sealed=registered['case_ids'], seed=split_seed), fresh_batches=fresh,
+                        splits=frozen_split, fresh_batches=fresh,
                         gate_rule=frozen_rule)
         if safeguards is not None:
             protocol['safeguards'] = safeguards
@@ -567,6 +586,91 @@ class IterationService:
                                             plan_revision=plan['revision'], seeded_from=seeded_from, actor=actor))
                 self.repository._receipt(conn, scope, request_key, payload, record)
         self._settle_root(iteration_id)
+        return self.iteration(iteration_id)
+
+    # ------------------------------------------------------------ deferred split (method-v4.1)
+    def _pending_split(self, iteration_id):
+        from .splits import pending
+        iteration = self.iteration_record(iteration_id)
+        if iteration['origin'] != 'native':
+            raise Conflict('Legacy iterations are read-only')
+        protocol = iteration.get('protocol') or {}
+        partitions = self.plans.inputs.describe(protocol['input']['input_id'])['partitions'] if pending(protocol) else None
+        return iteration, protocol, partitions
+
+    def _replace_protocol(self, iteration_id, before, after, *, kind, content, plan=None):
+        """Compare-and-set the protocol row; the iteration's other identity stays put."""
+        with self.repository.connect(write=True) as conn:
+            current = self._iteration(conn, iteration_id)
+            if current['protocol'] != before:
+                raise Conflict('The iteration split changed concurrently; reload before retrying')
+            fields, values = ['protocol_json=?'], [json.dumps(after, ensure_ascii=False)]
+            if plan is not None:
+                fields += ['plan_revision=?', 'plan_content_hash=?', 'selection_hash=?']
+                values += [plan['revision'], plan['content_hash'], plan['content']['selection']['selection_hash']]
+            conn.execute(f'UPDATE iterations SET {",".join(fields)} WHERE id=?', (*values, iteration_id))
+            self.repository._event(conn, current['task_id'], kind, iteration_id, content)
+
+    def register_calibration_samples(self, iteration_id, probe, diagnosis, *, actor):
+        """Register the probe sample P and diagnosis sample D of a pending deferred split, once.
+
+        P and D are disjoint whole papers of the pool, outside the sealed papers.
+        Replaying the identical registration returns the iteration; any other
+        second registration is refused.
+        """
+        actor = _text(actor, 'actor', limit=200)
+        from .splits import check_samples, pending
+        iteration, protocol, partitions = self._pending_split(iteration_id)
+        split = protocol.get('splits') or {}
+        if 'probe' in split or 'diagnosis' in split:
+            if (isinstance(probe, (list, tuple)) and isinstance(diagnosis, (list, tuple))
+                    and sorted(probe) == split.get('probe') and sorted(diagnosis) == split.get('diagnosis')):
+                return self.iteration(iteration_id)
+            raise Conflict('Calibration samples are already registered')
+        if not pending(protocol):
+            raise Conflict('Calibration samples are registered only while a deferred split is pending')
+        probe, diagnosis = check_samples(partitions, split, probe, diagnosis)
+        after = dict(protocol, splits=dict(split, probe=probe, diagnosis=diagnosis))
+        self._replace_protocol(iteration_id, protocol, after, kind='iteration.split.samples_registered',
+                               content=dict(probe=len(probe), diagnosis=len(diagnosis), actor=actor))
+        return self.iteration(iteration_id)
+
+    def freeze_split(self, iteration_id, search, validation, *, actor):
+        """Freeze a pending deferred split exactly once (method-v4.1 §3.7).
+
+        Requires P ⊆ validation, D ⊆ search, search ∪ validation = pool,
+        disjoint whole papers and no sealed overlap. Writes the standard
+        ``protocol.splits`` shape plus ``probe``/``diagnosis``, appends a plan
+        revision carrying the roles and points the iteration at it. Subset
+        scopes (probe / diag) are content-addressed and keep their ids.
+        """
+        actor = _text(actor, 'actor', limit=200)
+        from .splits import check_freeze, pending
+        iteration, protocol, partitions = self._pending_split(iteration_id)
+        split = protocol.get('splits') or {}
+        if not pending(protocol):
+            if ('deferred' in split and isinstance(search, (list, tuple)) and isinstance(validation, (list, tuple))
+                    and sorted(search) == split.get('search') and sorted(validation) == split.get('validation')):
+                return self.iteration(iteration_id)
+            raise Conflict('The split is already frozen' if 'deferred' in split
+                           else 'Only a pending deferred split can be frozen')
+        if 'probe' not in split or 'diagnosis' not in split:
+            raise Conflict('Register the calibration samples before freezing the split')
+        checked = check_freeze(partitions, split, search, validation)
+        roles = dict({c: 'search' for c in checked['search']}, **{c: 'validation' for c in checked['validation']})
+        head = self.plans.get(iteration['task_id'], iteration['plan_id'], iteration['plan_revision'])
+        # One fixed request key: a crashed freeze replays the same revision, a different split conflicts.
+        plan = self.plans.save(task_id=iteration['task_id'], input_id=protocol['input']['input_id'],
+                               expected_bundle_id=protocol['input']['bundle_id'],
+                               case_ids=head['content']['selection']['case_ids'], title=head['title'],
+                               mode=protocol['mode'], actor=actor, request_key='iteration:freeze-split',
+                               plan_id=iteration['plan_id'], base_revision=iteration['plan_revision'], roles=roles)
+        frozen = dict(search=checked['search'], validation=checked['validation'], sealed_ref=split['sealed_ref'],
+                      sealed=split['sealed'], seed=split['seed'], probe=split['probe'], diagnosis=split['diagnosis'],
+                      deferred=dict(pool_plan_revision=iteration['plan_revision'], frozen_by=actor, frozen_at=now()))
+        self._replace_protocol(iteration_id, protocol, dict(protocol, splits=frozen), kind='iteration.split.frozen',
+                               content=dict(search=len(checked['search']), validation=len(checked['validation']),
+                                            plan_revision=plan['revision'], actor=actor), plan=plan)
         return self.iteration(iteration_id)
 
     def _insert_candidate(self, conn, candidate_id, iteration_id, *, parent, parent_commit, base, common,
@@ -873,6 +977,10 @@ class IterationService:
             raise Conflict('Only the root candidate adopts finished runs')
         if candidate['status'] != 'frozen':
             raise Conflict('Freeze the candidate before running it')
+        from .splits import pending, require_frozen
+        if pending(iteration['protocol']) and not str(batch_id or '').startswith('subset:'):
+            # Before a deferred split is frozen only calibration subsets (probe / diag) run.
+            require_frozen(iteration['protocol'], 'A run outside the calibration samples')
         if None in (self.jobs, self.executions, self.build_spec) or not isinstance(self.preparation_config, dict):
             raise ValueError('Candidate execution is not configured')
         if batch_id is not None and batch_id.startswith('sealed:'):

@@ -240,7 +240,12 @@ class RoundMeasurements:
     def _plan(self, candidate, tree, kind, key):
         protocol = tree['protocol']
         candidates = [candidate['id']]
-        scopes = [(None, len(protocol['splits']['search']) + len(protocol['splits']['validation']))]
+        from .splits import pending, require_frozen
+        if pending(protocol) and kind != 'subset':
+            # Before a deferred split is frozen only calibration subsets (probe / diag) run.
+            require_frozen(protocol, f'A {kind} round measurement')
+        scopes = [(None, None if pending(protocol) else
+                   len(protocol['splits']['search']) + len(protocol['splits']['validation']))]
         scope_id = None
         if kind == 'cluster':
             from .execution_scopes import get

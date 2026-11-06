@@ -352,6 +352,8 @@ class ClusterStore:
         protocol = iteration.get('protocol') or {}
         if 'splits' not in protocol or (protocol.get('input') or {}).get('suite') not in PRIMARY_METRIC:
             raise ValueError('Clusters require a frozen search protocol and a supported primary metric')
+        from .splits import require_frozen
+        require_frozen(protocol, 'A cluster')
         primary = PRIMARY_METRIC[protocol['input']['suite']]
         normalized = dict(card, primary=primary)
         for key, default in (('signature', None), ('missing_signature', DEFAULT_MISSING), ('violation_signature', DEFAULT_VIOLATION)):

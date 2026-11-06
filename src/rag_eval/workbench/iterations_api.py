@@ -53,6 +53,8 @@ class CreateIteration(_Command):
     safeguards: list[dict] | None = None
     k_base: int = Field(default=2, ge=1, le=4)
     k_sealed: int | None = Field(default=None, ge=1, le=8)
+    # method-v4.1: 'deferred' registers only the pool; the split is frozen after calibration.
+    split_mode: str = Field(default='eager', pattern='^(eager|deferred)$')
 
 
 class Integration(_Command):
