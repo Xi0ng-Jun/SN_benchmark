@@ -132,6 +132,9 @@ class AutoRunControl:
     def _snapshot(self, iteration_id, action, command, root):
         """Hash the concrete reviewed configuration and process state, not only a requested verb."""
         tree = self.api.service.iteration_record(iteration_id)
+        owner = auto_runs.binding(self.repository, iteration_id)
+        if owner and owner['actor'] != self.api.actor:
+            raise Conflict('Continue this run using its original operator identity')
         launch = self._read(root, 'launch.json') or {}
         if action == 'calibrate':
             if self.busy(root):
@@ -154,7 +157,9 @@ class AutoRunControl:
             search, validation = session.materialize_split(bundle, groups, frozen['config']['split']['validation_size'])
             payload = dict(proposal_sha256=session.canonical_hash(proposed.to_dict()),
                            calibration_sha256=bundle['payload_sha256'], frozen=frozen,
-                           launch=launch, retry_failed=command.retry_failed)
+                           launch=launch, retry_failed=command.retry_failed,
+                           saved_config={name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                                         for name in ('run-config.json', 'resolved-config.json') if (root / name).exists()})
             summary = dict(action=action, config=frozen['config'], sources=frozen['sources'],
                 budget_hours=frozen['inputs']['time_budget_hours'], spend_budget=frozen['inputs'].get('spend_budget'),
                 spend_scope='measurement estimate; agent costs excluded',
@@ -266,6 +271,7 @@ class AutoRunControl:
         bundle = session._load(path)
         if not bundle.get('complete'):
             return dict(complete=False, alive=self.busy(root), phase='calibration',
+                        inputs=bundle['identity']['user_inputs'],
                         probe_size=len(bundle['probe']), diagnosis_size=len(bundle['diagnosis']),
                         completed_stages=list(bundle['results']))
         return dict(session.public_summary(bundle), alive=self.busy(root))

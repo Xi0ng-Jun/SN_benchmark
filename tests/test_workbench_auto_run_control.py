@@ -174,3 +174,21 @@ while True: time.sleep(.1)
             if child.poll() is None:
                 child.terminate()
                 child.wait(timeout=5)
+
+
+def test_new_operator_cannot_issue_a_fresh_confirmation(control):
+    ctl, _, iid, _ = control
+    ctl.api.actor = 'bob'
+    with pytest.raises(Conflict, match='operator identity'):
+        ctl.preview(iid, 'run', Action())
+
+
+def test_saved_config_change_invalidates_confirmation(control, monkeypatch):
+    ctl, _, iid, root = control
+    launches = []
+    monkeypatch.setattr(ctl, '_launch', lambda *args: launches.append(args))
+    preview = ctl.preview(iid, 'run', Action())
+    ledger_io.atomic_write_json(root / 'resolved-config.json', {'time_budget_hours': 10})
+    with pytest.raises(Conflict, match='configuration changed'):
+        ctl.execute(iid, 'run', Action(confirmation_token=preview['confirmation_token']))
+    assert not launches

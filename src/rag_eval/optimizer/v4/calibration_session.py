@@ -303,6 +303,7 @@ def public_summary(bundle):
     tasks = decide.attempts_by_task(result)
     rows = sorted(tasks.values(), key=statistics.mean)
     return dict(complete=bundle['complete'], summary=bundle['summary'], assumptions=bundle.get('assumptions', []),
+        inputs=bundle['identity']['user_inputs'],
         heatmap=[dict(row=i + 1, scores=v, mean=statistics.mean(v)) for i, v in enumerate(rows)],
         attempt_means=[statistics.mean(a.values()) if a else None for a in result.attempt_scores],
         aa_differences=[v[0] - statistics.mean(v[1:]) for v in rows if len(v) >= 2],

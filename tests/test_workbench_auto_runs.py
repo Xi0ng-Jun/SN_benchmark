@@ -130,3 +130,15 @@ def test_agent_command_line_refuses_before_reading(app_env, tmp_path, monkeypatc
     monkeypatch.setattr(agent_tools, 'build', lambda state, config: (repository, object()))
     with pytest.raises(SystemExit, match='automatic run r1'):
         agent_tools.main(['--state', 'x', '--task', task_id, '--role', 'analyst', 'iteration', 'ledger'])
+
+
+def test_v41_calibration_without_cli_identity_projects_bound_run(app_env):
+    client, repository, _, tmp_path = app_env
+    auto_runs.register(repository, 'it1', run_id='calibrating', state_dir=str(tmp_path), actor='a', method='method-v4')
+    response = client.get('/api/iterations/it1/auto-run')
+    assert response.status_code == 200
+    view = response.json()
+    assert view['method'] == 'v4'
+    assert view['run']['run_id'] == 'calibrating'
+    assert view['run']['iteration_id'] == 'it1'
+    assert view['run']['actor'] == 'a'
