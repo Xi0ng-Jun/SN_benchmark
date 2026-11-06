@@ -101,11 +101,11 @@ def test_user_edit_marks_source_and_keeps_rule_value():
         P.apply_user_edit(p, 'k_val', 2)
     result = P.validate(edited, cal())
     assert result['ok'] and not result['rejected']
-    frozen = P.freeze(edited)
+    frozen = P.freeze(edited, cal())
     assert frozen['config']['b'] == 5 and frozen['sources']['b'] == 'user' and frozen['rule_values']['b'] == 9
     assert frozen['config']['split'] == dict(validation_size=60)
     assert frozen['config']['adapter'] == {'agent_timeout': 1800.0, 'execution_timeout_seconds': 2250.0, 'infra_retry': 1}
-    assert P.freeze(P.Proposal.from_dict(edited.to_dict())) == frozen
+    assert P.freeze(P.Proposal.from_dict(edited.to_dict()), cal()) == frozen
 
 
 def test_validate_rejects_out_of_range_and_mismatched_sim_ids_per_item():
@@ -143,3 +143,94 @@ def test_validate_cross_constraints():
     assert not result['ok'] and {r['key'] for r in result['fatal']} >= {'validation_size'}
     few_cards = P.apply_user_edit(p, 'cards_per_analysis', 2)
     assert {r['key'] for r in P.validate(few_cards, cal())['fatal']} == {'cards_per_analysis'}
+
+
+@pytest.mark.parametrize('key', sorted(CONTRACT))
+def test_validate_requires_every_contract_key(key):
+    p = P.rule_defaults(cal(), INPUTS)
+    del p.items[key]
+    assert not P.validate(p, cal())['ok']
+
+
+def test_validate_binds_rule_values_and_rebuilds_untrusted_fallback():
+    p = P.rule_defaults(cal(), INPUTS)
+    p.items['b'].value = 5
+    assert not P.validate(p, cal())['ok']
+    p = P.rule_defaults(cal(), INPUTS)
+    p.items['smoke_size'].rule_value = 999
+    p.items['smoke_size'].range = dict(type='int', min=1, max=999)
+    agent = P.apply_agent_values(p, {'smoke_size': dict(value=999)})
+    result = P.validate(agent, cal())
+    assert result['ok'] and result['proposal'].items['smoke_size'].value == P.SMOKE_SIZE
+    assert result['proposal'].items['smoke_size'].range == P.allowed_ranges(cal(), INPUTS)['smoke_size']
+
+
+@pytest.mark.parametrize('key,value', [('calibration_k', 4), ('safeguards', {'x': 1}),
+                                      ('safeguard_z', 3), ('remeasure', False), ('minibatch_min', 11)])
+def test_advisor_cannot_edit_user_inputs_or_method_constants(key, value):
+    p = P.rule_defaults(cal(), INPUTS)
+    params = dict(p.params(), **{P.SIM_KEYS.get(key, key): value})
+    params = {k: v for k, v in params.items() if k not in ('safeguards', 'safeguard_z')}
+    agent = P.apply_agent_values(p, {key: dict(value=value, sim_params=params,
+                                             sim_id=simulate(params, cal())['sim_id'])})
+    result = P.validate(agent, cal())
+    assert result['ok'] and any(r['key'] == key for r in result['rejected'])
+    assert result['proposal'].items[key].value == p.items[key].value
+
+
+def test_freeze_revalidates_cross_constraints_and_simulation():
+    p = P.rule_defaults(cal(), INPUTS)
+    with pytest.raises(ValueError):
+        P.freeze(P.apply_user_edit(p, 'validation_size', 290), cal())
+    p.items['b'].sim_id = 'sim-forged'
+    with pytest.raises(ValueError):
+        P.freeze(p, cal())
+
+
+def test_rule_b_is_bounded_by_measurement_spend():
+    p = P.rule_defaults(cal(), dict(INPUTS, spend_budget=40, price_per_1k_tokens=0.01))
+    assert p.items['b'].value < 9
+    assert simulate(p.params(), cal())['rounds']['mid'] >= P.MIN_ROUNDS or p.items['b'].value == 1
+
+
+def test_explicit_user_k_validates():
+    p = P.rule_defaults(cal(k=5), dict(INPUTS, calibration_k=5))
+    assert P.validate(p, cal(k=5))['ok']
+
+
+def test_proposal_k_cannot_relabel_completed_calibration_measurements():
+    p = P.rule_defaults(cal(), INPUTS)
+    edited = P.apply_user_edit(p, 'calibration_k', 4)
+    result = P.validate(edited, cal())
+    assert not result['ok'] and any(r['key'] == 'calibration_k' and 'recalibrat' in r['reason']
+                                   for r in result['fatal'])
+    with pytest.raises(ValueError):
+        P.freeze(edited, cal())
+    assert not P.validate(P.rule_defaults(cal(), dict(INPUTS, calibration_k=5)), cal())['ok']
+
+
+def test_protected_user_edits_survive_advisor_attempts():
+    p = P.rule_defaults(cal(), INPUTS)
+    p = P.apply_user_edit(p, 'safeguard_z', 3)
+    agent = P.apply_agent_values(p, {'safeguard_z': dict(value=4)})
+    result = P.validate(agent, cal())
+    assert result['ok'] and result['proposal'].items['safeguard_z'].value == 3
+
+
+def test_cross_constraint_fallback_does_not_blame_unchanged_rule_neighbor():
+    p = P.rule_defaults(cal(), INPUTS)
+    params = dict(p.params(), validation_size=290)
+    agent = P.apply_agent_values(p, {'validation_size': dict(value=290, sim_params=params,
+                                                            reason='more validation coverage',
+                                                            sim_id=simulate(params, cal())['sim_id'])})
+    result = P.validate(agent, cal())
+    assert result['ok'] and result['proposal'].items['validation_size'].value == 60
+    assert {r['key'] for r in result['rejected']} == {'validation_size'}
+
+
+def test_serialized_advisor_cannot_bypass_protected_key_validation():
+    p = P.rule_defaults(cal(), INPUTS)
+    p.items['safeguards'].source = 'agent'
+    p.items['safeguards'].value = {'x': 4}
+    result = P.validate(p, cal())
+    assert result['ok'] and result['proposal'].items['safeguards'].value == P.DEFAULT_SAFEGUARDS

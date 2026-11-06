@@ -91,6 +91,32 @@ def test_spend_and_noise_adoptions():
     assert out['noise_adoptions']['expected']['mid'] == pytest.approx(out['candidates']['mid'] * double)
 
 
+def test_partial_execution_wave_cannot_finish_in_fractional_slots():
+    hist = History(agent_s=[100.0] * 10, analysis_s=[60.0] * 10)
+    c = cal(exec_overhead_s=0.0, per_task_s=10.0)
+    for b, slots in ((4, 3), (7, 3), (3, 8)):
+        out = simulate(dict(PARAMS, b=b, max_concurrent_executions=slots, remeasure=False), c, hist)
+        assert out['per_round_s'] == dict.fromkeys(('low', 'mid', 'high'), 60 + 100 + math.ceil(b / slots) * 600 + 30)
+
+
+def test_binding_spend_budget_caps_whole_rounds_and_marks_cost_scope():
+    params = dict(PARAMS, price_per_1k_tokens=0.01)
+    normal = simulate(params, cal())
+    bound = simulate(dict(params, spend_budget=10), cal())
+    assert bound['candidates']['high'] < normal['candidates']['low']
+    assert bound['spend']['cost']['high'] <= 10
+    assert bound['spend']['scope'] == 'measurement_only'
+    assert bound['spend']['agent_cost_included'] is False
+    tiny = simulate(dict(params, spend_budget=0.01), cal())
+    assert tiny['rounds'] == dict.fromkeys(('low', 'mid', 'high'), 0)
+    assert tiny['spend']['within_budget'] is False  # even the seed top-up cannot fit
+
+
+def test_spend_limit_requires_a_price():
+    with pytest.raises(ValueError, match='price'):
+        simulate(dict(PARAMS, spend_budget=10), cal())
+
+
 def test_read_history_uses_stable_ledger_fields_and_skips_garbage(tmp_path):
     ledger = dict(kind='method-v4-ledger', rounds=[
         dict(round=1, analysis_s=400.0, records={

@@ -321,7 +321,7 @@ def rule_defaults(calibration: Any, user_inputs: dict, history: Any = None) -> P
     while b > 1 and simulate(params_for(b), cal, hist)["rounds"]["mid"] < MIN_ROUNDS:
         b -= 1
     put("b", b, "rule", f"E·(T_agent+T_meas)/T_meas = {e}·({t_agent:.0f}+{t_meas:.0f})/{t_meas:.0f} → {b0}"
-        + (f", lowered to {b} so ≥{MIN_ROUNDS} rounds fit" if b != b0 else ""),
+        + (f", lowered to {b} so ≥{MIN_ROUNDS} rounds fit time and measurement-spend budgets" if b != b0 else ""),
         "medium" if agent_src == "history" else "low")
     put("cards_per_analysis", b + 2, "rule", "b + 2 (spares fill freed slots)")
 
@@ -375,12 +375,17 @@ def apply_user_edit(proposal: Proposal, key: str, value: Any) -> Proposal:
 def apply_agent_values(proposal: Proposal, values: dict) -> Proposal:
     """A copy with the calibration advisor's values (D3): key → dict(value, sim_id, sim_params, reason, confidence).
 
-    Nothing is checked here; ``validate`` is the guard rail.
+    Preserve user-owned inputs and method constants immediately; ``validate``
+    also checks serialized proposals that bypass this helper.
     """
     out = copy.deepcopy(proposal)
     for key, row in values.items():
         if key not in out.items:
             out.notes.setdefault("rejected", []).append(dict(key=key, reason="unknown parameter"))
+            continue
+        if key in ADVISOR_READ_ONLY:
+            out.notes.setdefault("rejected", []).append(
+                dict(key=key, source="agent", reason="advisor cannot change user inputs or method constants"))
             continue
         item = out.items[key]
         out.items[key] = dataclasses.replace(
@@ -389,75 +394,116 @@ def apply_agent_values(proposal: Proposal, values: dict) -> Proposal:
     return out
 
 
-def validate(proposal: Proposal, calibration: Any, history: Any = None) -> dict:
-    """§3.6 guard rails: range whitelist, cross-entry constraints and recomputed sim_ids, per item.
+# User-owned inputs and method constants are never advisor decision variables.
+ADVISOR_READ_ONLY = frozenset({"calibration_k", "safeguards", "safeguard_z", "remeasure", "minibatch_min"})
 
-    Rejected agent items fall back to their rule value; any other rejected item
-    makes the proposal invalid. Returns ``dict(ok, rejected=[{key, source, reason}], proposal)``.
+
+def validate(proposal: Proposal, calibration: Any, history: Any = None) -> dict:
+    """Validate the complete canonical contract, rebuilding rejected advisor values.
+
+    Serialized ranges, rule_params and rule_value are untrusted. Recompute the
+    baseline from calibration, user inputs and history, and validate the final
+    values again after fallback. Non-advisor errors are fatal.
     """
     cal, hist = _calibration(calibration), _history(history)
-    ranges = allowed_ranges(cal, proposal.inputs)
-    rejected, sims = [], {}
+    out = copy.deepcopy(proposal)
+    rejected, fatal, sims = copy.deepcopy(out.notes.get("rejected", [])), [], {}
+    try:
+        baseline = rule_defaults(cal, proposal.inputs, hist)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        return dict(ok=False, rejected=[], fatal=[dict(key="inputs", source=None, reason=str(exc))], proposal=out)
+    ranges = allowed_ranges(cal, baseline.inputs)
+
+    def row(key, reason, item=None):
+        return dict(key=key, source=item.source if item else None, reason=reason)
+
+    for key in sorted(set(ranges) - set(out.items)):
+        fatal.append(row(key, "missing mandatory parameter"))
+    for key in sorted(set(out.items) - set(ranges)):
+        fatal.append(row(key, "unknown parameter", out.items[key]))
+    if proposal.sim_id != baseline.sim_id or proposal.rule_params != baseline.rule_params:
+        fatal.append(row("sim_id", "rule sim_id or parameters do not match a recomputation"))
 
     def sim_id_for(params):
-        blob = json.dumps(params, sort_keys=True)
-        if blob not in sims:
-            try:
+        try:
+            blob = json.dumps(params, sort_keys=True, allow_nan=False)
+            if blob not in sims:
                 sims[blob] = simulate(params, cal, hist)["sim_id"]
-            except (ValueError, TypeError) as exc:
-                sims[blob] = f"invalid: {exc}"
-        return sims[blob]
+            return sims[blob]
+        except (ValueError, TypeError, KeyError, OverflowError, ZeroDivisionError):
+            return None
 
     def problem(key, item):
-        if key not in ranges:
-            return "unknown parameter"
-        out = check_range(item.value, ranges[key])
-        if out:
-            return out
+        reason = check_range(item.value, ranges[key])
+        if reason:
+            return reason
+        if key == "calibration_k" and item.value != cal.k:
+            return "calibration_k differs from the measured calibration; recalibration is required"
+        if item.source not in SOURCES or item.confidence not in CONFIDENCE or not item.reason:
+            return "invalid source, confidence or empty reason"
+        expected = baseline.items[key]
         if item.source == "agent":
+            if key in ADVISOR_READ_ONLY:
+                return "advisor cannot change user inputs or method constants"
             if not item.sim_id or not isinstance(item.sim_params, dict):
                 return "an agent value must cite a sim_id and the parameters it simulated"
             if key in SIM_KEYS and item.sim_params.get(SIM_KEYS[key]) != item.value:
                 return "the value differs from the simulated parameters"
             if sim_id_for(item.sim_params) != item.sim_id:
                 return "the cited sim_id does not match a recomputation"
-        elif item.source == "rule" and item.sim_id is not None:
-            if proposal.rule_params is None or sim_id_for(proposal.rule_params) != item.sim_id:
+        elif item.source in ("rule", "constant"):
+            if key in SIM_KEYS and item.sim_id != baseline.sim_id:
                 return "the cited sim_id does not match a recomputation"
+            if key not in SIM_KEYS and item.sim_id is not None:
+                return "parameter does not have a rule sim_id"
+            if item.value != expected.value:
+                return "the value differs from the recomputed rule value"
+            if item.source == "constant" and key not in ADVISOR_READ_ONLY:
+                return "parameter is not a method constant"
+        elif item.sim_params is not None or (item.sim_id is not None and
+                (key not in SIM_KEYS or item.sim_id != baseline.sim_id or item.value != expected.value)):
+            return "user values must not carry a stale simulation citation"
         return None
 
-    out = copy.deepcopy(proposal)
-    for key, item in list(out.items.items()):
+    def reject_or_restore(key, reason):
+        item = out.items[key]
+        entry = row(key, reason, item)
+        rejected.append(entry)
+        if item.source == "agent":
+            out.items[key] = copy.deepcopy(baseline.items[key])
+            out.items[key].reason = f"agent value rejected ({reason}); canonical baseline kept"
+        else:
+            fatal.append(entry)
+
+    for key in sorted(set(out.items) & set(ranges)):
+        item = out.items[key]
         reason = problem(key, item)
         if reason:
-            rejected.append(dict(key=key, source=item.source, reason=reason))
-    for key, reason in _cross(out.values(), cal).items():
-        if not any(r["key"] == key for r in rejected):
-            rejected.append(dict(key=key, source=out.items[key].source, reason=reason))
-    fatal = []
-    for row in rejected:
-        item = out.items.get(row["key"])
-        if item is not None and item.source == "agent" and item.rule_value is not None:
-            out.items[row["key"]] = dataclasses.replace(
-                item, value=item.rule_value, source="rule", sim_id=proposal.sim_id if row["key"] in SIM_KEYS else None,
-                sim_params=None, reason=f"agent value rejected ({row['reason']}); rule value kept")
-        else:
-            fatal.append(row)
+            reject_or_restore(key, reason)
+        out.items[key].range = copy.deepcopy(ranges[key])
+        out.items[key].rule_value = copy.deepcopy(baseline.items[key].rule_value)
+    if not fatal:
+        for key, reason in _cross(out.values(), cal).items():
+            if out.items[key].source == "agent":
+                reject_or_restore(key, reason)
+        for key, item in out.items.items():
+            reason = problem(key, item)
+            if reason:
+                fatal.append(row(key, reason, item))
+        for key, reason in _cross(out.values(), cal).items():
+            if not any(r["key"] == key for r in fatal):
+                fatal.append(row(key, reason, out.items[key]))
     if rejected:
-        out.notes = dict(out.notes, rejected=list(out.notes.get("rejected", [])) + rejected)
-    # Falling back may itself break a cross constraint (e.g. an accepted agent value next to a rule value).
-    for key, reason in _cross(out.values(), cal).items():
-        if not any(r["key"] == key for r in fatal):
-            fatal.append(dict(key=key, source=out.items[key].source, reason=reason))
+        out.notes = dict(out.notes, rejected=rejected)
     return dict(ok=not fatal, rejected=rejected, fatal=fatal, proposal=out)
 
 
-def freeze(proposal: Proposal) -> dict:
+def freeze(proposal: Proposal, calibration: Any, history: Any = None) -> dict:
     """The run-config mapping (adapter keys nested, ``validation_size`` under ``split``) with per-key sources."""
-    for key, item in proposal.items.items():
-        problem = check_range(item.value, item.range)
-        if problem:
-            raise ValueError(f"cannot freeze {key}: {problem}")
+    result = validate(proposal, calibration, history)
+    if not result["ok"]:
+        raise ValueError(f"cannot freeze invalid proposal: {result['fatal']}")
+    proposal = result["proposal"]
     config: dict = {}
     for key, item in sorted(proposal.items.items()):
         if key.startswith("adapter."):

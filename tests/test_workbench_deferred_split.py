@@ -198,3 +198,25 @@ def test_consumers_refuse_a_pending_split_clearly(env):
     with pytest.raises(splits.SplitPending, match='not frozen'):
         adapter._case_scopes(['qasper:q'], 'diagnose', protocol)
     assert splits.require_frozen(service.freeze_split(tree['id'], D, P, actor='alice')['protocol'])['search'] == D
+
+
+def test_diagnosis_can_grow_monotonically_before_freeze(env, monkeypatch):
+    service = env['service']
+    pool = [c for paper in parts(4) for c in paper['case_ids']]
+    state = dict(protocol=dict(splits=pending_split(pool)))
+    monkeypatch.setattr(service, '_pending_split', lambda _: ({}, state['protocol'], parts(4)))
+    monkeypatch.setattr(service, 'iteration', lambda _: dict(state))
+    def replace(_, before, after, **kwargs):
+        assert before == state['protocol']
+        state['protocol'] = after
+    monkeypatch.setattr(service, '_replace_protocol', replace)
+    probe, diag = ['q0a', 'q0b'], ['q1a', 'q1b']
+    service.register_calibration_samples('i', probe, diag, actor='alice')
+    grown = service.register_calibration_samples('i', probe, diag + ['q2a', 'q2b'], actor='alice')
+    assert grown['protocol']['splits']['diagnosis'] == diag + ['q2a', 'q2b']
+    with pytest.raises(Conflict):
+        service.register_calibration_samples('i', probe, diag, actor='alice')
+    with pytest.raises(Conflict):
+        service.register_calibration_samples('i', ['q3a', 'q3b'], diag + ['q2a', 'q2b'], actor='alice')
+    with pytest.raises(ValueError, match='whole papers'):
+        service.register_calibration_samples('i', probe, diag + ['q2a', 'q2b', 'q3a'], actor='alice')

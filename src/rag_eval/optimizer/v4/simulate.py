@@ -17,7 +17,8 @@ Model (one round under one parent):
   optional minibatch (eliminates ``q_mb``), then the rest of the validation set
   (minibatch results are reused, §4.2).
 * Round length waits for the slowest card: implementation phase =
-  max(slowest agent + its own cascade, typical agent + queued work b·W/E).
+  max(slowest agent + its own cascade, typical agent + ceil(b/E)·W).
+  This is a discrete-wave approximation; elimination contributes expected work.
 * Intervals: the low / mid / high scenarios vary the assumed quantities (agent
   seconds per card, elimination rates, σ²_het, analysis seconds); each output
   is reported sorted as ``dict(low, mid, high)``.
@@ -34,7 +35,7 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-SIM_VERSION = "v4.1-sim-1"
+SIM_VERSION = "v4.1-sim-2"
 
 # Method constants (§2.3) used by the simulator.
 C_ADOPT = 1.0           # c: adoption threshold (unconfirmed mechanism), Δ ≥ c·SE
@@ -254,6 +255,13 @@ def normalize_params(params: dict, calibration: CalibrationSummary) -> dict:
             raise ValueError(f"{key} must be a positive integer")
     if out["cards_per_analysis"] is None:
         out["cards_per_analysis"] = out["b"] + 2
+    for key in ("spend_budget", "price_per_1k_tokens"):
+        value = out[key]
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or not math.isfinite(value) or value < 0):
+            raise ValueError(f"{key} must be a finite nonnegative number")
+    if out["spend_budget"] is not None and out["price_per_1k_tokens"] is None:
+        raise ValueError("spend_budget needs price_per_1k_tokens; unknown prices cannot bound spend")
     return out
 
 
@@ -315,7 +323,8 @@ def _scenario(p: dict, cal: CalibrationSummary, agent: float, agent_hi: float, a
     if p["agent_timeout"]:
         slow = min(slow, float(p["agent_timeout"]))
     critical = slow + full
-    queued = agent + b * work / e
+    wave_work = math.ceil(b / e) * work
+    queued = agent + wave_work
     impl = max(critical, queued)
     remeasure_s = cal.t_meas(n_val) if p["remeasure"] else 0.0
     per_round = analysis + impl + remeasure_s + DECISION_S
@@ -323,11 +332,20 @@ def _scenario(p: dict, cal: CalibrationSummary, agent: float, agent_hi: float, a
     top_up = cal.t_meas(max(0, n_val - cal.n_probe))
     available = max(0.0, budget_s - top_up)
     rounds = int(available // per_round) if per_round > 0 else 0
+    top_up_tokens = cal.tokens_per_task * max(0, n_val - cal.n_probe)
+    round_tokens = cal.tokens_per_task * (b * tasks + (n_val if p["remeasure"] else 0))
+    if p["spend_budget"] is not None:
+        unit_price = p["price_per_1k_tokens"] / 1000
+        remaining = p["spend_budget"] - top_up_tokens * unit_price
+        round_cost = round_tokens * unit_price
+        if remaining < 0:
+            rounds = 0
+        elif round_cost > 0:
+            rounds = min(rounds, int(remaining // round_cost))
     candidates = rounds * b
     se = resolution_se(cal, n_val, sigma2_het, p["calibration_k"])
-    tokens = cal.tokens_per_task * (max(0, n_val - cal.n_probe)
-                                    + rounds * (b * tasks + (n_val if p["remeasure"] else 0)))
-    shares = dict(agent=agent, execution=b * work / e, wait=max(0.0, slow - agent) + full)
+    tokens = top_up_tokens + rounds * round_tokens
+    shares = dict(agent=agent, execution=wave_work, wait=max(0.0, slow - agent) + full)
     return dict(per_round_s=per_round, rounds=rounds, candidates=candidates, se=se,
                 detectable=(C_ADOPT + POWER_Z) * se, tokens=tokens, bottleneck=max(shares, key=shares.get),
                 shares=shares, minibatch_size=m,
@@ -377,7 +395,9 @@ def simulate(params: dict, calibration: Any, history: Any = None) -> dict:
         return _interval([s[key] for s in scen])
     se, detectable = iv("se"), iv("detectable")
     tokens = iv("tokens")
-    spend = dict(tokens=tokens)
+    spend = dict(tokens=tokens, scope="measurement_only", agent_cost_included=False,
+                 includes=["seed_validation_top_up", "forecast_round_measurements"],
+                 excludes=["prior_calibration", "implementation_agents", "analysis_agents"])
     if p["price_per_1k_tokens"] is not None:
         spend["cost"] = {k: v * p["price_per_1k_tokens"] / 1000 for k, v in tokens.items()}
         if p["spend_budget"] is not None:

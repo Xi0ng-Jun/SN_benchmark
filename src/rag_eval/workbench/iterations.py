@@ -612,11 +612,11 @@ class IterationService:
             self.repository._event(conn, current['task_id'], kind, iteration_id, content)
 
     def register_calibration_samples(self, iteration_id, probe, diagnosis, *, actor):
-        """Register the probe sample P and diagnosis sample D of a pending deferred split, once.
+        """Register fixed P and monotonically grow D while a deferred split is pending.
 
         P and D are disjoint whole papers of the pool, outside the sealed papers.
-        Replaying the identical registration returns the iteration; any other
-        second registration is refused.
+        Replaying the identical registration returns the iteration. P cannot
+        change, D cannot shrink or replace cases, and freezing closes growth.
         """
         actor = _text(actor, 'actor', limit=200)
         from .splits import check_samples, pending
@@ -626,7 +626,10 @@ class IterationService:
             if (isinstance(probe, (list, tuple)) and isinstance(diagnosis, (list, tuple))
                     and sorted(probe) == split.get('probe') and sorted(diagnosis) == split.get('diagnosis')):
                 return self.iteration(iteration_id)
-            raise Conflict('Calibration samples are already registered')
+            if (not pending(protocol) or not isinstance(probe, (list, tuple))
+                    or not isinstance(diagnosis, (list, tuple)) or sorted(probe) != split.get('probe')
+                    or not set(split.get('diagnosis') or ()) <= set(diagnosis)):
+                raise Conflict('Calibration samples are already registered: keep P fixed and only grow D while pending')
         if not pending(protocol):
             raise Conflict('Calibration samples are registered only while a deferred split is pending')
         probe, diagnosis = check_samples(partitions, split, probe, diagnosis)
