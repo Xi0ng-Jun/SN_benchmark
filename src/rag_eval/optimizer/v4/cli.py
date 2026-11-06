@@ -164,6 +164,10 @@ def cmd_run(args) -> int:
 
     services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
                               adapter_settings=_settings(loaded.adapter_settings))
+    if getattr(args, '_frozen_config', None) or args.expected_agent_profiles_sha256:
+        from .agent_profiles import preflight
+        preflight(services.adapter, services.task_id, loaded.adapter_settings,
+                  ('analyst', 'implementer', 'reviewer'), expected=args.expected_agent_profiles_sha256)
     adapter = services.adapter
     if not services.writable:
         raise UsageError("workbench config does not set task_worktrees.create_candidates=true")
@@ -274,6 +278,9 @@ def cmd_calibrate(args):
             inputs[key] = getattr(args, key)
     services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
                               adapter_settings=loaded.adapter_settings)
+    if not args.no_advisor or args.expected_agent_profiles_sha256:
+        from .agent_profiles import preflight
+        preflight(services.adapter, services.task_id, loaded.adapter_settings, expected=args.expected_agent_profiles_sha256)
     root = Path(args.state_dir)
     root.mkdir(parents=True, exist_ok=True)
     with run_view.hold_run_lock(root):
@@ -339,6 +346,9 @@ def cmd_calibrated_run(args):
     settings = bundle['identity']['adapter_settings']
     services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
                               adapter_settings=settings)
+    from .agent_profiles import preflight
+    preflight(services.adapter, services.task_id, settings, ('analyst', 'implementer', 'reviewer'),
+              expected=args.expected_agent_profiles_sha256)
     with run_view.hold_run_lock(root):
         _bind(services, args)
         seed = services.adapter.version_for(services.root_candidate_id)
@@ -468,6 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--actor")
     common.add_argument("--run-id")
     common.add_argument("--state-dir")
+    common.add_argument('--expected-agent-profiles-sha256', help=argparse.SUPPRESS)
     parser = _Parser(prog="python -m rag_eval.optimizer.cli v4", description="method-v4 on SN")
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
     run = sub.add_parser("run", parents=[common], help="calibrate and run rounds (start or resume)")
@@ -521,10 +532,11 @@ COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cm
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from rag_eval.workbench.agent_creations import CreationProfileUnavailable
     args = build_parser().parse_args(argv)
     try:
         return COMMANDS[args.command](args)
-    except UsageError as exc:
+    except (UsageError, CreationProfileUnavailable) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except Exception:  # noqa: BLE001

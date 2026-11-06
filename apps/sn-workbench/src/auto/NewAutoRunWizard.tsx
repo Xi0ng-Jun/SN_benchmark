@@ -150,7 +150,7 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
             {profiles.map(p => <Button key={p.id} label={`${p.provider} · ${p.model}`} selected={selectedProfiles[role + '_profile'] === p.id} disabled={inputLocked} onPress={() => setProfiles(v => ({ ...v, [role + '_profile']: p.id }))} />)}
           </View>
         </View>)}
-        <Copy small muted>选择已登记的模型配置，权衡 Agent 成本与能力。</Copy>
+        <Copy small muted>选择已登记的模型配置，权衡 Agent 成本与能力。“服务器默认”必须通过当前工作区授权校验；审查与校准顾问未单独设置时继承分析配置。预览会显示实际配置，不可用时请显式选择。</Copy>
       </Section>
       <Button label={authorized ? '终评授权：已登记' : '终评授权：未授权'} selected={authorized} disabled={inputLocked} onPress={() => setAuthorized(a => !a)} />
       <Copy small muted>终评使用封存题，需独立确认；此向导不会执行终评。</Copy>

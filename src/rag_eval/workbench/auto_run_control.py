@@ -134,6 +134,11 @@ class AutoRunControl:
             spend_budget=inputs.get('spend_budget'), price_per_1k_tokens=inputs.get('price_per_1k_tokens')))
         return config
 
+    def _agent_profiles(self, settings, roles=('analyst', 'implementer', 'reviewer', 'calibrator')):
+        from ..optimizer.v4.agent_profiles import resolve
+        from .agent_creations import require_profile_binding
+        return resolve(settings, lambda profile: require_profile_binding(self.config.get('agent_creation'), profile), roles)
+
     def _proposal(self, root):
         bundle = session.load_bundle(root / session.CALIBRATION_FILE)
         proposed = proposal.Proposal.from_dict(ledger_io.read_json(root / session.PROPOSAL_FILE))
@@ -161,9 +166,12 @@ class AutoRunControl:
                 config = self._read(root, 'calibration-input.json') or config
             config = dict(config, calibration_concurrency=session.calibration_concurrency(
                 root, config.get('calibration_concurrency', 1)))
+            profiles = self._agent_profiles(config.get('adapter'))
+            if launch.get('inputs') is None:
+                config['adapter'] = dict(config.get('adapter') or {}, **profiles)
             payload = dict(config=config, inputs=command.inputs)
             summary = dict(action=action, config=config, test_set_authorized=bool(command.inputs.get('test_set_authorized')),
-                           incurs_cost=True, budget_hours=config['time_budget_hours'])
+                           agent_profiles=profiles, incurs_cost=True, budget_hours=config['time_budget_hours'])
         elif action in ('run', 'resume'):
             if self.busy(root):
                 raise Conflict('An automatic process is already running')
@@ -171,6 +179,7 @@ class AutoRunControl:
             if state.get('halt_reason') not in (None, 'process_failure', 'budget_exhausted'):
                 raise Conflict('This run has stopped permanently')
             proposed, bundle = self._proposal(root)
+            profiles = self._agent_profiles(bundle['identity'].get('adapter_settings'), ('analyst', 'implementer', 'reviewer'))
             frozen = proposal.freeze(proposed, bundle['summary'], bundle['history'])
             _, groups = session._papers(self.api.service, iteration_id)
             search, validation = session.materialize_split(bundle, groups, frozen['config']['split']['validation_size'])
@@ -180,6 +189,7 @@ class AutoRunControl:
                            saved_config={name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                                          for name in ('run-config.json', 'resolved-config.json') if (root / name).exists()})
             summary = dict(action=action, config=frozen['config'], sources=frozen['sources'],
+                agent_profiles=profiles,
                 budget_hours=frozen['inputs']['time_budget_hours'], spend_budget=frozen['inputs'].get('spend_budget'),
                 spend_scope='measurement estimate; agent costs excluded',
                 test_set_authorized=bool(launch.get('test_set_authorized')), search_size=len(search),
@@ -193,6 +203,11 @@ class AutoRunControl:
                            behavior='keep remote work for resume' if action == 'pause' else 'cancel remote work and stop')
         payload.update(iteration_id=iteration_id, actor=self.api.actor, action=action,
                        root_candidate=tree['root_candidate_id'])
+        if action in ('calibrate', 'run', 'resume'):
+            # Bind the confirmed IDs to their actual server definitions without
+            # exposing provider settings or credentials in the public preview.
+            from ..optimizer.v4.agent_profiles import binding_digest
+            payload['agent_profiles_sha256'] = binding_digest(self.config['agent_creation'], profiles)
         return payload, summary
 
     def preview(self, iteration_id, action, command):
@@ -206,7 +221,8 @@ class AutoRunControl:
         token = secrets.token_urlsafe(32)
         digest = session.canonical_hash(payload)
         ledger_io.atomic_write_json(root / 'confirmation.json', dict(token_hash=session.canonical_hash(token),
-            config_sha256=digest, actor=self.api.actor, action=action, expires_at=time.time() + 600, consumed=False))
+            config_sha256=digest, actor=self.api.actor, action=action, expires_at=time.time() + 600, consumed=False,
+            agent_profiles_sha256=payload.get('agent_profiles_sha256')))
         return dict(summary, confirmation_token=token, config_sha256=digest, expires_in_seconds=600)
 
     def execute(self, iteration_id, action, command):
@@ -252,6 +268,9 @@ class AutoRunControl:
         argv = [sys.executable, '-m', 'rag_eval.optimizer.cli', 'v4', 'calibrate' if action == 'calibrate' else 'run',
                 '--config', str(config_path), '--state', str(self.repository.root), '--iteration', iteration_id,
                 '--actor', self.api.actor, '--run-id', run_id, '--state-dir', str(root.resolve())]
+        expected = (self._read(root, 'confirmation.json') or {}).get('agent_profiles_sha256')
+        if expected:
+            argv += ['--expected-agent-profiles-sha256', expected]
         if action == 'calibrate':
             argv += ['--v4-config', str(root / 'calibration-input.json')]
             for key in ('spend_budget', 'price_per_1k_tokens'):

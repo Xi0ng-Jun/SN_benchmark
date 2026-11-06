@@ -54,3 +54,14 @@ Chromium 缺库时将三个发行版包仅解包到被忽略的 `var/v41-browser
 - TypeScript typecheck 与 Expo 单 worker 构建通过；bundle `index-fb9d94cb9080b177c2c5481f7cd1cb10.js`。v4.1 定向浏览器通过（桌面／420px、明暗主题、参数草稿、两种恢复窗口、新建），新增校准并发默认2、非法17拒绝、选择3后确认与提交值一致断言；新向导截图已检查。浏览器旧合成工件缺少身份字段已补齐，未放宽生产工件校验。
 - 独立只读审查无新增重要缺陷。首次集成暴露了校准参数与优化配置摘要的职责冲突，已把参数移至加载层，保留原摘要实现与原回归断言。
 - 证据：`.superpowers/sdd/method-v4.1-dev-plan/calibration-parallel-{final,frontend,browser}.log`。本次仍无真实模型调用或部署；真实服务器双路加速比、资源峰值及模型限流未测量。
+
+## 服务器顾问 profile 反馈修复（2026-11-06）
+
+- 用户提供部署94ad00e的只读报告：test3校准成功，顾问证据已生成，但默认pi-flash不在服务器创建白名单，创建记录为0且无顾问产出；旧工件只保存ValueError，没有原始异常消息，因此历史现场根因仍为高置信推断。
+- 本地复现相同配置不匹配，走真实RoundOperations.agent／AgentCreationStore（仅外部bridge为假），确认在创建意图之前拒绝；合法profile可走完整创建／消息／观察并接收顾问产出。原测试已有真实创建存储路径，但仅覆盖允许pi-flash的配置，遗漏默认与白名单失配组合。
+- 新增共享授权预检，HTTP预览校验四角色并显式解析继承值，启动优化／恢复及CLI同样校验所需角色。确认页显示实际profile，令牌及子进程二次核验绑定定义／workspaceId，不自动替用户选模型。
+- 顾问回退增加安全错误码与失败阶段；任意异常原始消息仍不投影。旧校准／回退不改写、不自动重试。
+- 最终 Python：`tests/optimizer` 与工作台自动控制、划分、迭代、准备缓存、Agent 创建／迭代绑定／loop services 集成范围 **674 passed，1 既有弃用警告，226.51 秒**。覆盖默认失配、合法配置真实创建链路（假外部 bridge）、确认后同 ID 定义变化、子进程两次加载间的配置变化。
+- TypeScript typecheck、Expo 单 worker 构建、v4.1 定向浏览器验证通过；确认页模型配置展示断言通过，截图已检查。日志为 `.superpowers/sdd/method-v4.1-dev-plan/profile-preflight-{verified,frontend,browser}.log`。
+- 首次扩大回归达到 300 秒上限，无完整结果，不计为通过；保留 `profile-preflight-final.log`。附近旧演练单独 **5 passed，28.42 秒**，随后上述 674 项完整通过；此前间歇停滞原因未确定。
+- 所有重任务串行、pytest 单 worker；未访问服务器、未调用真实模型。真实服务器新版本的顾问与并行加速仍待验证。

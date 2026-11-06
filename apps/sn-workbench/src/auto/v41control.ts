@@ -26,6 +26,7 @@ export type ProposalItem = { value: unknown; source: string; reason: string; con
 export type ProposalView = { proposal: { items: Record<string, ProposalItem>; inputs: Record<string, unknown>;
   notes: { advisor?: { status: string; message?: string; reason?: string } } }; forecast: Forecast; frozen: boolean };
 export type Confirmation = { confirmation_token: string; action: string; incurs_cost: boolean; expires_in_seconds: number;
+  agent_profiles?: Record<string, string>;
   config_sha256: string; config?: Record<string, unknown>; sources?: Record<string, string>; budget_hours?: number;
   test_set_authorized?: boolean; spend_budget?: number | null; spend_scope?: string; search_size?: number;
   validation_size?: number; forecast?: Forecast; behavior?: string };
@@ -38,6 +39,8 @@ export async function patchProposal(id: string, key: string, value: unknown): Pr
   return result;
 }
 export const parameterLabels: Record<string, string> = {
+  'adapter.analyst_profile': '分析 Agent 模型配置', 'adapter.implementer_profile': '实现 Agent 模型配置',
+  'adapter.reviewer_profile': '审查 Agent 模型配置', 'adapter.calibrator_profile': '校准顾问模型配置',
   calibration_concurrency: '校准执行并发',
   calibration_k: '校准遍数', validation_size: '验证集题数', diagnose_size: '诊断题数', b: '每轮候选数',
   cards_per_analysis: '每轮分析卡数', max_concurrent_executions: '执行并发', remeasure: '采纳前复测',

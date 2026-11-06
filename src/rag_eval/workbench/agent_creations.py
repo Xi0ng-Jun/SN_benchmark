@@ -18,6 +18,17 @@ BRIEF_V3 = 'method-v3'
 BRIEF_V4 = 'method-v4'
 
 
+class CreationProfileUnavailable(ValueError):
+    """Safe, stable category; never carries provider configuration or credentials."""
+    code = 'agent_profile_not_allowed'
+
+
+def require_profile_binding(binding, profile_id):
+    if (not isinstance(binding, dict) or set(binding) != {'workspaceId', 'profiles'}
+            or not isinstance(binding['profiles'], dict) or profile_id not in binding['profiles']):
+        raise CreationProfileUnavailable('Creation profile is not allowed for this task workspace')
+
+
 def _opaque(value, name, limit=200):
     _text(value, name, limit=limit)
     if value != value.strip() or '\0' in value:
@@ -84,9 +95,7 @@ class AgentCreationStore:
         from .creation_bridge import validate_create_command
         workspace = self.repository._require(conn, 'workspaces', task['workspace_id'])
         binding = self._bindings.get(workspace['id'])
-        if (not isinstance(binding, dict) or set(binding) != {'workspaceId', 'profiles'}
-                or not isinstance(binding['profiles'], dict) or profile_id not in binding['profiles']):
-            raise ValueError('Creation profile is not allowed for this task workspace')
+        require_profile_binding(binding, profile_id)
         command = {'op': 'createAgent', 'workspaceId': binding['workspaceId'],
                    'expectedCwd': workspace['location'], 'agentId': agent_id,
                    'idempotencyKey': sdk_key, 'config': copy.deepcopy(binding['profiles'][profile_id])}
@@ -215,6 +224,12 @@ class AgentCreationStore:
                          **({'candidate_id': candidate_id} if candidate_id else {}),
                          **({'scope': scope} if scope else {})})
             return self._scope(conn, task_id, intent_id, actor)[1]
+
+    def require_profile(self, task_id, profile_id):
+        """Read-only preflight using the same workspace authorization as dispatch."""
+        with self.repository.connect() as conn:
+            task = self.repository._require(conn, 'tasks', task_id)
+            require_profile_binding(self._bindings.get(task['workspace_id']), profile_id)
 
     def get(self, task_id, intent_id, *, actor):
         actor = _opaque(actor, 'actor')

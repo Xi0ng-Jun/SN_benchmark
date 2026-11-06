@@ -30,7 +30,8 @@ def control(calibration_env, tmp_path):
     api = SimpleNamespace(repository=service.repository, service=service, actor='alice', _scope=scope, _write=lambda: None)
     config = tmp_path / 'trusted.json'
     config.write_text('{}')
-    controller = AutoRunControl(api, dict(_config_path=str(config)))
+    controller = AutoRunControl(api, dict(_config_path=str(config), agent_creation=dict(
+        workspaceId='test-workspace', profiles={'pi-flash': dict(provider='codex/test')})))
     app = FastAPI()
     app.include_router(controller.router())
     @app.exception_handler(Conflict)
@@ -100,6 +101,7 @@ def test_calibration_public_reads_and_frozen_edit_protection(control):
 
 def test_launcher_uses_only_trusted_config_and_never_starts_endpoint(control, monkeypatch):
     ctl, _, iid, root = control
+    ctl.preview(iid, 'run', Action())
     calls = []
     def popen(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -107,6 +109,7 @@ def test_launcher_uses_only_trusted_config_and_never_starts_endpoint(control, mo
     monkeypatch.setattr(subprocess, 'Popen', popen)
     ctl._launch(iid, 'ctl', root, 'run', Action())
     argv, opts = calls[-1]
+    assert argv[argv.index('--expected-agent-profiles-sha256') + 1] == ledger_io.read_json(root / 'confirmation.json')['agent_profiles_sha256']
     assert '--from-proposal' in argv and '--no-test-set' in argv and '--confirm' not in argv
     assert opts['start_new_session'] is True
     assert argv[argv.index('--config') + 1] == ctl.config['_config_path']
@@ -237,3 +240,30 @@ def test_resume_calibration_uses_saved_config_and_refuses_input_changes(control)
     assert preview['config'] == config
     with pytest.raises(Conflict, match='original inputs'):
         ctl.preview(iid, 'calibrate', Action(inputs=dict(inputs, calibration_k=4)))
+
+
+def test_profiles_preflight_resolves_defaults_and_rechecks_confirmation(control, monkeypatch):
+    ctl, client, iid, root = control
+    (root / 'calibration.json').unlink()
+    ctl.config['agent_creation']['profiles'] = {'server-model': dict(provider='codex/test')}
+    url = f'/api/iterations/{iid}/v4/calibrate'
+    inputs = dict(time_budget_hours=2)
+    rejected = client.post(url, json=dict(inputs=inputs))
+    assert rejected.status_code == 422
+    assert '模型配置' in rejected.json()['error']
+    assert not (root / 'confirmation.json').exists()
+    inputs['adapter'] = dict(analyst_profile='server-model', implementer_profile='server-model')
+    preview = client.post(url, json=dict(inputs=inputs))
+    assert preview.status_code == 200
+    resolved = preview.json()['config']['adapter']
+    assert resolved['calibrator_profile'] == resolved['reviewer_profile'] == 'server-model'
+    assert ledger_io.read_json(root / 'confirmation.json')['agent_profiles_sha256']
+    launches = []
+    monkeypatch.setattr(ctl, '_launch', lambda *a: launches.append(a))
+    ctl.config['agent_creation']['profiles']['server-model']['provider'] = 'codex/changed'
+    response = client.post(url, json=dict(inputs=inputs, confirmation_token=preview.json()['confirmation_token']))
+    assert response.status_code == 409
+    ctl.config['agent_creation']['profiles'] = {}
+    response = client.post(url, json=dict(inputs=inputs, confirmation_token=preview.json()['confirmation_token']))
+    assert response.status_code == 422
+    assert launches == []

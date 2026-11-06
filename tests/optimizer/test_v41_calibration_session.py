@@ -137,21 +137,30 @@ def test_missing_token_usage_does_not_become_zero_cost(calibration_env):
         simulate(dict(p.params(), spend_budget=10, price_per_1k_tokens=1), bundle['summary'])
 
 
-def test_cli_calibrated_run_uses_every_frozen_field_and_does_not_recalibrate(calibration_env, monkeypatch):
+@pytest.mark.parametrize('change_after_freeze', [False, True])
+def test_cli_calibrated_run_uses_every_frozen_field_and_does_not_recalibrate(calibration_env, monkeypatch, change_after_freeze):
     service, tree, adapter, path = calibration_env
     bundle = measure(calibration_env)
     adapter.version_for = lambda cid: adapter.seed
-    adapter._round_ops = SimpleNamespace(service=service)
+    from rag_eval.workbench.agent_creations import AgentCreationStore
+    workspace_id = service.repository.task(tree['task_id'])['workspace_id']
+    binding = dict(workspaceId='test-workspace', profiles={'pi-flash': dict(provider='codex/test')})
+    store = AgentCreationStore(service.repository, {workspace_id: binding})
+    adapter._round_ops = SimpleNamespace(service=service, creations=SimpleNamespace(store=store))
     adapter._protocol = lambda: service.iteration(tree['id'])['protocol']
     adapter.partitions = lambda: dict(adapter._protocol()['splits'], fresh_batches=[], k_base=2)
     adapter.set_evidence_dir = lambda p: None
     settings_seen = []
     def build(*a, **kw):
         settings_seen.append(kw['adapter_settings'])
+        adapter._config = dict(agent_creation=json.loads(json.dumps(binding)))
+        if change_after_freeze and len(settings_seen) == 2:
+            adapter._config['agent_creation']['profiles']['pi-flash']['provider'] = 'codex/unapproved'
         return cli.Services(adapter, tree['id'], tree['task_id'], tree['root_candidate_id'], True)
     monkeypatch.setattr(cli, 'build_services', build)
     measured = dict(adapter.calls)
     def run_once(run):
+        assert not change_after_freeze, 'changed model configuration reached optimisation'
         run._calibrate()
         frozen = run.frozen_config['config']
         for key, value in frozen.items():
@@ -161,8 +170,15 @@ def test_cli_calibrated_run_uses_every_frozen_field_and_does_not_recalibrate(cal
         close(run)
         return 'time_budget'
     monkeypatch.setattr(V4Run, 'run', run_once)
+    from rag_eval.optimizer.v4.agent_profiles import binding_digest
+    expected = binding_digest(binding, dict(analyst_profile='pi-flash', implementer_profile='pi-flash', reviewer_profile='pi-flash'))
     code = cli.main(['run', '--from-proposal', str(path / 'proposal.json'), '--iteration', tree['id'],
-                     '--actor', 'alice', '--run-id', 'test-run', '--state-dir', str(path), '--no-test-set'])
+                     '--actor', 'alice', '--run-id', 'test-run', '--state-dir', str(path), '--no-test-set',
+                     '--expected-agent-profiles-sha256', expected])
+    if change_after_freeze:
+        assert code == 2 and len(settings_seen) == 2
+        assert not (path / 'state.json').exists()
+        return
     assert code == 0
     frozen = session._load(path / session.RUN_CONFIG_FILE)
     for key, value in frozen['config']['adapter'].items():

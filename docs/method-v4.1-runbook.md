@@ -90,3 +90,13 @@ python -m rag_eval.optimizer.cli v4 status --state-dir "$V41_RUN_DIR"
 ## 本地资源预算
 
 WSL 约 7.8 GiB。所有 pytest、前端构建、类型检查、浏览器验证共用 `/tmp/v41-pytest.lock`，每次只跑一批；拿锁后 `MemAvailable` 至少 2.5 GiB。pytest 使用 `-n 1`，BLAS／OMP 线程均为 1；Node 堆上限 1536 MiB、Expo `--max-workers 1`。每批限定超时，不跑 SN 全量测试，不终止无关进程。测试证据见 `method-v4.1-progress.md` 和本地交付包。
+
+## Agent 模型配置预检（2026-11-06 增量）
+
+`adapter.analyst_profile` 和 `adapter.implementer_profile` 的内置缺省仍为 `pi-flash`；`reviewer_profile`、`calibrator_profile` 未指定时继承分析配置。内置值不保证在服务器白名单中。向导“服务器默认”不代表自动挑选任意可用模型：预览会校验四个角色的最终 profile，失效时在校准执行前报错；用户应显式选择已登记的分析／实现配置，或由管理员设置可信 `optimizer_v4.adapter` 默认值。顾问／审查可另选或继承分析配置。
+
+确认页显示实际 profile ID，确认令牌绑定所选 profile 定义及远端 workspaceId。子进程加载磁盘配置后还会校验批准的摘要，防止工作台内存配置与启动时文件不一致；失配时在测量前停止，需加载正确服务器配置后重新预览。此检查仅验证配置授权与一致性，不证明 bridge、凭据或模型服务健康。
+
+CLI `calibrate`（启用顾问时）与 `run --from-proposal` 同样执行角色配置预检；显式 `--no-advisor` 可做纯校准测量。顾问回退新增 `stage` 和 `error_type`；白名单失配使用稳定错误码 `agent_profile_not_allowed` 与可操作说明。其他异常不回显任意原始消息，以免泄漏案例或服务凭据。
+
+旧 fallback 工件不重写、不删除、不自动重试。已完成校准的模型配置身份仍不可修改；需要不同模型配置时按新迭代流程处理，真实重跑须用户授权。不要编辑 calibration.json／proposal.json 绕过恢复约束。

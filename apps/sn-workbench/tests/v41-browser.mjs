@@ -66,6 +66,7 @@ export async function checkV41({ browser, open, origin, shot }) {
         activeToken = `token-${epoch}-${previews}`;
         return route.fulfill({ json: { action: path === 'run/preview' ? 'run' : path.split('/').at(-1), confirmation_token: activeToken,
           incurs_cost: !['run/pause', 'run/stop'].includes(path), expires_in_seconds: 600, budget_hours: 8,
+          agent_profiles: { analyst_profile: 'server-model', implementer_profile: 'server-model', reviewer_profile: 'server-model', calibrator_profile: 'server-model' },
           test_set_authorized: false, config: { b: sample.proposal.proposal.items.b.value, calibration_concurrency: calibrationInputs?.calibration_concurrency ?? 2 }, config_sha256: 'synthetic', search_size: 100, validation_size: 60 } });
       }
       assert.equal(body.confirmation_token, activeToken);
@@ -92,6 +93,7 @@ export async function checkV41({ browser, open, origin, shot }) {
   await page.getByTestId('v41-calibrate').click();
   await page.getByTestId('v41-confirmation').waitFor();
   assert.match(await page.getByTestId('v41-confirmation').innerText(), /校准执行并发上限：3/);
+  assert.match(await page.getByTestId('v41-confirm-profiles').innerText(), /校准顾问模型配置：server-model/);
   assert.equal(confirmations, 0, 'preview must never start paid calibration');
   await page.getByTestId('v41-confirm').click();
   await page.getByTestId('v41-param-b').waitFor();

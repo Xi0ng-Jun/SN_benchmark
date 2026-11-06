@@ -67,6 +67,7 @@ def run(adapter, seed, state_dir, *, profile, clock=time.monotonic, timeout=TIME
     result = {}
     started = clock()
     remaining = max(0, min(TIMEOUT_S, intent['deadline'] - time.time()))
+    stage = 'evidence'
     try:
         ledger_io.atomic_write_json(evidence_path, evidence(adapter, bundle))
         text = (f'Read your calibration evidence at {evidence_path.resolve()}. '
@@ -80,22 +81,31 @@ def run(adapter, seed, state_dir, *, profile, clock=time.monotonic, timeout=TIME
             if clock() - started >= remaining:
                 raise TimeoutError('10 minute calibration advisor deadline')
             adapter.check_runtime()
+            stage = 'agent_request'
             result = adapter._round_ops.agent('calibrator', adapter.candidate_id(seed),
                 iteration_id=bundle['identity']['iteration_id'], key=key, profile=profile,
                 text=text, brief='method-v4')
             adapter._track_agent(key, result)
             if result.get('status') == 'idle':
+                stage = 'output_read'
                 if output.stat().st_size > 128000:
                     raise ValueError('advisor output exceeds 128 KB')
-                out = accept(base, ledger_io.read_json(output), bundle)
+                raw = ledger_io.read_json(output)
+                stage = 'output_validation'
+                out = accept(base, raw, bundle)
                 break
             if result.get('status') not in ('running', 'unknown'):
                 raise ValueError('advisor did not finish successfully')
             adapter._runtime_wait(min(2, max(0, remaining - (clock() - started))))
     except Exception as exc:
+        from rag_eval.workbench.agent_creations import CreationProfileUnavailable
         out = base
-        out.notes['advisor'] = dict(status='fallback', reason=type(exc).__name__,
-                                    message=f'校准顾问未给出建议：{type(exc).__name__}', failure_modes=[])
+        profile_error = isinstance(exc, CreationProfileUnavailable)
+        reason = exc.code if profile_error else type(exc).__name__
+        detail = ('校准顾问模型配置未获当前工作区授权，请选择已登记配置；本次使用规则建议'
+                  if profile_error else f'校准顾问未给出建议：{type(exc).__name__}（阶段：{stage}）')
+        out.notes['advisor'] = dict(status='fallback', reason=reason, stage=stage,
+                                    error_type=type(exc).__name__, message=detail, failure_modes=[])
     finally:
         # Close this role only; never cancel the run's completed measurements.
         adapter._cancel_agent(key, result.get('session_id'))

@@ -93,6 +93,17 @@ def test_timeout_falls_back_to_rules_and_closes_only_advisor(calibration_env):
     assert advisor.run(adapter, adapter.seed, calibration_env[3], profile='mock').values() == proposed.values()
 
 
+def test_unknown_exception_reports_stage_without_leaking_raw_message(calibration_env):
+    base(calibration_env)
+    def fail(root):
+        raise ValueError('password=private https://private.invalid/case')
+    adapter, _, _ = mock_bridge(calibration_env, fail)
+    out = advisor.run(adapter, adapter.seed, calibration_env[3], profile='mock')
+    note = out.notes['advisor']
+    assert note['reason'] == 'ValueError' and note['stage'] == 'agent_request'
+    assert 'private' not in json.dumps(note)
+
+
 def test_role_allowlist_and_root_run_binding(calibration_env, monkeypatch):
     service, tree, adapter, path = calibration_env
     bundle, proposed = base(calibration_env)

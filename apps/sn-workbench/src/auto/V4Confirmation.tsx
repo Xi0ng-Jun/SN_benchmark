@@ -17,6 +17,9 @@ export function V4Confirmation({ preview, busy, onConfirm, onCancel }: {
     {preview.incurs_cost && <>
       <Copy small>此操作会调用执行服务和 Agent，并产生费用。时间预算：{preview.budget_hours} 小时。</Copy>
       {preview.action === 'calibrate' && <Copy small>校准执行并发上限：{String(preview.config?.calibration_concurrency ?? 1)}。这是本次校准的上限，优化阶段并发在建议书中另行确定。</Copy>}
+      {preview.agent_profiles && <View testID="v41-confirm-profiles" style={{ gap: 2 }}>
+        {Object.entries(preview.agent_profiles).map(([key, value]) => <Copy key={key} small>{parameterLabels['adapter.' + key] ?? key}：{value}</Copy>)}
+      </View>}
       <Copy small>测量费用预算：{preview.spend_budget ?? '未设置'}；估算不含 Agent 和已经完成的校准费用，不是整场运行的硬性金额上限。</Copy>
       <Copy small>终评授权：{preview.test_set_authorized ? '已登记；终评仍需单独确认' : '未授权'}。此按钮不会执行终评。</Copy>
       {preview.validation_size != null && <Copy small>搜索 {preview.search_size} 题 · 验证 {preview.validation_size} 题；确认后划分和配置冻结。</Copy>}
