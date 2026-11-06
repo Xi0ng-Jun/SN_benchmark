@@ -112,6 +112,8 @@ class IterationAPI:
         self.views = run_views
         self.requests = ActionRequestStore(repository, execution_config=self.service.execution_config)
         self.repository = repository
+        from .auto_run_control import AutoRunControl
+        self.auto_control = AutoRunControl(self, config)
         self._shown = {}  # iteration id -> (version, tree) last served
 
     def primary(self, candidate, task_id=None):
@@ -286,6 +288,7 @@ class IterationAPI:
 
     def router(self):
         router = APIRouter()
+        router.include_router(self.auto_control.router())
         service, actor = self.service, self.actor
 
         @router.get('/api/iterations')
