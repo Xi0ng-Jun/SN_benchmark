@@ -102,12 +102,27 @@ def _timing(profiles, fallback, n, k):
                 warm_wall_s=statistics.mean(warm) if warm else None), source
 
 
+def calibration_concurrency(state_dir, requested):
+    """A saved schedule is immutable; pre-scheduler deliveries retain serial execution."""
+    if type(requested) is not int or not 1 <= requested <= 16:
+        raise ValueError('calibration concurrency must be an integer between 1 and 16')
+    path = Path(state_dir) / CALIBRATION_FILE
+    if path.exists():
+        schedule = _load(path).get('schedule')
+        if schedule is None:
+            return 1
+        if schedule['concurrency'] != requested:
+            raise ValueError('calibration concurrency differs; resume with its original value')
+    return requested
+
+
 def run_calibration(adapter, seed, service, iteration_id, actor, state_dir, user_inputs,
-                    adapter_settings=None, history=None):
+                    adapter_settings=None, history=None, *, concurrency=2):
     """Called under the run-directory lock. Completed stages are never re-executed."""
     inputs = proposal.normalize_inputs(user_inputs)
     path = Path(state_dir) / CALIBRATION_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
+    concurrency = calibration_concurrency(state_dir, concurrency)
     tree, groups = _papers(service, iteration_id)
     split = tree['protocol']['splits']
     pool = sorted(c for g in groups for c in g)
@@ -134,13 +149,17 @@ def run_calibration(adapter, seed, service, iteration_id, actor, state_dir, user
         if len(probe) < 2:
             raise ValueError('whole-paper probe needs at least two cases')
         remaining = [g for g in groups if not set(g) & set(probe)]
-        diagnosis = split.get('diagnosis') or remaining[0]
+        diagnosis = split.get('diagnosis') or _take(remaining, 40)
         saved = _save(path, dict(kind='method-v4.1-calibration', complete=False, identity=identity,
             probe=probe, diagnosis=diagnosis, history=dataclasses.asdict(_history(history)),
+            schedule=dict(version=1, concurrency=concurrency, diagnosis_batches=[dict(tasks=diagnosis)]),
             results={}, walls={}, profiles={}))
     service.register_calibration_samples(iteration_id, saved['probe'], saved['diagnosis'], actor=actor)
     probe = saved['probe']
-    if 'probe' not in saved['results']:
+    if 'schedule' in saved:
+        from .calibration_schedule import measure
+        saved = measure(adapter, seed, path, saved, initial=True)
+    elif 'probe' not in saved['results']:
         t0 = time.monotonic()
         # Sequential increments establish real cold/warm order and durable roots;
         # the adapter tops up k rather than running the previous roots again.
@@ -159,9 +178,13 @@ def run_calibration(adapter, seed, service, iteration_id, actor, state_dir, user
     remaining = [g for g in groups if not set(g) & set(probe)]
     want = math.ceil(22.5 / failure_rate) if failure_rate else 15
     diagnosis = sorted(set(saved['diagnosis']) | set(_take(remaining, want)))
-    service.register_calibration_samples(iteration_id, probe, diagnosis, actor=actor)
     saved['diagnosis'] = diagnosis
-    if 'diagnosis' not in saved['results']:
+    saved = _save(path, saved)  # intent before monotone registration; crash replay cannot shrink D
+    service.register_calibration_samples(iteration_id, probe, diagnosis, actor=actor)
+    if 'schedule' in saved:
+        from .calibration_schedule import finish_diagnosis
+        saved = finish_diagnosis(adapter, seed, path, saved)
+    elif 'diagnosis' not in saved['results']:
         saved = _save(path, saved)
         t0 = time.monotonic()
         result = adapter.evaluate_search(seed, diagnosis, 1)
@@ -182,7 +205,10 @@ def run_calibration(adapter, seed, service, iteration_id, actor, state_dir, user
         pool_size=len(pool), n_diagnosis=len(diagnosis),
         remaining_paper_sizes=tuple(map(len, remaining)), **timing)
     saved.update(complete=True, summary=summary.canonical(),
-        assumptions=[timing_note, 'concurrency scaling not measured'] + ([] if tokens is not None else ['token usage unavailable; spend forecast unavailable']),
+        assumptions=[timing_note, 'concurrency scaling not measured']
+        + ([f'calibration execution cap {concurrency}; observed execution times may include resource contention']
+           if concurrency > 1 else [])
+        + ([] if tokens is not None else ['token usage unavailable; spend forecast unavailable']),
         calibration=dict(rerun_var=aa['rerun_var'], validation=aa, safeguard_noise=noise,
                          walls=saved['walls'], safeguards=sg))
     saved = _save(path, saved)
@@ -298,12 +324,26 @@ def forecast(frozen, bundle, ledger=None):
     return simulate(params, bundle['summary'], history)
 
 
+def scheduling_summary(bundle):
+    """Only counts/timings cross the public boundary; never batch identities."""
+    schedule = bundle.get('schedule') or {}
+    return dict(calibration_concurrency=schedule.get('concurrency', 1),
+        probe_completed_k=schedule.get('probe_completed_k',
+            bundle['identity']['calibration_k'] if 'probe' in bundle['results'] else 0),
+        diagnosis_completed_cases=sum(len(b['tasks']) for b in schedule.get('diagnosis_batches', []) if 'result' in b)
+            if schedule else len(bundle['diagnosis']) if 'diagnosis' in bundle['results'] else 0,
+        measurement_active_wall_s=schedule.get('active_wall_s'),
+        cache_lock_wait_max_s=max((p.get('lock_waited_s', 0.) for rows in bundle.get('profiles', {}).values()
+                                  for p in rows), default=0.) if bundle.get('profiles') else None)
+
+
 def public_summary(bundle):
     result = EvalResult(**bundle['results']['probe'])
     tasks = decide.attempts_by_task(result)
     ordered = sorted(tasks, key=lambda task: statistics.mean(tasks[task]))
     rows = [tasks[task] for task in ordered]
     return dict(complete=bundle['complete'], summary=bundle['summary'], assumptions=bundle.get('assumptions', []),
+        **scheduling_summary(bundle),
         inputs=bundle['identity']['user_inputs'],
         heatmap=[dict(row=i + 1, scores=[attempt.get(task) for attempt in result.attempt_scores],
                       mean=statistics.mean(tasks[task])) for i, task in enumerate(ordered)],

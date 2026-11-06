@@ -207,12 +207,23 @@ def test_pending_calibration_exposes_original_browser_inputs_for_resume(control)
     dict(time_budget_hours=1, spend_budget=10),
     dict(time_budget_hours=1, price_per_1k_tokens=-1),
     dict(time_budget_hours=1, test_set_authorized='yes'),
+    dict(time_budget_hours=1, calibration_concurrency=0),
+    dict(time_budget_hours=1, calibration_concurrency=17),
+    dict(time_budget_hours=1, calibration_concurrency=True),
 ])
 def test_invalid_budget_or_authorization_refused_before_confirmation(control, inputs):
     ctl, _, iid, root = control
     with pytest.raises(ValueError):
         ctl.preview(iid, 'calibrate', Action(inputs=inputs))
     assert not (root / 'confirmation.json').exists()
+
+
+def test_calibration_concurrency_is_in_confirmed_config(control):
+    ctl, _, iid, root = control
+    (root / 'calibration.json').unlink()
+    preview = ctl.preview(iid, 'calibrate', Action(inputs=dict(time_budget_hours=1, calibration_concurrency=3)))
+    assert preview['config']['calibration_concurrency'] == 3
+    assert ctl._calibration_input(dict(time_budget_hours=1))['calibration_concurrency'] == 2
 
 
 def test_resume_calibration_uses_saved_config_and_refuses_input_changes(control):

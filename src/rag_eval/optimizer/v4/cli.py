@@ -280,14 +280,18 @@ def cmd_calibrate(args):
         _bind(services, args)
         adapter = services.adapter
         adapter.set_evidence_dir(root / EVIDENCE_DIR)
+        concurrency = session.calibration_concurrency(root,
+            args.calibration_concurrency if args.calibration_concurrency is not None else loaded.calibration_concurrency)
+        # Calibration has few jobs; avoid a 30-second idle gap after each short warm execution.
+        adapter._eval_poll_interval = min(adapter._eval_poll_interval, 5.)
         started = time.monotonic()
         adapter.configure_runtime(remaining=lambda: inputs['time_budget_hours'] * 3600 - (time.monotonic() - started),
-                                  max_concurrent_executions=1)
+                                  max_concurrent_executions=concurrency)
         try:
             with stop_on_sigterm():
                 bundle = session.run_calibration(adapter, adapter.version_for(services.root_candidate_id),
                     adapter._round_ops.service, args.iteration, args.actor, root, inputs,
-                    loaded.adapter_settings, read_history(args.history or []))
+                    loaded.adapter_settings, read_history(args.history or []), concurrency=concurrency)
                 if not args.no_advisor:
                     from . import advisor
                     advisor.run(adapter, adapter.version_for(services.root_candidate_id), root,
@@ -474,6 +478,8 @@ def build_parser() -> argparse.ArgumentParser:
     calibration = sub.add_parser('calibrate', parents=[common], help='measure seed P/D on a deferred iteration')
     calibration.add_argument('--v4-config', required=True)
     calibration.add_argument('--calibration-k', type=int, choices=range(2, 6))
+    calibration.add_argument('--calibration-concurrency', type=int, choices=range(1, 17),
+                             help='calibration execution cap (default from config: 2; 1 is serial)')
     calibration.add_argument('--history', action='append')
     calibration.add_argument('--spend-budget', type=float)
     calibration.add_argument('--price-per-1k-tokens', type=float)

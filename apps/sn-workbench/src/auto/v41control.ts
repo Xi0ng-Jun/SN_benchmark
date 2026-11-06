@@ -12,6 +12,8 @@ export type Forecast = {
 export type CalibrationDetail = {
   complete: boolean; alive?: boolean; elapsed_s?: number | null; phase?: string; launch_inputs?: Record<string, unknown>; inputs?: Record<string, unknown>;
   probe_size?: number; diagnosis_size?: number; completed_stages?: string[];
+  calibration_concurrency?: number; probe_completed_k?: number; diagnosis_completed_cases?: number;
+  measurement_active_wall_s?: number | null; cache_lock_wait_max_s?: number | null;
   summary?: { n_probe: number; n_diagnosis: number; k: number; pool_size: number; test_size: number;
     rerun_var: number; constant_fraction: number; infra_fail_rate: number; tokens_per_task: number | null;
     cold_wall_s: number | null; warm_wall_s: number | null; exec_overhead_s: number; per_task_s: number;
@@ -36,6 +38,7 @@ export async function patchProposal(id: string, key: string, value: unknown): Pr
   return result;
 }
 export const parameterLabels: Record<string, string> = {
+  calibration_concurrency: '校准执行并发',
   calibration_k: '校准遍数', validation_size: '验证集题数', diagnose_size: '诊断题数', b: '每轮候选数',
   cards_per_analysis: '每轮分析卡数', max_concurrent_executions: '执行并发', remeasure: '采纳前复测',
   smoke: '冒烟检查', smoke_size: '冒烟题数', minibatch: '小批筛选', minibatch_fraction: '小批比例', minibatch_min: '小批最少题数',

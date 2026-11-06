@@ -43,6 +43,7 @@ function ParameterEditor({ name, item, locked, iterationId, onSaved, onDraft }: 
 export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { iterationId: string; profiles?: CreationProfile[]; onStarted: () => void }) {
   const theme = useTheme(), base = controlPath(iterationId);
   const [tick, setTick] = useState(0), [hours, setHours] = useState('8'), [k, setK] = useState(3);
+  const [calibrationConcurrency, setCalibrationConcurrency] = useState('2');
   const [tokens, setTokens] = useState('0.5'), [answers, setAnswers] = useState('0.02'), [delta, setDelta] = useState('');
   const [spend, setSpend] = useState(''), [price, setPrice] = useState(''), [authorized, setAuthorized] = useState(false);
   const [selectedProfiles, setProfiles] = useState<Record<string, string>>({});
@@ -68,6 +69,7 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
     if (!inputs || restored.current) return;
     restored.current = true;
     setHours(String(inputs.time_budget_hours ?? 8)); setK(Number(inputs.calibration_k ?? 3));
+    setCalibrationConcurrency(String(calibration.data?.calibration_concurrency ?? saved?.calibration_concurrency ?? 1));
     const safeguards = inputs.safeguards as Record<string, number> | undefined;
     setTokens(String(safeguards?.tokens_per_task_ratio ?? .5)); setAnswers(String(safeguards?.answer_produced_rate ?? .02));
     setDelta(inputs.delta == null && inputs.min_meaningful_improvement == null ? '' : String(inputs.delta ?? inputs.min_meaningful_improvement));
@@ -95,8 +97,11 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
         if (!text.trim() || !Number.isFinite(value) || (zero ? value < 0 : value <= 0)) throw new Error(`${label}需要${zero ? '非负' : '正'}数`);
         return value;
       };
+      const concurrency = positive(calibrationConcurrency, '校准执行并发');
+      if (action === 'calibrate' && (!Number.isInteger(concurrency) || concurrency > 16)) throw new Error('校准执行并发需要 1–16 的整数');
       const body = action === 'calibrate' ? { inputs: calibration.data?.launch_inputs ?? {
         time_budget_hours: positive(hours, '时间预算'), calibration_k: k,
+        calibration_concurrency: concurrency,
         safeguards: { tokens_per_task_ratio: positive(tokens, 'token 容忍量', true), answer_produced_rate: positive(answers, '回答率容忍量', true) },
         ...(delta ? { min_meaningful_improvement: positive(delta, '最小有意义提升') } : {}),
         ...(spend ? { spend_budget: positive(spend, '测量费用预算', true) } : {}),
@@ -127,6 +132,8 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
       <Copy small muted>由你决定愿意投入的运行时间，模拟器据此估计候选数。</Copy>
       <Copy small>校准遍数：由你权衡测量成本与噪声估计稳定性。</Copy>
       <View style={{ flexDirection: 'row', gap: 8 }}>{[2, 3, 4, 5].map(n => <Button key={n} label={String(n)} selected={k === n} disabled={inputLocked} onPress={() => setK(n)} testID={`v41-k-${n}`} />)}</View>
+      <Field label="校准执行并发（1–16）" value={calibrationConcurrency} onChange={setCalibrationConcurrency} editable={!inputLocked} testID="v41-calibration-concurrency" />
+      <Copy small muted>默认 2，让 P 与 D 同时测量；1 为串行。P 首遍后其余遍可并行，受此上限约束。并发是评测执行数，每次执行内部仍可能并行调用模型。启动后按原值恢复。</Copy>
       <Field label="token 用量允许增加比例（0.5 = 50%）" value={tokens} onChange={setTokens} editable={!inputLocked} />
       <Field label="回答率允许下降（0.02 = 2 个百分点）" value={answers} onChange={setAnswers} editable={!inputLocked} />
       <Copy small muted>这是产品能接受的退化，由你定义；判定时还会计入实测噪声。</Copy>
@@ -147,7 +154,7 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
       </Section>
       <Button label={authorized ? '终评授权：已登记' : '终评授权：未授权'} selected={authorized} disabled={inputLocked} onPress={() => setAuthorized(a => !a)} />
       <Copy small muted>终评使用封存题，需独立确认；此向导不会执行终评。</Copy>
-      {calibration.data.alive ? <Copy testID="v41-calibrating">校准／顾问运行中 · 已用 {duration(calibration.data.elapsed_s)}：P {calibration.data.probe_size ?? calibration.data.summary?.n_probe ?? '待登记'} · D {calibration.data.diagnosis_size ?? calibration.data.summary?.n_diagnosis ?? '待登记'} · 已完成 {(calibration.data.completed_stages ?? []).join('、') || (calibration.data.complete ? '测量，等待顾问' : '等待测量回执')}</Copy>
+      {calibration.data.alive ? <Copy testID="v41-calibrating">校准／顾问运行中 · 已用 {duration(calibration.data.elapsed_s)}：P {calibration.data.probe_size ?? calibration.data.summary?.n_probe ?? '待登记'} · D {calibration.data.diagnosis_size ?? calibration.data.summary?.n_diagnosis ?? '待登记'} · 执行并发上限 {calibration.data.calibration_concurrency ?? calibrationConcurrency} · P 已完成 {calibration.data.probe_completed_k ?? 0} 遍 · D 已完成 {calibration.data.diagnosis_completed_cases ?? 0} 题 · 已完成 {(calibration.data.completed_stages ?? []).join('、') || (calibration.data.complete ? '测量，等待顾问' : '等待测量回执')}</Copy>
         : <Button label={calibration.data.phase === 'calibration' ? '预览恢复校准' : '预览校准'} primary disabled={locked} onPress={() => act('calibrate')} testID="v41-calibrate" />}
     </> : proposal.data ? <>
       <Copy>{proposal.data.proposal.notes.advisor?.message ?? '使用规则建议。校准顾问未提供说明。'}</Copy>

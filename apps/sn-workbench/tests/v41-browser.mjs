@@ -28,7 +28,7 @@ export async function checkV41({ browser, open, origin, shot }) {
   const sample = await (await page.request.get(`${origin}/api/test-v41`)).json();
   const finished = await (await page.request.get(`${origin}/api/iterations/v4-done/auto-run`)).json();
   let calibrated = false, running = false, missingProposal = false, confirmations = 0, previews = 0, patches = 0;
-  let epoch = 0, activeToken = null;
+  let epoch = 0, activeToken = null, calibrationInputs = null;
   await page.route('**/api/iterations/v41-wizard/auto-run', async route => {
     await route.fulfill({ json: running ? { ...finished, run: { ...finished.run, run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'running', alive: true }, next_action: null }
       : { schema_version: 1, method: 'v4', run: { method: 'v4', run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'not_started', alive: false },
@@ -58,15 +58,22 @@ export async function checkV41({ browser, open, origin, shot }) {
     }
     if (['calibrate', 'run/preview', 'run', 'run/pause', 'run/resume', 'run/stop'].includes(path)) {
       if (!body.confirmation_token) {
+        if (path === 'calibrate' && !calibrated) {
+          assert.equal(body.inputs.calibration_concurrency, 3);
+          calibrationInputs = body.inputs;
+        }
         previews++;
         activeToken = `token-${epoch}-${previews}`;
         return route.fulfill({ json: { action: path === 'run/preview' ? 'run' : path.split('/').at(-1), confirmation_token: activeToken,
           incurs_cost: !['run/pause', 'run/stop'].includes(path), expires_in_seconds: 600, budget_hours: 8,
-          test_set_authorized: false, config: { b: sample.proposal.proposal.items.b.value }, config_sha256: 'synthetic', search_size: 100, validation_size: 60 } });
+          test_set_authorized: false, config: { b: sample.proposal.proposal.items.b.value, calibration_concurrency: calibrationInputs?.calibration_concurrency ?? 2 }, config_sha256: 'synthetic', search_size: 100, validation_size: 60 } });
       }
       assert.equal(body.confirmation_token, activeToken);
       confirmations++; activeToken = null;
-      if (path === 'calibrate') { calibrated = true; missingProposal = false; }
+      if (path === 'calibrate') {
+        if (!calibrated) assert.deepEqual(body.inputs, calibrationInputs);
+        calibrated = true; missingProposal = false;
+      }
       if (path === 'run' || path === 'run/resume') running = true;
       return route.fulfill({ json: { accepted: true } });
     }
@@ -76,8 +83,15 @@ export async function checkV41({ browser, open, origin, shot }) {
   await page.getByTestId('v41-wizard').waitFor();
   await page.getByTestId('v41-k-3').click();
   await page.getByTestId('v41-hours').fill('8');
+  assert.equal(await page.getByTestId('v41-calibration-concurrency').inputValue(), '2');
+  await page.getByTestId('v41-calibration-concurrency').fill('17');
+  await page.getByTestId('v41-calibrate').click();
+  await page.getByText('校准执行并发需要 1–16 的整数', { exact: true }).waitFor();
+  assert.equal(previews, 0);
+  await page.getByTestId('v41-calibration-concurrency').fill('3');
   await page.getByTestId('v41-calibrate').click();
   await page.getByTestId('v41-confirmation').waitFor();
+  assert.match(await page.getByTestId('v41-confirmation').innerText(), /校准执行并发上限：3/);
   assert.equal(confirmations, 0, 'preview must never start paid calibration');
   await page.getByTestId('v41-confirm').click();
   await page.getByTestId('v41-param-b').waitFor();

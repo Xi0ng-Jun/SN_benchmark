@@ -80,6 +80,7 @@ export function V4Calibration({ detail, forecast, iterationId }: { detail?: Cali
   const count = Math.max(1, ...bins);
   return <View testID="v4-calibration" style={{ gap: 14 }}>
     <Copy>校准：P {s.n_probe} 题 × {s.k} 遍，D {s.n_diagnosis} 题 × 1 遍</Copy>
+    <Copy small muted>校准执行并发上限 {detail.calibration_concurrency ?? 1} · 已记录测量调度用时 {duration(detail.measurement_active_wall_s)} · 单执行缓存锁等待最大值 {duration(detail.cache_lock_wait_max_s)}。调度用时不含顾问和停机时间；硬中断可能丢失未落盘时段，并行执行耗时不能直接相加。</Copy>
     <Section title="匿名题 × 尝试" meta="按题均分排序">
       <Copy small muted>颜色越深分数越高（{num(low)}–{num(high)}）；点击格子查看分数。灰色表示该遍缺分；匿名行号不对应题号。</Copy>
       <View onLayout={e => setHeatWidth(e.nativeEvent.layout.width)}><ScrollView style={{ maxHeight: 280 }}>

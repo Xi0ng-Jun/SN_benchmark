@@ -73,9 +73,21 @@ def test_calibrate_freeze_and_import_reuses_p_d_and_only_fills_remaining_validat
 
 
 def test_interruption_after_probe_resumes_only_diagnosis_and_identity_is_checked(calibration_env, monkeypatch):
+    import threading
     _, _, adapter, _ = calibration_env
     original = adapter.evaluate_search
-    monkeypatch.setattr(adapter, 'evaluate_search', lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    subset = adapter.evaluate_subset
+    completed = threading.Event()
+    def probe(*args, **kwargs):
+        result = subset(*args, **kwargs)
+        if args[2] == 'probe' and args[4] == 3:
+            completed.set()
+        return result
+    def interrupted(*args, **kwargs):
+        assert completed.wait(3)
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(adapter, 'evaluate_subset', probe)
+    monkeypatch.setattr(adapter, 'evaluate_search', interrupted)
     with pytest.raises(KeyboardInterrupt):
         measure(calibration_env)
     calls = adapter.calls['subset:probe']

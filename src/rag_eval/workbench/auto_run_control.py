@@ -102,7 +102,7 @@ class AutoRunControl:
                                    dict(actor=self.api.actor, config_sha256=digest, **extra))
 
     def _calibration_input(self, inputs):
-        allowed = {'time_budget_hours', 'calibration_k', 'safeguards', 'min_meaningful_improvement',
+        allowed = {'time_budget_hours', 'calibration_k', 'calibration_concurrency', 'safeguards', 'min_meaningful_improvement',
                    'adapter', 'spend_budget', 'price_per_1k_tokens', 'test_set_authorized'}
         if set(inputs) - allowed:
             raise ValueError('Unknown calibration input')
@@ -122,6 +122,7 @@ class AutoRunControl:
                       if k not in ('spend_budget', 'price_per_1k_tokens', 'test_set_authorized', 'adapter')})
         config['adapter'] = dict(defaults.get('adapter') or {}, **adapter)
         config.setdefault('calibration_k', 3)
+        config.setdefault('calibration_concurrency', 2)
         # The CLI config validator remains authoritative; validate before a confirmation is issued.
         from tempfile import NamedTemporaryFile
         with NamedTemporaryFile(mode='w', suffix='.json') as file:
@@ -158,6 +159,8 @@ class AutoRunControl:
                 if command.inputs != launch['inputs']:
                     raise Conflict('Resume calibration with its original inputs')
                 config = self._read(root, 'calibration-input.json') or config
+            config = dict(config, calibration_concurrency=session.calibration_concurrency(
+                root, config.get('calibration_concurrency', 1)))
             payload = dict(config=config, inputs=command.inputs)
             summary = dict(action=action, config=config, test_set_authorized=bool(command.inputs.get('test_set_authorized')),
                            incurs_cost=True, budget_hours=config['time_budget_hours'])
@@ -291,6 +294,7 @@ class AutoRunControl:
         if not bundle.get('complete'):
             return dict(complete=False, alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='calibration',
                         inputs=bundle['identity']['user_inputs'],
+                        **session.scheduling_summary(bundle),
                         probe_size=len(bundle['probe']), diagnosis_size=len(bundle['diagnosis']),
                         completed_stages=list(bundle['results']))
         return dict(session.public_summary(bundle), alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs)

@@ -177,6 +177,7 @@ class LoadedConfig:
     adapter_settings: dict
     sha256: str
     resolved: dict
+    calibration_concurrency: int = 2  # independent of the optimization identity
 
 
 def load(path: str | Path) -> LoadedConfig:
@@ -188,6 +189,9 @@ def load(path: str | Path) -> LoadedConfig:
         raise ConfigError(f"cannot read v4 config {path}: {exc}") from None
     if not isinstance(data, dict):
         raise ConfigError("v4 config must hold a JSON object")
+    calibration_concurrency = data.pop('calibration_concurrency', 2)
+    if type(calibration_concurrency) is not int or not 1 <= calibration_concurrency <= 16:
+        raise ConfigError('calibration_concurrency must be an integer in [1, 16]')
     adapter = data.pop("adapter", {})
     if not isinstance(adapter, dict):
         raise ConfigError("'adapter' must be an object")
@@ -209,7 +213,7 @@ def load(path: str | Path) -> LoadedConfig:
     cfg = validate(V4Config(**data))
     settings = dict(ADAPTER_DEFAULTS, **adapter)
     resolved = dict(dataclasses.asdict(cfg), adapter=settings)
-    return LoadedConfig(cfg, settings, hashlib.sha256(raw).hexdigest(), resolved)
+    return LoadedConfig(cfg, settings, hashlib.sha256(raw).hexdigest(), resolved, calibration_concurrency)
 
 
 def digest(cfg: V4Config) -> str:

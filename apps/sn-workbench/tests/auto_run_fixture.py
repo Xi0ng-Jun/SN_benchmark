@@ -214,7 +214,8 @@ def add_v41_samples(app, runs):
     app.router.routes.insert(0, app.router.routes.pop())
     # Feed the same anonymous calibration to the ordinary completed run projection.
     from rag_eval.optimizer.v4 import calibration_session as session
-    bundle = dict(kind='method-v4.1-calibration', complete=True, identity=dict(user_inputs=proposed.inputs),
+    bundle = dict(kind='method-v4.1-calibration', complete=True,
+        identity=dict(user_inputs=proposed.inputs, calibration_k=3), probe=mock.validation, diagnosis=mock.search,
         results=dict(probe=dataclasses.asdict(measured)), summary=summary.canonical(), calibration=dict(validation=aa), assumptions=detail['assumptions'])
     session._save(runs / 'v4-done' / 'calibration.json', bundle)
     state = json.loads((runs / 'v4-done' / 'state.json').read_text())
