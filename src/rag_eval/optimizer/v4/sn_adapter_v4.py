@@ -71,6 +71,8 @@ class SNAdapterV4(SNAdapter):
         self._safeguard_cache_lock = threading.Lock()
         self._card_limit = threading.local()
         self.last_review: dict = {}
+        self._v41_measurements = None
+        self._v41_measurements_lock = threading.Lock()
 
     def _gated(self, call):
         """Run one keyed measurement while holding a global measurement slot."""
@@ -108,11 +110,15 @@ class SNAdapterV4(SNAdapter):
                                 "p" if rcid is not None else "u", *((tag,) if tag else ()), *self._generation())
         kwargs = self._v2_run_kwargs()
         label = f"{subset} {cid} k={k}" + (f" {tag}" if tag else "")
-        self._gated(lambda: self._await({label: (key, lambda: ops.subset(cid, subset, ids, k=k, paired=rcid is not None,
-                                                                          key=key, **kwargs))},
-                                        {label: (cid, rcid)}))
-        scopes = {t: scope_id for t in ids}
-        return self._read(cid, scopes), (self._read(rcid, scopes) if rcid is not None else None)
+        from .measurements import V41Measurements
+        with self._v41_measurements_lock:
+            if self._v41_measurements is None:
+                self._v41_measurements = V41Measurements(ops.api)
+        measurements = self._v41_measurements
+        self._gated(lambda: self._await({label: (key, lambda: measurements.subset(
+            cid, subset, ids, k=k, paired=rcid is not None, key=key, **kwargs))}, {label: (cid, rcid)}))
+        return (measurements.read_result(cid, scope_id, k, key=key),
+                measurements.read_result(rcid, scope_id, k, key=key) if rcid is not None else None)
 
     def evaluate_search(self, version: Version, task_ids: list[str], k: int) -> EvalResult:
         """Diagnosis: *version* alone on a search sample (``subset:diag``), k attempts."""

@@ -115,6 +115,9 @@ def smoke(adapter, snap, rec, card, candidate):
 
 def observe(adapter, candidate, reference, snap):
     """(verdict, infrastructure info) of the configured safeguards (§4.5), noise-aware."""
+    if (candidate.context or {}).get('v41_policy') or (reference.context or {}).get('v41_policy'):
+        shared = set(candidate.per_task_scores) & set(reference.per_task_scores)
+        candidate, reference = decide.restrict(candidate, shared), decide.restrict(reference, shared)
     observed = adapter.observe_safeguards(candidate, reference) or {}
     verdict = decide.safeguard_verdict(observed, snap.cfg.safeguards, noise=snap.safeguard_noise,
                                        z=snap.cfg.safeguard_z)
@@ -143,7 +146,15 @@ def minibatch(adapter, snap, rec, card, candidate):
     rec['cache_mb'] = cache(adapter, cm)
     pm = decide.restrict(snap.parent_val, snap.mb)
     d = decide.paired_delta(cm, pm, snap.mb, rerun_var=snap.rerun_var, families=snap.families)
-    check_dropped(d, len(snap.mb), 'minibatch')
+    full_n = len(snap.mb) + len(snap.rest)
+    known_infra = all((cm.error_classes.get(t) == 'infra_exhausted'
+                       or pm.error_classes.get(t) == 'infra_exhausted') for t in snap.mb)
+    if d['n'] == 0 and known_infra and d['dropped'] <= MAX_DROPPED_FRACTION * full_n:
+        # No minibatch effect is inferred. The full validation result will decide
+        # whether enough comparable tasks remain under the original denominator.
+        rec['minibatch_note'] = 'no observable minibatch: known exhausted infrastructure; continue to full validation'
+    else:
+        check_dropped(d, full_n, 'minibatch')
     # §4.2: the minibatch only records its safeguards; it never eliminates on them.
     sg, _ = safeguards(adapter, rec, cm, pm, snap)
     rec.update(delta_mb=d['delta'], se_mb=d['se'], n_mb=d['n'], safeguards_mb=sg)

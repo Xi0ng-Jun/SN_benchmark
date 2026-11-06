@@ -27,7 +27,9 @@ def combine(*results: Optional[EvalResult]) -> EvalResult:
         values.update(r.safeguard_values)
         attempts.extend(r.attempt_scores)
         for k, v in (r.context or {}).items():
-            if isinstance(v, dict) and isinstance(context.get(k), dict):
+            if k == "score_identities":
+                context.setdefault(k, []).extend(v)
+            elif isinstance(v, dict) and isinstance(context.get(k), dict):
                 context[k] = dict(context[k], **v)
             elif k not in context:
                 context[k] = v
@@ -80,7 +82,9 @@ def merge_attempts(*results: Optional[EvalResult]) -> EvalResult:
     context: dict = {}
     for r in parts:
         for k, v in (r.context or {}).items():
-            if isinstance(v, dict) and isinstance(context.get(k), dict):
+            if k == "score_identities":
+                context.setdefault(k, []).extend(v)
+            elif isinstance(v, dict) and isinstance(context.get(k), dict):
                 context[k] = dict(context[k], **v)
             elif k not in context:
                 context[k] = v
@@ -128,6 +132,11 @@ def paired_delta(candidate: EvalResult, reference: EvalResult, task_ids: Iterabl
     Missing primary scores are excluded from pairing, including admitted outputs
     without a judge result. Answer production is a separate safeguard.
     """
+    identities = [identity for result in (candidate, reference)
+                  for identity in (result.context or {}).get("score_identities", [])]
+    if identities:
+        from .results import compatible
+        compatible(identities)
     ids = list(task_ids)
     ca, ra = attempts_by_task(candidate), attempts_by_task(reference)
     diffs, floor_terms, paired_ids = [], [], []

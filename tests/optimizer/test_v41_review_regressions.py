@@ -112,3 +112,24 @@ def test_gaming_review_is_recorded_even_when_safeguard_blocks_adoption():
     assert mock.calls['review'] == 1
     assert 'needs_human_review' in record['flags']
     assert not record['qualification']['qualified'] and len(run.lineage) == 1
+
+
+def test_empty_known_infra_minibatch_continues_without_invented_statistics():
+    from types import SimpleNamespace
+    from rag_eval.optimizer.adapter import Card, Version
+    from rag_eval.optimizer.v4 import stages
+    ids = ['a', 'b']
+    candidate = EvalResult({}, {}, {}, dict.fromkeys(ids, 'infra_exhausted'))
+    parent = EvalResult(dict.fromkeys(ids, .5), {}, {}, {})
+    adapter = SimpleNamespace(evaluate_subset=lambda *args: (candidate, None),
+                              timing_profile=lambda result: [], observe_safeguards=lambda *args: {})
+    snapshot = SimpleNamespace(mb=ids, rest=list(range(18)), parent_val=parent,
+                               rerun_var=.01, families={}, safeguard_noise={}, cfg=V4Config(time_budget_hours=1))
+    record = stages.minibatch(adapter, snapshot, {}, Card('case', 'change'), Version('candidate'))
+    assert record['stage'] == 'minibatch_pass' and record['n_mb'] == 0
+    assert record['delta_mb'] is record['se_mb'] is None
+    assert 'no observable minibatch' in record['minibatch_note']
+    # The same two exhausted tasks exceed the allowance on a smaller full set.
+    snapshot.rest = list(range(17))
+    with pytest.raises(Exception, match='run failure'):
+        stages.minibatch(adapter, snapshot, {}, Card('case', 'change'), Version('candidate'))

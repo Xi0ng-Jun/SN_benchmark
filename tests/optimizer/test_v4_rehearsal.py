@@ -55,6 +55,23 @@ class V4Rig(Rig):
             adapter=dict(agent_poll_interval=.01, eval_poll_interval=.01, agent_timeout=WAIT,
                          eval_timeout=WAIT, worktree_timeout=WAIT))))
         monkeypatch.setattr(v4cli, 'build_services', self._build4)
+        # This lifecycle rig deliberately supplies synthetic scores. Artifact
+        # validation itself is exercised with real RunViews in the partial-artifact
+        # regression suite; this explicit seam cannot become a production fallback.
+        from rag_eval.optimizer.v4 import results
+        read_execution = results.read_execution
+        def synthetic_execution(views, execution_id, expected):
+            if views is not self.views:
+                return read_execution(views, execution_id, expected)
+            rows = {}
+            for entry in views.execution_runs(execution_id):
+                for task in entry.case_ids:
+                    rows[task] = dict(score=views.scores[execution_id][task], failure_kind=None,
+                                     output=dict(status='success'), trajectory=dict(run_id=entry.id,
+                                     run_dir=str(entry.run_dir), execution_id=execution_id))
+            assert set(rows) == set(expected)
+            return dict(rows=rows, identities=[])
+        monkeypatch.setattr(results, 'read_execution', synthetic_execution)
 
     def __enter__(self):
         self._stop.clear()          # the rig may be entered again (run, then test)
@@ -138,7 +155,10 @@ class V4Rig(Rig):
                          calibration_k if candidate['id'] == self.tree['root_candidate_id'] else 2)
                 assert len(attempts) <= limit, (candidate['id'], scope, len(attempts))
                 assert len({a['execution_id'] for a in attempts}) == len(attempts)
-                assert all(a['execution_state'] == 'finished' for a in attempts)
+                # A successful budget stop cancels unused speculative diagnosis;
+                # committed validation/remeasurement executions must finish.
+                allowed = {'finished', 'cancelled'} if str(scope).startswith('subset:diag:') else {'finished'}
+                assert all(a['execution_state'] in allowed for a in attempts), (scope, attempts)
 
     def state4(self):
         return json.loads((self.run_dir / STATE_FILE).read_text())
