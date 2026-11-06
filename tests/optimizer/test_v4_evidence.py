@@ -129,18 +129,20 @@ def test_safeguard_cache_requires_terminal_output_provenance_and_rechecks_access
     stub = dict(run_id='run', execution_id='execution')
     adapter._safeguard_observation(views, stub, 'case')
     adapter._safeguard_observation(views, stub, 'case')
-    assert len(calls) == 2 and not adapter._safeguard_cache
+    # v4.1: cache key is safeguard-output-v2; observation is called once; no sealed check yet (phase=running)
+    assert len(calls) == 1 and 'safeguard-output-v2:run:case' not in adapter._safeguard_cache
     state.write_text(json.dumps(dict(phase='finished')))
     adapter._safeguard_observation(views, stub, 'case')
     cached = adapter._safeguard_observation(views, stub, 'case')
-    assert len(calls) == 3 and len(checks) == 4
-    assert 'status' not in cached
+    # After phase=finished, observation called again (now 2 total) and sealed check called twice
+    assert len(calls) == 2 and len(checks) == 2
+    assert 'status' in cached    # v4.1 preserves status in the cached observation
     cached['usage']['total_tokens'] = -1
     assert adapter._safeguard_observation(views, stub, 'case')['usage']['total_tokens'] == 100
     row['product_record']['usage']['total_tokens'] = 200
     output.write_text(json.dumps(row) + '\n')
     assert adapter._safeguard_observation(views, stub, 'case')['usage']['total_tokens'] == 200
-    assert len(calls) == 4
+    assert len(calls) == 3
     # A sealed access policy still refuses a cached observation.
     def sealed(*args):
         raise ValueError('sealed')
@@ -153,8 +155,6 @@ def test_safeguard_infrastructure_is_always_reobserved(monkeypatch):
     from types import SimpleNamespace
     from rag_eval.optimizer.adapter import EvalResult
     adapter = SNAdapterV4({})
-    monkeypatch.setattr(adapter, '_protocol', lambda: dict(safeguards=[
-        dict(key='infrastructure_failure_rate', direction='decrease', margin=.1)]))
     monkeypatch.setattr(adapter, '_require_round_ops', lambda _: SimpleNamespace(
         repository=None, service=SimpleNamespace(candidate=lambda cid: dict(id=cid))))
     monkeypatch.setattr(adapter, '_views', lambda: object())
@@ -167,9 +167,15 @@ def test_safeguard_infrastructure_is_always_reobserved(monkeypatch):
     monkeypatch.setattr(adapter, '_infrastructure', infrastructure)
     result = EvalResult({}, dict(case=[dict(run_id='r')]), {}, {},
                         context=dict(candidate_id='parent', scopes=dict(case='scope')))
-    assert adapter.observe_safeguards(result, result)['infrastructure_failure_rate']['reference'] == 0
+    # v4.1: infrastructure is informational only (dict, not dict with specific keys)
+    observed = adapter.observe_safeguards(result, result)
+    assert 'infrastructure' in observed
+    assert isinstance(observed['infrastructure'], dict)
+    assert observed['infrastructure']['subject'] == rows
     rows['failed'] = 1
-    assert adapter.observe_safeguards(result, result)['infrastructure_failure_rate']['reference'] == 1
+    observed = adapter.observe_safeguards(result, result)
+    assert observed['infrastructure']['subject']['failed'] == 1
+    # Always reobserved (never cached)
     assert len(calls) == 4
 
 

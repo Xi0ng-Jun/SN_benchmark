@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 from ..adapter import Diff, EvaluationUnavailable, ImplementationDeclined, SmokeResult
 from . import calibrate, decide, mechanism
 
+# method-v4.1 §4.5: more than this share of the compared tasks dropped (no score on a side
+# after the adapter's infrastructure retries) makes the measurement a run failure.
+MAX_DROPPED_FRACTION = 0.10
+# method-v4.1 §4.1: implementation failure classes (recorded, fed back to the analyst).
+IMPLEMENTATION_FAILURES = ("timeout", "empty_diff", "workspace_error", "malformed_report")
+
 
 def timed(rec, name, start):
     rec.setdefault('timings', {})[name] = rec.get('timings', {}).get(name, 0.0) + time.monotonic() - start
@@ -34,6 +40,16 @@ def cache(adapter, result):
         return None
 
 
+def failure_kind(exc: BaseException) -> str:
+    """One of IMPLEMENTATION_FAILURES for an implementer exception (adapter-independent text rules)."""
+    text = str(exc).lower()
+    if isinstance(exc, TimeoutError) and 'agent' in text:
+        return 'timeout'
+    if 'preflight' in text or 'report' in text and ('malformed' in text or 'missing' in text):
+        return 'malformed_report'
+    return 'workspace_error'
+
+
 def build(adapter, snap, rec, card, candidate=None):
     start = time.monotonic()
     try:
@@ -53,6 +69,8 @@ def build(adapter, snap, rec, card, candidate=None):
             rec['attempt'] = 1
         if diff.metadata.get('preflight'):
             rec['preflight'] = diff.metadata['preflight']
+        if not (diff.content or '').strip():
+            return finish(rec, 'error', 'implement: the implementer left no change', failure_kind='empty_diff'), candidate
         candidate = adapter.materialize(diff, snap.parent)
         rec.update(stage='built', candidate=candidate.content_hash,
                    touches_preparation=adapter.touches_preparation(diff), **diff_fields(diff))
@@ -70,30 +88,9 @@ def build(adapter, snap, rec, card, candidate=None):
     except EvaluationUnavailable:
         raise
     except Exception as exc:
-        return finish(rec, 'error', f'implement: {type(exc).__name__}: {exc}'), candidate
+        return finish(rec, 'error', f'implement: {type(exc).__name__}: {exc}', failure_kind=failure_kind(exc)), candidate
     finally:
         timed(rec, 'agent_s', start)
-
-
-def rebase(adapter, rec, candidate, parent):
-    start = time.monotonic()
-    try:
-        rebased = adapter.rebase(candidate, parent)
-        if rebased is None:
-            return finish(rec, 'error', 'carry-over rebase conflict'), None
-        rec.setdefault('rebased_from', []).append(dict(candidate=candidate.content_hash, parent=rec['parent'],
-                                                     delta_val=rec.get('delta_val'), se_val=rec.get('se_val')))
-        rec.update(parent=parent.content_hash, candidate=rebased.content_hash, stage='built', attempt=1)
-        for key in ('qualification', 'mechanism', 'smoke', 'delta_mb', 'delta_val', 'se_mb', 'se_val',
-                    'safeguards', 'safeguards_mb', 'label', 'finished_at'):
-            rec.pop(key, None)
-        return rec, rebased
-    except EvaluationUnavailable:
-        raise
-    except Exception as exc:
-        return finish(rec, 'error', f'carry-over rebase: {exc}'), None
-    finally:
-        timed(rec, 'rebase_s', start)
 
 
 def smoke(adapter, snap, rec, card, candidate):
@@ -116,12 +113,27 @@ def smoke(adapter, snap, rec, card, candidate):
         timed(rec, 'smoke_s', start)
 
 
-def safeguards(adapter, rec, candidate, parent, cfg):
+def observe(adapter, candidate, reference, snap):
+    """(verdict, infrastructure info) of the configured safeguards (§4.5), noise-aware."""
+    observed = adapter.observe_safeguards(candidate, reference) or {}
+    verdict = decide.safeguard_verdict(observed, snap.cfg.safeguards, noise=snap.safeguard_noise,
+                                       z=snap.cfg.safeguard_z)
+    return verdict, observed.get('infrastructure')
+
+
+def safeguards(adapter, rec, candidate, parent, snap):
     start = time.monotonic()
     try:
-        return decide.safeguard_verdict(adapter.observe_safeguards(candidate, parent), cfg.safeguard_tolerances)
+        return observe(adapter, candidate, parent, snap)
     finally:
         timed(rec, 'safeguards_s', start)
+
+
+def check_dropped(d, n_tasks, what):
+    """§4.5 infrastructure rule: too many tasks without a score on a side is a run failure."""
+    if d['n'] == 0 or d['dropped'] > MAX_DROPPED_FRACTION * n_tasks:
+        raise EvaluationUnavailable(f'{what}: {d["dropped"]} of {n_tasks} tasks without a paired score '
+                                    f'(limit {MAX_DROPPED_FRACTION:.0%}): run failure')
 
 
 def minibatch(adapter, snap, rec, card, candidate):
@@ -131,12 +143,10 @@ def minibatch(adapter, snap, rec, card, candidate):
     rec['cache_mb'] = cache(adapter, cm)
     pm = decide.restrict(snap.parent_val, snap.mb)
     d = decide.paired_delta(cm, pm, snap.mb, rerun_var=snap.rerun_var, families=snap.families)
-    sg = safeguards(adapter, rec, cm, pm, snap.cfg)
+    check_dropped(d, len(snap.mb), 'minibatch')
+    # §4.2: the minibatch only records its safeguards; it never eliminates on them.
+    sg, _ = safeguards(adapter, rec, cm, pm, snap)
     rec.update(delta_mb=d['delta'], se_mb=d['se'], n_mb=d['n'], safeguards_mb=sg)
-    if d['delta'] is None:
-        return finish(rec, 'minibatch_fail', 'no task scored on both sides')
-    if sg['breached']:
-        return finish(rec, 'minibatch_fail', 'safeguard_breached', label='safeguard_breached')
     if d['se'] is not None and d['delta'] < -snap.cfg.minibatch_kill * d['se']:
         return finish(rec, 'minibatch_fail', 'delta_mb below -kill*SE_mb')
     rec['stage'] = 'minibatch_pass'
@@ -144,36 +154,48 @@ def minibatch(adapter, snap, rec, card, candidate):
 
 
 def validation(adapter, snap, rec, card, candidate):
+    """Stage 2 (k=1 on the whole validation set) and, when it cannot change the outcome, stage 3 without review.
+
+    The reviewer is needed only for c_mech·SE <= Δ < c·SE: below that even a confirmed
+    mechanism cannot qualify, above it the candidate qualifies unconfirmed.
+    """
     start = time.monotonic()
     cm, _ = adapter.evaluate_subset(candidate, None, 'mb', list(snap.mb), 1)
-    cr, _ = adapter.evaluate_subset(candidate, None, 'rest', list(snap.rest), snap.k_val)
+    cr, _ = adapter.evaluate_subset(candidate, None, 'rest', list(snap.rest), 1)
     timed(rec, 'validation_s', start)
     rec['cache_rest'] = cache(adapter, cr)
     cv = decide.combine(cm, cr)
     ids = list(snap.mb) + list(snap.rest)
     d = decide.paired_delta(cv, snap.parent_val, ids, rerun_var=snap.rerun_var, families=snap.families)
-    sg = safeguards(adapter, rec, cv, snap.parent_val, snap.cfg)
+    check_dropped(d, len(ids), 'validation')
+    sg, infra = safeguards(adapter, rec, cv, snap.parent_val, snap)
     rec.update(delta_val=d['delta'], se_val=d['se'], se_own=d['se_own'], se_floor=d['se_floor'],
-               se_method=d['se_method'], n_val=d['n'], dropped_val=d['dropped'], safeguards=sg, stage='validated')
-    # Can even the lowest threshold qualify? A reviewer can still veto high-scoring candidates.
-    optimistic = decide.qualification(d['delta'], d['se'], 'confirmed', sg, c=snap.cfg.c, c_mech=snap.cfg.c_mech,
-                                      unobserved_blocks=snap.cfg.unobserved_safeguard_blocks)
-    if not optimistic['qualified']:
-        # This local check reuses measured trajectories; it costs no new evaluation or reviewer.
-        start = time.monotonic()
-        mechanical = mechanism.mechanical(adapter, card.predicate, cv, snap.parent_val, snap.seed_aa)
-        timed(rec, 'mechanism_s', start)
-        return qualify(rec, snap.cfg, dict(mechanical=mechanical, reviewer=dict(conclusion='none',
-                       reason='cannot qualify even with confirmed mechanism'),
-                       tier=decide.tier(mechanical.get('status'), 'none'))), cv
-    return rec, cv
+               se_method=d['se_method'], n_val=d['n'], dropped_val=d['dropped'], own_failures=d['own_failures'],
+               safeguards=sg, stage='validated')
+    if infra is not None:
+        rec['infrastructure'] = infra
+    kw = dict(c=snap.cfg.c, c_mech=snap.cfg.c_mech)
+    confirmed = decide.qualification(d['delta'], d['se'], 'confirmed', sg, **kw)
+    unconfirmed = decide.qualification(d['delta'], d['se'], 'unconfirmed', sg, **kw)
+    if confirmed['qualified'] and not unconfirmed['qualified'] and snap.cfg.review:
+        return rec, cv                      # stage 3 review can lower the threshold
+    # The local check reuses measured trajectories; it costs no new evaluation or reviewer.
+    start = time.monotonic()
+    mechanical = mechanism.mechanical(adapter, card.predicate, cv, snap.parent_val, snap.seed_aa)
+    timed(rec, 'mechanism_s', start)
+    reason = ('cannot qualify even with a confirmed mechanism' if not confirmed['qualified']
+              else 'qualifies without the relaxation' if unconfirmed['qualified'] else 'review disabled')
+    tier_, flags = decide.tier(mechanical.get('status'), 'none')
+    return qualify(rec, snap.cfg, dict(mechanical=mechanical, reviewer=dict(conclusion='none', reason=reason),
+                                       tier=tier_, flags=flags)), cv
 
 
 def qualify(rec, cfg, mech):
     q = decide.qualification(rec['delta_val'], rec['se_val'], mech['tier'], rec['safeguards'],
-                             c=cfg.c, c_mech=cfg.c_mech, unobserved_blocks=cfg.unobserved_safeguard_blocks)
+                             c=cfg.c, c_mech=cfg.c_mech)
+    flags = sorted(set(mech.get('flags') or []) | set(q.get('flags') or []))
     return finish(rec, 'measured', None if q['qualified'] else ','.join(q['reasons']),
-                  mechanism=mech, qualification=q)
+                  mechanism=mech, qualification=q, flags=flags)
 
 
 def review(adapter, snap, rec, card, candidate, cv):
@@ -192,7 +214,7 @@ def review(adapter, snap, rec, card, candidate, cv):
             if error:
                 conclusion.update(conclusion='none', reason=f'review failed: {error}')
             mech['reviewer'] = dict(conclusion, pairs=mechanism.ledger_view(pairs), verdicts=verdicts)
-        mech['tier'] = decide.tier(mech['mechanical'].get('status'), mech['reviewer']['conclusion'])
+        mech['tier'], mech['flags'] = decide.tier(mech['mechanical'].get('status'), mech['reviewer']['conclusion'])
         return qualify(rec, snap.cfg, mech)
     finally:
         timed(rec, 'mechanism_s', start)
@@ -211,11 +233,10 @@ def merge(adapter, snap, best, second, best_version, second_version):
         return dict(out, skipped='rebase conflict'), None, None
     adapter.check_runtime()
     mb = adapter.evaluate_subset(version, None, 'mb', list(snap.mb), 1)[0]
-    rest = adapter.evaluate_subset(version, None, 'rest', list(snap.rest), snap.k_val)[0]
+    rest = adapter.evaluate_subset(version, None, 'rest', list(snap.rest), 1)[0]
     val = decide.combine(mb, rest)
     d = decide.paired_delta(val, snap.parent_val, list(snap.mb) + list(snap.rest),
                            rerun_var=snap.rerun_var, families=snap.families)
-    sg = safeguards(adapter, out, val, snap.parent_val, snap.cfg)
-    ok = sg['ok'] or (not sg['breached'] and not snap.cfg.unobserved_safeguard_blocks)
+    sg, _ = safeguards(adapter, out, val, snap.parent_val, snap)
     return dict(out, candidate=version.content_hash, delta_val=d['delta'], se_val=d['se'], n_val=d['n'],
-                safeguards=sg, adopt=d['delta'] is not None and d['delta'] > best['delta_val'] and ok), version, val
+                safeguards=sg, adopt=d['delta'] is not None and d['delta'] > best['delta_val'] and sg['ok']), version, val

@@ -2,10 +2,22 @@
 import json
 
 from rag_eval.optimizer import adapter as contract
+from rag_eval.optimizer.v4.config import V4Config
 from rag_eval.optimizer.v4.loop import V4Run
 from rag_eval.optimizer.v4.sn_adapter_v4 import SNAdapterV4
-from .test_v4_runtime import config, execute
-from .v4_mock import V4Mock
+from .v4_mock import ScriptedRun, V4Mock
+
+
+def config(**kw):
+    kw.setdefault("time_budget_hours", 1)
+    kw.setdefault("b", 2)
+    return V4Config(**kw)
+
+
+def execute(mock, cfg=None, path=None):
+    run = ScriptedRun(mock, mock.seed, cfg or config(), search=mock.search, validation=mock.validation,
+                      state_dir=path)
+    return run, run.run()
 
 
 def report():
@@ -27,7 +39,8 @@ def test_preflight_skip_is_not_frozen_or_measured_and_next_analyst_gets_reason(t
     assert rec['preflight']['reason'] == 'already_satisfied'
     assert all('redundant' not in version for version in mock.chain)
     assert all('redundant' not in row[0] for row in mock.measured)
-    assert reason == 'no_adoption' and run.lineage[-1]['version'] == 'seed+r1-useful'
+    # Script has 2 rounds, so after adoption in round 1, round 2 drafts no cards → script_end
+    assert reason == 'script_end' and run.lineage[-1]['version'] == 'seed+r1-useful'
     entry = next(e for e in mock.last_history if e['title'] == 'redundant')
     assert entry['implementation_feedback']['summary'] == 'The empty-list guard already returns early.'
     persisted = json.loads((tmp_path / 'state.json').read_text())
@@ -37,6 +50,7 @@ def test_preflight_skip_is_not_frozen_or_measured_and_next_analyst_gets_reason(t
 def test_low_gain_still_records_cheap_mechanism_observation_without_reviewer():
     mock = V4Mock([[dict(name='changed', delta=.00001, predicate=True)]])
     run, _ = execute(mock, config(speculative_analysis=False))
+    # v4.1: tiny Δ < c_mech·SE still runs mechanism check but never qualifies
     assert mock.calls.get('review', 0) == 0
     entry = next(e for e in run.history if e['title'] == 'changed')
     assert entry['outcome'] == 'mechanism_changed_gain_insufficient'
@@ -83,7 +97,7 @@ def test_speculative_analysis_sees_completed_skip_not_mislabeled_in_progress():
             return super().analyse(trajectories, n_cards, **kwargs)
 
     mock = Mock([[dict(name='redundant'), dict(name='experiment', delta=0)], []])
-    execute(mock, config(b=1, no_adoption_rounds=2))
+    execute(mock, config(b=1))
     completed = next(e for e in mock.next_history if e['title'] == 'redundant')
     assert completed['label'] == 'preflight_skipped'
     assert completed['implementation_feedback']['source'] == 'implementer_report_before_measurement'
@@ -94,7 +108,7 @@ def test_repair_skip_preserves_prior_attempt_but_projects_new_unfrozen_candidate
         def repair(self, card, parent, failed, **kwargs):
             raise contract.ImplementationDeclined(dict(report(), candidate_id='repair-unfrozen'))
     mock = Mock([[dict(name='needs-repair', delta=.1, predicate=True, smoke_behaviour_fails=True)]])
-    run, _ = execute(mock, config(smoke_behaviour_check=True, speculative_analysis=False))
+    run, _ = execute(mock, config(smoke=True, smoke_behaviour_check=True, speculative_analysis=False))
     rec = run.rounds[0]['records']['0']
     assert rec['stage'] == 'preflight_skipped' and rec['attempt'] == 2
     assert not rec.get('candidate')

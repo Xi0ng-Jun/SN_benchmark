@@ -7,17 +7,20 @@ import pytest
 from rag_eval.optimizer.adapter import EvaluationUnavailable
 from rag_eval.optimizer.v4.config import V4Config
 from rag_eval.optimizer.v4.loop import V4Run
-from .v4_mock import V4Mock
+from .v4_mock import ScriptedRun, V4Mock
 
 
 def config(**kw):
-    return V4Config(**(dict(time_budget_hours=1, b=2, merge=False, ablation=False,
-                           no_adoption_rounds=1) | kw))
+    kw.setdefault("time_budget_hours", 1)
+    kw.setdefault("b", 2)
+    kw.setdefault("merge", False)
+    kw.setdefault("ablation", False)
+    return V4Config(**kw)
 
 
 def execute(mock, cfg=None, path=None):
-    run = V4Run(mock, mock.seed, cfg or config(), search=mock.search, validation=mock.validation,
-                state_dir=path)
+    run = ScriptedRun(mock, mock.seed, cfg or config(), search=mock.search, validation=mock.validation,
+                      state_dir=path)
     return run, run.run()
 
 
@@ -33,7 +36,7 @@ def test_diagnosis_sample_is_reused_from_calibration_and_scores_reach_analyst():
 
     mock = Mock([[], []], n_search=100)
     mock.diagnoses = []
-    run, _ = execute(mock, config(diagnose_size=7, no_adoption_rounds=2))
+    run, _ = execute(mock, config(diagnose_size=7))
     assert len(mock.diagnoses) == 1
     assert len(mock.diagnoses[0][1]) == 7 and mock.diagnoses[0][2] == 1
     assert mock.seen_scores and set(mock.seen_scores) <= set(mock.diagnoses[0][1])
@@ -119,19 +122,7 @@ def test_history_survives_parent_adoption_without_numeric_validation_feedback():
     assert all('delta_val' not in e and 'se_val' not in e for e in mock.last_history)
 
 
-def test_round_timebox_carries_slow_candidate_without_reimplementing():
-    class Mock(V4Mock):
-        def implement(self, card, workspace):
-            if card.failure_mode_desc == 'slow':
-                time.sleep(.15)
-            return super().implement(card, workspace)
-
-    mock = Mock([[dict(name='fast', delta=.1), dict(name='slow', delta=.2)], [], []])
-    run, _ = execute(mock, config(round_timebox_hours=.07/3600, no_adoption_rounds=2, max_rounds=5))
-    assert run.rounds[0]['timeboxed']
-    assert run.rounds[0]['decision']['adopted'] == 'seed+r1-fast'
-    assert mock.calls['implement'] == 2
-    assert any(n['round'] > 1 and 'r1-slow' in n['version'] for n in run.lineage)
+# v4.1 removed round_timebox_hours: work overlaps naturally without artificial timeboxes
 
 
 @pytest.mark.parametrize("failure_type", [EvaluationUnavailable, ValueError])
@@ -158,6 +149,10 @@ def test_ablation_measurements_overlap_and_failure_only_skips_one_unit(failure_t
 def test_slow_review_does_not_block_next_candidate_measurement():
     second_measured = threading.Event()
     class Mock(V4Mock):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.overlap = False
+
         def review(self, card, diff, pairs, *, candidate, key):
             if card.failure_mode_desc == 'first':
                 self.overlap = second_measured.wait(.5)
@@ -189,7 +184,7 @@ def test_speculative_analysis_reused_only_on_unchanged_parent():
 
     mock = Mock([[dict(name='X', delta=-.001)], []])
     mock.analyses = []
-    run, _ = execute(mock, config(no_adoption_rounds=2))
+    run, _ = execute(mock, config())
     assert mock.analyses == [(1, 'seed'), (2, 'seed')]
     assert run.rounds[1]['analysis_prefetched']
 

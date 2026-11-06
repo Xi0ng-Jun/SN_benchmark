@@ -9,9 +9,16 @@ materialization. V3's default hooks preserve its existing behavior. Also:
   validation subsets ``subset:mb:<hash>`` / ``subset:rest:<hash>`` with an
   explicit k (frozen with the key), paired with the parent or, for the seed's
   calibration, alone.
-- ``observe_safeguards``: the iteration protocol's safeguards observed exactly
-  as v3 does (``observe_safeguards`` + the v3 infrastructure rule), returned
-  as point values; the verdict is v4's (``decide.safeguard_verdict``).
+- ``observe_safeguards`` (method-v4.1 §4.5): ``tokens_per_task_ratio`` (ratio of
+  mean tokens per admitted attempt) and ``answer_produced_rate`` (share of admitted
+  attempts whose output status is ``success``), each with per-task, per-attempt
+  detail; infrastructure counts (v3 rule) are returned as information only. The
+  verdict is v4.1's (``decide.safeguard_verdict``); safeguards come from the v4
+  config, not from the iteration protocol.
+- ``remeasure_subset``: one more attempt of a version on a subset under its own
+  request key (tag ``remeasure``), read back with every admitted attempt.
+- Per-card hard time limit: ``implement`` / ``repair`` end with a TimeoutError
+  after ``agent_timeout`` seconds, including the worktree wait.
 - ``review``: the accountant writes the blinded pairs into an evidence file;
   a v2 Agent with role ``reviewer`` (brief ``method-v4``, bound to the frozen
   candidate, no commands) reads it and writes one verdict file. Each pair shows
@@ -32,6 +39,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -61,6 +69,7 @@ class SNAdapterV4(SNAdapter):
         self._card_evidence_lock = threading.Lock()
         self._safeguard_cache: dict[tuple, dict] = {}
         self._safeguard_cache_lock = threading.Lock()
+        self._card_limit = threading.local()
         self.last_review: dict = {}
 
     def _gated(self, call):
@@ -74,6 +83,17 @@ class SNAdapterV4(SNAdapter):
 
     def evaluate_subset(self, version: Version, reference: Optional[Version], subset: str, task_ids: list[str],
                         k: int) -> tuple[EvalResult, Optional[EvalResult]]:
+        return self._subset(version, reference, subset, task_ids, k)
+
+    def remeasure_subset(self, version: Version, subset: str, task_ids: list[str]) -> EvalResult:
+        """Re-measurement (method-v4.1 §4.4): v2 tops the version up to 2 attempts on the subset.
+
+        A distinct request key (tag ``remeasure``); the result holds every admitted
+        attempt of the version on that scope, i.e. the first measurement and this one.
+        """
+        return self._subset(version, None, subset, task_ids, 2, tag="remeasure")[0]
+
+    def _subset(self, version, reference, subset, task_ids, k, tag=None):
         from rag_eval.workbench.execution_scopes import subset_scope_id
         ops = self._require_round_ops("evaluate_subset")
         cid = self.candidate_id(version)
@@ -85,9 +105,9 @@ class SNAdapterV4(SNAdapter):
         # The scope is in the key: each parent has its own minibatch (method §3.2), and a
         # paired and an unpaired request never share a key.
         key = self._request_key("subset", subset, scope_id.rsplit(":", 1)[-1], cid, k,
-                                "p" if rcid is not None else "u", *self._generation())
+                                "p" if rcid is not None else "u", *((tag,) if tag else ()), *self._generation())
         kwargs = self._v2_run_kwargs()
-        label = f"{subset} {cid} k={k}"
+        label = f"{subset} {cid} k={k}" + (f" {tag}" if tag else "")
         self._gated(lambda: self._await({label: (key, lambda: ops.subset(cid, subset, ids, k=k, paired=rcid is not None,
                                                                           key=key, **kwargs))},
                                         {label: (cid, rcid)}))
@@ -256,6 +276,40 @@ class SNAdapterV4(SNAdapter):
                                       round_path=str(path), round_sha256=digest, legacy=False)
             ledger_io.atomic_text(index, json.dumps(known, ensure_ascii=False, indent=1))
 
+    # ------------------------------------------------------------------
+    # per-card hard time limit (method-v4.1 §4.1) and card direction (§4.1)
+    # ------------------------------------------------------------------
+
+    def _within_card_limit(self, call):
+        self._card_limit.deadline = time.monotonic() + self._agent_timeout
+        try:
+            return call()
+        finally:
+            self._card_limit.deadline = None
+
+    def implement(self, card: Card, workspace: Any) -> Diff:
+        return self._within_card_limit(lambda: super(SNAdapterV4, self).implement(card, workspace))
+
+    def repair(self, *args, **kwargs):
+        return self._within_card_limit(lambda: super(SNAdapterV4, self).repair(*args, **kwargs))
+
+    def _runtime_wait(self, seconds: float) -> None:
+        deadline = getattr(self._card_limit, "deadline", None)
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"implementer agent exceeded the per-card time limit of {self._agent_timeout}s")
+            seconds = min(seconds, left)
+        return super()._runtime_wait(seconds)
+
+    def card_direction(self, card: Card) -> Optional[str]:
+        """The analyst's ``direction`` tag of a drafted card (None when absent: inferred by the loop)."""
+        if self._hypotheses is None or not card.ref:
+            return None
+        raw = (self._hypotheses.get(self._require_ids()[1], card.ref) or {}).get("card") or {}
+        value = raw.get("direction")
+        return value if isinstance(value, str) and value.strip() else None
+
     def _preflight_path(self, workspace):
         if self.evidence_dir is None:
             raise RuntimeError('preflight report needs an evidence directory')
@@ -418,7 +472,7 @@ class SNAdapterV4(SNAdapter):
     # ------------------------------------------------------------------
 
     def _safeguard_observation(self, views, stub: dict, case_id: str) -> dict:
-        """Cache only terminal output-derived language/token evidence, never infrastructure.
+        """Cache only terminal output-derived status/token evidence, never infrastructure.
 
         The key identifies the actual registered run and artifact revisions. The
         access policy is checked even on hits. Synthetic/alternate views without
@@ -445,11 +499,11 @@ class SNAdapterV4(SNAdapter):
             signature = provenance()
         except OSError:
             return views.observation(run_id, case_id)
-        key = ("safeguard-output-v1", run_id, stub.get("execution_id"), str(run_dir), case_id, signature)
+        key = ("safeguard-output-v2", run_id, stub.get("execution_id"), str(run_dir), case_id, signature)
         with self._safeguard_cache_lock:
             hit = self._safeguard_cache.get(key)
             if hit is not None:
-                return dict(question=hit["question"], prediction=hit["prediction"],
+                return dict(question=hit["question"], prediction=hit["prediction"], status=hit["status"],
                             response=dict(hit["response"]), usage=dict(hit["usage"]))
         observed = views.observation(run_id, case_id)
         load = getattr(views, "_load", None)
@@ -463,12 +517,14 @@ class SNAdapterV4(SNAdapter):
         record = row.get("product_record") or {}
         question = record.get("original_question") or record.get("question")
         projected = dict(question=observed.get("question"), prediction=observed.get("prediction"),
+                         status=observed.get("status"),
                          response=dict(answer=(observed.get("response") or {}).get("answer")),
                          usage=dict(total_tokens=(observed.get("usage") or {}).get("total_tokens")))
         # Some views derive question/tokens from other artifacts or live service
         # state. Cache only when all safeguard inputs demonstrably match outputs.
         proven = (question is not None and projected["question"] == question
                   and projected["prediction"] == row.get("prediction")
+                  and projected["status"] is not None and projected["status"] == row.get("status")
                   and projected["response"]["answer"] == (record.get("response") or {}).get("answer")
                   and projected["usage"]["total_tokens"] == (record.get("usage") or {}).get("total_tokens"))
         try:
@@ -482,38 +538,61 @@ class SNAdapterV4(SNAdapter):
                 self._safeguard_cache[key] = projected
         return observed
 
+    SAFEGUARDS = ("tokens_per_task_ratio", "answer_produced_rate")
+
+    def observable_safeguards(self) -> tuple[str, ...]:
+        return self.SAFEGUARDS
+
     def observe_safeguards(self, candidate: EvalResult, reference: EvalResult) -> dict:
-        from rag_eval.workbench.comparisons import ComparisonService, observe_safeguards
-        specs = list(self._protocol().get("safeguards") or [])
+        """Point values and per-task, per-attempt detail of the v4.1 SN safeguards (verdict: decide).
+
+        tokens_per_task_ratio: mean total tokens per admitted attempt, subject / reference
+        (``kind='ratio'``; per task the raw token counts). answer_produced_rate: share of
+        admitted attempts whose output status is ``success`` (notebook_runner writes
+        success / no_answer / error; ``kind='proportion'``). Infrastructure failures are
+        never a safeguard: ``infrastructure`` carries v3-rule counts for the record only.
+        """
+        from rag_eval.workbench.comparisons import ComparisonService
         ops, views = self._require_round_ops("observe_safeguards"), self._views()
         comparisons = ComparisonService(ops.repository, ops.service, views, initialize=False)
-        trajectories, infra = {}, {}
+        tokens: dict[str, dict] = {}
+        produced: dict[str, dict] = {}
+        infra = {}
         for side, result in (("subject", candidate), ("reference", reference)):
             cid = (result.context or {}).get("candidate_id")
             if not cid:
                 raise ValueError("safeguards need SN results (context.candidate_id)")
-            cases: dict[str, list] = {}
             for case_id, stubs in result.trajectories.items():
                 for stub in stubs or []:
                     try:
-                        cases.setdefault(case_id, []).append(self._safeguard_observation(views, stub, case_id))
+                        o = self._safeguard_observation(views, stub, case_id)
                     except (KeyError, ValueError):
                         continue
-            trajectories[side] = cases
+                    t = (o.get("usage") or {}).get("total_tokens")
+                    if type(t) in (int, float):
+                        tokens.setdefault(case_id, dict(subject=[], reference=[]))[side].append(float(t))
+                    if o.get("status") is not None:
+                        produced.setdefault(case_id, dict(subject=[], reference=[]))[side].append(
+                            1.0 if o.get("status") == "success" else 0.0)
             node = ops.service.candidate(cid)
             scopes = sorted(set((result.context.get("scopes") or {}).values()), key=lambda x: (x is not None, x or ""))
             rows = [row for scope in scopes for row in self._infrastructure(comparisons, node, scope)]
             infra[side] = dict(total=sum(r["total"] for r in rows), failed=sum(r["failed"] for r in rows),
                                unobserved=sum(r["unobserved"] for r in rows))
-        observed, _ = observe_safeguards(trajectories)
-        if all(infra[s]["total"] and not infra[s]["unobserved"] for s in infra):
-            observed["infrastructure_failure_rate"] = {s: infra[s]["failed"] / infra[s]["total"] for s in infra}
-        out = {}
-        for spec in specs:
-            value = observed.get(spec["key"]) or {}
-            out[spec["key"]] = dict(direction=spec["direction"], margin=spec.get("margin"),
-                                    subject=value.get("subject"), reference=value.get("reference"))
-        return out
+
+        def mean(detail, side):
+            values = [v for row in detail.values() for v in row[side]]
+            return sum(values) / len(values) if values else None
+        ts, tr = mean(tokens, "subject"), mean(tokens, "reference")
+        ratio = ts / tr if ts is not None and tr else None
+        return dict(
+            tokens_per_task_ratio=dict(kind="ratio", direction="lower_is_better", subject=ratio,
+                                       reference=1.0 if ratio is not None else None, tasks=tokens,
+                                       means=dict(subject=ts, reference=tr)),
+            answer_produced_rate=dict(kind="proportion", direction="higher_is_better",
+                                      subject=mean(produced, "subject"), reference=mean(produced, "reference"),
+                                      tasks=produced),
+            infrastructure=infra)
 
     # ------------------------------------------------------------------
     # reviewer (method-v4 §3.2 stage 3)

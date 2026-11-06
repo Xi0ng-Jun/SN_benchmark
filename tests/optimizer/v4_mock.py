@@ -2,7 +2,8 @@
 
 A version's score on task t, attempt i = base + Σ deltas of its cards + noise(t, i),
 noise in [-0.05, 0.05). Trajectories are dicts naming version, task and attempt;
-predicates are callables on those dicts. The reviewer is scripted by ``reviewer``:
+predicates are callables on those dicts. Rounds past the script draft no card (a run
+failure in v4.1, so a scripted run ends after ``max_consecutive_run_failures`` such rounds). The reviewer is scripted by ``reviewer``:
 'honest' (sees the change on the candidate side iff the card spec says effect),
 'sycophant' (claims an effect on every pair), 'gaming' (flags gaming), None (no reviewer).
 """
@@ -34,7 +35,8 @@ class V4Mock(SystemAdapter):
         self.calls: dict[str, int] = {}
         self.fail_once: dict[str, Exception] = {}   # "<stage>:<card name>" -> raised once
         self.reviews: list[dict] = []
-        self.safeguard_harm: dict[str, float] = {}  # card name -> infrastructure failure rate added
+        self.safeguard_harm: dict[str, float] = {}  # card name -> share of tasks without an answer added
+        self.token_harm: dict[str, float] = {}      # card name -> relative token increase added
 
     def _count(self, name):
         with self.lock:
@@ -50,18 +52,18 @@ class V4Mock(SystemAdapter):
 
     # -- scores -------------------------------------------------------------
     def score(self, h: str, task: str, attempt: int) -> float:
-        delta = sum(self.cards[r].get("delta", 0.0) for r in self.chain[h])
+        # "delta_by_attempt": {attempt: delta} overrides "delta" for that attempt (a lucky first measurement).
+        delta = sum((self.cards[r].get("delta_by_attempt") or {}).get(attempt, self.cards[r].get("delta", 0.0))
+                    for r in self.chain[h])
         return min(1.0, max(0.0, self.base + delta + noise(task, attempt)))
 
     def _result(self, version: Version, ids, k: int) -> EvalResult:
         h = version.content_hash
         attempts = [{t: self.score(h, t, i) for t in ids} for i in range(k)]
         trajectories = {t: [dict(version=h, task=t, attempt=i) for i in range(k)] for t in ids}
-        harm = sum(self.safeguard_harm.get(self.cards[r]["name"], 0.0) for r in self.chain[h])
         return EvalResult(per_task_scores={t: sum(a[t] for a in attempts) / k for t in ids}, trajectories=trajectories,
                           costs={t: 0.0 for t in ids}, error_classes={t: None for t in ids},
-                          safeguard_values=dict(infrastructure_failure_rate=harm), attempt_scores=attempts,
-                          context=dict(version=h))
+                          attempt_scores=attempts, context=dict(version=h))
 
     def evaluate(self, version, task_ids, k, *, purpose="screen"):
         self._count("evaluate:" + purpose)
@@ -79,10 +81,45 @@ class V4Mock(SystemAdapter):
         self._maybe_fail(subset, version)
         return self._result(version, task_ids, k), (self._result(reference, task_ids, k) if reference else None)
 
+    # -- safeguards (method-v4.1 §4.5 shape: point values + per-task, per-attempt detail) ------------
+    def observable_safeguards(self):
+        return ("tokens_per_task_ratio", "answer_produced_rate")
+
+    def _harm(self, h, table):
+        return sum(table.get(self.cards[r]["name"], 0.0) for r in self.chain[h])
+
+    def produced(self, h, task, attempt):
+        """1.0 unless the version's cards drop answers on a hash-chosen share of tasks (or the noise flips one)."""
+        u = int(hashlib.sha256(f"prod:{task}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+        flip = int(hashlib.sha256(f"prodnoise:{task}:{attempt}".encode()).hexdigest()[:8], 16) % 50 == 0
+        return 0.0 if (u < self._harm(h, self.safeguard_harm)) != flip else 1.0
+
+    def tokens(self, h, task, attempt):
+        return 1000.0 * (1 + self._harm(h, self.token_harm)) * (1 + noise(task, attempt))
+
     def observe_safeguards(self, candidate, reference):
-        return {"infrastructure_failure_rate": dict(direction="lower_is_better",
-                                                    subject=candidate.safeguard_values["infrastructure_failure_rate"],
-                                                    reference=reference.safeguard_values["infrastructure_failure_rate"])}
+        tokens, produced = {}, {}
+        for side, result in (("subject", candidate), ("reference", reference)):
+            for t, trajs in result.trajectories.items():
+                for tr in trajs or []:
+                    tokens.setdefault(t, dict(subject=[], reference=[]))[side].append(
+                        self.tokens(tr["version"], t, tr["attempt"]))
+                    produced.setdefault(t, dict(subject=[], reference=[]))[side].append(
+                        self.produced(tr["version"], t, tr["attempt"]))
+
+        def mean(detail, side):
+            vals = [v for row in detail.values() for v in row[side]]
+            return sum(vals) / len(vals) if vals else None
+        ts, tr = mean(tokens, "subject"), mean(tokens, "reference")
+        return dict(tokens_per_task_ratio=dict(kind="ratio", direction="lower_is_better",
+                                               subject=ts / tr if ts and tr else None, reference=1.0 if tr else None,
+                                               tasks=tokens),
+                    answer_produced_rate=dict(kind="proportion", direction="higher_is_better",
+                                              subject=mean(produced, "subject"), reference=mean(produced, "reference"),
+                                              tasks=produced))
+
+    def card_direction(self, card):
+        return self.cards[card.ref].get("direction")
 
     def features(self, trajectories, predicate):
         if predicate is None:
@@ -114,7 +151,8 @@ class V4Mock(SystemAdapter):
         self._count("implement")
         spec = self.cards[card.ref]
         if spec.get("implement_error"):
-            raise RuntimeError("implementer failed")
+            raise spec["implement_error"] if isinstance(spec["implement_error"], BaseException) \
+                else RuntimeError("implementer failed")
         lines = spec.get("lines", 3)
         return Diff(content="\n".join(f"+line {i}" for i in range(lines)), metadata=dict(workspace, attempt=1))
 
@@ -167,3 +205,20 @@ class V4Mock(SystemAdapter):
                 out.append(dict(pair=p["pair"], effect=eff, changed_side=changed if eff else None,
                                 side_effect=False, gaming=False, note=""))
         return out
+
+
+class ScriptedRun:
+    """Test seam: a V4Run that stops (reason ``script_end``) once the mock's scripted rounds are finished.
+
+    method-v4.1 stops only on the budget or on failures; scripted tests end when the script ends,
+    so the regular stop path (ablation, cumulative check) still runs.
+    """
+
+    def __new__(cls, adapter, *args, **kwargs):
+        from rag_eval.optimizer.v4.loop import V4Run
+
+        class _Run(V4Run):
+            def _stop_reason(self):
+                return super()._stop_reason() or ("script_end" if len(self.rounds) >= len(self.adapter.rounds)
+                                                  else None)
+        return _Run(adapter, *args, **kwargs)

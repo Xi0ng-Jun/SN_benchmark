@@ -41,7 +41,7 @@ class V4Rig(Rig):
         self.run_dir = tmp_path / 'v4run'
         self.v4_config = tmp_path / 'v4.json'
         self.v4_config.write_text(json.dumps(dict(
-            time_budget_hours=10, b=2, no_adoption_rounds=1, smoke_size=2, minibatch_min=2,
+            time_budget_hours=10, b=2, smoke=True, smoke_size=2, minibatch=True, minibatch_min=2,
             smoke_behaviour_check=True,
             adapter=dict(agent_poll_interval=.01, eval_poll_interval=.01, agent_timeout=WAIT,
                          eval_timeout=WAIT, worktree_timeout=WAIT))))
@@ -190,8 +190,11 @@ def test_v4_gaming_reviewer_vetoes_adoption(rig4, capsys):
     with rig4:
         assert rig4.run4() == 0
     rec = rig4.records4()['Fix empty retrievals']
-    assert rec['mechanism']['tier'] == 'suspicious' and rec['label'] == 'below_threshold'
-    assert len(rig4.state4()['lineage']) == 1
+    # v4.1: gaming → tier unconfirmed + flag needs_human_review, never vetoes
+    assert rec['mechanism']['tier'] == 'unconfirmed' and rec['mechanism']['reviewer']['needs_human_review']
+    # Adoption decided by Δ vs 1·SE (c=1.0 for unconfirmed); the mock's GOOD gain qualifies
+    assert rec['label'] == 'adopted'
+    assert len(rig4.state4()['lineage']) == 2
 
 
 def test_v4_kill_during_stage2_resumes_without_new_agents_or_duplicate_runs(rig4, capsys):

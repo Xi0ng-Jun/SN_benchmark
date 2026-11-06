@@ -1,26 +1,37 @@
-"""method-v4 config, verdict parsing, endpoint report (pure parts)."""
+"""method-v4.1 config, verdict parsing, endpoint report (pure parts)."""
 import json
 
 import pytest
 
 from rag_eval.optimizer.v4 import endpoint
-from rag_eval.optimizer.v4.config import ConfigError, load
+from rag_eval.optimizer.v4.config import ConfigError, load, V4Config
 from rag_eval.optimizer.v4.sn_adapter_v4 import parse_verdict
 
 
 def test_config_is_strict_and_reports_variants(tmp_path):
     path = tmp_path / "c.json"
+    # v4.1: safeguards is a dict of metric keys -> tolerance values
     path.write_text(json.dumps(dict(time_budget_hours=8, c=0.5, adapter=dict(reviewer_profile="claude-kimi-k3"),
-                                    safeguard_tolerances=dict(cost_per_task=1.0))))
+                                    safeguards=dict(tokens_per_task_ratio=0.6, answer_produced_rate=0.01))))
     loaded = load(path)
     assert loaded.config.c == 0.5 and loaded.adapter_settings["reviewer_profile"] == "claude-kimi-k3"
-    assert loaded.config.safeguard_tolerances == dict(infrastructure_failure_rate=0.05, cost_per_task=1.0)
-    assert set(loaded.config.variants()) == {"c", "safeguard_tolerances"}
+    assert loaded.config.safeguards == dict(tokens_per_task_ratio=0.6, answer_produced_rate=0.01)
+    # v4.1: safeguards is a user input (not a variant when it matches the defaults structure-wise)
+    assert set(loaded.config.variants()) == {"c"}
+    # v4.1 removed: no_adoption_rounds, max_rounds, round_timebox_hours, predictive_time_stop, k_val,
+    # safeguard_tolerances (replaced by safeguards dict), unobserved_safeguard_blocks
     for bad in (dict(time_budget_hours=8, typo=1), dict(c=1), dict(time_budget_hours=8, c=0.4, c_mech=0.6),
-                dict(time_budget_hours=8, k_val=3), dict(time_budget_hours=8, adapter=dict(nope=1))):
+                dict(time_budget_hours=8, no_adoption_rounds=1), dict(time_budget_hours=8, k_val=3),
+                dict(time_budget_hours=8, predictive_time_stop=True),
+                dict(time_budget_hours=8, adapter=dict(nope=1))):
         path.write_text(json.dumps(bad))
         with pytest.raises(ConfigError):
             load(path)
+    # calibration_k must be in [2, 5]
+    with pytest.raises(ConfigError, match="calibration_k"):
+        V4Config(time_budget_hours=8, calibration_k=1)
+    with pytest.raises(ConfigError, match="calibration_k"):
+        V4Config(time_budget_hours=8, calibration_k=6)
 
 
 def test_parse_verdict_keeps_only_known_pairs_and_coerces(tmp_path):
@@ -43,15 +54,16 @@ def test_endpoint_report_interval_shrinkage_and_conclusion():
         dict(candidate_id="cs", score=0.40, delta_vs_seed=0.0, se_delta=0.0),
         dict(candidate_id="cb", score=0.43, delta_vs_seed=0.03, se_delta=0.02, boot_lower=-0.004, boot_upper=0.061,
              boot_units=30, boot_unit="family")])
-    rep = endpoint.report(result, nodes, lineage, k_val=2)
+    # v4.1: candidates always k=1
+    rep = endpoint.report(result, nodes, lineage, k_val=1)
     final = rep["points"][-1]
     assert final["delta_val_cumulative"] == pytest.approx(0.05) and final["shrinkage"] == pytest.approx(0.02)
     assert final["ci95"] == [-0.004, 0.061] and final["ci95_method"] == "bootstrap" and not rep["confirmed"]
     assert final["ci95_normal"][0] < 0 < final["ci95_normal"][1]
     assert rep["conclusion"] == "the test set did not confirm an improvement" and rep["deploy"] == "cb"
-    assert rep["warnings"]       # k_sealed differs from k_val
+    assert rep["warnings"]       # k_sealed differs from calibration_k
     with pytest.raises(ValueError):
-        endpoint.report(result, nodes[::-1], lineage, k_val=1)
+        endpoint.report(result, nodes[::-1], lineage, 1)
 
 
 def test_endpoint_node_set_uses_the_pruned_final_version():

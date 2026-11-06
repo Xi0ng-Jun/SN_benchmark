@@ -12,11 +12,17 @@ iteration's sealed selection once and writes ``endpoint.json``.
 
 Exit codes: 0 ok, 1 unexpected error, 2 usage / validation error, 3 halted
 with process_failure or budget_exhausted (rerun, or ``--retry-failed``).
+
+Signals during ``run``: SIGINT stops polling and keeps remote work (resumable);
+SIGTERM raises ``RunStopRequested``: executions are cancelled, Agents archived,
+receipts written and the run halts ``stopped`` (final; next step ``v4 test``).
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import signal
 import sys
 import traceback
 from dataclasses import dataclass
@@ -28,7 +34,7 @@ from .. import ledger_io, run_view
 from ..adapter import EvaluationUnavailable, Version
 from . import calibrate, endpoint
 from .config import ConfigError, load
-from .loop import FAILURE_HALTS, LEDGER_FILE, STATE_FILE, V4Run, final_version
+from .loop import FAILURE_HALTS, LEDGER_FILE, STATE_FILE, STOPPED, RunStopRequested, V4Run, final_version
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_HALTED = 0, 1, 2, 3
 IDENTITY_FILE = "cli-run.json"
@@ -100,6 +106,19 @@ def _require(args, *names):
         raise UsageError(f"v4 {args.command} requires {', '.join(missing)}")
 
 
+@contextlib.contextmanager
+def stop_on_sigterm():
+    """SIGTERM -> RunStopRequested in the main thread, once; later SIGTERMs are ignored while stopping."""
+    def handler(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise RunStopRequested("SIGTERM")
+    previous = signal.signal(signal.SIGTERM, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def _settings(adapter_settings: dict) -> dict:
     """SNAdapterV4 keyword arguments from the config's adapter section."""
     return {k: v for k, v in adapter_settings.items()}
@@ -143,8 +162,12 @@ def cmd_run(args) -> int:
         raise UsageError("workbench config does not set task_worktrees.create_candidates=true")
     parts = adapter.partitions()
     cfg = loaded.config
-    if not parts.get("safeguards"):
-        raise UsageError("the iteration protocol has no pre-registered safeguards")
+    # method-v4.1: safeguards come from the v4 config; the protocol need not register any.
+    observable = set(adapter.observable_safeguards())
+    missing = sorted(set(cfg.safeguards) - observable)
+    if missing:
+        raise UsageError(f"the v4 config names safeguard(s) {missing} that SN cannot observe "
+                         f"(observable: {sorted(observable)})")
     search, validation = parts["search"], parts["validation"]
     if not search or len(validation) < 2:
         raise UsageError("the iteration needs a search split and at least 2 validation cases")
@@ -197,12 +220,20 @@ def _run_locked(args, loaded, services, seed, search, validation, test_ids, stat
             created_at=_now()))
     run = V4Run(services.adapter, seed, loaded.config, search=search, validation=validation,
                 test_size=len(test_ids) or None, state_dir=state_dir, key_generation=key_generation)
-    reason = run.run()
+    with stop_on_sigterm():
+        reason = run.run()
     if run.feasibility is not None and run.calibration is not None:
         print(calibrate.render(run.feasibility, run.calibration))
     print(f"halt reason: {reason}")
     print(f"rounds: {len(run.rounds)}; adopted nodes: {len(run.lineage) - 1}")
     print(f"ledger: {state_dir / LEDGER_FILE}")
+    if run.failure_detail:
+        print(f"failure: {run.failure_detail}")
+    if (run.cumulative or {}).get("warning"):
+        print("WARNING: cumulative check: the final version breaches safeguard(s) "
+              f"{run.cumulative['safeguards']['breached']} against the seed (no rollback)")
+    if reason == STOPPED:
+        print("stopped by SIGTERM: executions cancelled, Agents archived (see the session's cancellation receipts)")
     if reason == "process_failure":
         print("process failure: fix the cause, then rerun (or --retry-failed for new measurement keys)")
     elif reason not in FAILURE_HALTS:
@@ -222,7 +253,7 @@ def cmd_status(args) -> int:
     print(f"run: {ident.get('run_id')} iteration: {ident.get('iteration_id')} config sha256: "
           f"{ident.get('config_sha256')}")
     cal = st.get("calibration")
-    print("calibration: " + (f"k_val={cal['k_val']} rerun_var={cal['rerun_var']:.4g}" if cal else "-"))
+    print("calibration: " + (f"candidates k=1, rerun_var={cal['rerun_var']:.4g}" if cal else "-"))
     parts = st.get("partitions") or {}
     print(f"partitions: search={len(parts.get('search', []))} minibatch={len(parts.get('minibatch', []))} "
           f"rest={len(parts.get('rest', []))} test={parts.get('test_size')}")
@@ -294,7 +325,7 @@ def cmd_test(args) -> int:
         return EXIT_HALTED
     except ValueError as exc:
         raise UsageError(str(exc)) from None
-    rep = endpoint.report(result, nodes, st["lineage"], k_val=(st.get("calibration") or {}).get("k_val"),
+    rep = endpoint.report(result, nodes, st["lineage"], k_val=1,
                           ablation=st.get("ablation"))
     ledger_io.atomic_write_json(state_dir / ENDPOINT_FILE, rep)
     print(endpoint.render(rep))

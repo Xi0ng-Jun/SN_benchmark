@@ -5,8 +5,20 @@ import pytest
 
 from rag_eval.optimizer.adapter import EvaluationUnavailable
 from rag_eval.optimizer.v4 import calibrate
-from .test_v4_runtime import config, execute
-from .v4_mock import V4Mock
+from rag_eval.optimizer.v4.config import V4Config
+from .v4_mock import ScriptedRun, V4Mock
+
+
+def config(**kw):
+    kw.setdefault("time_budget_hours", 1)
+    kw.setdefault("b", 2)
+    return V4Config(**kw)
+
+
+def execute(mock, cfg=None, path=None):
+    run = ScriptedRun(mock, mock.seed, cfg or config(), search=mock.search, validation=mock.validation,
+                      state_dir=path)
+    return run, run.run()
 
 
 @pytest.mark.parametrize("failure_type", [EvaluationUnavailable, KeyboardInterrupt])

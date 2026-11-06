@@ -20,7 +20,7 @@ CAUSES = ('supported', 'refuted', 'undecided')
 # -> verified (predictions checked) -> concluded.
 STATUSES = ('draft', 'approved', 'rejected', 'implementing', 'verified', 'concluded')
 _REQUIRED = ('title', 'component', 'mechanism', 'predictions', 'falsification', 'implementer_brief')
-_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract', 'cluster_id', 'search_refs')
+_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract', 'cluster_id', 'search_refs', 'direction')
 
 
 def _str(value, name, limit=4000):
@@ -73,6 +73,9 @@ def validate_card(card, rule=None):
                                    'guard': item.get('guard', False)})
     if 'cluster_id' in card:
         out['cluster_id'] = _str(card['cluster_id'], 'cluster_id', 64)
+    if 'direction' in card:
+        # method-v4.1 §4.1: a short name grouping cards that pursue the same idea.
+        out['direction'] = _str(card['direction'], 'direction', 64)
     if 'contract' in card:
         validators = {'lcd-v1': validate_contract, 'lcd-v2': validate_mechanism}
         if rule_id not in validators:

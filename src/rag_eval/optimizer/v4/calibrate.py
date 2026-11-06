@@ -1,4 +1,4 @@
-"""method-v4 §2.3 calibration: seed A/A runs, derived quantities and the feasibility card.
+"""method-v4 §2.3 calibration (v4.1: no k_val rule; safeguard A/A noise): seed A/A runs, derived quantities and the feasibility card.
 
 ``measure`` runs (or, on resume, replays) the seed's A/A measurements:
 search sample (k = diagnose_k, the diagnosis measurement), minibatch and rest
@@ -16,7 +16,7 @@ from typing import Optional
 
 from ..adapter import BudgetExhausted, EvaluationCancelled, EvalResult, SystemAdapter, Version
 from .config import V4Config
-from .decide import attempts_by_task, combine
+from .decide import attempts_by_task, combine, safeguard_noise
 
 
 def measure(adapter: SystemAdapter, seed: Version, cfg: V4Config, search: list[str], mb: list[str],
@@ -96,16 +96,14 @@ def derive(results: dict[str, EvalResult], walls: dict[str, float], cfg: V4Confi
     search = _aa(results["search"])
     if val["rerun_var"] is None:
         raise ValueError("calibration needs at least two validation tasks with two scored attempts")
-    if cfg.k_val is not None:
-        k_val, rule = cfg.k_val, "configured"
-    else:
-        k_val = 2 if val["rerun_var"] > val["task_var"] else 1
-        rule = "rerun variance > task variance -> 2, else 1"
     tasks = dict(search=sizes["search"], mb=sizes["mb"], rest=sizes["rest"])
     per_task = {s: (walls.get(s) or 0.0) / max(1, tasks[s]) for s in tasks}
-    return dict(validation=val, search=search, k_val=k_val, k_val_rule=rule,
+    # method-v4.1 §4.2: candidates are always measured once (k=1); no k_val rule.
+    return dict(validation=val, search=search,
                 rerun_var=val["rerun_var"], se_floor_rule="sqrt(sum_i rerun_var*(1/k_c,i + 1/k_p,i)) / n",
                 walls=dict(walls), seconds_per_task=per_task, sizes=dict(sizes), safeguards=safeguards,
+                safeguard_noise=safeguard_noise(safeguards),
+                safeguard_se_rule="sqrt(sum_i var*(1/k_s,i + 1/k_r,i)) / n per safeguard (ratio: log scale)",
                 infrastructure_failure_rate=_infra(safeguards), cache=dict(profiles or {}))
 
 
@@ -136,8 +134,16 @@ def _cold_warm(cal: dict, stage: dict, sizes: dict) -> tuple[dict, dict, str]:
 
 
 def _infra(safeguards: Optional[dict]) -> Optional[float]:
-    row = (safeguards or {}).get("infrastructure_failure_rate") or {}
-    return row.get("subject")
+    """Seed infrastructure failure rate (information only, not a safeguard in v4.1)."""
+    row = ((safeguards or {}).get("infrastructure") or {}).get("subject") or {}
+    total = row.get("total") if isinstance(row, dict) else None
+    return row["failed"] / total if total and not row.get("unobserved") else None
+
+
+def validation_seconds(cal: Optional[dict], cfg: V4Config) -> float:
+    """One k=1 measurement of the whole validation set, from the calibration walls (k attempts)."""
+    walls = (cal or {}).get("walls") or {}
+    return (float(walls.get("mb") or 0.0) + float(walls.get("rest") or 0.0)) / max(1, cfg.calibration_k)
 
 
 def feasibility(cal: dict, cfg: V4Config) -> dict:
@@ -152,11 +158,11 @@ def feasibility(cal: dict, cfg: V4Config) -> dict:
     preparation code pays the cold column; any other candidate the warm one.
     Without a profile both columns are the observed values (labelled so).
     """
-    sizes, walls, k_cal, k_val = cal["sizes"], cal["walls"], cfg.calibration_k, cal["k_val"]
+    sizes, walls, k_cal = cal["sizes"], cal["walls"], cfg.calibration_k
     smoke_s = walls.get("search", 0.0) * min(1.0, cfg.smoke_size / max(1, sizes["search"]))
     stage = dict(agent=cfg.agent_estimate_minutes * 60, smoke=smoke_s,
                  minibatch=walls.get("mb", 0.0) * (1 / k_cal if walls.get("mb") else 0),
-                 validation_rest=walls.get("rest", 0.0) * (k_val / k_cal))
+                 validation_rest=walls.get("rest", 0.0) / k_cal)
     cold, warm, note = _cold_warm(cal, stage, sizes)
     per_candidate = sum(stage.values())
     budget = cfg.time_budget_hours * 3600
@@ -173,7 +179,7 @@ def feasibility(cal: dict, cfg: V4Config) -> dict:
                 cache_note=note,
                 candidates_in_budget=candidates, rounds_in_budget=rounds,
                 test_half_width_95=half, test_n=n_test,
-                k_val=k_val, rerun_var=cal["rerun_var"], task_var=cal["validation"]["task_var"],
+                rerun_var=cal["rerun_var"], task_var=cal["validation"]["task_var"],
                 constant_fraction=cal["validation"]["constant_fraction"],
                 infrastructure_failure_rate=cal.get("infrastructure_failure_rate"), warnings=[])
     if n_test is not None and n_test < 40:
@@ -194,7 +200,7 @@ def render(card: dict, cal: dict) -> str:
         "feasibility (advice only):",
         f"  validation: mb={cal['sizes']['mb']} rest={cal['sizes']['rest']} search={cal['sizes']['search']} "
         f"test={card['test_n'] if card['test_n'] is not None else '-'}",
-        f"  k_val={card['k_val']} ({cal['k_val_rule']}); rerun var {card['rerun_var']:.4g}, "
+        f"  candidates k=1; rerun var {card['rerun_var']:.4g}, "
         f"task var {card['task_var']:.4g}; constant tasks {card['constant_fraction']:.0%}",
         "  per candidate (s): " + ", ".join(f"{k} {v:.0f}" for k, v in st.items())
         + f" = {card['per_candidate_seconds']:.0f}",

@@ -1,4 +1,4 @@
-"""method-v4 run configuration: user inputs (§2.1) and method constants (§2.2).
+"""method-v4.1 run configuration: user inputs / proposal values (§2.1-§2.2) and method constants (§2.3).
 
 One JSON file holds everything; unknown keys are refused, every value is part
 of the pre-registration (its sha256 is recorded and a resume must match).
@@ -14,58 +14,65 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# §2.1 default safeguard tolerances; other protocol safeguards use their own pre-registered margin.
-DEFAULT_TOLERANCES = {"infrastructure_failure_rate": 0.05, "cost_per_task": 0.5}
+# method-v4.1 §4.5 default safeguards: key -> product tolerance (ratio metrics: relative increase, +50%;
+# proportion metrics: absolute drop, -2 points). A configured dict replaces this one (the user may add or
+# remove safeguards); every key must be observable by the adapter (checked at startup).
+DEFAULT_SAFEGUARDS = {"tokens_per_task_ratio": 0.5, "answer_produced_rate": 0.02}
+
+# Inputs the user (later: the calibration proposal) chooses; not method constants, so never "variants".
+USER_KEYS = frozenset({
+    "time_budget_hours", "min_meaningful_improvement", "agent_estimate_minutes", "calibration_k", "smoke",
+    "smoke_size", "minibatch", "minibatch_fraction", "minibatch_min", "b", "cards_per_analysis",
+    "max_concurrent_executions", "diagnose_size", "safeguards", "endpoint_nodes"})
 
 
 @dataclass(frozen=True)
 class V4Config:
-    # --- user inputs (§2.1) ---
+    # --- user inputs / proposal (method-v4.1 §2.1, §2.2) ---
     time_budget_hours: float                 # wall clock of the optimisation (endpoint excluded)
     min_meaningful_improvement: Optional[float] = None   # feasibility card only, never a decision input
-    # --- method constants (§2.2) ---
-    b: int = 4                               # parallel implementations per round
-    cards_per_analysis: Optional[int] = None  # None: 2b
-    smoke_size: int = 3
-    smoke_repair_attempts: int = 1
-    smoke_behaviour_check: bool = False
+    calibration_k: int = 3                   # seed A/A repetitions on the validation set (2-5)
+    smoke: bool = False                      # stage 0 (search smoke) on/off
+    smoke_size: int = 1
+    minibatch: bool = False                  # stage 1 (validation minibatch kill) on/off
     minibatch_fraction: float = 0.25
     minibatch_min: int = 10
+    b: int = 4                               # parallel implementations
+    cards_per_analysis: Optional[int] = None  # None: 2b
+    max_concurrent_executions: Optional[int] = 3      # per optimisation run; None uses the default cap (3)
+    # Diagnosis: the parent on a search sample (0 = whole search set) at diagnose_k; the analyst
+    # sees at most analyst_max_failures + analyst_n_controls cases of it.
+    diagnose_size: int = 40
+    safeguards: dict = field(default_factory=lambda: dict(DEFAULT_SAFEGUARDS))
+    # --- method constants (§2.3) ---
     c: float = 1.0                           # adoption threshold, mechanism not confirmed
     c_mech: float = 0.5                      # adoption threshold, mechanism confirmed
+    safeguard_z: float = 2.0                 # breached iff harm > tolerance + z*SE_metric
+    remeasure: bool = True                   # re-measure the chosen candidate before adopting (§4.4)
     minibatch_kill: float = 1.0              # stage 1: Δ_mb < -kill·SE_mb is eliminated
+    smoke_repair_attempts: int = 1
+    smoke_behaviour_check: bool = False
     review: bool = True
     review_pairs: int = 6                    # candidate/parent pairs shown to the reviewer
     review_controls: int = 2                 # parent/parent (A/A) control pairs
     review_min_effect: int = 4               # of review_pairs judged "took effect" → effective
     review_max_control_effect: int = 1       # more control pairs judged "took effect" → untrusted
-    no_adoption_rounds: int = 3              # R: halt after R consecutive rounds without adoption
     max_consecutive_run_failures: int = 3
-    merge: bool = True
-    ablation: bool = True                    # §4.2 pruning before the endpoint (skipped when time is short)
+    merge: bool = False
+    ablation: bool = False                   # §5.2 pruning before the endpoint (skipped when time is short)
     ablation_kill: float = 1.0               # removing a change costs < ablation_kill·SE → pruned
     tie_fraction: float = 0.5                # Δ within tie_fraction·SE of the best: smaller diff wins
-    calibration_k: int = 2                   # validation A/A repetitions
-    k_val: Optional[int] = None              # None: calibration decides (1 or 2)
-    max_rounds: int = 50
-    max_concurrent_executions: Optional[int] = 3      # per optimisation run; None uses the default cap (3)
-    round_timebox_hours: Optional[float] = 3.0
-    predictive_time_stop: bool = True          # stop if a historical average round would not fit
-    # Diagnosis: the parent on a search sample (0 = whole search set) at diagnose_k; the analyst
-    # sees at most analyst_max_failures + analyst_n_controls cases of it.
-    diagnose_size: int = 40
     diagnose_k: int = 1
     speculative_prefetches: int = 2              # per round: diagnosis prefetches of the current best
     speculative_analysis: bool = True
     ablation_parallel: int = 3                   # ablated versions measured at once
-    safeguard_tolerances: dict = field(default_factory=lambda: dict(DEFAULT_TOLERANCES))
-    unobserved_safeguard_blocks: bool = True  # an unobserved safeguard blocks adoption (never kills a minibatch)
     endpoint_nodes: str = "seed_final"       # or "lineage": every adopted node
     # Analyst case selection (fixed accountant rule, as in v3).
     analyst_failure_threshold: float = 0.5
     analyst_max_failures: int = 12
     analyst_n_controls: int = 3
-    # Feasibility card: assumed Agent time of one candidate (analysis share + implementation).
+    # Fallback Agent time of one card (implementation) until the run has observed one; also the
+    # feasibility card's assumption.
     agent_estimate_minutes: float = 45.0
 
     @property
@@ -73,11 +80,10 @@ class V4Config:
         return self.cards_per_analysis or 2 * self.b
 
     def variants(self) -> dict:
-        """Method constants that differ from their defaults (§2.2: each is a method variant)."""
-        user = {"time_budget_hours", "min_meaningful_improvement", "max_rounds", "agent_estimate_minutes"}
+        """Method constants that differ from their defaults (§2.3: each is a method variant)."""
         out = {}
         for f in dataclasses.fields(self):
-            if f.name in user:
+            if f.name in USER_KEYS:
                 continue
             default = f.default if f.default is not dataclasses.MISSING else f.default_factory()
             if getattr(self, f.name) != default:
@@ -130,36 +136,36 @@ def _check(name: str, value: Any, default: Any, kind: Any) -> None:
 
 
 def validate(cfg: V4Config) -> V4Config:
-    positive = ("b", "smoke_size", "minibatch_min", "review_pairs", "no_adoption_rounds",
-                "max_consecutive_run_failures", "calibration_k", "max_rounds", "diagnose_k", "ablation_parallel")
+    positive = ("b", "smoke_size", "minibatch_min", "review_pairs", "max_consecutive_run_failures",
+                "diagnose_k", "ablation_parallel")
     for name in positive:
         if getattr(cfg, name) < 1:
             raise ConfigError(f"{name} must be >= 1")
+    if not 2 <= cfg.calibration_k <= 5:
+        raise ConfigError("calibration_k must be in [2, 5]")
     if cfg.diagnose_size < 0 or cfg.speculative_prefetches < 0:
         raise ConfigError("diagnose_size and speculative_prefetches must be >= 0")
     if cfg.max_concurrent_executions is not None and cfg.max_concurrent_executions < 1:
         raise ConfigError("max_concurrent_executions must be >= 1 or null")
-    if cfg.round_timebox_hours is not None and cfg.round_timebox_hours <= 0:
-        raise ConfigError("round_timebox_hours must be > 0 or null")
     if cfg.time_budget_hours <= 0:
         raise ConfigError("time_budget_hours must be > 0")
     if not 0 < cfg.minibatch_fraction < 1:
         raise ConfigError("minibatch_fraction must be in (0, 1)")
     for name in ("c", "c_mech", "minibatch_kill", "ablation_kill", "tie_fraction", "smoke_repair_attempts",
-                 "review_controls"):
+                 "review_controls", "safeguard_z", "agent_estimate_minutes"):
         if getattr(cfg, name) < 0:
             raise ConfigError(f"{name} must be >= 0")
     if cfg.c_mech > cfg.c:
         raise ConfigError("c_mech must not exceed c (mechanism evidence only relaxes the threshold)")
-    if cfg.k_val is not None and cfg.k_val not in (1, 2):
-        raise ConfigError("k_val must be 1, 2 or null (calibration decides)")
     if cfg.cards_per_analysis is not None and cfg.cards_per_analysis < 1:
         raise ConfigError("cards_per_analysis must be >= 1 or null")
     if not 0 < cfg.review_min_effect <= cfg.review_pairs:
         raise ConfigError("review_min_effect must be in [1, review_pairs]")
     if cfg.endpoint_nodes not in ("seed_final", "lineage"):
         raise ConfigError("endpoint_nodes must be 'seed_final' or 'lineage'")
-    for key, tol in cfg.safeguard_tolerances.items():
+    for key, tol in cfg.safeguards.items():
+        if not isinstance(key, str) or not key:
+            raise ConfigError("safeguard keys must be non-empty strings")
         if type(tol) not in (int, float) or tol < 0:
             raise ConfigError(f"safeguard tolerance {key!r} must be a number >= 0")
     return cfg
@@ -196,8 +202,6 @@ def load(path: str | Path) -> LoadedConfig:
         default = f.default if f.default is not dataclasses.MISSING else (
             f.default_factory() if f.default_factory is not dataclasses.MISSING else None)
         _check(name, value, default, f.type)
-    if "safeguard_tolerances" in data:
-        data["safeguard_tolerances"] = dict(DEFAULT_TOLERANCES, **data["safeguard_tolerances"])
     for name, value in adapter.items():
         default = ADAPTER_DEFAULTS[name]
         kind = "Optional[str]" if default is None else type(default)
@@ -209,9 +213,4 @@ def load(path: str | Path) -> LoadedConfig:
 
 
 def digest(cfg: V4Config) -> str:
-    values = dataclasses.asdict(cfg)
-    # This default preserves historical behaviour and existing v4-state-3 identities.
-    # A changed policy is still frozen into the run identity.
-    if values["predictive_time_stop"]:
-        values.pop("predictive_time_stop")
-    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(dataclasses.asdict(cfg), sort_keys=True).encode()).hexdigest()

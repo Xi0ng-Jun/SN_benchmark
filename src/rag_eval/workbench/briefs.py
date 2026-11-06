@@ -330,9 +330,12 @@ V4_HISTORY_LABELS_TEXT = ('preflight_skipped (implementer reported a source/loca
                           'not an independently proved rejection), smoke_fail (did not run, or the predicted behaviour did not change on the smoke cases), '
                           'minibatch_fail (clearly worse on the first validation slice), below_threshold (validation '
                           'gain too small for its mechanism evidence), qualified_not_adopted (good enough, another '
-                          'card was better this round: you may propose it again on the new parent), adopted, '
+                          'card was better this round: you may propose it again on the new parent), remeasure_failed '
+                          '(qualified once, but a second measurement did not confirm the gain), adopted, '
                           'safeguard_breached (with the safeguard names), pruned (adopted, then removed by ablation), '
-                          'run_failed (the candidate failed to run on the validation cases), in_progress (still being '
+                          'run_failed (the candidate failed to run on the validation cases), implementation_failed (with '
+                          'a class: timeout, empty diff, workspace error or malformed preflight report; the hypothesis '
+                          'is untested), in_progress (still being '
                           'implemented or measured: do not propose it again); entries from an earlier parent are marked')
 
 
@@ -349,7 +352,7 @@ Commands (`$S` = `{s}`):
 - `$S proposal draft --parent {candidate_id} --file card.json`: save one card under this node (it is leak-scanned and validated)
 Nothing else. Never request runs, freezes, derivations, adoptions or other decisions; the coordinator does all of that.
 
-Card (lcd-v2): JSON with title, component, mechanism, implementer_brief, falsification, predictions (may be []), optional change_scope and search_refs (opaque references such as ["c1", "c3"] from this exact round evidence), and contract = {{slice_predicate, manipulation: {{direction: decrease|increase, threshold in [0, 1]}}, slice_effect: {{direction: positive}}}}. The slice_predicate is the card's behaviour expectation: a closed signature (kind regex or range on one field; all_of / any_of / not) over behaviour fields or trace.* step features such as trace.n_empty_retrievals; never case ids, scores or gold. The coordinator checks it mechanically on validation pairs (and on smoke cases when the optional behaviour smoke gate is enabled) and an independent reviewer judges whether the change took effect: a change whose mechanism is confirmed is adopted with a smaller validation gain, so make the expectation specific. One card per distinct failure mode; draft the most promising card first (cards are implemented in the order you draft them).
+Card (lcd-v2): JSON with title, component, mechanism, implementer_brief, falsification, predictions (may be []), direction (a short name of the idea the card pursues, e.g. "query-rewrite-empty-retrieval"; reuse the same direction name for another attempt at the same idea), optional change_scope and search_refs (opaque references such as ["c1", "c3"] from this exact round evidence), and contract = {{slice_predicate, manipulation: {{direction: decrease|increase, threshold in [0, 1]}}, slice_effect: {{direction: positive}}}}. The slice_predicate is the card's behaviour expectation: a closed signature (kind regex or range on one field; all_of / any_of / not) over behaviour fields or trace.* step features such as trace.n_empty_retrievals; never case ids, scores or gold. The coordinator checks it mechanically on validation pairs (and on smoke cases when the optional behaviour smoke gate is enabled) and an independent reviewer judges whether the change took effect: a change whose mechanism is confirmed is adopted with a smaller validation gain, so make the expectation specific. One card per distinct failure mode; draft the most promising card first (cards are implemented in the order you draft them).
 
 Aim to produce useful candidates this round: prioritize small, reversible answer-path changes supported by the supplied search evidence. A concrete failure observation, a plausible product mechanism, and a bounded change can justify an experiment with limited uncertainty. Full causal proof is not a prerequisite for drafting. Do not invent cards to fill a quota; if no justified candidate remains, explain the specific missing evidence or refutation.
 
@@ -357,7 +360,9 @@ Before drafting: distinguish observed search evidence, the code fact in a named 
 
 Cost: the preparation cache source list is named in the evidence file. A ::symbol entry covers only that definition or assignment, not the entire file. Covered changes may require a new preparation snapshot; matching snapshots can be reused across evaluations. Answer-path prompts outside those symbols do not by themselves invalidate preparation. Prefer answer-path changes when suitable; identify required preparation changes in implementer_brief.
 
-Outcome labels you may see: {V4_HISTORY_LABELS_TEXT}; with a mechanism tier (confirmed / unconfirmed / suspicious) when the candidate was fully measured.
+Outcome labels you may see: {V4_HISTORY_LABELS_TEXT}; with a mechanism tier (confirmed / unconfirmed) when the candidate was fully measured, and possibly a human-review flag (a reviewer reported possible score gaming; this never rejects a candidate by itself).
+
+Directions: the evidence summarises history per direction. When a direction already has two or more attempts that did not qualify (below_threshold, minibatch_fail, smoke_fail, safeguard_breached, remeasure_failed), choose a different direction, or state in the card's mechanism what is essentially different from those attempts. Directions marked "inferred" were derived from older card titles.
 
 Use history to choose the next experiment. Do not repeat rejected or already-satisfied changes under a new title, or duplicate adopted/in-progress work. A materially revised hypothesis may be proposed when supplied evidence or a frozen-source fact explains what changed and how it addresses the earlier failure. An inconclusive preflight is not a measured rejection; distinguish uncertainty and infrastructure failure from evidence against the mechanism. When no candidate was adopted, inspect the stated reason and pursue another supported mechanism or a justified revision; nonadoption alone does not prove there is no useful change.
 

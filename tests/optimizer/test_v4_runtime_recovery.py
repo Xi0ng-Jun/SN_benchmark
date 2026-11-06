@@ -64,8 +64,7 @@ def test_process_failure_preserves_unfinished_implementer_for_same_key_resume(tm
     mock = Mock()
     mock.fail_once['rest:bad'] = EvaluationUnavailable('temporary measurement outage')
     cfg = V4Config(time_budget_hours=1, b=2, merge=False, ablation=False,
-                   speculative_analysis=False, no_adoption_rounds=1,
-                   max_consecutive_run_failures=1)
+                   speculative_analysis=False, max_consecutive_run_failures=1)
 
     def coordinator():
         return V4Run(mock, mock.seed, cfg, search=mock.search, validation=mock.validation,

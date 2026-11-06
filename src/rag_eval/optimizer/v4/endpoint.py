@@ -127,7 +127,7 @@ def report(result: dict, nodes: list[dict], lineage: list[dict], *, k_val: Optio
                node_set_hash=result.get("node_set_hash"), claimed_at=result.get("claimed_at"),
                confirmed_by=result.get("confirmed_by"), warnings=[])
     if result.get("k") is not None and k_val is not None and result["k"] != k_val:
-        out["warnings"].append(f"test k = iteration k_sealed = {result['k']}, calibration's k_val = {k_val}")
+        out["warnings"].append(f"test k = iteration k_sealed = {result['k']}, validation k = {k_val}")
     if final and final.get("ci95_method") != "bootstrap":
         out["warnings"].append("no bootstrap interval (fewer than two papers): normal interval used")
     return out
