@@ -152,8 +152,8 @@ def check_range(value: Any, spec: dict) -> Optional[str]:
     return None
 
 
-def _cross(values: dict, calibration: CalibrationSummary) -> dict:
-    """Constraints between entries: key → reason."""
+def _cross(values: dict, calibration: CalibrationSummary, *, include_dependencies=False) -> dict:
+    """Constraint errors by field; include all participants for advisor rollback."""
     out = {}
     available = calibration.pool_size - calibration.test_size
     if values.get("validation_size", 0) + values.get("diagnose_size", 0) > available:
@@ -161,6 +161,8 @@ def _cross(values: dict, calibration: CalibrationSummary) -> dict:
             f"validation_size + diagnose_size exceeds the {available} tasks of the pool"
     if values.get("cards_per_analysis", 0) < values.get("b", 0):
         out["cards_per_analysis"] = "cards_per_analysis must be at least b"
+        if include_dependencies:
+            out["b"] = out["cards_per_analysis"]
     return out
 
 
@@ -483,7 +485,7 @@ def validate(proposal: Proposal, calibration: Any, history: Any = None) -> dict:
         out.items[key].range = copy.deepcopy(ranges[key])
         out.items[key].rule_value = copy.deepcopy(baseline.items[key].rule_value)
     if not fatal:
-        for key, reason in _cross(out.values(), cal).items():
+        for key, reason in _cross(out.values(), cal, include_dependencies=True).items():
             if out.items[key].source == "agent":
                 reject_or_restore(key, reason)
         for key, item in out.items.items():

@@ -234,3 +234,25 @@ def test_serialized_advisor_cannot_bypass_protected_key_validation():
     p.items['safeguards'].value = {'x': 4}
     result = P.validate(p, cal())
     assert result['ok'] and result['proposal'].items['safeguards'].value == P.DEFAULT_SAFEGUARDS
+
+
+@pytest.mark.parametrize('user_cards', [None, 12, 5])
+def test_cross_constraint_rolls_back_agent_b_and_preserves_user_cards(user_cards):
+    p = P.rule_defaults(cal(), INPUTS)
+    if user_cards is not None:
+        p = P.apply_user_edit(p, 'cards_per_analysis', user_cards)
+    params = dict(p.params(), b=16, cards_per_analysis=18)
+    agent = P.apply_agent_values(p, {'b': dict(value=16, sim_params=params,
+                                            reason='fill execution slots', sim_id=simulate(params, cal())['sim_id'])})
+    result = P.validate(agent, cal())
+    assert result['proposal'].items['b'].value == 9
+    assert result['proposal'].items['b'].source == 'rule'
+    assert {r['key'] for r in result['rejected']} == {'b'}
+    if user_cards is None:
+        assert result['ok'] and result['proposal'].items['cards_per_analysis'].value == 11
+    else:
+        assert result['proposal'].items['cards_per_analysis'].value == user_cards
+        assert result['proposal'].items['cards_per_analysis'].source == 'user'
+        assert result['ok'] is (user_cards >= 9)
+        if user_cards < 9:
+            assert {r['key'] for r in result['fatal']} == {'cards_per_analysis'}
