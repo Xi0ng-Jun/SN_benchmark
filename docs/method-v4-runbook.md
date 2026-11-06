@@ -1,5 +1,7 @@
 # method-v4 运行手册与实现记录
 
+> v4.1 的校准、停机、保护指标与工作台操作已变化，请使用 [method-v4.1 运行手册](method-v4.1-runbook.md)。本文件保留旧 v4 的历史说明，不用于启动新的 v4.1 运行。
+
 分支 `feat/method-v4`（从 `method-v3-clean` 拉出）。入口：`python -m rag_eval.optimizer.cli v4 <run|status|test|figure>`，源码在 `src/rag_eval/optimizer/v4/`。
 方法文档：`harness-opt/docs/method-v4.md`（草稿 v1）；绑定方案：`harness-opt/docs/method-v4-sn-binding-plan.md`。
 分工：本地修改、离线验证和审查；推送、服务器部署、真实模型演练及正式运行另需用户授权。服务器 Agent 按已授权范围拉取已审查提交、部署、运行和汇报。本次运行时补全仍是本地未提交改动，不能把当前 HEAD 当成交付版本。
