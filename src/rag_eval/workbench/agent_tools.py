@@ -19,7 +19,7 @@ ANALYST_COMMANDS = ('source', 'task', 'evidence', 'runs', 'cases', 'case', 'exec
                     'iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'proposal draft', 'requests',
                     'request withdraw', 'cluster preview', 'cluster propose', 'cluster list', 'cluster show', 'cluster result', *REQUEST_COMMANDS)
 IMPLEMENTER_COMMANDS = ('card', 'leak-check', 'node freeze', 'node run', 'node cluster-run', 'requests', 'request withdraw', 'cluster list', 'cluster show', 'cluster result')
-GROUPS = ('iteration', 'node', 'proposal', 'request', 'cluster')
+GROUPS = ('iteration', 'node', 'proposal', 'request', 'cluster', 'calibration')
 # cluster result --wait: re-read in this process every WAIT_POLL seconds, never longer than WAIT_CAP.
 WAIT_POLL, WAIT_CAP = 10, 1800
 # Implementer cluster-result states after which waiting cannot change the answer by itself:
@@ -87,7 +87,9 @@ def main(argv=None):
     parser.add_argument('--config', default=os.environ.get('SN_WORKBENCH_CONFIG',
                         'configs/sn-workbench-local.json' if local else 'var/sn-workbench-server/config.json'))
     parser.add_argument('--task', required=True)
-    parser.add_argument('--role', choices=('analyst', 'implementer'), default='analyst')
+    parser.add_argument('--role', choices=('analyst', 'implementer', 'calibrator'), default='analyst')
+    parser.add_argument('--run-id', help='calibrator: its automatic run identity')
+    parser.add_argument('--params', help='calibrator simulate: JSON parameters')
     parser.add_argument('--hypothesis')
     parser.add_argument('--candidate', help="the implementer's own iteration candidate")
     parser.add_argument('--node', help="the analyst's own node: drafted proposals hang under it")
@@ -121,7 +123,9 @@ def main(argv=None):
     options = parser.parse_intermixed_args(argv)
     if options.command in GROUPS and options.args:
         options.command = options.command + ' ' + options.args.pop(0)
-    allowed = IMPLEMENTER_COMMANDS if options.role == 'implementer' else ANALYST_COMMANDS
+    from .auto_runs import CALIBRATOR_ALLOWED
+    allowed = {'implementer': IMPLEMENTER_COMMANDS, 'analyst': ANALYST_COMMANDS,
+               'calibrator': CALIBRATOR_ALLOWED}[options.role]
     if options.command not in allowed:
         parser.error(f'{options.role} commands: ' + ', '.join(allowed))
     if options.scope == 'iteration' and (options.node or options.role != 'analyst'):
@@ -190,6 +194,9 @@ def wait_until_settled(read, seconds, *, clock=None, sleep=None):
 def dispatch(options, repository, views, store, policy):
     """The command's output before the analyst projection."""
     task_id, a, command = options.task, options.args, options.command
+    if options.role == 'calibrator':
+        from ..optimizer.v4.advisor import tool
+        return tool(options, repository, views)
     from .hypotheses import leak_check
     if command == 'source':
         from .frozen_source import candidate_source

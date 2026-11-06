@@ -288,6 +288,10 @@ def cmd_calibrate(args):
                 bundle = session.run_calibration(adapter, adapter.version_for(services.root_candidate_id),
                     adapter._round_ops.service, args.iteration, args.actor, root, inputs,
                     loaded.adapter_settings, read_history(args.history or []))
+                if not args.no_advisor:
+                    from . import advisor
+                    advisor.run(adapter, adapter.version_for(services.root_candidate_id), root,
+                                profile=adapter._calibrator_profile)
         except RunStopRequested:
             adapter.cancel_pending()
             raise
@@ -473,6 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
     calibration.add_argument('--history', action='append')
     calibration.add_argument('--spend-budget', type=float)
     calibration.add_argument('--price-per-1k-tokens', type=float)
+    calibration.add_argument('--no-advisor', action='store_true', help='use rule values only')
     proposed = sub.add_parser('proposal', parents=[common], help='show or edit the calibration proposal')
     proposed.add_argument('action', choices=('show', 'set'))
     proposed.add_argument('assignment', nargs='?')

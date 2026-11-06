@@ -57,9 +57,11 @@ class SNAdapterV4(SNAdapter):
     _BRIEF = V4_REVIEWER_BRIEF       # every Agent of a v4 run: the v4 analyst / implementer / reviewer brief
 
     def __init__(self, config: dict, *, reviewer_profile: Optional[str] = None, reviewer_view_budget: int = 30000,
+                 calibrator_profile: Optional[str] = None,
                  max_concurrent_measurements: int = 3, **kwargs) -> None:
         super().__init__(config, **kwargs)
         self._reviewer_profile = reviewer_profile or self._analyst_profile
+        self._calibrator_profile = calibrator_profile or self._analyst_profile
         if type(reviewer_view_budget) is not int or reviewer_view_budget < 1:
             raise ValueError("reviewer_view_budget must be a positive int")
         self._reviewer_view_budget = reviewer_view_budget
@@ -177,10 +179,20 @@ class SNAdapterV4(SNAdapter):
 
     def _evidence_extra(self) -> str:
         path, digest = self._preparation_file()
-        return (f"## Cost of a change\nPreparation cache sources are listed in {path} (sha256 {digest}). "
+        advice = getattr(self._card_limit, 'calibration_advice', None)
+        prefix = ('## Calibration advisor hypotheses (D only; verify independently)\n'
+                  + json.dumps(advice, ensure_ascii=False) + '\n\n') if advice else ''
+        return prefix + (f"## Cost of a change\nPreparation cache sources are listed in {path} (sha256 {digest}). "
                 "The ::symbol entries cover only those definitions, not the whole file. Changing covered sources "
                 "may require a new preparation snapshot; subsequent evaluations can reuse it. Prefer answer-path "
                 "changes when suitable, and draft the most promising card first.\n\n")
+
+    def analyse(self, *args, calibration_advice=None, **kwargs):
+        self._card_limit.calibration_advice = calibration_advice
+        try:
+            return super().analyse(*args, **kwargs)
+        finally:
+            self._card_limit.calibration_advice = None
 
     def _analysis_history(self, history, budget, parent_id):
         from .agent_context import analysis_history

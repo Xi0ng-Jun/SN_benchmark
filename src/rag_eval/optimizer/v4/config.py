@@ -93,7 +93,7 @@ class V4Config:
 
 # Adapter settings (SN): part of the same file under "adapter".
 ADAPTER_DEFAULTS: dict[str, Any] = dict(
-    analyst_profile="pi-flash", implementer_profile="pi-flash", reviewer_profile=None,
+    analyst_profile="pi-flash", implementer_profile="pi-flash", reviewer_profile=None, calibrator_profile=None,
     agent_poll_interval=10.0, agent_timeout=3600.0, worktree_timeout=600.0,
     wait_for_running=False,  # optional positive-status waiting under the run's total deadline
     analyst_view_budget=12000, reviewer_view_budget=30000,

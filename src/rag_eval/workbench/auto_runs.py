@@ -23,6 +23,7 @@ ANALYST_ALLOWED = frozenset(V3_ANALYST_COMMANDS)
 V4_ANALYST_ALLOWED = frozenset(V4_ANALYST_COMMANDS)
 IMPLEMENTER_ALLOWED = frozenset(V3_IMPLEMENTER_COMMANDS)
 REVIEWER_ALLOWED = frozenset()   # method-v4 reviewer: one evidence file in, one verdict file out
+CALIBRATOR_ALLOWED = frozenset(('calibration show', 'simulate', 'history', 'source'))
 
 
 def _has_table(conn):
@@ -101,9 +102,12 @@ def agent_refusal(repository, task_id, role, command):
     """The message refusing *command* for an Agent of an automatic iteration, or None."""
     bound = task_binding(repository, task_id)
     if bound is None:
+        if role == 'calibrator':
+            return 'calibrator requires an automatic method-v4 run'
         return 'source requires an automatic method-v4 run' if command == 'source' else None
     analyst_allowed = V4_ANALYST_ALLOWED if bound.get('method') == 'method-v4' else ANALYST_ALLOWED
-    allowed = {'implementer': IMPLEMENTER_ALLOWED, 'reviewer': REVIEWER_ALLOWED}.get(role, analyst_allowed)
+    allowed = {'analyst': analyst_allowed, 'implementer': IMPLEMENTER_ALLOWED, 'reviewer': REVIEWER_ALLOWED,
+               'calibrator': CALIBRATOR_ALLOWED if bound.get('method') == 'method-v4' else frozenset()}.get(role, frozenset())
     if command in allowed:
         return None
     return (f"this iteration is driven by automatic run {bound['run_id']}: a {role} may only use "

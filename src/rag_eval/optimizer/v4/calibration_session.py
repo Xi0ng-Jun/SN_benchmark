@@ -225,6 +225,7 @@ def freeze_run(service, iteration_id, actor, state_dir, proposed=None):
     if frozen['config']['diagnose_size'] > len(search):
         raise ValueError('diagnose_size exceeds the frozen search set')
     frozen.update(calibration_sha256=bundle['payload_sha256'], proposal_sha256=canonical_hash(proposed.to_dict()),
+                  advisor=proposed.notes.get('advisor'),
                   iteration_id=iteration_id, seed=bundle['identity']['seed'],
                   split=dict(search=search, validation=validation))
     path = root / RUN_CONFIG_FILE

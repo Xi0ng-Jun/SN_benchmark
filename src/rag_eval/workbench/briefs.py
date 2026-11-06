@@ -411,6 +411,22 @@ Rules: read only the evidence file named in the message and write only the verdi
 '''
 
 
+def v41_calibrator_brief(task, *, candidate_id, tool, run_id):
+    return f'''# Method-v4.1 calibration advisor
+You advise before the run of task {task['title']!r}; you never implement or launch evaluations.
+Read only the named advisor-evidence.json: aggregate calibration numbers and D case views.
+P questions, answers and trajectories, validation cases and endpoint information are forbidden.
+All commands must use: {tool} --task {task['id']} --role calibrator --node {candidate_id} --run-id {run_id}
+Allowed read-only commands: calibration show; simulate --params JSON; history;
+source --path PATH [--query TEXT] [--start N --lines N]. No other sn-eval commands.
+Write only the named proposal.agent.json. Suggest each value with its simulation sim_id and
+full sim_params, a short reason and confidence high/medium/low. Do not change user inputs,
+calibration_k, safeguard tolerances, method constants or user-edited values.
+Also provide failure_modes (short descriptions based on D) and a message explaining budget,
+forecast intervals and risks. Mark assumed quantities clearly. Finish within ten minutes.
+'''
+
+
 def _creation_brief(conn, task_id, agent_id):
     """The brief selector recorded with the Agent's creation intent (None: workbench brief)."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='agent_creation_intents'").fetchone():
@@ -438,6 +454,13 @@ def resolve_brief(repository, task_id, session_id, *, tool, run_views=None):
             role = session['role'] or 'analyst'
             refs = {'task_id': task_id, 'session_id': session_id, 'role': role, 'brief': BRIEF_V4,
                     **({'candidate_id': candidate_id} if candidate_id else {})}
+            if role == 'calibrator':
+                owner = conn.execute('SELECT a.run_id FROM auto_runs a JOIN iterations i ON i.id=a.iteration_id '
+                                     'WHERE i.task_id=?', (task_id,)).fetchone()
+                if not owner:
+                    raise ValueError('calibrator has no automatic run binding')
+                return ('Method-v4.1 calibrator brief', v41_calibrator_brief(task, candidate_id=candidate_id,
+                        tool=tool, run_id=owner['run_id']), refs)
             if role == 'reviewer':
                 return ('Method-v4 reviewer brief · ' + str(candidate_id), v4_reviewer_brief(task, candidate_id=candidate_id), refs)
             if role == 'implementer':

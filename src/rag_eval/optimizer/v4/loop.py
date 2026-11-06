@@ -385,8 +385,10 @@ class V4Run:
         start = time.monotonic()
         search_eval = self._diagnostics[parent.content_hash]
         selected, roles = select_analysis_cases(search_eval, self.cfg, shown=shown)
+        advice = ((self.frozen_config or {}).get('advisor') or {}).get('failure_modes') if round_id == 1 else None
         cards = self.adapter.analyse(selected, self.cfg.n_cards, case_roles=roles, parent=parent,
                                      round_id=round_id, history=history, no_adoption_rounds=no_adoption,
+                                     **({'calibration_advice': advice} if advice else {}),
                                      case_scores={t: search_eval.per_task_scores[t] for t in selected
                                                   if t in search_eval.per_task_scores})
         out = []

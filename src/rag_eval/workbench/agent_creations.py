@@ -110,7 +110,7 @@ class AgentCreationStore:
         # the earlier rule: bound worktree when present.
         if role == 'implementer' and bound is None:
             raise ValueError('An implementer Agent needs a Task bound to an SN worktree')
-        if bound is not None and role not in ('analyst', 'reviewer'):
+        if bound is not None and role not in ('analyst', 'reviewer', 'calibrator'):
             if not bound['paseo_workspace_id']:
                 raise ValueError('Task worktree needs a registered Paseo workspace for agent creation')
             command.update(workspaceId=bound['paseo_workspace_id'], expectedCwd=bound['worktree_path'])
@@ -127,20 +127,22 @@ class AgentCreationStore:
         _text(request_key, 'request key', limit=200)
         if title is not None:
             _opaque(title, 'creation title')
-        if role not in (None, 'analyst', 'implementer', 'reviewer'):
+        if role not in (None, 'analyst', 'implementer', 'reviewer', 'calibrator'):
             raise ValueError('Invalid Agent role')
         if (role == 'implementer') != (hypothesis_id is not None):
             raise ValueError('An implementer Agent is created for exactly one approved hypothesis card')
-        if candidate_id is not None and role not in ('analyst', 'implementer', 'reviewer'):
+        if candidate_id is not None and role not in ('analyst', 'implementer', 'reviewer', 'calibrator'):
             raise ValueError('Only an analyst, implementer or reviewer Agent is created for a candidate')
         if role == 'reviewer' and (candidate_id is None or brief != BRIEF_V4 or scope is not None):
             raise ValueError('A reviewer Agent reviews one candidate of a method-v4 run (brief method-v4)')
+        if role == 'calibrator' and (candidate_id is None or brief != BRIEF_V4 or scope is not None):
+            raise ValueError('A calibrator needs a frozen method-v4 seed binding')
         if scope not in (None, 'iteration') or (scope and (role != 'analyst' or candidate_id is not None)):
             raise ValueError('Only an analyst without a candidate is created for the whole iteration')
         # 'method-v3': an Agent of an automatic method-v3 run gets the short v3 brief.
         if brief not in (None, BRIEF_V3, BRIEF_V4) or (brief == BRIEF_V3 and role not in ('analyst', 'implementer')):
             raise ValueError('Only an analyst or implementer Agent takes the method-v3 brief')
-        if brief == BRIEF_V4 and role not in ('analyst', 'implementer', 'reviewer'):
+        if brief == BRIEF_V4 and role not in ('analyst', 'implementer', 'reviewer', 'calibrator'):
             raise ValueError('Only an analyst, implementer or reviewer Agent takes the method-v4 brief')
         payload = {'profile_id': profile_id, 'title': title}
         if role is not None:
@@ -158,6 +160,13 @@ class AgentCreationStore:
         repo = self.repository
         with repo.connect(write=True) as conn:
             task = repo._require(conn, 'tasks', task_id)
+            if role == 'calibrator':
+                if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='auto_runs'").fetchone():
+                    raise ValueError('calibrator requires an automatic run')
+                owner = conn.execute('SELECT i.root_candidate_id,a.method FROM iterations i JOIN auto_runs a '
+                                     'ON a.iteration_id=i.id WHERE i.task_id=?', (task_id,)).fetchone()
+                if not owner or owner['method'] != 'method-v4' or owner['root_candidate_id'] != candidate_id:
+                    raise ValueError('calibrator requires its automatic method-v4 seed')
             prior = conn.execute('SELECT * FROM agent_creation_intents WHERE task_id=? AND actor=? AND request_key=?',
                                  (task_id, actor, request_key)).fetchone()
             if prior is not None:
@@ -184,9 +193,9 @@ class AgentCreationStore:
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='candidates'").fetchone() else None
                 # An analyst reads one frozen node (its runs are the evidence it cites);
                 # an implementer changes one candidate that is still being implemented.
-                if candidate is None or (candidate['status'] != 'frozen' if role in ('analyst', 'reviewer') else (
+                if candidate is None or (candidate['status'] != 'frozen' if role in ('analyst', 'reviewer', 'calibrator') else (
                         candidate['proposal_id'] != hypothesis_id or candidate['status'] != 'ready')):
-                    raise ValueError('The candidate is not frozen for analysis' if role in ('analyst', 'reviewer')
+                    raise ValueError('The candidate is not frozen for analysis' if role in ('analyst', 'reviewer', 'calibrator')
                                      else 'The candidate is not implementing this proposal')
                 # Evaluated or not admitted: there are runs to read. Frozen-but-unrun and
                 # running nodes have nothing yet (the workbench offers no button there either).

@@ -13,7 +13,7 @@ def test_deferred_cli_calibration_then_run_keeps_seed_probe_receipts(rig4, env, 
     rig4.task_id = rig4.tree['task_id']
     rig4.role = {task: 'search' for task in rig4.case_ids}
     with rig4:
-        assert rig4.v4('calibrate', '--v4-config', str(rig4.v4_config), '--calibration-k', '2') == 0
+        assert rig4.v4('calibrate', '--v4-config', str(rig4.v4_config), '--calibration-k', '2', '--no-advisor') == 0
     bundle = session.load_bundle(rig4.run_dir / session.CALIBRATION_FILE)
     candidate = rig4.api.service.candidate(rig4.tree['root_candidate_id'])
     before = [(a['attempt'], a['execution_id'], a['batch_id']) for a in candidate['attempts']]
