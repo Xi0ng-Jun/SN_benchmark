@@ -157,3 +157,32 @@ def test_cli_calibrated_run_uses_every_frozen_field_and_does_not_recalibrate(cal
         assert settings_seen[-1][key] == value
     assert adapter.calls['subset:probe'] == measured['subset:probe']
     assert cli.main(['proposal', 'set', 'b=2', '--state-dir', str(path)]) == 2
+
+
+def test_public_heatmap_preserves_missing_attempt_column(calibration_env):
+    bundle = measure(calibration_env)
+    probe = bundle['results']['probe']
+    task = next(iter(probe['attempt_scores'][0]))
+    original = probe['attempt_scores'][0].pop(task)
+    public = session.public_summary(bundle)
+    missing = next(row for row in public['heatmap'] if row['scores'][0] is None)
+    assert missing['scores'] == [None, *[a[task] for a in probe['attempt_scores'][1:]]]
+    assert 'qasper:' not in json.dumps(public)
+
+
+def test_public_config_includes_frozen_timeouts_split_and_sources_without_private_values(calibration_env):
+    from rag_eval.optimizer.v4.run_view import project
+    service, tree, _, root = calibration_env
+    measure(calibration_env)
+    frozen, bundle = session.freeze_run(service, tree['id'], 'alice', root)
+    resolved = session.runtime_config(frozen, bundle)
+    resolved['adapter']['server_password'] = 'must-not-project'
+    view = project({}, identity=dict(config_resolved=resolved), ledger=dict(frozen_config=frozen))
+    for name in ('agent_timeout', 'execution_timeout_seconds', 'infra_retry'):
+        key = 'adapter.' + name
+        assert view['config'][key] == frozen['config']['adapter'][name]
+        assert view['parameter_sources'][key] == frozen['sources'][key]
+    assert view['config']['validation_size'] == frozen['config']['split']['validation_size']
+    assert view['parameter_sources']['validation_size'] == frozen['sources']['validation_size']
+    assert 'must-not-project' not in json.dumps(view)
+    assert all(task not in json.dumps(view) for task in bundle['probe'])

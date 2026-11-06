@@ -253,7 +253,7 @@ class V4Run:
                     config_sha256=digest(self.cfg),
                     variants=self.cfg.variants(), seed=self.seed.content_hash,
                     partitions={k: (len(v) if isinstance(v, list) else v) for k, v in self.partitions.items()},
-                    deviations=[d for d in DEVIATIONS if not (self.calibration_bundle and "calibration still runs" in d)],
+                    deviations=[d for d in DEVIATIONS if not (self.calibration_bundle and ("calibration still runs" in d or "SN keeps v2" in d))],
                     calibration=self.calibration, feasibility=self.feasibility, forecast=self.forecast,
                     frozen_config=self.frozen_config,
                     rounds=rounds, lineage=self.lineage, stop_reason=self.stop_reason, ablation=self.ablation,
@@ -1165,8 +1165,8 @@ DEVIATIONS = [
     "the seed's calibration A/A stands in for the parent's A/A in the mechanical check and the reviewer's control pairs",
     "safeguards come from the v4 config key `safeguards` (default tokens_per_task_ratio +50%, answer_produced_rate "
     "-2 points), not from the iteration protocol; the protocol no longer needs registered safeguards",
-    "answer_produced_rate counts every admitted attempt whose output status is not 'success' as a candidate "
-    "failure; a model-service timeout recorded as status 'error' inside an admitted attempt is not reclassified",
+    "answer_produced_rate counts observed output status success; only proven exhausted infrastructure failures "
+    "are dropped from paired comparisons (at most 10% of the full validation set)",
     "the remaining-time rule (one card + one re-measurement) uses observed means, else the calibration's validation "
     "wall and agent_estimate_minutes",
     "an analysis that yields no card counts as a run failure (max_consecutive_run_failures halts the run)",

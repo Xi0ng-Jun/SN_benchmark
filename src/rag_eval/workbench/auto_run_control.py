@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -77,7 +78,10 @@ class AutoRunControl:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise Conflict('Another control action is in progress') from None
-            yield
+            try:
+                yield
+            except RunLocked:
+                raise Conflict('An automatic process is already running') from None
 
     @staticmethod
     def _read(root, name):
@@ -102,6 +106,14 @@ class AutoRunControl:
                    'adapter', 'spend_budget', 'price_per_1k_tokens', 'test_set_authorized'}
         if set(inputs) - allowed:
             raise ValueError('Unknown calibration input')
+        if 'test_set_authorized' in inputs and type(inputs['test_set_authorized']) is not bool:
+            raise ValueError('test_set_authorized must be a boolean')
+        for key in ('spend_budget', 'price_per_1k_tokens'):
+            value = inputs.get(key)
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+                raise ValueError(key + ' must be a finite nonnegative number')
+        if inputs.get('spend_budget') is not None and inputs.get('price_per_1k_tokens') is None:
+            raise ValueError('spend_budget needs price_per_1k_tokens')
         adapter = inputs.get('adapter') or {}
         if set(adapter) - {'analyst_profile', 'implementer_profile', 'reviewer_profile', 'calibrator_profile'}:
             raise ValueError('Only configured agent profiles may be selected in the browser')
@@ -142,6 +154,10 @@ class AutoRunControl:
             if (root / session.RUN_CONFIG_FILE).exists():
                 raise Conflict('This run is frozen; calibration cannot be changed')
             config = self._calibration_input(command.inputs)
+            if launch.get('inputs') is not None:
+                if command.inputs != launch['inputs']:
+                    raise Conflict('Resume calibration with its original inputs')
+                config = self._read(root, 'calibration-input.json') or config
             payload = dict(config=config, inputs=command.inputs)
             summary = dict(action=action, config=config, test_set_authorized=bool(command.inputs.get('test_set_authorized')),
                            incurs_cost=True, budget_hours=config['time_budget_hours'])
@@ -218,7 +234,7 @@ class AutoRunControl:
                     if action == 'calibrate':
                         ledger_io.atomic_write_json(root / 'calibration-input.json', payload['config'])
                         ledger_io.atomic_write_json(root / 'launch.json', dict(
-                            test_set_authorized=bool(command.inputs.get('test_set_authorized'))))
+                            test_set_authorized=bool(command.inputs.get('test_set_authorized')), inputs=command.inputs))
                     self._launch(iteration_id, run_id, root, action, command)
             except Exception:
                 self._audit(iteration_id, action + '.failed', digest)
@@ -266,15 +282,18 @@ class AutoRunControl:
     def calibration(self, iteration_id):
         root = self.directory(iteration_id)
         path = root / session.CALIBRATION_FILE
+        launch_inputs = (self._read(root, 'launch.json') or {}).get('inputs')
+        process = self.process(root)
+        elapsed_s = max(0, time.time() - process['started_at']) if process and process.get('started_at') else None
         if not path.exists():
-            return dict(complete=False, alive=self.busy(root), phase='starting' if self.busy(root) else 'not_started')
+            return dict(complete=False, alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='starting' if self.busy(root) else 'not_started')
         bundle = session._load(path)
         if not bundle.get('complete'):
-            return dict(complete=False, alive=self.busy(root), phase='calibration',
+            return dict(complete=False, alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='calibration',
                         inputs=bundle['identity']['user_inputs'],
                         probe_size=len(bundle['probe']), diagnosis_size=len(bundle['diagnosis']),
                         completed_stages=list(bundle['results']))
-        return dict(session.public_summary(bundle), alive=self.busy(root))
+        return dict(session.public_summary(bundle), alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs)
 
     def read_proposal(self, iteration_id):
         root = self.directory(iteration_id)
@@ -286,6 +305,9 @@ class AutoRunControl:
         self.api._write()
         root = self.directory(iteration_id)
         with self.control_lock(root):
+            owner = auto_runs.binding(self.repository, iteration_id)
+            if owner and owner['actor'] != self.api.actor:
+                raise Conflict('Continue this run using its original operator identity')
             if self.busy(root) or (root / session.RUN_CONFIG_FILE).exists():
                 raise Conflict('Proposal cannot change while running or after freeze')
             with hold_run_lock(root):

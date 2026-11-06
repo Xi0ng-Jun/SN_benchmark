@@ -192,3 +192,37 @@ def test_saved_config_change_invalidates_confirmation(control, monkeypatch):
     with pytest.raises(Conflict, match='configuration changed'):
         ctl.execute(iid, 'run', Action(confirmation_token=preview['confirmation_token']))
     assert not launches
+
+
+def test_pending_calibration_exposes_original_browser_inputs_for_resume(control):
+    ctl, _, iid, root = control
+    inputs = dict(time_budget_hours=2, calibration_k=3, adapter=dict(calibrator_profile='review-fast'), test_set_authorized=True)
+    ledger_io.atomic_write_json(root / 'launch.json', dict(inputs=inputs, test_set_authorized=True))
+    (root / 'calibration.json').unlink()
+    response = ctl.calibration(iid)
+    assert response['launch_inputs'] == inputs and not response['complete']
+
+
+@pytest.mark.parametrize('inputs', [
+    dict(time_budget_hours=1, spend_budget=10),
+    dict(time_budget_hours=1, price_per_1k_tokens=-1),
+    dict(time_budget_hours=1, test_set_authorized='yes'),
+])
+def test_invalid_budget_or_authorization_refused_before_confirmation(control, inputs):
+    ctl, _, iid, root = control
+    with pytest.raises(ValueError):
+        ctl.preview(iid, 'calibrate', Action(inputs=inputs))
+    assert not (root / 'confirmation.json').exists()
+
+
+def test_resume_calibration_uses_saved_config_and_refuses_input_changes(control):
+    ctl, _, iid, root = control
+    inputs = dict(time_budget_hours=2, calibration_k=3)
+    config = ctl._calibration_input(inputs)
+    ledger_io.atomic_write_json(root / 'launch.json', dict(inputs=inputs))
+    ledger_io.atomic_write_json(root / 'calibration-input.json', config)
+    ctl.config['optimizer_v4'] = dict(adapter=dict(analyst_profile='changed-server-default'))
+    preview = ctl.preview(iid, 'calibrate', Action(inputs=inputs))
+    assert preview['config'] == config
+    with pytest.raises(Conflict, match='original inputs'):
+        ctl.preview(iid, 'calibrate', Action(inputs=dict(inputs, calibration_k=4)))

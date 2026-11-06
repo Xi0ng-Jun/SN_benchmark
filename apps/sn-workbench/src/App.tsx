@@ -16,6 +16,7 @@ import { Lineage } from './tree/Lineage';
 import { CandidateDetail, ProposalDetail } from './tree/NodeDetail';
 import { CompareMatrix } from './tree/CompareMatrix';
 import { CommandPalette, PaletteItem } from './tree/CommandPalette';
+import { NewAutoRunWizard } from './auto/NewAutoRunWizard';
 import { NewIterationDialog } from './tree/NewIterationDialog';
 import { AgentDrawer, AgentTarget } from './tree/AgentDrawer';
 import { agentsOf, analystsOf, iterationAnalystsOf, stepsOf } from './tree/next';
@@ -290,10 +291,11 @@ export default function App() {
                   {!iterations.data ? <Copy small muted>正在读取迭代…</Copy>
                     : !iterations.data.length ? <View style={{ gap: 10, alignItems: 'flex-start' }}><Copy muted>还没有迭代。迭代固定一个起点 commit 和冻结题单，候选从这里派生成树。</Copy>
                       <Button label="新建迭代" primary onPress={() => setNewIteration(true)} testID="empty-new-iteration" /></View>
-                    : auto && isV4(autoRun.data) ? <V4RunPage view={autoRun.data} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} />
+                    : auto && isV4(autoRun.data) ? <V4RunPage key={iterationId} onRefresh={bump} profiles={boot?.creation_profiles ?? []} sessions={task?.sessions ?? []} live={live} onOpenAgent={openAgent} view={autoRun.data} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} />
                     : auto ? (autoRun.data ? <AutoRunPage view={autoRun.data as AutoRunView} compact={compact} selected={route.node} onSelect={id => { setReader(null); update({ node: id, proposal: null }); }} onTriggerSealed={triggerSealed} />
                       : <Copy small muted>{autoRun.error ?? '正在读取自动运行…'}</Copy>)
                     : !tree ? <Copy small muted>正在读取迭代树…</Copy>
+                      : tree.protocol?.splits?.status === 'pending' ? <NewAutoRunWizard key={tree.id} iterationId={tree.id} profiles={boot?.creation_profiles ?? []} onStarted={bump} />
                       : route.matrix ? <CompareMatrix tree={tree} labels={labels} picked={picked} onClose={() => update({ matrix: false })}
                         onReadCase={(runId, caseId) => setReader({ runId, caseId })} />
                         : <Lineage tree={tree} labels={labels} titles={titles} selectedId={route.proposal ?? route.node} onSelect={selectNode}
@@ -332,7 +334,7 @@ export default function App() {
     </View>
     <ConfirmDialog spec={confirm} onClose={() => setConfirm(null)} onDone={() => { const title = confirm?.title; setConfirm(null); bump(); setNotice(`${title ?? '操作'}：已完成`); }} />
     <CommandPalette open={palette} items={paletteItems} onClose={() => setPalette(false)} />
-    <NewIterationDialog open={newIteration} inputs={boot?.inputs ?? []} onClose={() => setNewIteration(false)}
+    <NewIterationDialog profiles={boot?.creation_profiles ?? []} open={newIteration} inputs={boot?.inputs ?? []} onClose={() => setNewIteration(false)}
       onCreated={created => { setNewIteration(false); bump(); selectIteration(created.id); setNotice('迭代已建立，正在准备 C0'); }} />
     <WorkspaceConfiguration visible={settingsOpen} workspace={boot?.workspaces[0]} actor={boot?.actor ?? ''} capabilities={boot?.capabilities}
       profiles={boot?.creation_profiles ?? []} inputs={boot?.inputs ?? []} theme={dark ? 'dark' : 'light'} onThemeChange={value => setDark(value === 'dark')}

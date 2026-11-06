@@ -301,10 +301,12 @@ def forecast(frozen, bundle, ledger=None):
 def public_summary(bundle):
     result = EvalResult(**bundle['results']['probe'])
     tasks = decide.attempts_by_task(result)
-    rows = sorted(tasks.values(), key=statistics.mean)
+    ordered = sorted(tasks, key=lambda task: statistics.mean(tasks[task]))
+    rows = [tasks[task] for task in ordered]
     return dict(complete=bundle['complete'], summary=bundle['summary'], assumptions=bundle.get('assumptions', []),
         inputs=bundle['identity']['user_inputs'],
-        heatmap=[dict(row=i + 1, scores=v, mean=statistics.mean(v)) for i, v in enumerate(rows)],
+        heatmap=[dict(row=i + 1, scores=[attempt.get(task) for attempt in result.attempt_scores],
+                      mean=statistics.mean(tasks[task])) for i, task in enumerate(ordered)],
         attempt_means=[statistics.mean(a.values()) if a else None for a in result.attempt_scores],
         aa_differences=[v[0] - statistics.mean(v[1:]) for v in rows if len(v) >= 2],
         aa_se=bundle['calibration']['validation'].get('aa_se'))

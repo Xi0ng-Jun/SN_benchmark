@@ -38,6 +38,12 @@ def test_advisor_accepts_recomputed_simulation_and_preserves_user_fields(calibra
         reason='more execution slots', confidence='medium')}, failure_modes=['empty retrieval'], message='Estimate only')
     accepted = advisor.accept(proposed, raw, bundle)
     assert accepted.items['max_concurrent_executions'].source == 'agent'
+    overridden = proposal.apply_user_edit(accepted, 'max_concurrent_executions', 2)
+    persisted = proposal.Proposal.from_dict(overridden.to_dict())
+    checked = proposal.validate(persisted, bundle['summary'], bundle['history'])
+    assert checked['ok']
+    assert checked['proposal'].items['max_concurrent_executions'].agent_value == 4
+    assert checked['proposal'].items['max_concurrent_executions'].value == 2
     edited = proposal.apply_user_edit(proposed, 'max_concurrent_executions', 2)
     assert advisor.accept(edited, raw, bundle).items['max_concurrent_executions'].value == 2
 

@@ -59,6 +59,7 @@ class Item:
     range: dict
     sim_id: Optional[str] = None
     rule_value: Any = None
+    agent_value: Any = None           # retain an accepted advisor suggestion after a user override
     sim_params: Optional[dict] = None   # the parameters the cited simulation used (agent items)
 
     def __post_init__(self):
@@ -412,7 +413,7 @@ def apply_agent_values(proposal: Proposal, values: dict) -> Proposal:
             continue
         item = out.items[key]
         out.items[key] = dataclasses.replace(
-            item, value=row.get("value"), source="agent", sim_id=row.get("sim_id"), sim_params=row.get("sim_params"),
+            item, value=row.get("value"), agent_value=row.get("value"), source="agent", sim_id=row.get("sim_id"), sim_params=row.get("sim_params"),
             reason=str(row.get("reason") or ""), confidence=row.get("confidence") if row.get("confidence") in CONFIDENCE else "low")
     return out
 

@@ -1,3 +1,4 @@
+import type { CalibrationDetail, Forecast } from './v41control';
 // The projection served by GET /api/iterations/{id}/auto-run for a method-v4 run (optimizer/v4/run_view.py).
 // Counts only, never case ids.
 
@@ -5,11 +6,11 @@ export type V4Status = 'running' | 'interrupted' | 'halted' | 'not_started';
 export type V4Phase = 'calibrating' | 'analysing' | 'building' | 'deciding' | 'between_rounds' | 'ablating' | 'halted';
 export type V4NextAction = 'resume' | 'retry' | 'budget' | 'test' | 'review' | 'no_test';
 export type V4Stage = 'pending' | 'built' | 'repair' | 'rebase' | 'smoke_pass' | 'minibatch_pass' | 'validated' | 'error' | 'smoke_fail' | 'minibatch_fail' | 'run_failed' | 'preflight_skipped' | 'measured';
-export type V4Label = 'preflight_skipped' | 'implementation_failed' | 'smoke_fail' | 'minibatch_fail' | 'run_failed' | 'below_threshold' | 'qualified_not_adopted' | 'adopted' | 'safeguard_breached' | 'pruned';
+export type V4Label = 'preflight_skipped' | 'implementation_failed' | 'smoke_fail' | 'minibatch_fail' | 'run_failed' | 'below_threshold' | 'qualified_not_adopted' | 'adopted' | 'safeguard_breached' | 'pruned' | 'remeasure_failed';
 export type V4Tier = 'confirmed' | 'unconfirmed' | 'suspicious';
 
 export type V4SafeguardRow = { key: string; direction: string | null; subject: number | null; reference: number | null;
-  tolerance: number | null; harm: number | null; breached: boolean | null };
+  se?: number | null; threshold?: number | null; changed_tasks?: number | null; tolerance: number | null; harm: number | null; breached: boolean | null };
 export type V4Safeguards = { ok: boolean | null; breached: string[]; unobserved: string[]; rows: V4SafeguardRow[] };
 export type V4Verdict = { pair: string; kind: 'candidate' | 'control' | null; effect: boolean | null; changed_side: 'A' | 'B' | null;
   side_effect: boolean | null; gaming: boolean | null; note: string | null };
@@ -22,6 +23,8 @@ export type V4Mechanism = {
 };
 export type V4Cache = { executions: number; wall_s: number; cases: number; cache_hits: number; cache_misses: number; lock_waited_s: number } | null;
 export type V4Record = {
+  direction?: string | null; direction_inferred?: boolean; flags?: string[] | null; failure_kind?: string | null;
+  remeasure?: { status: string; passed: boolean | null; delta_val: number | null; se_val: number | null; n_val: number | null; dropped_val: number | null; reasons?: string[] | null; reason?: string | null } | null;
   card_index: number; title: string | null; card_ref: string | null; stage: V4Stage; label: V4Label | null; reason: string | null;
   carried_to: number | null; parent: string | null; attempt: number | null; repaired: boolean | null; pruned: boolean | null; halted: string | null; unmeasured: string | null;
   delta_mb: number | null; se_mb: number | null; n_mb: number | null; delta_val: number | null; se_val: number | null;
@@ -36,7 +39,7 @@ export type V4Record = {
 };
 export type V4Decision = { qualified: number[]; best: number | null; adopted: string | null; adopted_id: string | null;
   merge: { of: number[]; adopt: boolean; skipped: string | null; delta_val: number | null; se_val: number | null; candidate_id: string | null } | null };
-export type V4Round = { round: number; parent: string | null; parent_id: string | null; started_at: string | null; finished_at: string | null;
+export type V4Round = { forecast?: Forecast | null; round: number; parent: string | null; parent_id: string | null; started_at: string | null; finished_at: string | null;
   wall_s: number | null; analysis_s: number | null; decision_s: number | null; cards: number | null; cards_with_expectation: number;
   minibatch_size: number; rest_size: number; diagnosis_s: number | null; diagnosis_prefetched: boolean | null;
   timeboxed: boolean; not_started: number; open: boolean; records: V4Record[];
@@ -66,6 +69,7 @@ export type V4Progress = { rounds_finished: number; round: number | null; adopte
   run_failures_limit: number | null; elapsed_s: number | null; budget_s: number | null; stop_reason: string | null;
   key_generation: number; search_size: number; validation_size: number; test_size: number | null; families: number | null };
 export type V4RunView = {
+  calibration_detail?: CalibrationDetail | null; forecast?: Forecast | null; parameter_sources?: Record<string, string> | null;
   schema_version: number; method: 'v4';
   run: { method: 'v4'; run_id: string | null; iteration_id: string | null; actor: string | null; config_sha256: string | null;
     created_at: string | null; test_set: boolean; status: V4Status; alive: boolean; halt_reason?: string | null;
@@ -87,13 +91,13 @@ export const v4PhaseLabels: Record<V4Phase, string> = {
 };
 // None of these means the room for improvement is used up (method-v4 §3.5).
 export const v4HaltLabels: Record<string, string> = {
-  time_budget: '时间预算用完', no_adoption: '连续多轮没有采纳', max_rounds: '达到轮数上限',
+  stopped: '已停止', time_budget: '时间预算用完', no_adoption: '连续多轮没有采纳', max_rounds: '达到轮数上限',
   process_failure: '流程故障', budget_exhausted: '花费预算用尽',
 };
 export const v4ActionTexts: Record<V4NextAction, { title: string; detail: string }> = {
-  resume: { title: '进程已退出，运行没有结束', detail: '用启动时的同一条 v4 run 命令续跑。已决定的候选不会重做。' },
-  retry: { title: '流程故障，等你修复', detail: '查清原因后，在 v4 run 命令后加 --retry-failed 续跑。' },
-  budget: { title: '花费预算用尽，等你决定', detail: '增加预算后续跑，或就此结束，进入测试集评测。' },
+  resume: { title: '进程已退出，运行没有结束', detail: '点击预览续跑，确认后恢复原配置；也可使用原命令。已决定的候选不会重做。' },
+  retry: { title: '流程故障，等你修复', detail: '查清原因后点击预览续跑，确认重试；也可在原命令中加 --retry-failed。' },
+  budget: { title: '花费预算用尽，等你决定', detail: '检查费用记录与冻结预算；配置冻结后不能在运行中修改。终评需要另行授权。' },
   test: { title: '下一步：测试集评测（只做一次）', detail: '先运行 v4 test 预览节点集；经用户同意后再加 --confirm --budget <文件>。' },
   review: { title: '测试集已评测', detail: '结论和部署节点见下方“终点”。测试集已作废，下次运行需要新的测试集。' },
   no_test: { title: '这次运行没有测试集', detail: '用 --no-test-set 启动的演练，不做终点评测。' },
@@ -103,7 +107,7 @@ export const stageLabels: Record<V4Stage, string> = {
   minibatch_fail: '小批淘汰', run_failed: '运行失败', preflight_skipped: '检查后跳过', measured: '已测完',
 };
 export const labelTexts: Record<V4Label, string> = {
-  preflight_skipped: '检查后跳过', implementation_failed: '实现未完成',
+  remeasure_failed: '复测未通过', preflight_skipped: '检查后跳过', implementation_failed: '实现未完成',
   smoke_fail: '冒烟未过', minibatch_fail: '小批淘汰', run_failed: '运行失败', below_threshold: '未达门槛', qualified_not_adopted: '合格未采纳',
   adopted: '已采纳', safeguard_breached: '保护指标越界', pruned: '消融中被剪除',
 };

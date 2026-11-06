@@ -152,9 +152,11 @@ def v4_run(run_dir, script, *, endpoint=False, interrupt=False, **config):
     from rag_eval.optimizer.v4.loop import V4Run
     from tests.optimizer.v4_mock import V4Mock
     mock = V4Mock(script)
-    cfg = V4Config(**dict(dict(time_budget_hours=12.0, b=2, no_adoption_rounds=1), **config))
+    cfg = V4Config(**dict(dict(time_budget_hours=12.0, b=4, minibatch=True, smoke=True, merge=True, ablation=True, max_consecutive_run_failures=1), **config))
     run = V4Run(mock, mock.seed, cfg, search=mock.search, validation=mock.validation, test_size=60,
                 families={t: f'paper{i // 4}' for i, t in enumerate(mock.validation)}, state_dir=run_dir)
+    # Browser fixture stops after its finite script; production uses the budget.
+    run._stop_reason = lambda: 'time_budget' if len(run.rounds) >= len([r for r in script if r]) else None
     run.run()
     atomic_write_json(run_dir / 'cli-run.json', dict(method='v4', run_id=run_dir.name, iteration_id=run_dir.name,
         actor='operator', created_at=NOW, config_sha256='0' * 64, config_resolved=dataclasses.asdict(cfg), test_set=True))
@@ -164,7 +166,7 @@ def v4_run(run_dir, script, *, endpoint=False, interrupt=False, **config):
                       boot_lower=(.03 * i - .022) if i else None, boot_upper=(.03 * i + .024) if i else None,
                       boot_units=15 if i else None, boot_unit='family' if i else None) for i, n in enumerate(nodes)]
         rep_ = v4_endpoint.report(dict(status='finished', metric='str_em', n=60, k=1, curve=curve), nodes, run.lineage,
-                                  k_val=run.calibration['k_val'], ablation=run.ablation)
+                                  k_val=1, ablation=run.ablation)
         atomic_write_json(run_dir / 'endpoint.json', rep_)
     if interrupt:
         import json as _json
@@ -183,6 +185,42 @@ def v4_run(run_dir, script, *, endpoint=False, interrupt=False, **config):
 V4_SCRIPT = [[dict(name='检索为空时重试一次扩展查询', delta=.10, effect=True), dict(name='答案引用对齐段落', delta=.06),
               dict(name='缩短综合提示', delta=-.2), dict(name='拒答阈值调整', implement_error=True)],
              [dict(name='澄清歧义问题', delta=.003, effect=True), dict(name='合并重复检索', delta=-.01)], []]
+
+
+def add_v41_samples(app, runs):
+    from fastapi.responses import JSONResponse
+    from rag_eval.optimizer.v4 import proposal, calibrate
+    from rag_eval.optimizer.v4.simulate import CalibrationSummary, simulate
+    from tests.optimizer.v4_mock import V4Mock
+    mock = V4Mock([])
+    measured = mock._result(mock.seed, mock.validation, 3)
+    aa = calibrate._aa(measured)
+    summary = CalibrationSummary(rerun_var=aa['rerun_var'], n_probe=40, k=3, seed_fail_rate=.4,
+        constant_fraction=0, exec_overhead_s=10, per_task_s=2, p95_exec_s=120, infra_fail_rate=.01,
+        tokens_per_task=None, safeguard_var=dict(tokens_per_task_ratio=.01, answer_produced_rate=.002),
+        cold_wall_s=100, warm_wall_s=80, pool_size=160, n_diagnosis=20, remaining_paper_sizes=(10,) * 10)
+    proposed = proposal.rule_defaults(summary, dict(time_budget_hours=8, calibration_k=3))
+    proposed.notes['advisor'] = dict(status='fallback', message='校准顾问未给出建议：离线浏览器夹具')
+    rows = sorted(([a[t] for a in measured.attempt_scores] for t in mock.validation), key=lambda v: sum(v) / len(v))
+    detail = dict(complete=True, alive=False, inputs=proposed.inputs, summary=summary.canonical(),
+        heatmap=[dict(row=i+1, scores=v, mean=sum(v)/len(v)) for i, v in enumerate(rows)],
+        attempt_means=[sum(a.values()) / len(a) for a in measured.attempt_scores],
+        aa_differences=[v[0] - sum(v[1:])/2 for v in rows], aa_se=aa['aa_se'], assumptions=['synthetic browser fixture'])
+    sample = dict(calibration=detail, proposal=dict(proposal=proposed.to_dict(), forecast=simulate(proposed.params(), summary), frozen=False))
+    async def samples():
+        return JSONResponse(sample)
+    app.add_api_route('/api/test-v41', samples)
+    # create_app mounts the SPA last; keep this fixture-only endpoint ahead of it.
+    app.router.routes.insert(0, app.router.routes.pop())
+    # Feed the same anonymous calibration to the ordinary completed run projection.
+    from rag_eval.optimizer.v4 import calibration_session as session
+    bundle = dict(kind='method-v4.1-calibration', complete=True, identity=dict(user_inputs=proposed.inputs),
+        results=dict(probe=dataclasses.asdict(measured)), summary=summary.canonical(), calibration=dict(validation=aa), assumptions=detail['assumptions'])
+    session._save(runs / 'v4-done' / 'calibration.json', bundle)
+    state = json.loads((runs / 'v4-done' / 'state.json').read_text())
+    state['forecast'] = sample['proposal']['forecast']
+    state['rounds'][0]['records']['0']['flags'] = ['needs_human_review']
+    atomic_write_json(runs / 'v4-done' / 'state.json', state)
 
 
 def main():
@@ -204,7 +242,7 @@ def main():
         atomic_write_json(runs / name / 'state.json', still_running(state))
     v4_run(runs / 'v4-done', V4_SCRIPT, endpoint=True)
     v4_run(runs / 'v4-interrupted', V4_SCRIPT[:1] + [[dict(name='澄清歧义问题', delta=.05)]], interrupt=True,
-           no_adoption_rounds=3, max_rounds=2)
+           max_consecutive_run_failures=1)
     (runs / 'auto-new').mkdir()
     atomic_write_json(runs / 'auto-new' / 'cli-run.json', dict(run_id='auto-new', iteration_id='auto-new', actor='operator', created_at=NOW))
 
@@ -216,10 +254,11 @@ def main():
     seed_iteration(repository, workspace_id, 'manual', '手动迭代')
     titles = dict(zip(('auto-new', 'auto-budget', 'auto-interrupted', 'auto-sealed', 'auto-done', 'auto-running'),
                       ('自动 · 未开始', '自动 · 预算用尽', '自动 · 已中断', '自动 · 封存集已评', '自动 · 已结束', '自动 · 运行中')))
-    titles.update({'v4-done': 'v4 · 已结束', 'v4-interrupted': 'v4 · 已中断'})
+    titles.update({'v41-wizard': 'v4.1 · 待校准', 'v4-done': 'v4 · 已结束', 'v4-interrupted': 'v4 · 已中断'})
     for name, title in titles.items():
         seed_iteration(repository, workspace_id, name, title)
-        auto_runs.register(repository, name, run_id=name, state_dir=str(runs / name), actor='operator')
+        auto_runs.register(repository, name, run_id=name, state_dir=str(runs / name), actor='operator', method='method-v4' if name.startswith(('v4-', 'v41-')) else 'method-v3')
+    add_v41_samples(app, runs)
     with run_view.hold_run_lock(runs / 'auto-running'):
         uvicorn.run(app, host='127.0.0.1', port=args.port, log_level='warning')
 

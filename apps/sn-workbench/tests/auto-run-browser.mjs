@@ -20,6 +20,7 @@ const open = async (id, { scheme = 'light', width = 1440, height = 1000 } = {}) 
 const shot = (page, name, fullPage = true) => page.screenshot({ path: `test-results/auto-${name}.png`, fullPage });
 const status = async page => { await page.getByTestId('auto-status-label').waitFor({ timeout: 20000 }); return page.getByTestId('auto-status-label').innerText(); };
 
+if (!process.env.WORKBENCH_V41_ONLY) {
 // Finished: lineage in segments, a rolled-back branch, an open segment, every attempt kept.
 {
   const page = await open('auto-done');
@@ -234,6 +235,7 @@ for (const [id, width] of [['auto-done', 1440], ['auto-done', 1280], ['auto-done
   await page.getByTestId('v4-detail-run').waitFor();
   assert.match(await page.getByTestId('v4-detail-run').innerText(), /与方法文档的偏离/);
   // A candidate: cascade, mechanism with control pairs, safeguards.
+  await page.getByTestId('v41-tab-rounds').click();
   await page.getByTestId('v4-record-1-0').click();
   await page.getByTestId('v4-detail-record').waitFor();
   const detail = await page.getByTestId('v4-mechanism').innerText();
@@ -242,6 +244,7 @@ for (const [id, width] of [['auto-done', 1440], ['auto-done', 1280], ['auto-done
   await shot(page, 'v4-record-light', false);
   // An eliminated candidate stays visible with its stage.
   assert.match(await page.getByTestId('v4-record-1-2').innerText(), /小批淘汰/);
+  await page.getByTestId('v41-tab-overview').click();
   await page.getByTestId('v4-node-1').click();
   await page.getByTestId('v4-detail-node').waitFor();
   await page.close();
@@ -250,10 +253,13 @@ for (const [id, width] of [['auto-done', 1440], ['auto-done', 1280], ['auto-done
   const page = await open('v4-interrupted', { scheme: 'dark', width: 820 });
   assert.equal(await status(page), '已中断');
   assert.match(await page.getByTestId('auto-next-action').innerText(), /续跑/);
+  await page.getByTestId('v41-tab-rounds').click();
   assert.match(await page.getByTestId('v4-round-2').innerText(), /等待全验证集/);
   await shot(page, 'v4-interrupted-dark');
   await page.close();
 }
+}
+await (await import('./v41-browser.mjs')).checkV41({ browser, open, origin, shot });
 await browser.close();
 assert.deepEqual(failures, []);
 console.log('auto-run browser checks passed');

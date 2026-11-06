@@ -114,7 +114,7 @@ def _round(rd: dict, versions: dict, *, open_: bool) -> dict:
                 minibatch_size=len(split.get("minibatch") or []), rest_size=len(split.get("rest") or []),
                 diagnosis_s=rd.get("diagnosis_s"), diagnosis_prefetched=rd.get("diagnosis_prefetched"),
                 analysis_empty=bool(rd.get("analysis_empty")), not_started=len(rd.get("not_started") or []),
-                open=open_, records=[_record(r, versions) for r in records], queued=queued, decision=decision)
+                forecast=rd.get('forecast'), open=open_, records=[_record(r, versions) for r in records], queued=queued, decision=decision)
 
 
 def _phase(state: dict, alive: bool) -> str:
@@ -208,6 +208,24 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
     status = "running" if alive else "halted" if halt else "interrupted"
     resolved = identity.get("config_resolved") or {}
     config = {k: resolved.get(k) for k in CONFIG_SHOWN if k in resolved}
+    frozen = (ledger or {}).get('frozen_config') or {}
+    frozen_values = frozen.get('config') or {}
+    sources = dict(frozen.get('sources') or {})
+    config.update({k: frozen_values[k] for k in CONFIG_SHOWN if k in frozen_values})
+    # Explicit public adapter whitelist: no server config, paths or task membership.
+    from .config import ADAPTER_DEFAULTS
+    adapter = dict(resolved.get('adapter') or {}, **(frozen_values.get('adapter') or {}))
+    for key in ADAPTER_DEFAULTS:
+        if key in adapter:
+            config['adapter.' + key] = adapter[key]
+            sources.setdefault('adapter.' + key, 'runtime_resolved')
+    validation_size = (frozen_values.get('split') or {}).get('validation_size')
+    if validation_size is not None:
+        config['validation_size'] = validation_size
+    for key in ('time_budget_hours', 'spend_budget', 'price_per_1k_tokens', 'delta'):
+        if key in (frozen.get('inputs') or {}):
+            config[key] = frozen['inputs'][key]
+            sources[key] = 'user_input'
     budget_s = (resolved.get("time_budget_hours") or 0) * 3600 or None
     lineage = _lineage(state, versions)
     rounds = [_round(rd, versions, open_=False) for rd in state.get("rounds") or []]
@@ -219,7 +237,7 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
         stage_counts[r["stage"]] = stage_counts.get(r["stage"], 0) + 1
     progress = dict(rounds_finished=len(state.get("rounds") or []),
                     round=(state.get("current_round") or {}).get("round"),
-                    adopted=len(lineage) - 1, candidates=len(records), stage_counts=stage_counts,
+                    adopted=max(0, len(lineage) - 1), candidates=len(records), stage_counts=stage_counts,
                     no_adoption=state.get("no_adoption", 0), failure_detail=state.get("failure_detail"),
                     run_failures=state.get("run_failures", 0),
                     run_failures_limit=resolved.get("max_consecutive_run_failures"),
@@ -237,7 +255,7 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
                 progress=progress, config=config, variants=(ledger or {}).get("variants") or {},
                 calibration=_calibration(state.get("calibration")), feasibility=state.get("feasibility"),
                 forecast=state.get('forecast'),
-                parameter_sources=((ledger or {}).get('frozen_config') or {}).get('sources'),
+                parameter_sources=sources,
                 cumulative=state.get("cumulative"),
                 lineage=lineage, rounds=rounds, ablation=_ablation(state.get("ablation"), versions),
                 time_account=(ledger or {}).get("time_account"), endpoint=endpoint,
