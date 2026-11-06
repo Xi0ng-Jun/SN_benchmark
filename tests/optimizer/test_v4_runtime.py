@@ -47,7 +47,7 @@ def test_candidate_validation_failure_isolated_and_successful_sibling_adopted():
     mock = V4Mock([[dict(name='bad', delta=.2), dict(name='good', delta=.1)]])
     mock.fail_once['rest:bad'] = EvaluationUnavailable('candidate crashes')
     run, reason = execute(mock)
-    assert reason == 'no_adoption'
+    assert reason == 'script_end'
     assert run.lineage[-1]['version'] == 'seed+r1-good'
     bad = next(r for r in run.rounds[0]['records'].values() if r['title'] == 'bad')
     assert bad['label'] == 'run_failed'
@@ -61,7 +61,7 @@ def test_consecutive_failures_halt_and_retry_resumes_unfinished_stage(tmp_path):
     assert reason == 'process_failure' and run.run_failures == 1
     built = mock.calls['implement']
     resumed, reason = execute(mock, cfg, tmp_path)
-    assert reason == 'no_adoption' and len(resumed.lineage) == 2
+    assert reason == 'script_end' and len(resumed.lineage) == 2
     assert mock.calls['implement'] == built
 
 
@@ -84,7 +84,7 @@ def test_waiting_minibatch_does_not_occupy_implementation_slot():
 
 
 def test_reviewer_not_started_when_even_confirmed_mechanism_cannot_qualify():
-    mock = V4Mock([[dict(name='tiny', delta=.00001)]])
+    mock = V4Mock([[dict(name='tiny', delta=.00001)]], score_noise=lambda t, i: (0, -.04, .04)[i % 3])
     run, _ = execute(mock)
     assert mock.calls.get('review', 0) == 0
     rec = run.rounds[0]['records']['0']
@@ -141,7 +141,7 @@ def test_ablation_measurements_overlap_and_failure_only_skips_one_unit(failure_t
             return super().evaluate_subset(version, reference, subset, task_ids, k)
     mock = Mock([[dict(name='A', delta=.1)], [dict(name='B', delta=.1)], [dict(name='C', delta=.1)], []])
     run, reason = execute(mock, config(ablation=True, ablation_parallel=3))
-    assert reason == 'no_adoption' and mock.overlap
+    assert reason == 'script_end' and mock.overlap
     assert run.ablation['status'] == 'done'
     assert any(row['status'] == 'run_failed' for row in run.ablation['units'].values())
 
@@ -248,4 +248,4 @@ def test_candidate_exception_does_not_abort_sibling():
     mock = V4Mock([[dict(name='bad', delta=.1), dict(name='good', delta=.2)]])
     mock.fail_once['smoke:bad'] = ValueError('candidate returned malformed response')
     run, reason = execute(mock)
-    assert reason == 'no_adoption' and run.lineage[-1]['version'] == 'seed+r1-good'
+    assert reason == 'script_end' and run.lineage[-1]['version'] == 'seed+r1-good'

@@ -7,7 +7,7 @@ from rag_eval.optimizer.sn_adapter import SNAdapter
 from rag_eval.optimizer.v4.config import V4Config
 from rag_eval.optimizer.v4.loop import V4Run
 
-from .v4_mock import V4Mock
+from .v4_mock import ScriptedRun, V4Mock
 
 
 def test_process_failure_preserves_unfinished_implementer_for_same_key_resume(tmp_path):
@@ -67,7 +67,7 @@ def test_process_failure_preserves_unfinished_implementer_for_same_key_resume(tm
                    speculative_analysis=False, max_consecutive_run_failures=1)
 
     def coordinator():
-        return V4Run(mock, mock.seed, cfg, search=mock.search, validation=mock.validation,
+        return ScriptedRun(mock, mock.seed, cfg, search=mock.search, validation=mock.validation,
                      state_dir=tmp_path)
 
     first = coordinator()
@@ -75,7 +75,7 @@ def test_process_failure_preserves_unfinished_implementer_for_same_key_resume(tm
     assert not mock.archived
     assert first.current['records']['1']['stage'] == 'pending'
     second = coordinator()
-    assert second.run() == 'no_adoption'
+    assert second.run() == 'script_end'
     assert second.lineage[-1]['version'] == 'seed+r1-slow'
     assert second.rounds[0]['records']['1']['stage'] == 'measured'
     assert set(mock.agent_keys) == {'same-implementer-key'}

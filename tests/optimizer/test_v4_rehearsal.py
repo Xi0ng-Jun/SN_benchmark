@@ -35,6 +35,15 @@ class V4Rig(Rig):
                 raise Crash('process killed')
             return runtime_wait(adapter, seconds)
         monkeypatch.setattr(SNAdapter, '_runtime_wait', crash_at_poll)
+        # Finish this finite script through the production budget stop, after its round
+        # commits. No empty-card analysis is used as a successful termination signal.
+        from rag_eval.optimizer.v4.loop import V4Run
+        stop_reason = V4Run._stop_reason
+        def script_budget(run):
+            if run.rounds and run.current is None:
+                return 'time_budget'
+            return stop_reason(run)
+        monkeypatch.setattr(V4Run, '_stop_reason', script_budget)
         self.review_mode = 'none'          # 'none': no pair changed; 'gaming': every pair flagged
         self.reviews: list[dict] = []
         self.preflight_outcomes: dict[str, str] = {}
@@ -147,7 +156,7 @@ def test_v4_adopts_reviews_blind_and_evaluates_the_test_set_once(rig4, capsys):
     with rig4:
         assert rig4.run4() == 0
     out = capsys.readouterr().out
-    assert 'halt reason: no_adoption' in out and 'feasibility' in out
+    assert 'halt reason: time_budget' in out and 'feasibility' in out
     st = rig4.state4()
     recs = rig4.records4()
     good, bad = recs['Fix empty retrievals'], recs['Break synthesis']
@@ -183,7 +192,7 @@ def test_v4_adopts_reviews_blind_and_evaluates_the_test_set_once(rig4, capsys):
                 if str(a.get('batch_id')).startswith('sealed')]) == 2
 
 
-def test_v4_gaming_reviewer_vetoes_adoption(rig4, capsys):
+def test_v4_gaming_reviewer_flags_without_vetoing_adoption(rig4, capsys):
     rig4.effects = {'Fix empty retrievals': GOOD}
     rig4.analyst_cards = first_round_only([card('Fix empty retrievals')])
     rig4.review_mode = 'gaming'

@@ -112,7 +112,7 @@ def test_safeguard_cache_requires_terminal_output_provenance_and_rechecks_access
     adapter = SNAdapterV4({})
     output = tmp_path / 'outputs.jsonl'
     state = tmp_path / 'state.json'
-    row = dict(case_id='case', prediction='answer', product_record=dict(question='question',
+    row = dict(case_id='case', status='success', prediction='answer', product_record=dict(question='question',
                response=dict(answer='answer'), usage=dict(total_tokens=100)))
     output.write_text(json.dumps(row) + '\n')
     state.write_text(json.dumps(dict(phase='running')))
@@ -123,26 +123,26 @@ def test_safeguard_cache_requires_terminal_output_provenance_and_rechecks_access
         current = json.loads(output.read_text())
         rec = current['product_record']
         return dict(question=rec['question'], prediction=current['prediction'], response=rec['response'],
-                    usage=rec['usage'], status='mutable-status')
+                    usage=rec['usage'], status=current['status'])
     views = SimpleNamespace(_entry=lambda run_id: SimpleNamespace(run_dir=tmp_path),
                             _assert_unsealed=lambda run_id, case_id: checks.append(case_id), observation=observation)
     stub = dict(run_id='run', execution_id='execution')
     adapter._safeguard_observation(views, stub, 'case')
     adapter._safeguard_observation(views, stub, 'case')
-    # v4.1: cache key is safeguard-output-v2; observation is called once; no sealed check yet (phase=running)
-    assert len(calls) == 1 and 'safeguard-output-v2:run:case' not in adapter._safeguard_cache
+    # A running output is mutable: both observations must read it afresh.
+    assert len(calls) == 2 and not adapter._safeguard_cache
     state.write_text(json.dumps(dict(phase='finished')))
     adapter._safeguard_observation(views, stub, 'case')
     cached = adapter._safeguard_observation(views, stub, 'case')
-    # After phase=finished, observation called again (now 2 total) and sealed check called twice
-    assert len(calls) == 2 and len(checks) == 2
+    # Terminal output is cached only after provenance is checked; every access checks policy.
+    assert len(calls) == 3 and len(checks) == 2
     assert 'status' in cached    # v4.1 preserves status in the cached observation
     cached['usage']['total_tokens'] = -1
     assert adapter._safeguard_observation(views, stub, 'case')['usage']['total_tokens'] == 100
     row['product_record']['usage']['total_tokens'] = 200
     output.write_text(json.dumps(row) + '\n')
     assert adapter._safeguard_observation(views, stub, 'case')['usage']['total_tokens'] == 200
-    assert len(calls) == 3
+    assert len(calls) == 4
     # A sealed access policy still refuses a cached observation.
     def sealed(*args):
         raise ValueError('sealed')

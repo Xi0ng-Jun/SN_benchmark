@@ -48,7 +48,8 @@ def test_preflight_skip_is_not_frozen_or_measured_and_next_analyst_gets_reason(t
 
 
 def test_low_gain_still_records_cheap_mechanism_observation_without_reviewer():
-    mock = V4Mock([[dict(name='changed', delta=.00001, predicate=True)]])
+    mock = V4Mock([[dict(name='changed', delta=.00001, predicate=True)]],
+                  score_noise=lambda t, i: (0, -.04, .04)[i % 3])
     run, _ = execute(mock, config(speculative_analysis=False))
     # v4.1: tiny Δ < c_mech·SE still runs mechanism check but never qualifies
     assert mock.calls.get('review', 0) == 0

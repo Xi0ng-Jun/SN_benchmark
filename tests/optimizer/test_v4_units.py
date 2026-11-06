@@ -28,10 +28,14 @@ def test_config_is_strict_and_reports_variants(tmp_path):
         with pytest.raises(ConfigError):
             load(path)
     # calibration_k must be in [2, 5]
-    with pytest.raises(ConfigError, match="calibration_k"):
-        V4Config(time_budget_hours=8, calibration_k=1)
-    with pytest.raises(ConfigError, match="calibration_k"):
-        V4Config(time_budget_hours=8, calibration_k=6)
+    for k in (1, 6):
+        path.write_text(json.dumps(dict(time_budget_hours=8, calibration_k=k)))
+        with pytest.raises(ConfigError, match="calibration_k"):
+            load(path)
+    for k in (2, 5):
+        path.write_text(json.dumps(dict(time_budget_hours=8, calibration_k=k)))
+        assert load(path).config.calibration_k == k
+        assert "calibration_k" not in load(path).config.variants()
 
 
 def test_parse_verdict_keeps_only_known_pairs_and_coerces(tmp_path):
@@ -61,9 +65,10 @@ def test_endpoint_report_interval_shrinkage_and_conclusion():
     assert final["ci95"] == [-0.004, 0.061] and final["ci95_method"] == "bootstrap" and not rep["confirmed"]
     assert final["ci95_normal"][0] < 0 < final["ci95_normal"][1]
     assert rep["conclusion"] == "the test set did not confirm an improvement" and rep["deploy"] == "cb"
-    assert rep["warnings"]       # k_sealed differs from calibration_k
+    assert rep["warnings"] == []  # sealed and candidate validation both use k=1
+    assert "validation k = 2" in endpoint.report(result, nodes, lineage, k_val=2)["warnings"][0]
     with pytest.raises(ValueError):
-        endpoint.report(result, nodes[::-1], lineage, 1)
+        endpoint.report(result, nodes[::-1], lineage, k_val=1)
 
 
 def test_endpoint_node_set_uses_the_pruned_final_version():

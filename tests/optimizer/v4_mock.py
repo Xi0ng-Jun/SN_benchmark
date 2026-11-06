@@ -22,8 +22,9 @@ def noise(task: str, attempt: int) -> float:
 
 
 class V4Mock(SystemAdapter):
-    def __init__(self, rounds: list[list[dict]], *, n_search=20, n_val=40, base=0.5, reviewer="honest"):
+    def __init__(self, rounds: list[list[dict]], *, n_search=20, n_val=40, base=0.5, reviewer="honest", score_noise=noise):
         self.rounds, self.base, self.reviewer = rounds, base, reviewer
+        self.score_noise = score_noise
         self.search = [f"s{i:02d}" for i in range(n_search)]
         self.validation = [f"v{i:02d}" for i in range(n_val)]
         self.seed = Version("seed", metadata=dict(candidate_id="seed"))
@@ -55,7 +56,7 @@ class V4Mock(SystemAdapter):
         # "delta_by_attempt": {attempt: delta} overrides "delta" for that attempt (a lucky first measurement).
         delta = sum((self.cards[r].get("delta_by_attempt") or {}).get(attempt, self.cards[r].get("delta", 0.0))
                     for r in self.chain[h])
-        return min(1.0, max(0.0, self.base + delta + noise(task, attempt)))
+        return min(1.0, max(0.0, self.base + delta + self.score_noise(task, attempt)))
 
     def _result(self, version: Version, ids, k: int) -> EvalResult:
         h = version.content_hash
