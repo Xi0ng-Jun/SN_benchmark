@@ -135,7 +135,7 @@ def test_safeguard_cache_requires_terminal_output_provenance_and_rechecks_access
     adapter._safeguard_observation(views, stub, 'case')
     cached = adapter._safeguard_observation(views, stub, 'case')
     # Terminal output is cached only after provenance is checked; every access checks policy.
-    assert len(calls) == 3 and len(checks) == 2
+    assert len(calls) == 3 and len(checks) == 4
     assert 'status' in cached    # v4.1 preserves status in the cached observation
     cached['usage']['total_tokens'] = -1
     assert adapter._safeguard_observation(views, stub, 'case')['usage']['total_tokens'] == 100

@@ -126,6 +126,20 @@ class V4Rig(Rig):
             checks=[dict(kind='source', target='backend/app', observation='Synthetic fixture has a known guard.')],
         )))
 
+    def assert_no_duplicate_measurements(self):
+        """v4.1: seed calibration k=3; candidates once plus one re-measurement."""
+        calibration_k = json.loads(self.v4_config.read_text()).get('calibration_k', 3)
+        for candidate in self.candidates():
+            per_scope = {}
+            for attempt in candidate['attempts']:
+                per_scope.setdefault(attempt.get('batch_id'), []).append(attempt)
+            for scope, attempts in per_scope.items():
+                limit = (1 if str(scope).startswith(('smoke:', 'sealed:')) else
+                         calibration_k if candidate['id'] == self.tree['root_candidate_id'] else 2)
+                assert len(attempts) <= limit, (candidate['id'], scope, len(attempts))
+                assert len({a['execution_id'] for a in attempts}) == len(attempts)
+                assert all(a['execution_state'] == 'finished' for a in attempts)
+
     def state4(self):
         return json.loads((self.run_dir / STATE_FILE).read_text())
 
@@ -200,7 +214,7 @@ def test_v4_gaming_reviewer_flags_without_vetoing_adoption(rig4, capsys):
         assert rig4.run4() == 0
     rec = rig4.records4()['Fix empty retrievals']
     # v4.1: gaming → tier unconfirmed + flag needs_human_review, never vetoes
-    assert rec['mechanism']['tier'] == 'unconfirmed' and rec['mechanism']['reviewer']['needs_human_review']
+    assert rec['mechanism']['tier'] == 'unconfirmed' and 'needs_human_review' in rec['flags']
     # Adoption decided by Δ vs 1·SE (c=1.0 for unconfirmed); the mock's GOOD gain qualifies
     assert rec['label'] == 'adopted'
     assert len(rig4.state4()['lineage']) == 2
@@ -229,11 +243,11 @@ def test_v4_kill_during_stage2_resumes_without_new_agents_or_duplicate_runs(rig4
     with rig4:
         assert rig4.run4() == 0
     assert len(rig4.state4()['lineage']) == 2
-    # The old-parent round-2 speculative analyst is distinct from the adopted-parent round-2 analyst.
-    # Restart reuses both existing request identities; it creates no second implementer.
+    # The old-parent speculative analyst may run; the budget seam prevents a new
+    # adopted-parent round. Resume creates no duplicate implementer or reviewer.
     assert len(rig4.intents('implementer')) == 1 and len(rig4.intents('reviewer')) == 1
     analysts = rig4.intents('analyst')
-    assert len(analysts) == 3 and len({i['request_key'] for i in analysts}) == 3
+    assert len(analysts) == 2 and len({i['request_key'] for i in analysts}) == 2
     assert len(rig4.creator.commands) - agents <= 2
     rig4.assert_no_duplicate_measurements()
 
