@@ -415,9 +415,15 @@ def test_clustered_se_uses_families():
 
 
 def test_ablation_prunes_a_change_that_does_not_contribute():
-    mock = V4Mock([[dict(name="A", delta=0.1)], [dict(name="Z", effect=True, **BAND)], []])
+    # With all three calibration attempts, Z must remain inside the mechanism
+    # band against an already remeasured parent (not just against the seed).
+    mock = V4Mock([[dict(name="A", delta=0.1)],
+                   [dict(name="Z", effect=True, delta=-.0005, delta_by_attempt={1: .0055})], []])
     r, reason = run(mock, cfg(ablation=True))
     assert reason == "script_end" and len(r.lineage) == 3          # Z adopted on mechanism evidence
+    z = records(r, 1)['Z']
+    assert .5 * z['se_val'] <= z['delta_val'] < z['se_val']
+    assert z['remeasure']['passed']
     ab = r.ablation
     assert ab["status"] == "done" and ab["pruned"] == [2] and ab["accepted"]
     assert r.final_version() == ab["final"] and r.final_version() != r.lineage[-1]["version"]
