@@ -177,7 +177,9 @@ def validation(adapter, snap, rec, card, candidate):
     kw = dict(c=snap.cfg.c, c_mech=snap.cfg.c_mech)
     confirmed = decide.qualification(d['delta'], d['se'], 'confirmed', sg, **kw)
     unconfirmed = decide.qualification(d['delta'], d['se'], 'unconfirmed', sg, **kw)
-    if confirmed['qualified'] and snap.cfg.review:
+    review_band = (d['delta'] is not None and d['se'] is not None
+                   and d['delta'] >= snap.cfg.c_mech * d['se'])
+    if review_band and snap.cfg.review:
         return rec, cv                      # stage 3 can relax the threshold or flag gaming
     # The local check reuses measured trajectories; it costs no new evaluation or reviewer.
     start = time.monotonic()

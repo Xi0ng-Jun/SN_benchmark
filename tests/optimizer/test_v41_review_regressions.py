@@ -99,3 +99,16 @@ def test_sn_safeguards_ignore_unmatched_tasks_and_attempt_multiplicity(monkeypat
     assert observed['tokens_per_task_ratio']['means'] == dict(subject=5050, reference=5050)
     assert set(observed['tokens_per_task_ratio']['tasks']) == {'a', 'b'}
     assert observed['answer_produced_rate']['subject'] == observed['answer_produced_rate']['reference'] == 1
+
+
+def test_gaming_review_is_recorded_even_when_safeguard_blocks_adoption():
+    mock = V4Mock([[dict(name='harmful', delta=.15)]], reviewer='gaming')
+    mock.token_harm['harmful'] = 2.0
+    run = ScriptedRun(mock, mock.seed, V4Config(time_budget_hours=1),
+                      search=mock.search, validation=mock.validation)
+    run.run()
+    record = run.rounds[0]['records']['0']
+    assert record['safeguards']['breached'] == ['tokens_per_task_ratio']
+    assert mock.calls['review'] == 1
+    assert 'needs_human_review' in record['flags']
+    assert not record['qualification']['qualified'] and len(run.lineage) == 1
