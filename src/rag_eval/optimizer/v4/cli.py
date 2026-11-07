@@ -287,6 +287,11 @@ def cmd_calibrate(args):
         _bind(services, args)
         adapter = services.adapter
         adapter.set_evidence_dir(root / EVIDENCE_DIR)
+        from .calibration_recovery import configure
+        recovery_timeout = configure(root, args.recovery_execution_timeout_seconds, write=False)
+        adapter._recovery_execution_timeout_seconds = recovery_timeout
+        adapter._eval_timeout = max(adapter._eval_timeout,
+            recovery_timeout or loaded.adapter_settings['execution_timeout_seconds']) + 60
         concurrency = session.calibration_concurrency(root,
             args.calibration_concurrency if args.calibration_concurrency is not None else loaded.calibration_concurrency)
         # Calibration has few jobs; avoid a 30-second idle gap after each short warm execution.
@@ -298,7 +303,8 @@ def cmd_calibrate(args):
             with stop_on_sigterm():
                 bundle = session.run_calibration(adapter, adapter.version_for(services.root_candidate_id),
                     adapter._round_ops.service, args.iteration, args.actor, root, inputs,
-                    loaded.adapter_settings, read_history(args.history or []), concurrency=concurrency)
+                    loaded.adapter_settings, read_history(args.history or []), concurrency=concurrency,
+                    recovery_execution_timeout_seconds=recovery_timeout)
                 if not args.no_advisor:
                     from . import advisor
                     advisor.run(adapter, adapter.version_for(services.root_candidate_id), root,
@@ -495,6 +501,8 @@ def build_parser() -> argparse.ArgumentParser:
     calibration.add_argument('--spend-budget', type=float)
     calibration.add_argument('--price-per-1k-tokens', type=float)
     calibration.add_argument('--no-advisor', action='store_true', help='use rule values only')
+    calibration.add_argument('--recovery-execution-timeout-seconds', type=int,
+        help='existing incomplete calibration: longer timeout for new executions, saved once for resume')
     proposed = sub.add_parser('proposal', parents=[common], help='show or edit the calibration proposal')
     proposed.add_argument('action', choices=('show', 'set'))
     proposed.add_argument('assignment', nargs='?')

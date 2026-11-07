@@ -95,14 +95,9 @@ class V4Rig(Rig):
             review = re.search(r'Review candidate (\S+)\. Your evidence is the file (\S+) \(sha256 ([0-9a-f]{64})\)',
                                command['text'])
             if not review:
-                before = self.handled
-                # One command at a time through the v3 driver.
-                saved = self.messenger.commands
-                self.messenger.commands = saved[:before + 1]
-                try:
-                    super()._agents()
-                finally:
-                    self.messenger.commands = saved
+                # Producers append concurrently. Keep the shared queue intact
+                # and let this dispatcher handle any later reviewer message.
+                super()._agents(limit=self.handled + 1)
                 continue
             self.handled += 1
             data = Path(review.group(2)).read_bytes()
@@ -182,6 +177,33 @@ def first_round_only(cards):
         calls.append(parent)
         return cards if len(calls) == 1 else []
     return analyst
+
+
+@pytest.mark.parametrize('arrival', ['during_handler', 'after_handler'])
+def test_rehearsal_keeps_review_arriving_while_implementer_is_handled(tmp_path, monkeypatch, arrival):
+    from types import SimpleNamespace
+    rig = object.__new__(V4Rig)
+    evidence = tmp_path / 'review.md'
+    evidence.write_text('pairs: p1\n### p1\nA | comparison: identical\nB | comparison: identical\n')
+    verdict = tmp_path / 'verdict.json'
+    review = dict(agentId='reviewer', text=(f'Review candidate c. Your evidence is the file {evidence} '
+        f'(sha256 {hashlib.sha256(evidence.read_bytes()).hexdigest()}). '
+        f'Write to the file {verdict} and nothing else'))
+    rig.messenger = SimpleNamespace(commands=[dict(agentId='implementer',
+        text='Implement the approved card (hypothesis h) in candidate c, now')])
+    rig.handled, rig.reviews, rig.review_mode = 0, [], 'none'
+    rig.reads = SimpleNamespace(done=set())
+    rig._implementer = lambda _: rig.messenger.commands.append(review) if arrival == 'during_handler' else None
+    if arrival == 'after_handler':
+        original = Rig._agents
+        def deliver_after_handler(self, **kwargs):
+            original(self, **kwargs)
+            self.messenger.commands.append(review)
+        monkeypatch.setattr(Rig, '_agents', deliver_after_handler)
+    rig._agents()
+    assert rig.handled == 2
+    assert rig.reads.done == {'implementer', 'reviewer'}
+    assert len(rig.reviews) == 1 and verdict.exists()
 
 
 def test_v4_adopts_reviews_blind_and_evaluates_the_test_set_once(rig4, capsys):

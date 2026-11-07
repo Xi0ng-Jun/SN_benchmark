@@ -11,10 +11,15 @@ from . import results
 
 
 class V41Measurements(RoundMeasurements):
-    def __init__(self, iteration_api):
+    def __init__(self, iteration_api, *, execution_timeout_override=None):
         super().__init__(iteration_api)
+        self.execution_timeout_override = execution_timeout_override
         self._validated = OrderedDict()
         self._validated_lock = threading.Lock()
+
+    def _prepare_execution_step(self, step):
+        if self.execution_timeout_override is not None:
+            step.setdefault('timeout_seconds', self.execution_timeout_override)
 
     def _retry_roots(self, iteration_id, candidate_id):
         with self.repository.connect() as conn:
@@ -49,7 +54,7 @@ class V41Measurements(RoundMeasurements):
         return state
 
     def _projection(self, attempt, expected):
-        if attempt.get('execution_state') != 'finished' or not attempt.get('execution_id'):
+        if attempt.get('execution_state') not in ('finished', 'failed', 'timeout') or not attempt.get('execution_id'):
             raise EvaluationUnavailable('v4 logical measurement has no finished execution')
         key = (attempt['execution_id'], tuple(sorted(expected)))
         with self._validated_lock:
@@ -64,12 +69,13 @@ class V41Measurements(RoundMeasurements):
         return projection
 
     def _infra(self, attempt):
-        if attempt.get('execution_state') in (None, 'running'):
+        if attempt.get('execution_state') in (None, 'running', 'cancelled'):
             return False
         runs = self.views.execution_runs(attempt.get('execution_id')) if attempt.get('execution_id') else []
         expected = [task for run in runs for task in run.case_ids]
         projection = self._projection(attempt, expected)
-        return any(row['failure_kind'] == 'infra_exhausted' for row in projection['rows'].values())
+        return any(row['failure_kind'] in ('infra_exhausted', 'execution_incomplete')
+                   for row in projection['rows'].values())
 
     def slots(self, candidate_id, scope, k):
         from rag_eval.workbench.execution_scopes import get
@@ -108,6 +114,9 @@ class V41Measurements(RoundMeasurements):
     def _complete(self, state, tree, observed):
         if state.get('v41_policy') != results.POLICY:
             raise EvaluationUnavailable('v4 measurement policy differs; start a new iteration')
+        # A retry can finish in the same dispatch tick. Bind its physical
+        # attempt to the original root before selecting the logical slots.
+        self._recover_retry_mappings(tree['id'])
         k, scope = state['k'], state['scope_id']
         sides = {step['candidate_id'] for step, _ in observed} | {state['candidate_id']}
         frozen = {}

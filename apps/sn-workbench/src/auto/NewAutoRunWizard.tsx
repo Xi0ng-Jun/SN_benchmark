@@ -44,6 +44,7 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
   const theme = useTheme(), base = controlPath(iterationId);
   const [tick, setTick] = useState(0), [hours, setHours] = useState('8'), [k, setK] = useState(3);
   const [calibrationConcurrency, setCalibrationConcurrency] = useState('2');
+  const [executionSeconds, setExecutionSeconds] = useState('7200'), [recoverySeconds, setRecoverySeconds] = useState('');
   const [tokens, setTokens] = useState('0.5'), [answers, setAnswers] = useState('0.02'), [delta, setDelta] = useState('');
   const [spend, setSpend] = useState(''), [price, setPrice] = useState(''), [authorized, setAuthorized] = useState(false);
   const [selectedProfiles, setProfiles] = useState<Record<string, string>>({});
@@ -70,6 +71,8 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
     restored.current = true;
     setHours(String(inputs.time_budget_hours ?? 8)); setK(Number(inputs.calibration_k ?? 3));
     setCalibrationConcurrency(String(calibration.data?.calibration_concurrency ?? saved?.calibration_concurrency ?? 1));
+    setExecutionSeconds(String(calibration.data?.execution_timeout_seconds ??
+      (saved?.adapter as Record<string, unknown> | undefined)?.execution_timeout_seconds ?? 7200));
     const safeguards = inputs.safeguards as Record<string, number> | undefined;
     setTokens(String(safeguards?.tokens_per_task_ratio ?? .5)); setAnswers(String(safeguards?.answer_produced_rate ?? .02));
     setDelta(inputs.delta == null && inputs.min_meaningful_improvement == null ? '' : String(inputs.delta ?? inputs.min_meaningful_improvement));
@@ -99,6 +102,10 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
       };
       const concurrency = positive(calibrationConcurrency, '校准执行并发');
       if (action === 'calibrate' && (!Number.isInteger(concurrency) || concurrency > 16)) throw new Error('校准执行并发需要 1–16 的整数');
+      const seconds = positive(executionSeconds, '执行时限');
+      if (action === 'calibrate' && (!Number.isInteger(seconds) || seconds > 86400)) throw new Error('执行时限需要 1–86400 的整数');
+      const recovery = recoverySeconds ? positive(recoverySeconds, '恢复执行时限') : undefined;
+      if (recovery != null && (!Number.isInteger(recovery) || recovery > 86400)) throw new Error('恢复执行时限需要 1–86400 的整数');
       const body = action === 'calibrate' ? { inputs: calibration.data?.launch_inputs ?? {
         time_budget_hours: positive(hours, '时间预算'), calibration_k: k,
         calibration_concurrency: concurrency,
@@ -106,8 +113,8 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
         ...(delta ? { min_meaningful_improvement: positive(delta, '最小有意义提升') } : {}),
         ...(spend ? { spend_budget: positive(spend, '测量费用预算', true) } : {}),
         ...(price ? { price_per_1k_tokens: positive(price, 'token 单价', true) } : {}),
-        adapter: selectedProfiles, test_set_authorized: authorized,
-      } } : {};
+        adapter: { ...selectedProfiles, execution_timeout_seconds: seconds }, test_set_authorized: authorized,
+      }, ...(recovery != null ? { recovery_execution_timeout_seconds: recovery } : {}) } : {};
       if (action === 'calibrate' && spend && !price) throw new Error('填写测量费用预算时必须提供同一货币单位的 token 单价');
       const value = await api<Confirmation>(base + (action === 'run' ? '/run/preview' : action === 'resume' ? '/run/resume' : '/calibrate'), body);
       setPreview({ value, body });
@@ -134,6 +141,15 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
       <View style={{ flexDirection: 'row', gap: 8 }}>{[2, 3, 4, 5].map(n => <Button key={n} label={String(n)} selected={k === n} disabled={inputLocked} onPress={() => setK(n)} testID={`v41-k-${n}`} />)}</View>
       <Field label="校准执行并发（1–16）" value={calibrationConcurrency} onChange={setCalibrationConcurrency} editable={!inputLocked} testID="v41-calibration-concurrency" />
       <Copy small muted>默认 2，让 P 与 D 同时测量；1 为串行。P 首遍后其余遍可并行，受此上限约束。并发是评测执行数，每次执行内部仍可能并行调用模型。启动后按原值恢复。</Copy>
+      <Field label="每个评测批次的执行时限（秒）" value={executionSeconds} onChange={setExecutionSeconds} editable={!inputLocked} testID="v41-execution-timeout" />
+      <Copy small muted>包含整个批次的排队、资料准备、生成和评分；程序会预留收尾时间。上面的小时预算不会自动延长此时限。</Copy>
+      {calibration.data.phase === 'calibration' && !calibration.data.alive && !calibration.data.complete && <>
+        <Copy small muted>校准未完成，累计测量调度用时 {duration(calibration.data.measurement_active_wall_s)}。恢复保留已有有效分数，失败批次可能重新生成。</Copy>
+        {calibration.data.recovery_execution_timeout_seconds ? <Copy small>已登记恢复时限：{calibration.data.recovery_execution_timeout_seconds} 秒，仅用于新派发的执行。</Copy> : <>
+          <Field label="恢复时延长执行时限（秒，选填）" value={recoverySeconds} onChange={setRecoverySeconds} editable={!locked} testID="v41-recovery-timeout" />
+          <Copy small muted>必须大于原时限，最多 86400 秒；确认后固定。旧执行、题单与校准并发不变。</Copy>
+        </>}
+      </>}
       <Field label="token 用量允许增加比例（0.5 = 50%）" value={tokens} onChange={setTokens} editable={!inputLocked} />
       <Field label="回答率允许下降（0.02 = 2 个百分点）" value={answers} onChange={setAnswers} editable={!inputLocked} />
       <Copy small muted>这是产品能接受的退化，由你定义；判定时还会计入实测噪声。</Copy>

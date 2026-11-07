@@ -36,6 +36,8 @@ def failure_kind(output):
     phase = record.get('failed_phase')
     kind = record.get('error_type')
     if status == 'error':
+        if kind == 'partition_deadline' and phase in ('asking', 'not_started'):
+            return 'execution_incomplete'
         if kind == 'PreparationInfrastructureError' and phase in ('preparation', 'preparing', 'importing'):
             return 'infra_exhausted'
         if kind in ('APIConnectionError', 'ConnectError') and phase in ('asking', 'preparation', 'preparing'):
@@ -45,6 +47,15 @@ def failure_kind(output):
     return 'scoring_unavailable' if status == 'success' else 'unknown_failure'
 
 
+def _deadline_failure(entry):
+    failure = entry.failure or {}
+    if (entry.execution_state in ('failed', 'timeout') and
+            (failure.get('error_type'), failure.get('failed_phase')) in (
+                ('execution_deadline', 'not_started'), ('partition_deadline_kill', 'deadline'))):
+        return {key: failure[key] for key in ('error_type', 'failed_phase')}
+    return None
+
+
 def read_partition(views, entry, expected):
     """Validate the whole original artifact, then select its requested case rows."""
     from rag_eval.flip_report import _read_side
@@ -52,9 +63,16 @@ def read_partition(views, entry, expected):
     from rag_eval.benchmark_comparison import scorer_comparison, validate_scored_submission
     from rag_eval.workbench.run_views import PRIMARY_METRIC
     views._assert_unsealed(entry.id)
-    if entry.execution_state in ('running', 'cancelled'):
+    if entry.execution_state not in ('finished', 'failed', 'timeout'):
         raise EvaluationUnavailable(f'v4 partition {entry.id} is not settled')
-    if entry.scores is None:
+    if entry.scores is None or not Path(entry.scores).exists():
+        failure = _deadline_failure(entry)
+        if failure:
+            # A producer-recorded deadline is an unresolved task, never a score.
+            # Other missing/corrupt artifacts must still fail validation.
+            return dict(identities=[], rows={task: dict(score=None, failure_kind='execution_incomplete',
+                output=dict(status='missing', product_record=failure),
+                trajectory=dict(run_id=entry.id, run_dir=str(entry.run_dir))) for task in expected})
         raise EvaluationUnavailable(f'v4 partition {entry.id} has no official scorer artifact')
     try:
         side, artifacts = _read_side(entry.run_dir, entry.scores, None)
@@ -73,8 +91,9 @@ def read_partition(views, entry, expected):
         scorer, _ = scorer_comparison(scores)
         identity = dict(bundle_id=scores['bundle_id'], suite=scores['suite'], profile=scores['profile'],
                         metric=metric, scorer=scorer, method=submission['method'])
-        outputs = {row['case_id']: row for row in (json.loads(line) for line in
-                   (Path(entry.run_dir) / 'outputs.jsonl').read_text().splitlines())}
+        output_path = Path(entry.run_dir) / 'outputs.jsonl'
+        output_text = '' if not output_path.exists() and _deadline_failure(entry) else output_path.read_text()
+        outputs = {row['case_id']: row for row in (json.loads(line) for line in output_text.splitlines())}
         rows = {}
         for row in scores['per_case']:
             task = row['case_id']
@@ -89,7 +108,18 @@ def read_partition(views, entry, expected):
                         if key in record}
             if (record.get('response') or {}).get('llm_mode') is not None:
                 evidence['response'] = dict(llm_mode=record['response']['llm_mode'])
-            rows[task] = dict(score=value, failure_kind=failure_kind(output) if value is None else None,
+            observed_failure = failure_kind(output)
+            kind = observed_failure if value is None else None
+            if observed_failure == 'execution_incomplete' or (task not in outputs and _deadline_failure(entry)):
+                kind = 'execution_incomplete'
+                if task not in outputs:
+                    evidence = _deadline_failure(entry)
+                # ALCE scores empty/error answers numerically. Retain that
+                # official artifact but do not treat an execution cutoff as a
+                # model answer or freeze its placeholder score as a healthy row.
+                evidence = dict(evidence, official_primary_score=value)
+                value = None
+            rows[task] = dict(score=value, failure_kind=kind,
                               output=dict(status=output.get('status'), product_record=evidence), trajectory=dict(run_id=entry.id, run_dir=str(entry.run_dir),
                               scores_id=scores['scores_id'], submission_id=scores['submission_id'],
                               output_identity=fingerprint(output)))
@@ -133,7 +163,7 @@ def resolve_slot(projections):
         identities.extend(projection['identities'])
         for task, row in projection['rows'].items():
             prior = rows.get(task)
-            if prior is None or prior['failure_kind'] == 'infra_exhausted':
+            if prior is None or prior['failure_kind'] in ('infra_exhausted', 'execution_incomplete'):
                 rows[task] = row
     compatible(identities)
     return dict(rows=rows, identities=identities)

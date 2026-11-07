@@ -115,7 +115,8 @@ class SNAdapterV4(SNAdapter):
         from .measurements import V41Measurements
         with self._v41_measurements_lock:
             if self._v41_measurements is None:
-                self._v41_measurements = V41Measurements(ops.api)
+                self._v41_measurements = V41Measurements(ops.api, execution_timeout_override=
+                    getattr(self, '_recovery_execution_timeout_seconds', None))
         measurements = self._v41_measurements
         self._gated(lambda: self._await({label: (key, lambda: measurements.subset(
             cid, subset, ids, k=k, paired=rcid is not None, key=key, **kwargs))}, {label: (cid, rcid)}))

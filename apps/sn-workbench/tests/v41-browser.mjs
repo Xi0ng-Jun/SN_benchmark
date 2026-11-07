@@ -28,7 +28,7 @@ export async function checkV41({ browser, open, origin, shot }) {
   const sample = await (await page.request.get(`${origin}/api/test-v41`)).json();
   const finished = await (await page.request.get(`${origin}/api/iterations/v4-done/auto-run`)).json();
   let calibrated = false, running = false, missingProposal = false, confirmations = 0, previews = 0, patches = 0;
-  let epoch = 0, activeToken = null, calibrationInputs = null;
+  let epoch = 0, activeToken = null, calibrationInputs = null, recovering = false;
   await page.route('**/api/iterations/v41-wizard/auto-run', async route => {
     await route.fulfill({ json: running ? { ...finished, run: { ...finished.run, run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'running', alive: true }, next_action: null }
       : { schema_version: 1, method: 'v4', run: { method: 'v4', run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'not_started', alive: false },
@@ -37,7 +37,7 @@ export async function checkV41({ browser, open, origin, shot }) {
   await page.route('**/api/iterations/v41-wizard/v4/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname.split('/v4/')[1];
     const body = request.method() === 'GET' ? {} : request.postDataJSON();
-    if (path === 'calibration') return route.fulfill({ json: calibrated ? sample.calibration : { complete: false, alive: false, phase: 'not_started' } });
+    if (path === 'calibration') return route.fulfill({ json: calibrated ? sample.calibration : { complete: false, alive: false, phase: recovering ? 'calibration' : 'not_started', ...(recovering ? { launch_inputs: calibrationInputs, execution_timeout_seconds: 14400, measurement_active_wall_s: 6600 } : {}) } });
     if (path === 'proposal') {
       if (missingProposal) return route.fulfill({ status: 404, json: { error: '建议书工件不可用' } });
       if (request.method() === 'PATCH') {
@@ -60,13 +60,16 @@ export async function checkV41({ browser, open, origin, shot }) {
       if (!body.confirmation_token) {
         if (path === 'calibrate' && !calibrated) {
           assert.equal(body.inputs.calibration_concurrency, 3);
-          calibrationInputs = body.inputs;
+          if (recovering) { assert.deepEqual(body.inputs, calibrationInputs); assert.equal(body.recovery_execution_timeout_seconds, 21600); }
+          else calibrationInputs = body.inputs;
         }
         previews++;
         activeToken = `token-${epoch}-${previews}`;
         return route.fulfill({ json: { action: path === 'run/preview' ? 'run' : path.split('/').at(-1), confirmation_token: activeToken,
           incurs_cost: !['run/pause', 'run/stop'].includes(path), expires_in_seconds: 600, budget_hours: 8,
           agent_profiles: { analyst_profile: 'server-model', implementer_profile: 'server-model', reviewer_profile: 'server-model', calibrator_profile: 'server-model' },
+          execution_timeout_seconds: body.recovery_execution_timeout_seconds ?? calibrationInputs?.adapter?.execution_timeout_seconds ?? 7200,
+          recovery_execution_timeout_seconds: body.recovery_execution_timeout_seconds,
           test_set_authorized: false, config: { b: sample.proposal.proposal.items.b.value, calibration_concurrency: calibrationInputs?.calibration_concurrency ?? 2 }, config_sha256: 'synthetic', search_size: 100, validation_size: 60 } });
       }
       assert.equal(body.confirmation_token, activeToken);
@@ -90,11 +93,22 @@ export async function checkV41({ browser, open, origin, shot }) {
   await page.getByText('校准执行并发需要 1–16 的整数', { exact: true }).waitFor();
   assert.equal(previews, 0);
   await page.getByTestId('v41-calibration-concurrency').fill('3');
+  await page.getByTestId('v41-execution-timeout').fill('14400');
   await page.getByTestId('v41-calibrate').click();
   await page.getByTestId('v41-confirmation').waitFor();
   assert.match(await page.getByTestId('v41-confirmation').innerText(), /校准执行并发上限：3/);
   assert.match(await page.getByTestId('v41-confirm-profiles').innerText(), /校准顾问模型配置：server-model/);
+  assert.match(await page.getByTestId('v41-confirm-timeout').innerText(), /14400 秒/);
+  assert.equal(calibrationInputs.adapter.execution_timeout_seconds, 14400);
   assert.equal(confirmations, 0, 'preview must never start paid calibration');
+  // Simulate an interrupted server run; recovery must retain the original inputs.
+  recovering = true;
+  await page.reload();
+  await page.getByTestId('v41-recovery-timeout').fill('21600');
+  await page.getByTestId('v41-calibrate').click();
+  await page.getByTestId('v41-confirmation').waitFor();
+  assert.match(await page.getByTestId('v41-confirm-timeout').innerText(), /21600 秒.*恢复时限/);
+  await shot(page, 'v41-confirm-recovery');
   await page.getByTestId('v41-confirm').click();
   await page.getByTestId('v41-param-b').waitFor();
   assert.equal(confirmations, 1);

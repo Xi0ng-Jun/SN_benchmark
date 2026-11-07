@@ -1,6 +1,6 @@
 # method-v4.1 操作与验收
 
-2026-11-06。本手册对应 `feat/method-v4.1`，取代旧 v4 手册中有关校准、停机、保护指标和工作台启动的说明。方法依据为工作区的 `harness-opt/docs/method-v4.1.md`。离线验证不代表真实模型、服务或方法效果已通过验收。
+2026-11-07。本手册对应 `feat/method-v4.1`，取代旧 v4 手册中有关校准、停机、保护指标和工作台启动的说明。方法依据为工作区的 `harness-opt/docs/method-v4.1.md`。离线验证不代表真实模型、服务或方法效果已通过验收。
 
 ## 入口与生命周期
 
@@ -55,7 +55,7 @@ python -m rag_eval.optimizer.cli v4 run \
 python -m rag_eval.optimizer.cli v4 status --state-dir "$V41_RUN_DIR"
 ```
 
-校准可选 `--calibration-concurrency 2`（优先于配置文件顶层 `calibration_concurrency`）、`--no-advisor`、`--history <ledger.json>`（可重复），以及 `--spend-budget`／`--price-per-1k-tokens`。恢复校准重复原命令和并发值；旧交付中没有调度记录的校准继续串行恢复，不迁移在途身份。恢复优化重复原 `run --from-proposal` 命令。对已查清的可重试流程失败加 `--retry-failed`，不会把已完成的独立测量替换成新的独立尝试。不能编辑冻结文件绕过身份检查。
+校准可选 `--calibration-concurrency 2`（优先于配置文件顶层 `calibration_concurrency`）、`--no-advisor`、`--history <ledger.json>`（可重复），以及 `--spend-budget`／`--price-per-1k-tokens`。恢复校准重复原命令和并发值；旧交付中没有调度记录的校准继续串行恢复，不迁移在途身份。`calibrate` **不支持 `--retry-failed`**；恢复优化的 `run --from-proposal` 才支持该参数。不能编辑冻结文件绕过身份检查。已有失败校准延长新执行时限的方法见下文。
 
 校准并发与建议书中的优化执行并发是两个参数，均为单次运行的执行上限，不是服务器总并发或模型请求上限。提高并发会叠加 runner 内部并发；没有新增自动容量探测；上限不是保证占满的槽位数，实际并行受剩余 P 遍次与 D 批次数约束。校准状态轮询间隔不超过 5 秒，已有更短设置保留。页面展示完成遍数／题数和测量调度累计用时（不含顾问、停机时间；硬中断可能丢失未落盘时段），各执行耗时可能重叠，不能直接相加；耗时预测仍受并发争用影响。
 
@@ -66,6 +66,7 @@ python -m rag_eval.optimizer.cli v4 status --state-dir "$V41_RUN_DIR"
 | 文件 | 作用 |
 |---|---|
 | `calibration.json` | P/D 身份、阶段结果、全 k 方差、实际计时依据、未知量与假设、内容哈希 |
+| `calibration-recovery.json` | 绑定原校准身份的恢复时限；只用于新执行步骤，不增加重试次数 |
 | `proposal.json` | 规则／顾问／用户值、范围、理由、置信度、simulation ID |
 | `proposal.agent.json`、`advisor-intent.json` | 顾问产出和固定截止时间；迟到产出不覆盖回退决策 |
 | `run-config.json`、`resolved-config.json`、`cli-run.json` | 不可变划分／配置及运行身份；冻结中断可以幂等恢复 |
@@ -100,3 +101,23 @@ WSL 约 7.8 GiB。所有 pytest、前端构建、类型检查、浏览器验证�
 CLI `calibrate`（启用顾问时）与 `run --from-proposal` 同样执行角色配置预检；显式 `--no-advisor` 可做纯校准测量。顾问回退新增 `stage` 和 `error_type`；白名单失配使用稳定错误码 `agent_profile_not_allowed` 与可操作说明。其他异常不回显任意原始消息，以免泄漏案例或服务凭据。
 
 旧 fallback 工件不重写、不删除、不自动重试。已完成校准的模型配置身份仍不可修改；需要不同模型配置时按新迭代流程处理，真实重跑须用户授权。不要编辑 calibration.json／proposal.json 绕过恢复约束。
+
+## 部分完成后的校准恢复（2026-11-07）
+
+校准阶段总预算与单个 execution 时限同时生效。默认每个 execution 7200 秒，包含该批次所有分区的排队／准备／生成／评分；内部预留 `max(300秒, 10%时限)` 收尾（极短时限最多预留一半），因此默认分区调度截止点为6480秒。分区还受自身时限与剩余批次时间的较小值约束。48小时阶段预算不会自动放宽2小时的 execution 时限。
+
+新校准向导可设置每批执行时限并在确认页查看。失败校准保留原题单、k、并发、adapter身份及已派发预算；在“恢复时延长执行时限”填写更长秒数并预览确认，或对**原 calibrate 命令**追加：
+
+```bash
+--recovery-execution-timeout-seconds 21600
+```
+
+21600秒是此次40分区现场可采用的保守起点，并非容量保证。根据实际服务吞吐调整，不能把P/D并行时间重复相加。恢复参数必须大于原时限且不超过86400秒；首次在运行锁内写入 `calibration-recovery.json`，绑定原校准身份，之后不可改写。后续重复原命令即可读取该记录。它只改变**之后新建步骤**（恢复重试和剩余P独立遍次）的预算；已登记／已派发步骤按原预算恢复。它不增加重试额度，不重置独立测量计数。未使用的既有infra_retry可继续执行；耗尽仍有截止缺口时保持未完成，不能靠反复点击无限重试。
+
+此次首波观察到的8个并行分区不等于后续峰值：原校准上限8指execution数，每个execution内部parallel=4。k=5时，P首遍完成后剩余4遍可同时派发；若D仍在运行，可有5个execution、最多20个分区重叠。实际并发与吞吐需在服务器核验；恢复保持原并发身份，不在旧工件中直接把8改成4。6小时是每次新执行的上限，不是整段校准的预计完成时间。
+
+截止证据分为批次未启动、分区被截止杀掉、runner记录的partition_deadline。已有官方工件仍须完整校验；健康首测分数保留，截止空槽由同一逻辑尝试的重试补齐。ALCE会对错误／缺失答案计算数值0：有明确截止证据时，此数字保存在原始评分与诊断中，不作为健康模型表现，不把缺题计为0或缩小题单。正常作答／no_answer的有效官方0分仍保留。取消、未知缺工件、评分损坏不能按截止重试绕过校验。
+
+恢复目前沿用整scope执行接口，**健康题可能物理重跑，但新分数不覆盖其首个有效分数**。准备缓存能减少这部分成本，实际命中依赖完整内容键。`preparation-cache.json`顶层`miss`只表示读取时未命中；应看`store.status=stored/already_cached/store_failed`及缓存条目，不能据miss断言未发布。
+
+支持边界：此次`failed/finished_with_errors`有逐分区截止证据，可按上述路径恢复。外层监督器硬超时且`run_state=None`、没有可信逐分区证据时，仍拒绝推断缺失原因；需保留工件进一步处理。本修复不自动补ALCE引用模型评分，不操作封存集，不自动启动服务器运行。

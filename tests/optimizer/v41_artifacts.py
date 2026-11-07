@@ -29,7 +29,7 @@ class ArtifactFactory:
         self.ids = [case['case_id'] for case in self.bundle['cases']]
 
     def make(self, execution, *, statuses=('success', 'success'), values=(.25, .75),
-             errors=None, records=None, source_manifest=None, packages=None):
+             errors=None, records=None, source_manifest=None, packages=None, omit_outputs=()):
         errors, records = errors or {}, records or {}
         run_id = execution + '-1'
         path = self.root / run_id
@@ -48,6 +48,7 @@ class ArtifactFactory:
                 record.update(error_type=errors[index], failed_phase=record.get('failed_phase', 'asking'))
             outputs.append(dict(case_id=task, status=status, prediction=answer,
                                 output_available=bool(answer), product_record=record))
+        outputs = [row for index, row in enumerate(outputs) if index not in omit_outputs]
         output_bytes = ''.join(json.dumps(row) + '\n' for row in outputs).encode()
         (path / 'outputs.jsonl').write_bytes(output_bytes)
         (path / 'planned.jsonl').write_text(''.join(json.dumps(dict(case_id=task)) + '\n' for task in self.ids))

@@ -17,6 +17,11 @@ from .repository import Conflict, now
 from .splits import batches, claim
 
 
+def execution_budget(state, step):
+    """A step's frozen budget; legacy measurements retain their original budget."""
+    return dict(timeout_seconds=step.get('timeout_seconds', state['timeout_seconds']))
+
+
 def stopped(repository, key):
     parts = key.split('/')
     if len(parts) < 3 or parts[0] != 'round':
@@ -120,7 +125,7 @@ def execute_round_action(service, record, *, actor, override=False):
         if stopped(service.repository, state['original_key']):
             return
         service.run(step['candidate_id'], request_key=step['request_key'], batch_id=step['batch_id'],
-                    budget=dict(timeout_seconds=state['timeout_seconds']),
+                    budget=execution_budget(state, step),
                     actor=state.get('step_actors', {}).get(step['request_key'], state['actor']))
     with ThreadPoolExecutor(max_workers=max(1, len(steps))) as pool:
         list(pool.map(launch, steps))
@@ -165,7 +170,7 @@ class RoundMeasurements:
                     # The execution receipt precedes candidate attachment. Do
                     # not depend on the latter surviving a coordinator crash.
                     record = self.service.executions.run_receipt(task_id, job['job_id'], job['state_version'],
-                        receipt['preparation']['preparation_id'], dict(timeout_seconds=state['timeout_seconds']),
+                        receipt['preparation']['preparation_id'], execution_budget(state, step),
                         actor=actor, request_key=key)
                     if record is not None:
                         record = self.service.executions.get(task_id, record['execution_id'])
@@ -180,6 +185,9 @@ class RoundMeasurements:
         with self.repository.connect(write=True) as conn:
             conn.execute('INSERT INTO round_measurements VALUES(?,?) ON CONFLICT(key) DO UPDATE '
                          'SET payload_json=excluded.payload_json', (key, json.dumps(value)))
+
+    def _prepare_execution_step(self, step):
+        """Called once before a new step is persisted; old steps are never changed."""
 
     @contextmanager
     def _lock(self, iteration_id, admission=None):
@@ -576,6 +584,9 @@ class RoundMeasurements:
                 state = self._plan(candidate, tree, kind, storage_key)
                 if not state.get('exhausted'):
                     self._adopt_prepared_retries(state, tree)
+                    for steps in state['generations']:
+                        for step in steps:
+                            self._prepare_execution_step(step)
                 state.update(original_key=key, actor=actor, infra_retry=infra_retry, timeout_seconds=timeout_seconds,
                              override=override, candidate_id=candidate_id, kind=kind, **extra)
                 self._save(storage_key, state)
@@ -591,7 +602,8 @@ class RoundMeasurements:
             actions = state.setdefault('actions', [])
             if len(actions) <= generation:
                 action_id = hashlib.sha256(f'{storage_key}:{generation}'.encode()).hexdigest()[:32]
-                params = dict(timeout_seconds=timeout_seconds)
+                params = dict(timeout_seconds=max((execution_budget(state, step)['timeout_seconds']
+                    for step in state['generations'][generation]), default=timeout_seconds))
                 # Existing verbs: confirmation replays the round footprint (execute_round_action);
                 # a segment consumes its batch exactly like a fresh run, a smoke is a plain node run.
                 verb = {'fresh': 'node-fresh-run', 'segment': 'node-fresh-run',
@@ -645,7 +657,7 @@ class RoundMeasurements:
                 return 'stopped'
             try:
                 self.service.run(step['candidate_id'], request_key=step['request_key'], batch_id=step['batch_id'],
-                                 budget=dict(timeout_seconds=timeout_seconds),
+                                 budget=execution_budget(state, step),
                                  actor=state.get('step_actors', {}).get(step['request_key'], actor),
                                  **(dict(execution_admission=execution_admission) if execution_admission is not None else {}))
                 return None
@@ -720,6 +732,7 @@ class RoundMeasurements:
                             retry_step = next(s for gen in owner['generations'] for s in gen if s['request_key'] == retrykey)
                             state.setdefault('step_actors', {})[retrykey] = owner.get('step_actors', {}).get(retrykey, owner['actor'])
                         else:
+                            self._prepare_execution_step(retry_step)
                             conn.execute('INSERT INTO round_infra_retries VALUES(?,?,?,?,?,?,NULL)',
                                 (tree['id'], step['candidate_id'], attempt['attempt'], root_attempt, number, retrykey))
                         if retrykey not in {s['request_key'] for s in retries}:

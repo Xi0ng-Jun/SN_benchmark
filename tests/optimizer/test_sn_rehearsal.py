@@ -270,8 +270,8 @@ class Rig:
                 return
             time.sleep(TICK)
 
-    def _agents(self):
-        while self.handled < len(self.messenger.commands):
+    def _agents(self, *, limit=None):
+        while self.handled < len(self.messenger.commands) and (limit is None or self.handled < limit):
             command = self.messenger.commands[self.handled]
             self.handled += 1
             text = command['text']

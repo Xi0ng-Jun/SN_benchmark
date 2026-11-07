@@ -68,3 +68,66 @@ def test_infra_retry_does_not_replace_healthy_tasks_or_count_as_remeasurement(ri
         replay = adapter().remeasure_subset(version, 'rest', ids)
     assert replay.attempt_scores == second.attempt_scores
     assert len(rig4.api.service.candidate(seed)['attempts']) == 4
+
+
+@pytest.mark.parametrize("retry_succeeds", [True, False])
+def test_terminal_failed_attempt_retries_without_replacing_healthy_scores(rig4, monkeypatch, retry_succeeds):
+    seed = rig4.tree['root_candidate_id']
+    ids = sorted(rig4.protocol['splits']['validation'])
+    finish = rig4.env['executions']._finish
+    rewritten = set()
+    def finish_with_deadline(eid, **kwargs):
+        if kwargs['state'] == 'finished' and not rewritten:
+            rewritten.add(eid)
+            kwargs.update(state='failed', exit_code=1, error_type='child_exit',
+                          run_state=dict(phase='finished_with_errors'))
+        return finish(eid, **kwargs)
+    monkeypatch.setattr(rig4.env['executions'], '_finish', finish_with_deadline)
+    reader = results.read_execution
+    def partial(views, execution_id, expected):
+        projection = deepcopy(reader(views, execution_id, expected))
+        for task, row in projection['rows'].items():
+            row['score'] = .25 if execution_id in rewritten else .99
+            if (execution_id in rewritten or not retry_succeeds) and task == ids[0]:
+                row.update(score=None, failure_kind='execution_incomplete')
+        return projection
+    monkeypatch.setattr(results, 'read_execution', partial)
+    def adapter():
+        return services_from_operations(rig4.ops, rig4.config, rig4.tree['id'], actor='alice',
+            run_id='terminal-recovery', adapter_settings=dict(eval_poll_interval=.05, infra_retry=1)).adapter
+    from rag_eval.optimizer.v4.measurements import V41Measurements
+    from rag_eval.optimizer.adapter import EvaluationUnavailable
+    infra = V41Measurements._infra
+    def old_failure(self, attempt):
+        if attempt.get('execution_state') == 'failed':
+            raise EvaluationUnavailable('old release failed before retry')
+        return infra(self, attempt)
+    monkeypatch.setattr(V41Measurements, '_infra', old_failure)
+    dispatch = rig4.api.service.run
+    def finish_before_dispatch_returns(*args, **kwargs):
+        result = dispatch(*args, **kwargs)
+        rig4._settle()
+        return result
+    monkeypatch.setattr(rig4.api.service, 'run', finish_before_dispatch_returns)
+    version = Version(seed, metadata=dict(candidate_id=seed))
+    with pytest.raises(EvaluationUnavailable, match='old release'):
+        adapter().evaluate_subset(version, None, 'rest', ids, 1)
+    monkeypatch.setattr(V41Measurements, '_infra', infra)
+    resumed = adapter()
+    resumed._recovery_execution_timeout_seconds = 14400
+    if not retry_succeeds:
+        for _ in range(2):
+            with pytest.raises(EvaluationUnavailable, match='execution_incomplete'):
+                resumed.evaluate_subset(version, None, 'rest', ids, 1)
+        assert len(rig4.api.service.candidate(seed)['attempts']) == 2
+        return
+    measured, _ = resumed.evaluate_subset(version, None, 'rest', ids, 1)
+    replay, _ = resumed.evaluate_subset(version, None, 'rest', ids, 1)
+    second, _ = resumed.evaluate_subset(version, None, 'rest', ids, 2)
+    attempts = rig4.api.service.candidate(seed)['attempts']
+    assert len(attempts) == 3
+    assert [rig4.env['executions'].get(rig4.task_id, a['execution_id'])['budget']['timeout_seconds']
+            for a in attempts] == [7200, 14400, 14400]
+    assert measured.per_task_scores == {task: .99 if task == ids[0] else .25 for task in ids}
+    assert replay.attempt_scores == measured.attempt_scores
+    assert len(measured.attempt_scores) == 1 and len(second.attempt_scores) == 2

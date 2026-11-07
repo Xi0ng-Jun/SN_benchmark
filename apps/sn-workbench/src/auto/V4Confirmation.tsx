@@ -17,6 +17,7 @@ export function V4Confirmation({ preview, busy, onConfirm, onCancel }: {
     {preview.incurs_cost && <>
       <Copy small>此操作会调用执行服务和 Agent，并产生费用。时间预算：{preview.budget_hours} 小时。</Copy>
       {preview.action === 'calibrate' && <Copy small>校准执行并发上限：{String(preview.config?.calibration_concurrency ?? 1)}。这是本次校准的上限，优化阶段并发在建议书中另行确定。</Copy>}
+      {preview.action === 'calibrate' && preview.execution_timeout_seconds != null && <Copy small testID="v41-confirm-timeout">新派发的每个评测批次最多 {preview.execution_timeout_seconds} 秒，包含排队、准备、生成与评分，并预留收尾时间。{preview.recovery_execution_timeout_seconds ? '这是恢复时限，旧执行记录不变。' : ''}</Copy>}
       {preview.agent_profiles && <View testID="v41-confirm-profiles" style={{ gap: 2 }}>
         {Object.entries(preview.agent_profiles).map(([key, value]) => <Copy key={key} small>{parameterLabels['adapter.' + key] ?? key}：{value}</Copy>)}
       </View>}

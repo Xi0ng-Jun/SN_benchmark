@@ -267,3 +267,39 @@ def test_profiles_preflight_resolves_defaults_and_rechecks_confirmation(control,
     response = client.post(url, json=dict(inputs=inputs, confirmation_token=preview.json()['confirmation_token']))
     assert response.status_code == 422
     assert launches == []
+
+
+def test_calibration_recovery_budget_is_confirmed_without_changing_original_input(control, monkeypatch):
+    from rag_eval.optimizer.v4 import calibration_session as session
+    ctl, client, iid, root = control
+    bundle = session._load(root / session.CALIBRATION_FILE)
+    bundle['complete'] = False
+    session._save(root / session.CALIBRATION_FILE, bundle)
+    inputs = dict(time_budget_hours=2, calibration_k=3, adapter={})
+    config = ctl._calibration_input(inputs)
+    ledger_io.atomic_write_json(root / 'calibration-input.json', config)
+    ledger_io.atomic_write_json(root / 'launch.json', dict(inputs=inputs))
+    before = (root / 'calibration-input.json').read_bytes()
+    launches = []
+    monkeypatch.setattr(ctl, '_launch', lambda *args: launches.append(args))
+    url = f'/api/iterations/{iid}/v4/calibrate'
+    body = dict(inputs=inputs, recovery_execution_timeout_seconds=14400)
+    response = client.post(url, json=body)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview['execution_timeout_seconds'] == 14400
+    assert client.post(url, json=dict(body, recovery_execution_timeout_seconds=18000,
+        confirmation_token=preview['confirmation_token'])).status_code == 409
+    assert not launches
+    assert client.post(url, json=dict(body, confirmation_token=preview['confirmation_token'])).status_code == 200
+    assert (root / 'calibration-input.json').read_bytes() == before
+    assert launches[0][-1].recovery_execution_timeout_seconds == 14400
+
+
+def test_new_calibration_accepts_execution_budget_but_not_connection_settings(control):
+    ctl, _, _, _ = control
+    config = ctl._calibration_input(dict(time_budget_hours=48,
+        adapter=dict(execution_timeout_seconds=14400)))
+    assert config['adapter']['execution_timeout_seconds'] == 14400
+    with pytest.raises(ValueError):
+        ctl._calibration_input(dict(time_budget_hours=48, adapter=dict(server_url='untrusted')))

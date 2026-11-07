@@ -10,6 +10,7 @@ export type Forecast = {
   params: Record<string, unknown>;
 };
 export type CalibrationDetail = {
+  execution_timeout_seconds?: number; recovery_execution_timeout_seconds?: number | null;
   complete: boolean; alive?: boolean; elapsed_s?: number | null; phase?: string; launch_inputs?: Record<string, unknown>; inputs?: Record<string, unknown>;
   probe_size?: number; diagnosis_size?: number; completed_stages?: string[];
   calibration_concurrency?: number; probe_completed_k?: number; diagnosis_completed_cases?: number;
@@ -26,6 +27,7 @@ export type ProposalItem = { value: unknown; source: string; reason: string; con
 export type ProposalView = { proposal: { items: Record<string, ProposalItem>; inputs: Record<string, unknown>;
   notes: { advisor?: { status: string; message?: string; reason?: string } } }; forecast: Forecast; frozen: boolean };
 export type Confirmation = { confirmation_token: string; action: string; incurs_cost: boolean; expires_in_seconds: number;
+  execution_timeout_seconds?: number; recovery_execution_timeout_seconds?: number | null;
   agent_profiles?: Record<string, string>;
   config_sha256: string; config?: Record<string, unknown>; sources?: Record<string, string>; budget_hours?: number;
   test_set_authorized?: boolean; spend_budget?: number | null; spend_scope?: string; search_size?: number;

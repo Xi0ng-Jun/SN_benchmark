@@ -569,7 +569,8 @@ class SNAdapter(SystemAdapter):
         pending = dict(calls)
         planned: set[str] = set()
         retries = self._infra_retry * (self.key_generation + 1)
-        settle = 1.25 * self._execution_timeout_seconds * (retries + 1)
+        execution_timeout = getattr(self, '_recovery_execution_timeout_seconds', None) or self._execution_timeout_seconds
+        settle = 1.25 * execution_timeout * (retries + 1)
         deadline = time.monotonic() + max(self._eval_timeout, settle)
         while True:
             for label, (key, call) in list(pending.items()):

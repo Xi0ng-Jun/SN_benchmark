@@ -31,6 +31,7 @@ class Action(BaseModel):
     confirmation_token: str | None = None
     inputs: dict = Field(default_factory=dict)
     retry_failed: bool = False
+    recovery_execution_timeout_seconds: int | None = Field(default=None, strict=True, ge=1, le=86400)
 
 
 class Edit(BaseModel):
@@ -115,8 +116,12 @@ class AutoRunControl:
         if inputs.get('spend_budget') is not None and inputs.get('price_per_1k_tokens') is None:
             raise ValueError('spend_budget needs price_per_1k_tokens')
         adapter = inputs.get('adapter') or {}
-        if set(adapter) - {'analyst_profile', 'implementer_profile', 'reviewer_profile', 'calibrator_profile'}:
-            raise ValueError('Only configured agent profiles may be selected in the browser')
+        if set(adapter) - {'analyst_profile', 'implementer_profile', 'reviewer_profile', 'calibrator_profile',
+                           'execution_timeout_seconds'}:
+            raise ValueError('Only agent profiles and execution timeout may be selected in the browser')
+        if 'execution_timeout_seconds' in adapter and (type(adapter['execution_timeout_seconds']) is not int
+                or not 1 <= adapter['execution_timeout_seconds'] <= 86400):
+            raise ValueError('执行时限必须是 1–86400 秒的整数')
         defaults = self.config.get('optimizer_v4') or {}
         config = dict(defaults, **{k: v for k, v in inputs.items()
                       if k not in ('spend_budget', 'price_per_1k_tokens', 'test_set_authorized', 'adapter')})
@@ -154,6 +159,8 @@ class AutoRunControl:
         if owner and owner['actor'] != self.api.actor:
             raise Conflict('Continue this run using its original operator identity')
         launch = self._read(root, 'launch.json') or {}
+        if command.recovery_execution_timeout_seconds is not None and action != 'calibrate':
+            raise ValueError('恢复执行时限只用于校准')
         if action == 'calibrate':
             if self.busy(root):
                 raise Conflict('An automatic process is already running')
@@ -169,9 +176,16 @@ class AutoRunControl:
             profiles = self._agent_profiles(config.get('adapter'))
             if launch.get('inputs') is None:
                 config['adapter'] = dict(config.get('adapter') or {}, **profiles)
-            payload = dict(config=config, inputs=command.inputs)
+            from ..optimizer.v4.calibration_recovery import configure
+            from ..optimizer.v4.config import ADAPTER_DEFAULTS
+            recovery_timeout = configure(root, command.recovery_execution_timeout_seconds, write=False)
+            timeout = recovery_timeout or config['adapter'].get('execution_timeout_seconds',
+                                                                ADAPTER_DEFAULTS['execution_timeout_seconds'])
+            payload = dict(config=config, inputs=command.inputs, recovery_execution_timeout_seconds=recovery_timeout)
             summary = dict(action=action, config=config, test_set_authorized=bool(command.inputs.get('test_set_authorized')),
-                           agent_profiles=profiles, incurs_cost=True, budget_hours=config['time_budget_hours'])
+                           agent_profiles=profiles, execution_timeout_seconds=timeout,
+                           recovery_execution_timeout_seconds=recovery_timeout,
+                           incurs_cost=True, budget_hours=config['time_budget_hours'])
         elif action in ('run', 'resume'):
             if self.busy(root):
                 raise Conflict('An automatic process is already running')
@@ -251,6 +265,8 @@ class AutoRunControl:
                     auto_runs.register(self.repository, iteration_id, run_id=run_id, state_dir=str(root.resolve()),
                                        actor=self.api.actor, method='method-v4')
                     if action == 'calibrate':
+                        # Only the CLI writes the recovery receipt, after identity
+                        # validation under the run lock (also serializes direct CLI use).
                         ledger_io.atomic_write_json(root / 'calibration-input.json', payload['config'])
                         ledger_io.atomic_write_json(root / 'launch.json', dict(
                             test_set_authorized=bool(command.inputs.get('test_set_authorized')), inputs=command.inputs))
@@ -273,6 +289,8 @@ class AutoRunControl:
             argv += ['--expected-agent-profiles-sha256', expected]
         if action == 'calibrate':
             argv += ['--v4-config', str(root / 'calibration-input.json')]
+            if command.recovery_execution_timeout_seconds is not None:
+                argv += ['--recovery-execution-timeout-seconds', str(command.recovery_execution_timeout_seconds)]
             for key in ('spend_budget', 'price_per_1k_tokens'):
                 if command.inputs.get(key) is not None:
                     argv += ['--' + key.replace('_', '-'), str(command.inputs[key])]
@@ -310,13 +328,21 @@ class AutoRunControl:
         if not path.exists():
             return dict(complete=False, alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='starting' if self.busy(root) else 'not_started')
         bundle = session._load(path)
+        from ..optimizer.v4.calibration_recovery import configure
+        from ..optimizer.v4.config import ADAPTER_DEFAULTS
+        recovery_timeout = configure(root, write=False)
+        execution_limits = dict(recovery_execution_timeout_seconds=recovery_timeout,
+            execution_timeout_seconds=recovery_timeout or bundle['identity'].get('adapter_settings', {}).get(
+                'execution_timeout_seconds', ADAPTER_DEFAULTS['execution_timeout_seconds']))
         if not bundle.get('complete'):
             return dict(complete=False, alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='calibration',
+                        **execution_limits,
                         inputs=bundle['identity']['user_inputs'],
                         **session.scheduling_summary(bundle),
                         probe_size=len(bundle['probe']), diagnosis_size=len(bundle['diagnosis']),
                         completed_stages=list(bundle['results']))
-        return dict(session.public_summary(bundle), alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs)
+        return dict(session.public_summary(bundle), alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs,
+                    **execution_limits)
 
     def read_proposal(self, iteration_id):
         root = self.directory(iteration_id)

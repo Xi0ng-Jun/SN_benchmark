@@ -117,7 +117,7 @@ def calibration_concurrency(state_dir, requested):
 
 
 def run_calibration(adapter, seed, service, iteration_id, actor, state_dir, user_inputs,
-                    adapter_settings=None, history=None, *, concurrency=2):
+                    adapter_settings=None, history=None, *, concurrency=2, recovery_execution_timeout_seconds=None):
     """Called under the run-directory lock. Completed stages are never re-executed."""
     inputs = proposal.normalize_inputs(user_inputs)
     path = Path(state_dir) / CALIBRATION_FILE
@@ -134,6 +134,8 @@ def run_calibration(adapter, seed, service, iteration_id, actor, state_dir, user
     saved = _load(path) if path.exists() else None
     if saved and saved['identity'] != identity:
         raise ValueError('calibration identity differs; use its original inputs and seed')
+    from .calibration_recovery import configure
+    adapter._recovery_execution_timeout_seconds = configure(path.parent, recovery_execution_timeout_seconds)
     if saved and saved.get('complete'):
         # Recover the crash window between the complete calibration and proposal writes.
         if not (path.parent / PROPOSAL_FILE).exists():
