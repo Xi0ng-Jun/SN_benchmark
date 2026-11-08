@@ -53,6 +53,12 @@ class Bridge:
         self.commands.append(copy.deepcopy(command))
         return self.reply(command)
 
+    def preflight(self, command):
+        # Explicit offline bridge seam. Real transport/scope checks have their
+        # own tests; this fixture never accesses a daemon or loads model config.
+        from rag_eval.workbench.creation_bridge import validate_create_command
+        validate_create_command(command)
+
 
 def test_prepare_freezes_server_scope_identity_and_exact_request_key(tmp_path):
     repo, task, bindings, store = setup(tmp_path)

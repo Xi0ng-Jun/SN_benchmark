@@ -139,6 +139,13 @@ class CreationAPI:
     def profiles(self):
         return copy.deepcopy(self._profiles)
 
+    def preflight(self, task_id, profile_id):
+        from .agent_preflight import AgentPreflightError
+        self._task_scope(task_id)
+        if not callable(getattr(self.bridge, 'preflight', None)):
+            raise AgentPreflightError('BRIDGE_UNAVAILABLE')
+        self.bridge.preflight(self.store.preflight_command(task_id, profile_id))
+
     def _task_scope(self, task_id):
         with self.repository.connect() as conn:
             task = self.repository._require(conn, 'tasks', task_id)

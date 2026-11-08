@@ -171,8 +171,7 @@ class RoundOperations:
         if stored_role == 'implementer' and hypothesis_id is None and candidate_id:
             hypothesis_id = self.service.candidate(candidate_id)['proposal_id']
         creation_key = self._key('agent-create', key)
-        prior = next((i for i in self.creations.store.list(task_id, actor=actor)
-                      if i['request_key'] == creation_key), None)
+        prior = self.creations.store.find_request(task_id, creation_key, actor=actor)
         intent = prior or self.creations.store.prepare(task_id, profile, actor=actor,
                     request_key=creation_key, role=stored_role, candidate_id=None if scope == 'iteration' else candidate_id,
                     hypothesis_id=hypothesis_id, scope=scope, **({'brief': brief} if brief else {}))
@@ -182,8 +181,10 @@ class RoundOperations:
             intent = self.creations.store.attempt(task_id, intent['id'], actor=actor,
                                                   bridge=self.creations.bridge)
         if intent['status'] != 'created':
+            result = (intent.get('envelope') or {}).get('result') or {}
             return dict(status='unknown' if intent['status'] == 'unknown' else 'failed',
-                        reason='agent_creation_' + intent['status'])
+                        reason='agent_creation_' + intent['status'], intent_id=intent['id'],
+                        code=result.get('code'), cause=result.get('cause'))
         session_id = intent['session_id']
         message_identity = key if message_stage == 'initial' else key + '/followup/' + message_stage
         message_key = self._key('agent-message', message_identity)

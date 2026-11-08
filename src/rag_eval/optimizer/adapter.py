@@ -93,6 +93,10 @@ class EvaluationUnavailable(RuntimeError):
     """
 
 
+class AgentRequestFailed(RuntimeError):
+    """A durable Agent request failed; measurement retries cannot repair it."""
+
+
 class BudgetExhausted(EvaluationUnavailable):
     """The frozen run budget does not admit the requested evaluation."""
 

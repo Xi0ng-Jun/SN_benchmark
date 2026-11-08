@@ -158,16 +158,16 @@ def cmd_run(args) -> int:
     if args.retry_failed:
         if st is None or st.get("halt_reason") != "process_failure":
             raise UsageError("--retry-failed is only allowed after a process_failure halt")
+        if st.get('failure_kind') == 'agent_request':
+            raise UsageError('Agent failure does not need new measurement keys; inspect/recover the Agent request first')
         key_generation = int(st.get("key_generation", 0)) + 1
     if st is not None and st.get("halt_reason") and st["halt_reason"] not in FAILURE_HALTS:
         raise UsageError(f"the run already stopped ({st['halt_reason']}); next step: v4 test")
 
     services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
                               adapter_settings=_settings(loaded.adapter_settings))
-    if getattr(args, '_frozen_config', None) or args.expected_agent_profiles_sha256:
-        from .agent_profiles import preflight
-        preflight(services.adapter, services.task_id, loaded.adapter_settings,
-                  ('analyst', 'implementer', 'reviewer'), expected=args.expected_agent_profiles_sha256)
+    from .startup import preflight
+    preflight(services, args, loaded.adapter_settings, ('analyst', 'implementer', 'reviewer'))
     adapter = services.adapter
     if not services.writable:
         raise UsageError("workbench config does not set task_worktrees.create_candidates=true")
@@ -250,7 +250,9 @@ def _run_locked(args, loaded, services, seed, search, validation, test_ids, stat
     if reason == STOPPED:
         print("stopped by SIGTERM: executions cancelled, Agents archived (see the session's cancellation receipts)")
     if reason == "process_failure":
-        print("process failure: fix the cause, then rerun (or --retry-failed for new measurement keys)")
+        print("Agent failure: inspect the request; recover-agent-creation only supports confirmed pre-dispatch refusals"
+              if run.failure_kind == 'agent_request' else
+              "process failure: fix the cause, then rerun (or --retry-failed for new measurement keys)")
     elif reason not in FAILURE_HALTS:
         print("next: v4 test (preview), then v4 test --confirm --budget <file> with the user's consent")
     return EXIT_HALTED if reason in FAILURE_HALTS else EXIT_OK
@@ -279,8 +281,8 @@ def cmd_calibrate(args):
     services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
                               adapter_settings=loaded.adapter_settings)
     if not args.no_advisor or args.expected_agent_profiles_sha256:
-        from .agent_profiles import preflight
-        preflight(services.adapter, services.task_id, loaded.adapter_settings, expected=args.expected_agent_profiles_sha256)
+        from .startup import preflight
+        preflight(services, args, loaded.adapter_settings)
     root = Path(args.state_dir)
     root.mkdir(parents=True, exist_ok=True)
     with run_view.hold_run_lock(root):
@@ -352,9 +354,8 @@ def cmd_calibrated_run(args):
     settings = bundle['identity']['adapter_settings']
     services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
                               adapter_settings=settings)
-    from .agent_profiles import preflight
-    preflight(services.adapter, services.task_id, settings, ('analyst', 'implementer', 'reviewer'),
-              expected=args.expected_agent_profiles_sha256)
+    from .startup import preflight
+    preflight(services, args, settings, ('analyst', 'implementer', 'reviewer'))
     with run_view.hold_run_lock(root):
         _bind(services, args)
         seed = services.adapter.version_for(services.root_candidate_id)
@@ -492,6 +493,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument('--from-proposal', help='freeze a completed calibration proposal and run without recalibrating')
     run.add_argument("--retry-failed", action="store_true", help="after process_failure: new measurement keys")
     run.add_argument("--no-test-set", action="store_true", help="rehearsal: run without an endpoint")
+    recovery = sub.add_parser('recover-agent-creation', parents=[common],
+        help='preview recovery of the current analyst pre-dispatch refusal; never creates an Agent')
+    recovery.add_argument('--intent-id', required=True)
+    recovery.add_argument('--confirm', action='store_true', help='prepare one linked replacement; resume separately')
     calibration = sub.add_parser('calibrate', parents=[common], help='measure seed P/D on a deferred iteration')
     calibration.add_argument('--v4-config', required=True)
     calibration.add_argument('--calibration-k', type=int, choices=range(2, 6))
@@ -535,16 +540,23 @@ def cmd_figure(args) -> int:
     return EXIT_OK
 
 
+def cmd_recover_agent_creation(args):
+    from .agent_recovery import command
+    return command(args)
+
+
 COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cmd_figure,
+            'recover-agent-creation': cmd_recover_agent_creation,
             'calibrate': cmd_calibrate, 'proposal': cmd_proposal}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     from rag_eval.workbench.agent_creations import CreationProfileUnavailable
+    from rag_eval.workbench.agent_preflight import AgentPreflightError
     args = build_parser().parse_args(argv)
     try:
         return COMMANDS[args.command](args)
-    except (UsageError, CreationProfileUnavailable) as exc:
+    except (UsageError, CreationProfileUnavailable, AgentPreflightError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except Exception:  # noqa: BLE001

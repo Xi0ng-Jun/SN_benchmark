@@ -9,7 +9,9 @@ export type Forecast = {
   assumptions: { name: string; value: unknown; source: string }[];
   params: Record<string, unknown>;
 };
+export type StartupError = { code: string; message: string; command: string; at: number };
 export type CalibrationDetail = {
+  startup_error?: StartupError | null;
   execution_timeout_seconds?: number; recovery_execution_timeout_seconds?: number | null;
   complete: boolean; alive?: boolean; elapsed_s?: number | null; phase?: string; launch_inputs?: Record<string, unknown>; inputs?: Record<string, unknown>;
   probe_size?: number; diagnosis_size?: number; completed_stages?: string[];

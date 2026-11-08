@@ -157,6 +157,9 @@ class _FakeCreations:
     def list(self, task_id, *, actor):
         return [i for i in self.intents if i["actor"] == actor]
 
+    def find_request(self, task_id, request_key, *, actor):
+        return next((i for i in self.list(task_id, actor=actor) if i['request_key'] == request_key), None)
+
 
 class _FakeRoundOps:
     def __init__(self, hypotheses):

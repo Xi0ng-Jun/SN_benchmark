@@ -20,7 +20,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-from .adapter import (BudgetExhausted, Card, Diff, EvalResult, EvaluationCancelled, EvaluationUnavailable, Predicate,
+from .adapter import (AgentRequestFailed, BudgetExhausted, Card, Diff, EvalResult, EvaluationCancelled, EvaluationUnavailable, Predicate,
                       SmokeResult, SystemAdapter, Version)
 
 
@@ -283,8 +283,7 @@ class SNAdapter(SystemAdapter):
             if session_id is None:
                 creation_key = ops._key("agent-create", key)
                 task_id = self._config.get("task_id")
-                intent = next((r for r in ops.creations.store.list(task_id, actor=ops._agent_actor(key))
-                               if r["request_key"] == creation_key), {})
+                intent = ops.creations.store.find_request(task_id, creation_key, actor=ops._agent_actor(key)) or {}
                 session_id = intent.get("session_id")
             if not session_id:
                 self.cancellation_report.append(dict(key=key, status="remote_creation_unknown"))
@@ -1344,8 +1343,7 @@ class SNAdapter(SystemAdapter):
         ops = self._round_ops
         creation_key = ops._key("agent-create", key)
         actor = ops._agent_actor(key)
-        intent = next((i for i in ops.creations.store.list(task_id, actor=actor)
-                       if i["request_key"] == creation_key), None)
+        intent = ops.creations.store.find_request(task_id, creation_key, actor=actor)
         if intent is None:
             raise RuntimeError(f"analyst Agent creation intent for {key!r} not found after dispatch")
         return _instant(intent["prepared_at"])
@@ -1544,6 +1542,23 @@ class SNAdapter(SystemAdapter):
                      budget=self._analyst_view_budget)
         return head + views, stats
 
+    def _agent_call(self, role, candidate_id, call):
+        try:
+            return self._round_ops.agent(role, candidate_id, **call)
+        except ValueError as exc:
+            # Store authorization/validation can change after preflight. Keep
+            # the request durable and expose a bounded error, never private config.
+            ops, suffix = self._round_ops, ''
+            try:
+                owner = ops._get(ops._key('agent-actor', call['key'])) or {}
+                intent = ops.creations.store.find_request(self._config['task_id'],
+                    ops._key('agent-create', call['key']), actor=owner.get('actor'))
+                if intent:
+                    suffix = f" intent_id={intent['id']}"
+            except (ValueError, KeyError):
+                pass
+            raise AgentRequestFailed(f'{role} AGENT_REQUEST_REFUSED ({type(exc).__name__}){suffix}') from exc
+
     def _poll_agent(self, role: str, candidate_id: Optional[str], call: dict) -> dict:
         """Call ``RoundOperations.agent`` with one key until the agent is idle."""
         self.check_runtime()
@@ -1551,7 +1566,7 @@ class SNAdapter(SystemAdapter):
         if self._runtime_remaining is not None:
             with self._agent_requests_lock:
                 self._agent_requests.setdefault(key, None)
-        result = self._round_ops.agent(role, candidate_id, **call)
+        result = self._agent_call(role, candidate_id, call)
         self._track_agent(key, result)
         deadline = time.monotonic() + self._agent_timeout
         wait_for_running = self._wait_for_running and self._runtime_remaining is not None
@@ -1578,15 +1593,17 @@ class SNAdapter(SystemAdapter):
                     f"{role} agent {reason} (key={call['key']!r})"
                 )
             self._runtime_wait(self._agent_poll_interval)
-            result = self._round_ops.agent(role, candidate_id, **call)
+            result = self._agent_call(role, candidate_id, call)
             self._track_agent(key, result)
         if self._runtime_remaining is not None and result.get('status') == 'idle':
             with self._agent_requests_lock:
                 self._agent_requests.pop(key, None)
         if result.get("status") != "idle":
-            raise RuntimeError(
+            raise AgentRequestFailed(
                 f"{role} agent ended with status {result.get('status')!r}: "
                 f"{result.get('reason', 'no reason given')}"
+                + (f" ({result['code']})" if result.get('code') else '')
+                + (f" intent_id={result['intent_id']}" if result.get('intent_id') else '')
             )
         return result
 

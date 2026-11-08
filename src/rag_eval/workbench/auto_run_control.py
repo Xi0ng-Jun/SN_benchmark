@@ -60,6 +60,7 @@ class AutoRunControl:
     def __init__(self, api, config):
         self.api, self.repository, self.config = api, api.repository, config
         self.root = self.repository.root / 'automatic-v41'
+        self.creation_api = None  # wired by create_app; same store/bridge as real dispatch
 
     def directory(self, iteration_id):
         self.api._scope(iteration_id=iteration_id)
@@ -218,6 +219,10 @@ class AutoRunControl:
         payload.update(iteration_id=iteration_id, actor=self.api.actor, action=action,
                        root_candidate=tree['root_candidate_id'])
         if action in ('calibrate', 'run', 'resume'):
+            from .agent_preflight import AgentPreflightError
+            if self.creation_api is None:
+                raise AgentPreflightError('BRIDGE_UNAVAILABLE')
+            self.creation_api.preflight(tree['task_id'], next(iter(profiles.values())))
             # Bind the confirmed IDs to their actual server definitions without
             # exposing provider settings or credentials in the public preview.
             from ..optimizer.v4.agent_profiles import binding_digest
@@ -300,6 +305,8 @@ class AutoRunControl:
                 argv += ['--no-test-set']
             if command.retry_failed:
                 argv += ['--retry-failed']
+        from ..optimizer.v4.startup import clear
+        clear(root)  # before spawn: never remove a fast child's new failure receipt
         with (root / 'process.log').open('ab') as log:
             child = subprocess.Popen(argv, cwd=Path(__file__).resolve().parents[3],
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
@@ -325,8 +332,10 @@ class AutoRunControl:
         launch_inputs = (self._read(root, 'launch.json') or {}).get('inputs')
         process = self.process(root)
         elapsed_s = max(0, time.time() - process['started_at']) if process and process.get('started_at') else None
+        from ..optimizer.v4.startup import read as read_startup_error
+        startup_error = read_startup_error(root, auto_runs.binding(self.repository, iteration_id), alive=self.busy(root))
         if not path.exists():
-            return dict(complete=False, alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='starting' if self.busy(root) else 'not_started')
+            return dict(complete=False, alive=self.busy(root), startup_error=startup_error, elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='starting' if self.busy(root) else 'not_started')
         bundle = session._load(path)
         from ..optimizer.v4.calibration_recovery import configure
         from ..optimizer.v4.config import ADAPTER_DEFAULTS
@@ -335,13 +344,13 @@ class AutoRunControl:
             execution_timeout_seconds=recovery_timeout or bundle['identity'].get('adapter_settings', {}).get(
                 'execution_timeout_seconds', ADAPTER_DEFAULTS['execution_timeout_seconds']))
         if not bundle.get('complete'):
-            return dict(complete=False, alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='calibration',
+            return dict(complete=False, alive=self.busy(root), startup_error=startup_error, elapsed_s=elapsed_s, launch_inputs=launch_inputs, phase='calibration',
                         **execution_limits,
                         inputs=bundle['identity']['user_inputs'],
                         **session.scheduling_summary(bundle),
                         probe_size=len(bundle['probe']), diagnosis_size=len(bundle['diagnosis']),
                         completed_stages=list(bundle['results']))
-        return dict(session.public_summary(bundle), alive=self.busy(root), elapsed_s=elapsed_s, launch_inputs=launch_inputs,
+        return dict(session.public_summary(bundle), alive=self.busy(root), startup_error=startup_error, elapsed_s=elapsed_s, launch_inputs=launch_inputs,
                     **execution_limits)
 
     def read_proposal(self, iteration_id):

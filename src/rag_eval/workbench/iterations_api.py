@@ -339,7 +339,7 @@ class IterationAPI:
             if bound.get('method') == 'method-v4':
                 from ..optimizer.v4.run_view import read_run as read_v4
                 from ..optimizer.run_view import run_alive
-                view = read_v4(bound['state_dir'], alive=run_alive(bound['state_dir']))
+                view = read_v4(bound['state_dir'], alive=run_alive(bound['state_dir']), binding=bound)
                 for key, value in (('run_id', bound['run_id']), ('iteration_id', iteration_id), ('actor', bound['actor'])):
                     if view['run'].get(key) is None:
                         view['run'][key] = value

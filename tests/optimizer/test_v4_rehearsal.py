@@ -150,10 +150,17 @@ class V4Rig(Rig):
                          calibration_k if candidate['id'] == self.tree['root_candidate_id'] else 2)
                 assert len(attempts) <= limit, (candidate['id'], scope, len(attempts))
                 assert len({a['execution_id'] for a in attempts}) == len(attempts)
-                # A successful budget stop cancels unused speculative diagnosis;
-                # committed validation/remeasurement executions must finish.
+                # A budget stop can interrupt speculative diagnosis after job
+                # preparation but before dispatch. Such a receipt has no execution
+                # to finish/cancel; actual validation/remeasurement must finish.
                 allowed = {'finished', 'cancelled'} if str(scope).startswith('subset:diag:') else {'finished'}
-                assert all(a['execution_state'] in allowed for a in attempts), (scope, attempts)
+                for attempt in attempts:
+                    if str(scope).startswith('subset:diag:') and attempt.get('execution_id') is None:
+                        assert attempt.get('execution_state') is None
+                        assert attempt.get('job_id') and attempt.get('preparation_id')
+                        assert self.env['executions'].latest_for_job(self.task_id, attempt['job_id']) is None
+                    else:
+                        assert attempt['execution_state'] in allowed, (scope, attempts)
 
     def state4(self):
         return json.loads((self.run_dir / STATE_FILE).read_text())

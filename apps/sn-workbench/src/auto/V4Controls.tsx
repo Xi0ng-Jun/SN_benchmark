@@ -14,7 +14,7 @@ export function V4Controls({ view, onRefresh }: { view: V4RunView; onRefresh: ()
   const base = controlPath(view.run.iteration_id);
   const request = async (action: string, confirmation?: Confirmation) => {
     setBusy(true); setError('');
-    const retry = confirmation ? requestedRetry : view.next_action === 'retry';
+    const retry = confirmation ? requestedRetry : view.next_action === 'retry' && view.progress?.failure_kind !== 'agent_request';
     try {
       const result = await api<Confirmation>(base + '/run/' + action, { retry_failed: retry, ...(confirmation ? { confirmation_token: confirmation.confirmation_token } : {}) });
       if (confirmation) { setPreview(null); onRefresh(); } else { setRequestedRetry(retry); setPreview(result); }

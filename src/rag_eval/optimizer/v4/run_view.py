@@ -239,6 +239,7 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
                     round=(state.get("current_round") or {}).get("round"),
                     adopted=max(0, len(lineage) - 1), candidates=len(records), stage_counts=stage_counts,
                     no_adoption=state.get("no_adoption", 0), failure_detail=state.get("failure_detail"),
+                    failure_kind=state.get('failure_kind'),
                     run_failures=state.get("run_failures", 0),
                     run_failures_limit=resolved.get("max_consecutive_run_failures"),
                     elapsed_s=state.get("elapsed_s"), budget_s=budget_s, stop_reason=state.get("stop_reason"),
@@ -262,13 +263,15 @@ def project(state: Optional[dict], *, identity: Optional[dict] = None, ledger: O
                 deviations=(ledger or {}).get("deviations") or [])
 
 
-def read_run(state_dir: str | Path, *, alive: bool) -> dict:
+def read_run(state_dir: str | Path, *, alive: bool, binding=None) -> dict:
     from ..run_view import IDENTITY_FILE, _optional_json
     from .loop import LEDGER_FILE, STATE_FILE
     state_dir = Path(state_dir)
     view = project(_optional_json(state_dir / STATE_FILE), identity=_optional_json(state_dir / IDENTITY_FILE),
                    ledger=_optional_json(state_dir / LEDGER_FILE), endpoint=_optional_json(state_dir / ENDPOINT_FILE),
                    alive=alive)
+    from .startup import read as startup_error
+    view['startup_error'] = startup_error(state_dir, binding or _optional_json(state_dir / IDENTITY_FILE), alive=alive)
     from .calibration_session import CALIBRATION_FILE, load_bundle, public_summary
     if (state_dir / CALIBRATION_FILE).exists():
         try:

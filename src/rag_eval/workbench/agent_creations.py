@@ -17,6 +17,13 @@ BRIEF_V3 = 'method-v3'
 # method-v4: analyst / implementer briefs of a v4 run, and the reviewer (one evidence file in, one verdict file out).
 BRIEF_V4 = 'method-v4'
 
+# These receipts prove refusal before createAgent. Identity conflicts and unknown
+# outcomes need investigation, not a new UUID masquerading as a retry.
+RETRYABLE_CREATION_CODES = frozenset({
+    'SCOPE_MISMATCH', 'WORKSPACE_NOT_FOUND', 'WORKSPACE_UNAVAILABLE',
+    'BRIDGE_UNAVAILABLE', 'NOT_CONNECTED', 'CONNECTION_UNAVAILABLE', 'CONNECT_FAILED',
+})
+
 
 class CreationProfileUnavailable(ValueError):
     """Safe, stable category; never carries provider configuration or credentials."""
@@ -72,6 +79,9 @@ class AgentCreationStore:
                 prepared_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
                 UNIQUE(task_id,actor,request_key)
             )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS agent_creation_retries(
+                predecessor_id TEXT PRIMARY KEY REFERENCES agent_creation_intents(id),
+                successor_id TEXT NOT NULL UNIQUE REFERENCES agent_creation_intents(id))''')
 
     @staticmethod
     def _record(row):
@@ -128,7 +138,7 @@ class AgentCreationStore:
         return validate_create_command(command)
 
     def prepare(self, task_id, profile_id, *, actor, request_key, title=None, role=None, hypothesis_id=None,
-                candidate_id=None, scope=None, brief=None):
+                candidate_id=None, scope=None, brief=None, _retry_of=None):
         task_id = _opaque(task_id, 'task identity')
         profile_id = _opaque(profile_id, 'creation profile')
         actor = _opaque(actor, 'actor')
@@ -169,6 +179,17 @@ class AgentCreationStore:
         repo = self.repository
         with repo.connect(write=True) as conn:
             task = repo._require(conn, 'tasks', task_id)
+            if _retry_of is not None:
+                _, old = self._scope(conn, task_id, _retry_of, actor)
+                self._require_retryable(old)
+                linked = conn.execute('SELECT successor_id FROM agent_creation_retries WHERE predecessor_id=?',
+                                      (_retry_of,)).fetchone()
+                if linked:
+                    return self._latest(conn, task_id, linked['successor_id'], actor)
+                old_payload = json.loads(conn.execute('SELECT payload FROM agent_creation_intents WHERE id=?',
+                                                     (_retry_of,)).fetchone()['payload'])
+                if payload != old_payload or request_key != 'creation-retry:' + _retry_of:
+                    raise Conflict('Creation retry must preserve the original request payload')
             if role == 'calibrator':
                 if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='auto_runs'").fetchone():
                     raise ValueError('calibrator requires an automatic run')
@@ -179,6 +200,8 @@ class AgentCreationStore:
             prior = conn.execute('SELECT * FROM agent_creation_intents WHERE task_id=? AND actor=? AND request_key=?',
                                  (task_id, actor, request_key)).fetchone()
             if prior is not None:
+                if _retry_of is not None:
+                    raise Conflict('Creation retry key exists without its recovery link')
                 if json.loads(prior['payload']) != payload:
                     raise Conflict('Creation request key was already used with different content')
                 return self._record(prior)
@@ -223,13 +246,69 @@ class AgentCreationStore:
                          **({'role': role, 'hypothesis_id': hypothesis_id} if role else {}),
                          **({'candidate_id': candidate_id} if candidate_id else {}),
                          **({'scope': scope} if scope else {})})
+            if _retry_of is not None:
+                conn.execute('INSERT INTO agent_creation_retries VALUES(?,?)', (_retry_of, intent_id))
+                repo._event(conn, task_id, 'agent.creation.retry_prepared', intent_id,
+                            dict(predecessor_id=_retry_of, actor=actor))
             return self._scope(conn, task_id, intent_id, actor)[1]
+
+    @staticmethod
+    def _require_retryable(intent):
+        from .creation_bridge import validate_create_envelope
+        if intent['status'] != 'not_attempted' or intent.get('session_id'):
+            raise Conflict('Only a confirmed pre-dispatch refusal can be retried')
+        try:
+            result = validate_create_envelope(intent['envelope'], intent['command'])['result']
+        except ValueError:
+            raise Conflict('Creation refusal has no valid receipt') from None
+        if result['status'] != 'not_attempted' or result['code'] not in RETRYABLE_CREATION_CODES:
+            raise Conflict('Creation refusal requires investigation; automatic replay is forbidden')
+
+    def retry_not_attempted(self, task_id, intent_id, *, actor):
+        """Explicitly prepare one successor, with fresh authorization; never dispatch here.
+
+        The old receipt and request key remain immutable. Preparation and linking
+        share one transaction, so concurrent or repeated confirmations converge.
+        """
+        old = self.get(task_id, intent_id, actor=actor)
+        self._require_retryable(old)
+        return self.prepare(task_id, old['profile_id'], actor=actor,
+            request_key='creation-retry:' + intent_id, _retry_of=intent_id,
+            **{key: old.get(key) for key in ('title', 'role', 'hypothesis_id', 'candidate_id', 'scope', 'brief')})
+
+    def _latest(self, conn, task_id, intent_id, actor):
+        seen = set()
+        while intent_id not in seen:
+            seen.add(intent_id)
+            _, intent = self._scope(conn, task_id, intent_id, actor)
+            linked = conn.execute('SELECT successor_id FROM agent_creation_retries WHERE predecessor_id=?',
+                                  (intent_id,)).fetchone()
+            if not linked:
+                return intent
+            intent_id = linked['successor_id']
+        raise Conflict('Creation recovery chain contains a cycle')
+
+    def find_request(self, task_id, request_key, *, actor):
+        """Resolve the effective receipt for dispatch, cancellation and analysis."""
+        actor = _opaque(actor, 'actor')
+        with self.repository.connect() as conn:
+            row = conn.execute('SELECT id FROM agent_creation_intents WHERE task_id=? AND actor=? AND request_key=?',
+                               (task_id, actor, request_key)).fetchone()
+            return self._latest(conn, task_id, row['id'], actor) if row else None
 
     def require_profile(self, task_id, profile_id):
         """Read-only preflight using the same workspace authorization as dispatch."""
         with self.repository.connect() as conn:
             task = self.repository._require(conn, 'tasks', task_id)
             require_profile_binding(self._bindings.get(task['workspace_id']), profile_id)
+
+    def preflight_command(self, task_id, profile_id, *, role='analyst', candidate_id=None, hypothesis_id=None):
+        """Construct the real authorized scope without persisting or creating an Agent."""
+        with self.repository.connect() as conn:
+            task = self.repository._require(conn, 'tasks', task_id)
+            return self._command(conn, task, profile_id, None,
+                '00000000-0000-4000-8000-000000000000', 'read-only-preflight',
+                role, hypothesis_id, candidate_id)
 
     def get(self, task_id, intent_id, *, actor):
         actor = _opaque(actor, 'actor')

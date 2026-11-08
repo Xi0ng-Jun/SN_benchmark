@@ -65,10 +65,12 @@ export type V4Endpoint = { status: string; metric: string | null; n: number | nu
   delta_test: number | null; ci95: [number, number] | null; confirmed: boolean; conclusion: string; deploy: string | null;
   points: V4EndpointPoint[]; warnings: string[] };
 export type V4Progress = { rounds_finished: number; round: number | null; adopted: number; candidates: number;
+  failure_detail?: string | null; failure_kind?: string | null;
   stage_counts: Record<string, number>; no_adoption: number; no_adoption_limit: number | null; run_failures: number;
   run_failures_limit: number | null; elapsed_s: number | null; budget_s: number | null; stop_reason: string | null;
   key_generation: number; search_size: number; validation_size: number; test_size: number | null; families: number | null };
 export type V4RunView = {
+  startup_error?: import('./v41control').StartupError | null;
   calibration_detail?: CalibrationDetail | null; forecast?: Forecast | null; parameter_sources?: Record<string, string> | null;
   schema_version: number; method: 'v4';
   run: { method: 'v4'; run_id: string | null; iteration_id: string | null; actor: string | null; config_sha256: string | null;
@@ -96,7 +98,7 @@ export const v4HaltLabels: Record<string, string> = {
 };
 export const v4ActionTexts: Record<V4NextAction, { title: string; detail: string }> = {
   resume: { title: '进程已退出，运行没有结束', detail: '点击预览续跑，确认后恢复原配置；也可使用原命令。已决定的候选不会重做。' },
-  retry: { title: '流程故障，等你修复', detail: '查清原因后点击预览续跑，确认重试；也可在原命令中加 --retry-failed。' },
+  retry: { title: '流程故障，等你修复', detail: '查清原因后预览续跑。Agent 创建故障需先修复请求；测量故障才使用 --retry-failed。' },
   budget: { title: '花费预算用尽，等你决定', detail: '检查费用记录与冻结预算；配置冻结后不能在运行中修改。终评需要另行授权。' },
   test: { title: '下一步：测试集评测（只做一次）', detail: '先运行 v4 test 预览节点集；经用户同意后再加 --confirm --budget <文件>。' },
   review: { title: '测试集已评测', detail: '结论和部署节点见下方“终点”。测试集已作废，下次运行需要新的测试集。' },

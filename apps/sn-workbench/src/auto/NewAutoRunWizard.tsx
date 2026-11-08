@@ -133,6 +133,7 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
   const inputLocked = locked || !!calibration.data?.launch_inputs;
   return <View testID="v41-wizard" style={{ gap: 14 }}>
     <Copy>自动优化 · 目标与预算 → 校准 → 建议 → 确认启动</Copy>
+    {!!calibration.data?.startup_error && <Copy testID="v41-startup-error" small style={{ color: theme.error }}>{calibration.data.startup_error.message}。本次启动已退出，请修复后重新预览。</Copy>}
     {preview ? <V4Confirmation preview={preview.value} busy={busy} onConfirm={confirm} onCancel={() => setPreview(null)} /> : !calibration.data ? <Copy small muted>{calibration.error ?? '读取校准状态…'}</Copy> : !ready ? <>
       <Copy small muted>题池与起点已登记，主指标沿用输入的官方评分协议。先测种子的噪声和耗时，再决定搜索／验证划分。</Copy>
       <Field label="时间预算（小时）" value={hours} onChange={setHours} editable={!inputLocked} testID="v41-hours" />

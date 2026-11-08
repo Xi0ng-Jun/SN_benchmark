@@ -61,6 +61,11 @@ function Status({ view }: { view: V4RunView }) {
       <Text style={{ fontSize: 13, lineHeight: 20, fontWeight: '500', color: ['resume', 'retry', 'budget'].includes(action) ? theme.warning : theme.text }}>{v4ActionTexts[action].title}</Text>
       <Copy small muted>{v4ActionTexts[action].detail}</Copy>
     </View>}
+    {!!view.progress && !!view.startup_error && <Copy testID="v4-startup-error" small style={{ color: theme.error }}>{view.startup_error.message}。本次启动已退出，请修复后重新预览。</Copy>}
+    {!!view.progress?.failure_detail && <View testID="v4-failure-detail" style={{ gap: 4 }}>
+      <Copy small style={{ color: theme.error }}>{view.progress.failure_detail}</Copy>
+      {view.progress.failure_kind === 'agent_request' && <Copy small muted>Agent 请求失败；已完成的测量已保留。请先核查创建或消息回执，再续跑。</Copy>}
+    </View>}
     {run.status === 'halted' && run.halt_reason !== 'process_failure' && run.halt_reason !== 'budget_exhausted' &&
       <Copy small muted>停机原因只说明这次运行为什么结束，不代表改进空间已经用尽。</Copy>}
   </View>;

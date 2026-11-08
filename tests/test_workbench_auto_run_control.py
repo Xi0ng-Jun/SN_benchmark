@@ -32,6 +32,13 @@ def control(calibration_env, tmp_path):
     config.write_text('{}')
     controller = AutoRunControl(api, dict(_config_path=str(config), agent_creation=dict(
         workspaceId='test-workspace', profiles={'pi-flash': dict(provider='codex/test')})))
+    from rag_eval.workbench.creation_api import CreationAPI
+    from test_workbench_agent_creations import Bridge, created
+    with service.repository.connect() as conn:
+        task = service.repository._require(conn, 'tasks', tree['task_id'])
+        workspace = service.repository._require(conn, 'workspaces', task['workspace_id'])
+    controller.creation_api = CreationAPI(service.repository, workspace, controller.config,
+                                          actor='alice', bridge=Bridge(created))
     app = FastAPI()
     app.include_router(controller.router())
     @app.exception_handler(Conflict)
@@ -87,6 +94,25 @@ def test_readonly_server_refuses_every_write_before_launch(control, monkeypatch)
         response = client.post(f'/api/iterations/{iid}/v4/{route}', json={})
         assert response.status_code in (409, 422), response.text
     assert client.patch(f'/api/iterations/{iid}/v4/proposal', json=dict(key='b', value=1)).status_code == 422
+
+
+def test_real_scope_is_checked_at_preview_and_again_before_launch(control, monkeypatch):
+    from rag_eval.workbench.agent_preflight import AgentPreflightError
+    ctl, client, iid, root = control
+    url = f'/api/iterations/{iid}/v4'
+    launches, commands = [], []
+    monkeypatch.setattr(ctl, '_launch', lambda *a: launches.append(a))
+    monkeypatch.setattr(ctl.creation_api.bridge, 'preflight', lambda command: commands.append(command))
+    preview = client.post(url + '/run/preview', json={}).json()
+    assert commands[0]['workspaceId'] == ctl.config['agent_creation']['workspaceId']
+    with ctl.repository.connect() as conn:
+        task = ctl.repository._require(conn, 'tasks', ctl.api.service.iteration_record(iid)['task_id'])
+        expected = ctl.repository._require(conn, 'workspaces', task['workspace_id'])['location']
+    assert commands[0]['expectedCwd'] == expected
+    monkeypatch.setattr(ctl.creation_api.bridge, 'preflight', lambda _: (_ for _ in ()).throw(AgentPreflightError('SCOPE_MISMATCH')))
+    refused = client.post(url + '/run', json=dict(confirmation_token=preview['confirmation_token']))
+    assert refused.status_code == 422 and 'SCOPE_MISMATCH' in refused.text
+    assert not launches and not ledger_io.read_json(root / 'confirmation.json')['consumed']
 
 
 def test_calibration_public_reads_and_frozen_edit_protection(control):
@@ -160,6 +186,7 @@ while True: time.sleep(.1)
         confirmed(ctl, 'run')
         assert run_alive(root)
         restarted = AutoRunControl(ctl.api, ctl.config)
+        restarted.creation_api = ctl.creation_api
         assert restarted.busy(root)
         with pytest.raises(Conflict, match='already running'):
             restarted.preview(iid, 'run', Action())
@@ -246,6 +273,7 @@ def test_profiles_preflight_resolves_defaults_and_rechecks_confirmation(control,
     ctl, client, iid, root = control
     (root / 'calibration.json').unlink()
     ctl.config['agent_creation']['profiles'] = {'server-model': dict(provider='codex/test')}
+    ctl.creation_api.store._bindings[ctl.creation_api.workspace_id]['profiles'] = ctl.config['agent_creation']['profiles']
     url = f'/api/iterations/{iid}/v4/calibrate'
     inputs = dict(time_budget_hours=2)
     rejected = client.post(url, json=dict(inputs=inputs))

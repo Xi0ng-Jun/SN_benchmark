@@ -235,6 +235,10 @@ class AgentCreationBridgeAdapter:
                 raise ValueError('Invalid creation executable')
         self._transport = AgentBridgeAdapter(frozen, command=command, timeout=timeout)
 
+    def preflight(self, command):
+        from .agent_preflight import check_scope
+        check_scope(self._transport, validate_create_command(command))
+
     def call(self, command):
         try:
             frozen = validate_create_command(command)

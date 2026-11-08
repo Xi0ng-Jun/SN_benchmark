@@ -31,4 +31,5 @@ def preflight(adapter, task_id, settings, roles=tuple(ROLE_LABELS), *, expected=
     profiles = resolve(settings, lambda profile: store.require_profile(task_id, profile), roles)
     if expected is not None and binding_digest(adapter._config['agent_creation'], profiles) != expected:
         raise CreationProfileUnavailable('服务器 Agent 模型配置已改变；请重启工作台加载当前配置后重新预览确认')
+    adapter._round_ops.creations.preflight(task_id, next(iter(profiles.values())))
     return profiles

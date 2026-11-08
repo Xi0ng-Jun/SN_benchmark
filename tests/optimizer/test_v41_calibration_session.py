@@ -142,11 +142,14 @@ def test_cli_calibrated_run_uses_every_frozen_field_and_does_not_recalibrate(cal
     service, tree, adapter, path = calibration_env
     bundle = measure(calibration_env)
     adapter.version_for = lambda cid: adapter.seed
-    from rag_eval.workbench.agent_creations import AgentCreationStore
+    from rag_eval.workbench.creation_api import CreationAPI
+    from test_workbench_agent_creations import Bridge, created
     workspace_id = service.repository.task(tree['task_id'])['workspace_id']
     binding = dict(workspaceId='test-workspace', profiles={'pi-flash': dict(provider='codex/test')})
-    store = AgentCreationStore(service.repository, {workspace_id: binding})
-    adapter._round_ops = SimpleNamespace(service=service, creations=SimpleNamespace(store=store))
+    workspace = next(w for w in service.repository.workspaces() if w['id'] == workspace_id)
+    creations = CreationAPI(service.repository, workspace, dict(agent_creation=binding),
+                           actor='alice', bridge=Bridge(created))
+    adapter._round_ops = SimpleNamespace(service=service, creations=creations)
     adapter._protocol = lambda: service.iteration(tree['id'])['protocol']
     adapter.partitions = lambda: dict(adapter._protocol()['splits'], fresh_batches=[], k_base=2)
     adapter.set_evidence_dir = lambda p: None

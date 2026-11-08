@@ -27,17 +27,46 @@ export async function checkV41({ browser, open, origin, shot }) {
   await page.request.post(`${origin}/api/session`, { data: { token: 'test-access' } });
   const sample = await (await page.request.get(`${origin}/api/test-v41`)).json();
   const finished = await (await page.request.get(`${origin}/api/iterations/v4-done/auto-run`)).json();
+  // Agent recovery keeps measurement keys; the visible error names the actual
+  // refusal instead of showing only an unexplained interrupted process.
+  const recovery = await open('v4-interrupted');
+  const recoveryRequests = [];
+  await recovery.route('**/api/iterations/v4-interrupted/auto-run', route => route.fulfill({ json: {
+    ...finished, run: { ...finished.run, iteration_id: 'v4-interrupted', alive: false, status: 'halted', halt_reason: 'process_failure' },
+    next_action: 'retry', progress: { ...finished.progress, run_failures: 1, failure_kind: 'agent_request',
+      failure_detail: 'analyst agent_creation_not_attempted (SCOPE_MISMATCH) intent_id=synthetic' },
+  } }));
+  await recovery.route('**/api/iterations/v4-interrupted/v4/run/resume', route => {
+    const body = route.request().postDataJSON();
+    recoveryRequests.push(body);
+    assert.equal(body.retry_failed, false, 'Agent recovery must not change measurement keys');
+    return route.fulfill({ json: body.confirmation_token ? { accepted: true } : {
+      action: 'resume', confirmation_token: 'agent-recovery-confirmation', incurs_cost: true,
+      expires_in_seconds: 600, budget_hours: 8, config: {}, config_sha256: 'synthetic',
+      test_set_authorized: false, search_size: 100, validation_size: 60,
+    } });
+  });
+  await recovery.reload();
+  await recovery.getByTestId('v4-failure-detail').waitFor();
+  assert.match(await recovery.getByTestId('v4-failure-detail').innerText(), /SCOPE_MISMATCH/);
+  await recovery.getByTestId('v41-resume').click();
+  await recovery.getByTestId('v41-confirm').click();
+  await recovery.waitForFunction(() => !document.querySelector('[data-testid="v41-confirmation"]'));
+  assert.equal(recoveryRequests.length, 2);
+  await shot(recovery, 'v41-agent-failure');
+  await recovery.close();
   let calibrated = false, running = false, missingProposal = false, confirmations = 0, previews = 0, patches = 0;
+  let startupError = { code: 'SCOPE_MISMATCH', message: 'Agent 启动预检失败：SCOPE_MISMATCH；任务目录与远端工作区目录不一致', command: 'calibrate', at: 1 };
   let epoch = 0, activeToken = null, calibrationInputs = null, recovering = false;
   await page.route('**/api/iterations/v41-wizard/auto-run', async route => {
     await route.fulfill({ json: running ? { ...finished, run: { ...finished.run, run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'running', alive: true }, next_action: null }
       : { schema_version: 1, method: 'v4', run: { method: 'v4', run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'not_started', alive: false },
-          phase: null, next_action: null, progress: null, config: null, variants: {}, calibration: null, feasibility: null, lineage: [], rounds: [], ablation: null, time_account: null, endpoint: null, deviations: [] } });
+          startup_error: startupError, phase: null, next_action: null, progress: null, config: null, variants: {}, calibration: null, feasibility: null, lineage: [], rounds: [], ablation: null, time_account: null, endpoint: null, deviations: [] } });
   });
   await page.route('**/api/iterations/v41-wizard/v4/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname.split('/v4/')[1];
     const body = request.method() === 'GET' ? {} : request.postDataJSON();
-    if (path === 'calibration') return route.fulfill({ json: calibrated ? sample.calibration : { complete: false, alive: false, phase: recovering ? 'calibration' : 'not_started', ...(recovering ? { launch_inputs: calibrationInputs, execution_timeout_seconds: 14400, measurement_active_wall_s: 6600 } : {}) } });
+    if (path === 'calibration') return route.fulfill({ json: calibrated ? sample.calibration : { startup_error: startupError, complete: false, alive: false, phase: recovering ? 'calibration' : 'not_started', ...(recovering ? { launch_inputs: calibrationInputs, execution_timeout_seconds: 14400, measurement_active_wall_s: 6600 } : {}) } });
     if (path === 'proposal') {
       if (missingProposal) return route.fulfill({ status: 404, json: { error: '建议书工件不可用' } });
       if (request.method() === 'PATCH') {
@@ -84,6 +113,13 @@ export async function checkV41({ browser, open, origin, shot }) {
     throw new Error('Unexpected control route ' + path);
   });
   await page.goto(`${origin}/#it=v41-wizard`);
+  await page.getByTestId('v41-wizard').waitFor();
+  await page.getByTestId('v41-startup-error').waitFor();
+  assert.match(await page.getByTestId('v41-startup-error').innerText(), /SCOPE_MISMATCH/);
+  assert.equal(await page.getByTestId('v4-startup-error').count(), 0, 'pending wizard shows the failure once');
+  await shot(page, 'v41-startup-error');
+  startupError = null;
+  await page.reload();
   await page.getByTestId('v41-wizard').waitFor();
   await page.getByTestId('v41-k-3').click();
   await page.getByTestId('v41-hours').fill('8');

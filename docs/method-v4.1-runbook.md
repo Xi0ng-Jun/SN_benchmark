@@ -73,6 +73,7 @@ python -m rag_eval.optimizer.cli v4 status --state-dir "$V41_RUN_DIR"
 | `baseline-remainder.json` | 冻结后 V\\P 的基线补测，用于恢复时复用 |
 | `state.json`、`ledger.json` | 轮次、测量／复测、判定、人工审查标记、预测、时间账及取消回执 |
 | `confirmation.json`、`launch.json`、`process.json` | 一次性确认、原始启动输入、拥有的进程身份 |
+| `startup-error.json` | 启动预检失败的安全错误码及运行身份；未启动或旧状态也能显示，不改冻结配置；新预检通过或新启动前清除 |
 | `process.log`、`run.lock`、`control.lock` | 子进程日志、运行独占、操作串行化 |
 
 这些目录可能包含内部诊断和案例映射，不应整体发布。公开页面投影使用计数与匿名行号；缺分保持缺失，不能变成零分。
@@ -121,3 +122,31 @@ CLI `calibrate`（启用顾问时）与 `run --from-proposal` 同样执行角色
 恢复目前沿用整scope执行接口，**健康题可能物理重跑，但新分数不覆盖其首个有效分数**。准备缓存能减少这部分成本，实际命中依赖完整内容键。`preparation-cache.json`顶层`miss`只表示读取时未命中；应看`store.status=stored/already_cached/store_failed`及缓存条目，不能据miss断言未发布。
 
 支持边界：此次`failed/finished_with_errors`有逐分区截止证据，可按上述路径恢复。外层监督器硬超时且`run_state=None`、没有可信逐分区证据时，仍拒绝推断缺失原因；需保留工件进一步处理。本修复不自动补ALCE引用模型评分，不操作封存集，不自动启动服务器运行。
+
+
+## Agent 创建拒绝与当前分析恢复（2026-11-08）
+
+`not_attempted / SCOPE_MISMATCH` 表示创建前目录校验拒绝；原请求键会继续读取旧拒绝，单独修配置不能使它重新创建。新入口只允许恢复当前轮尚未保存分析卡的 analyst 请求：持原 run 锁，核对原运行／任务／操作者与请求归属，按当前部署授权准备唯一新回执，保留原回执及其错误。预览和确认均不创建 Agent；普通续跑才派发。`unknown`、已有会话、已创建、`AGENT_ALREADY_EXISTS` 等不允许通过此入口重发，需另行核查远端事实。
+
+```bash
+# V41_FAILED_INTENT 必须是本轮 analyst 的完整 intent ID，不能用旧 calibrator ID。
+python -m rag_eval.optimizer.cli v4 recover-agent-creation \
+  --config "$V41_SERVER_CONFIG" --state "$V41_WORKBENCH_STATE" \
+  --iteration "$V41_ITERATION" --actor "$V41_ACTOR" --run-id "$V41_RUN_ID" \
+  --state-dir "$V41_RUN_DIR" --intent-id "$V41_FAILED_INTENT"
+# 确认只准备唯一后继；重复同一确认返回已有后继。
+python -m rag_eval.optimizer.cli v4 recover-agent-creation \
+  --config "$V41_SERVER_CONFIG" --state "$V41_WORKBENCH_STATE" \
+  --iteration "$V41_ITERATION" --actor "$V41_ACTOR" --run-id "$V41_RUN_ID" \
+  --state-dir "$V41_RUN_DIR" --intent-id "$V41_FAILED_INTENT" --confirm
+# 随后按原 run --from-proposal 命令续跑，或网页重新预览续跑。
+# 不加 --retry-failed，不重跑校准，不改冻结参数或已完成基线。
+```
+
+恢复 CLI 不迁移目录、不创建远端 workspace。部署必须先满足真实目录关系：DB 中 task.workspace_id 对应 location、服务器 config.workspace.location 与远端 workspace canonical directory 一致。创建命令 expectedCwd 从 DB 工作区记录读取，配置加载时绑定该本地工作区；不能只给手工连通性测试替换 expectedCwd。`scripts/sn-eval` 从该目录自身的 src 加载代码，所以该目录也必须部署本次版本。
+
+如果错误引用了别的工作台共享的远端 workspace，不应改写共享 workspace 的目录。可保留原本地评测目录、task／iteration／state 身份，在确认此目录仅归目标工作台使用后，将它升级到交付 SHA，为同一目录登记专用远端 workspace，更新目标工作台私有 config 的 agent_creation.workspaceId。远端 ID 是部署绑定，不是 P/D 或优化参数；新后继按新绑定准备，旧创建记录保持旧绑定。只重启目标工作台加载配置，重新预览确认；原共享工作区、其他服务和旧回执不动。目录被其他服务使用时，先另拟迁移路径，不直接改 DB 身份或覆盖共享代码。
+
+每次部署均须串行构建 apps/sn-agent-bridge（npm ci、npm run build，确认 dist/cli.js）与 apps/sn-workbench（npm ci、npm run typecheck、npm run build -- --max-workers 1）。dist 不在 Git 内，检出新 SHA 不代表构建产物存在。协调者、Agent brief 中的 sn-eval 路径及其实际 Python 导入都应指向本次 SHA 和原绝对 state；不要把新 checkout 下的同名相对目录当成旧状态。
+
+预检在 HTTP 预览、确认与 CLI 实际启动时检查角色授权、bridge 构建及真实目录映射，最多分页检查远端工作区、总预算 30 秒。这只是当时部署快照，不证明模型回复、实现候选的 worktree 注册或未来稳定性，实际创建前仍校验。运行中的请求拒绝会保存 agent_request 故障及安全错误码／intent ID；网页不会为这类失败旋转测量键。网页确认后子进程预检失败会写 startup-error.json，并在停止状态显示原因，即使尚无 state.json；完成的校准和基线不变。

@@ -79,10 +79,11 @@ class AgentBridgeAdapter:
         self._config = {k: v for k, v in config.items()
                         if k in {'url', 'password', 'authHeader', 'connectTimeoutMs'}}
         cli = Path(__file__).resolve().parents[3] / 'apps/sn-agent-bridge/dist/cli.js'
+        self._default_command = command is None
         self._command = tuple(command) if command is not None else ('node', str(cli))
         self._timeout = timeout
 
-    def call(self, command):
+    def call(self, command, *, timeout=None):
         if (not isinstance(command, dict) or not isinstance(command.get('op'), str)
                 or command['op'] not in _READ_OPERATIONS):
             return _failure('BRIDGE_INVALID_COMMAND')
@@ -90,7 +91,10 @@ class AgentBridgeAdapter:
             request = json.dumps({'config': self._config, 'command': command}, ensure_ascii=False).encode('utf-8')
             if len(request) > 65536:
                 return _failure('BRIDGE_INVALID_COMMAND')
-            returncode, output = _run_bounded(self._command, request, self._timeout)
+            budget = self._timeout if timeout is None else min(self._timeout, timeout)
+            if type(budget) not in (int, float) or not math.isfinite(budget) or budget <= 0:
+                return _failure('BRIDGE_TIMEOUT')
+            returncode, output = _run_bounded(self._command, request, budget)
             if returncode != 0:
                 return _failure('BRIDGE_PROCESS_FAILED')
             try:

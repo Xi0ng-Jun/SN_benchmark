@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import ledger_io
-from ..adapter import BudgetExhausted, EvalResult, EvaluationUnavailable, SystemAdapter, Version
+from ..adapter import AgentRequestFailed, BudgetExhausted, EvalResult, EvaluationUnavailable, SystemAdapter, Version
 from ..loop import select_analysis_cases
 from . import agent_context, calibrate, decide, stages
 from .config import V4Config, digest
@@ -114,6 +114,7 @@ class V4Run:
         self.no_adoption = 0              # analyst context only (consecutive rounds without adoption); never a stop
         self.run_failures = 0
         self.failure_detail: Optional[str] = None
+        self.failure_kind: Optional[str] = None
         self.stop_reason: Optional[str] = None
         self.halt_reason: Optional[str] = None
         self.ablation: Optional[dict] = None
@@ -165,7 +166,8 @@ class V4Run:
                     versions={h: ledger_io.version_metadata(v) for h, v in self.versions.items()},
                     lineage=self.lineage, rounds=self.rounds, current_round=self.current, history=self.history,
                     analyst_shown=self.analyst_shown, no_adoption=self.no_adoption, run_failures=self.run_failures,
-                    failure_detail=self.failure_detail, stop_reason=self.stop_reason, ablation=self.ablation,
+                    failure_detail=self.failure_detail, failure_kind=self.failure_kind,
+                    stop_reason=self.stop_reason, ablation=self.ablation,
                     cumulative=self.cumulative, halt_reason=self.halt_reason,
                     elapsed_s=self.elapsed(), sessions=self.sessions, key_generation=self.key_generation,
                     key_generation_log=self.key_generation_log, started_at=self.started_at, updated_at=_now())
@@ -189,7 +191,7 @@ class V4Run:
         self.partitions = recorded
         self.versions = {h: Version(content_hash=h, metadata=m) for h, m in st["versions"].items()}
         for name in ("calibration", "feasibility", "forecast", "lineage", "rounds", "history", "analyst_shown", "sessions",
-                     "key_generation_log", "started_at", "stop_reason", "ablation", "cumulative", "failure_detail"):
+                     "key_generation_log", "started_at", "stop_reason", "ablation", "cumulative", "failure_detail", "failure_kind"):
             setattr(self, name, st.get(name, getattr(self, name)))
         self.current = st.get("current_round")
         self.no_adoption, self.run_failures = st.get("no_adoption", 0), st.get("run_failures", 0)
@@ -257,7 +259,8 @@ class V4Run:
                     calibration=self.calibration, feasibility=self.feasibility, forecast=self.forecast,
                     frozen_config=self.frozen_config,
                     rounds=rounds, lineage=self.lineage, stop_reason=self.stop_reason, ablation=self.ablation,
-                    halt_reason=self.halt_reason, failure_detail=self.failure_detail, cumulative=self.cumulative,
+                    halt_reason=self.halt_reason, failure_detail=self.failure_detail, failure_kind=self.failure_kind,
+                    cumulative=self.cumulative,
                     remeasures=remeasures, implementation_failures=failures, flagged=flagged,
                     card_estimate=self._card_estimate() if self.calibration else None,
                     time_account=dict(total_wall_s=self.elapsed(),
@@ -386,11 +389,14 @@ class V4Run:
         search_eval = self._diagnostics[parent.content_hash]
         selected, roles = select_analysis_cases(search_eval, self.cfg, shown=shown)
         advice = ((self.frozen_config or {}).get('advisor') or {}).get('failure_modes') if round_id == 1 else None
-        cards = self.adapter.analyse(selected, self.cfg.n_cards, case_roles=roles, parent=parent,
-                                     round_id=round_id, history=history, no_adoption_rounds=no_adoption,
-                                     **({'calibration_advice': advice} if advice else {}),
-                                     case_scores={t: search_eval.per_task_scores[t] for t in selected
-                                                  if t in search_eval.per_task_scores})
+        try:
+            cards = self.adapter.analyse(selected, self.cfg.n_cards, case_roles=roles, parent=parent,
+                                         round_id=round_id, history=history, no_adoption_rounds=no_adoption,
+                                         **({'calibration_advice': advice} if advice else {}),
+                                         case_scores={t: search_eval.per_task_scores[t] for t in selected
+                                                      if t in search_eval.per_task_scores})
+        except TimeoutError as exc:
+            raise AgentRequestFailed('analyst agent timeout; inspect the existing request before resuming') from exc
         out = []
         lookup = getattr(self.adapter, "card_direction", None)
         for card in cards:
@@ -444,11 +450,18 @@ class V4Run:
                     rec.pop("label", None)
             self.run_failures = 0
             self.failure_detail = None
+            self.failure_kind = None
         self.halt_reason = None
         self.cumulative = None            # recomputed at this session's halt
         interrupted = stopped = False
         try:
             return self._run()
+        except AgentRequestFailed as exc:
+            self.run_failures += 1
+            self.failure_kind = 'agent_request'
+            self.failure_detail = str(exc)[:500]
+            log.error('Agent request failed: %s', exc)
+            return self._halt('process_failure')
         except RunStopRequested:
             # Operator stop: cancel owned remote work (below) and end the run for good.
             stopped = True

@@ -217,6 +217,7 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
     from .loop_services import RoundOperations
     from .loop_api import RoundAPI, RoundManager
     round_operations = RoundOperations(iteration_api, creation_api, message_api, session_reader)
+    iteration_api.auto_control.creation_api = creation_api
     round_service = RoundService(repository, round_operations)
 
     def round_allowed(iteration_id):
