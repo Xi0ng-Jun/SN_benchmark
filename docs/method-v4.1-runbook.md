@@ -1,6 +1,6 @@
 # method-v4.1 操作与验收
 
-2026-11-07。本手册对应 `feat/method-v4.1`，取代旧 v4 手册中有关校准、停机、保护指标和工作台启动的说明。方法依据为工作区的 `harness-opt/docs/method-v4.1.md`。离线验证不代表真实模型、服务或方法效果已通过验收。
+2026-11-09 更新。本手册对应 `feat/method-v4.1`，取代旧 v4 手册中有关校准、停机、保护指标和工作台启动的说明。方法依据为工作区的 `harness-opt/docs/method-v4.1.md`。离线验证不代表真实模型、服务或方法效果已通过验收。
 
 ## 入口与生命周期
 
@@ -14,7 +14,7 @@
 
 关闭向导后迭代仍保留；重新打开 pending 迭代可继续。校准已启动时使用原输入和原操作者恢复，不能修改 k 或替换模型配置。校准完成后复用 P/D，不再次派发已完成的种子测量；冻结后的验证集其余题补测一遍。
 
-暂停发送 SIGINT，停止本地轮询并保留远端工作以便续跑。停止发送 SIGTERM，取消在途执行、归档 Agent，记为 `stopped`，不能按普通续跑恢复。远端取消请求不等于远端已确认停止，仍需检查回执。控制台重启后按运行绑定、锁和进程身份重新发现运行；PID 的 boot ID 和 start ticks 必须匹配，发送信号通过 pidfd 固定目标。
+暂停发送 SIGINT，停止本地轮询并保留远端工作以便续跑。终止发送 SIGTERM，取消在途执行、归档 Agent，记为 `stopped`；这是终态，`v4 run` 会拒绝续跑并提示 `v4 test`（未授权终评时不要执行）。页面上「暂停（可续跑）」与红色「终止运行（不可恢复）」分开，终止需输入「终止」确认。用命令行停进程时同理：只想停下用 SIGINT。已终止的实验要继续，按下文「复用校准新建迭代」处理。远端取消请求不等于远端已确认停止，仍需检查回执。控制台重启后按运行绑定、锁和进程身份重新发现运行；PID 的 boot ID 和 start ticks 必须匹配，发送信号通过 pidfd 固定目标。
 
 ## 配置来源
 
@@ -150,3 +150,35 @@ python -m rag_eval.optimizer.cli v4 recover-agent-creation \
 每次部署均须串行构建 apps/sn-agent-bridge（npm ci、npm run build，确认 dist/cli.js）与 apps/sn-workbench（npm ci、npm run typecheck、npm run build -- --max-workers 1）。dist 不在 Git 内，检出新 SHA 不代表构建产物存在。协调者、Agent brief 中的 sn-eval 路径及其实际 Python 导入都应指向本次 SHA 和原绝对 state；不要把新 checkout 下的同名相对目录当成旧状态。
 
 预检在 HTTP 预览、确认与 CLI 实际启动时检查角色授权、bridge 构建及真实目录映射，最多分页检查远端工作区、总预算 30 秒。这只是当时部署快照，不证明模型回复、实现候选的 worktree 注册或未来稳定性，实际创建前仍校验。运行中的请求拒绝会保存 agent_request 故障及安全错误码／intent ID；网页不会为这类失败旋转测量键。网页确认后子进程预检失败会写 startup-error.json，并在停止状态显示原因，即使尚无 state.json；完成的校准和基线不变。
+
+## 复用校准新建迭代与分析卡格式（2026-11-09）
+
+**卡片格式。** 自动运行（task 绑定 method-v3/v4 运行）的分析卡一律按 lcd-v2 机制合同校验（`slice_predicate`／`manipulation`／`slice_effect`，`predictions` 可为 `[]`），与 brief 一致；不再读取迭代冻结的 `gate_rule`。此前「新建迭代 → 自动优化」未传 gate_rule，迭代被冻结为默认 lcd-v1，按 brief 写的卡全部被拒。新建自动迭代现记录 `protocol.method=method-v4.1` 与 RULE_V2；旧迭代记录不改，但校验同样走 lcd-v2。`proposal draft` 先做格式校验（立即返回 `invalid_card`），再做泄漏扫描；每次草稿结果（只记结果类别）在运行页当前轮显示。
+
+**Agent 工具命令。** brief 中的 `sn-eval` 命令带 `env SN_WORKBENCH_PYTHON=<服务进程解释器>`，Agent 不再依赖继承环境或评测目录下的 `.venv`。
+
+**拒绝原因。** Agent 创建被存储层拒绝时，`failure_detail` 为 `<角色> <代码> (<类型>): <原因> intent_id=…`；已知代码如 `CANDIDATE_NOT_EVALUATED`、`PROFILE_UNBOUND`、`REQUEST_KEY_CONFLICT`，其余为 `AGENT_REQUEST_REFUSED`。原因限 240 字，绝对路径只保留末段，形如 token/key 的值被遮蔽。
+
+**过期证据。** 若某轮分析证据已落盘但从未有 analyst 创建意图（派发被拒或中断），而历史随后改变，新内容另存 `round-<轮>-<父>-<摘要>.md` 并使用新请求键；旧文件不动。已派发过的分析仍复用原文件。
+
+**复用校准新建迭代。** 条件：同起点 commit、输入／bundle、mode、执行与准备策略、case_retry、题池、划分种子与 sealed、k、Agent 设置，且操作者与原校准相同；原校准完整、原运行目录保留（新迭代通过 `candidate_links` 引用原 root 的执行，原目录不可删除）。
+
+1. 网页新建自动迭代，题单与原迭代完全相同。资料准备缓存按内容自动命中，无需操作。
+2. 向导「复用已有校准」列出兼容来源；预览显示全部身份核对、挂接执行数、P/D 与剩余基线题数、用户改过的建议项。确认不调用模型、不产生费用。
+3. 导入后在建议书页核对带入的值（用户修改保持 `user`，顾问说明保留，不重跑顾问），再预览冻结并启动。冻结后验证集剩余题与原来完全相同时复用原剩余基线，否则补测差集。
+
+命令行等价操作（预览不写任何文件）：
+
+```bash
+python -m rag_eval.optimizer.cli v4 import-calibration \
+  --config "$V41_SERVER_CONFIG" --state "$V41_WORKBENCH_STATE" \
+  --iteration "$NEW_ITERATION" --actor "$V41_ACTOR" --from-iteration "$OLD_ITERATION"
+# 全部 ok 后，用输出的 plan_sha256 确认；可重复执行，结果收敛。
+python -m rag_eval.optimizer.cli v4 import-calibration \
+  --config "$V41_SERVER_CONFIG" --state "$V41_WORKBENCH_STATE" \
+  --iteration "$NEW_ITERATION" --actor "$V41_ACTOR" --from-iteration "$OLD_ITERATION" \
+  --confirm "$PLAN_SHA256"
+```
+
+`--state` 是工作台 state 目录（其中的 `workbench.sqlite` 由代码定位），不是数据库文件。默认运行目录为 `<state>/automatic-v41/<sha256(新迭代)[:24]>`，与网页一致。导入先写 `calibration-import.json` 意图，再登记 P/D、绑定、挂接执行、写建议书与校准；中途失败时校准和启动均被拒绝，重复同一确认即可补完。原迭代、原运行目录与原回执只读。导入后种子不再测 P/D；每个新运行仍会在 smoke 样本上测一次种子，这是正常轮次开销。
+

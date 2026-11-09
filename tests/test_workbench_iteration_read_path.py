@@ -1,4 +1,6 @@
 """Cost of reading one iteration tree: SQL statements and recomputation per GET (offline)."""
+from types import SimpleNamespace
+from fastapi import APIRouter
 from contextlib import contextmanager
 import os
 
@@ -45,6 +47,8 @@ def reader(t):
     api.service, api.comparisons, api.views = t['env']['service'], t['comparisons'], t['views']
     api.repository, api.actor, api.workspace = t['env']['repo'], 'alice', t['env']['workspace']
     api._shown = {}
+    # Bypasses __init__: the v4 run-control routes are mounted from this attribute.
+    api.auto_control = SimpleNamespace(router=APIRouter)
     return api
 
 

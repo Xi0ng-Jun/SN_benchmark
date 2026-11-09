@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+from fastapi import APIRouter
 import json
 import pytest
 from test_workbench_iterations import env, iteration, BUDGET, finish  # noqa: F401
@@ -123,6 +125,8 @@ def test_http_ledger_scope_and_human_confirmation_adapter(env):
     api.workspace, api.actor, api.writable = env['workspace'], 'human', True
     api.service, api.repository, api.views = env['service'], env['repo'], None
     api.requests = ActionRequestStore(env['repo'])
+    # Bypasses __init__: the v4 run-control routes are mounted from this attribute.
+    api.auto_control = SimpleNamespace(router=APIRouter)
     app = FastAPI()
     app.include_router(api.router())
     with TestClient(app) as client:

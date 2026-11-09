@@ -41,13 +41,14 @@ def calibrated(rig4, env, monkeypatch):
     _use(rig4, _deferred(rig4, env, 'source'), rig4.tmp / 'source-run')
     with rig4:
         assert rig4.v4('calibrate', '--v4-config', str(rig4.v4_config), '--calibration-k', '2', '--no-advisor') == 0
+    rig4.one_round = V4Run._stop_reason   # the rig's script: stop once a round has committed
     monkeypatch.setattr(V4Run, '_stop_reason', lambda run: 'time_budget')
     with rig4:
         assert rig4.v4('run', '--from-proposal', str(rig4.run_dir / 'proposal.json')) == 0
     return rig4.tree, rig4.run_dir
 
 
-def test_import_reuses_calibration_without_measuring_the_seed(rig4, env, calibrated, capsys):
+def test_import_reuses_calibration_without_measuring_the_seed(rig4, env, calibrated, capsys, monkeypatch):
     source, source_dir = calibrated
     old_root = rig4.api.service.candidate(source['root_candidate_id'])
     old_attempts, old_files = old_root['attempts'], _hashes(source_dir)
@@ -80,11 +81,23 @@ def test_import_reuses_calibration_without_measuring_the_seed(rig4, env, calibra
     assert proposed['notes']['imported_from']['iteration_id'] == source['id']
 
     _use(rig4, rig4.api.service.iteration(target['id']), target_dir)
+    monkeypatch.setattr(V4Run, '_stop_reason', rig4.one_round)   # a full first round on the imported root
+    from .test_sn_rehearsal import GOOD, card
+    from .test_v4_rehearsal import first_round_only
+    rig4.effects = {'Fix empty retrievals': GOOD}
+    rig4.analyst_cards = first_round_only([card('Fix empty retrievals')])
     with rig4:
         assert _cli(rig4, 'run', target['id'], '--from-proposal', str(target_dir / 'proposal.json'),
                     run_id='v41-' + target['id'], state_dir=target_dir) == 0
     seeds = [a['batch_id'] for a in rig4.api.service.candidate(target['root_candidate_id'])['attempts']]
     assert not [s for s in seeds if s.startswith(('subset:probe', 'subset:diag', 'subset:rest'))], seeds
+    # Round 1 ran on the imported root: its analyst was created and drafted lcd-v2 cards there.
+    state = json.loads((target_dir / 'state.json').read_text())
+    assert state['rounds'] and state['rounds'][0]['cards'], state.get('failure_detail')
+    analysts = rig4.intents('analyst')   # rig4.task_id is the target task now
+    assert analysts and analysts[0]['candidate_id'] == target['root_candidate_id']
+    drafted = [h for h in rig4.api.hypotheses.list(target['task_id']) if h.get('parent_candidate_id') == target['root_candidate_id']]
+    assert drafted and all('slice_predicate' in (h['card'].get('contract') or {}) for h in drafted)
     # The source iteration and its run directory are only read.
     assert rig4.api.service.candidate(source['root_candidate_id'])['attempts'] == old_attempts
     assert _hashes(source_dir) == old_files
