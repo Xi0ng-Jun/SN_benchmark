@@ -302,3 +302,15 @@ def test_approve_rejects_benchmark_leak(monkeypatch):
 def test_approve_passes_through_non_draft(monkeypatch):
     result, store = _approval(monkeypatch, V3_CARD, status="approved")
     assert result == dict(status="approved") and not store.decisions
+
+
+# -- Agent creation refusals keep a bounded, safe reason ---------------------
+
+def test_refusal_reason_names_a_stable_code_and_hides_paths_and_secrets():
+    from rag_eval.optimizer.sn_adapter import refusal_reason
+    code, reason = refusal_reason(ValueError('The candidate has no finished run to analyse yet'))
+    assert code == 'CANDIDATE_NOT_EVALUATED' and reason == 'The candidate has no finished run to analyse yet'
+    code, reason = refusal_reason(ValueError('bad config /home/user/private/state/config.json token=abc123 x' * 20))
+    assert code == 'AGENT_REQUEST_REFUSED' and len(reason) <= 240
+    assert '/home/user' not in reason and 'abc123' not in reason and 'config.json' in reason
+    assert refusal_reason(ValueError(''))[1] == 'no detail'

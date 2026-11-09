@@ -1587,7 +1587,8 @@ class SNAdapter(SystemAdapter):
                     suffix = f" intent_id={intent['id']}"
             except (ValueError, KeyError):
                 pass
-            raise AgentRequestFailed(f'{role} AGENT_REQUEST_REFUSED ({type(exc).__name__}){suffix}') from exc
+            code, reason = refusal_reason(exc)
+            raise AgentRequestFailed(f'{role} {code} ({type(exc).__name__}): {reason}{suffix}') from exc
 
     def _poll_agent(self, role: str, candidate_id: Optional[str], call: dict) -> dict:
         """Call ``RoundOperations.agent`` with one key until the agent is idle."""
@@ -1712,6 +1713,30 @@ def _history_line(entry: dict, vocabulary: str = "v3") -> Optional[str]:
         if entry.get("attribution_possibly_biased"):
             line += " (possibly biased)"
     return line + "\n"
+
+
+# Stable codes for creation refusals the store raises before any Agent exists
+# (rag_eval.workbench.agent_creations); anything else stays AGENT_REQUEST_REFUSED.
+_REFUSAL_CODES = (
+    ('The candidate has no finished run', 'CANDIDATE_NOT_EVALUATED'),
+    ('The candidate is not frozen', 'CANDIDATE_NOT_FROZEN'),
+    ('The candidate is not implementing', 'CANDIDATE_NOT_IMPLEMENTING'),
+    ('Creation profile is not allowed', 'PROFILE_UNBOUND'),
+    ('An iteration analyst needs', 'ITERATION_NOT_EVALUATED'),
+    ('The hypothesis card is not approved', 'CARD_NOT_APPROVED'),
+    ('Creation request key was already used', 'REQUEST_KEY_CONFLICT'),
+)
+_REDACT_SECRET = re.compile(r'(?i)\b(token|key|secret|password|authorization)\b(\s*[:=]\s*)\S+')
+_REDACT_PATH = re.compile(r'(?<![\w.])/(?:[^\s/:\'"]+/)+([^\s/:\'"]*)')
+
+
+def refusal_reason(exc: BaseException) -> tuple[str, str]:
+    """(stable code, bounded reason) of a creation refusal; paths and secret values are reduced."""
+    text = " ".join(str(exc).split())
+    code = next((c for prefix, c in _REFUSAL_CODES if text.startswith(prefix)), 'AGENT_REQUEST_REFUSED')
+    text = _REDACT_SECRET.sub(lambda m: m.group(1) + m.group(2) + '[redacted]', text)
+    text = _REDACT_PATH.sub(lambda m: '…/' + m.group(1), text)
+    return code, (text[:240] or 'no detail')
 
 
 def _render_worktree_map(round_ops: Any, candidate_id: str) -> str:

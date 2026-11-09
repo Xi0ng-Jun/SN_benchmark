@@ -106,6 +106,7 @@ def test_prepared_successor_binding_change_is_a_visible_agent_failure(rig4, monk
     st = rig4.state4()
     assert st['failure_kind'] == 'agent_request'
     assert 'AGENT_REQUEST_REFUSED' in st['failure_detail']
+    assert '): ' in st['failure_detail'] and 'intent_id=' in st['failure_detail']  # the reason survives
     assert 'private-changed-binding' not in st['failure_detail']
     assert len(rig4.creator.commands) == 1
     assert rig4.intents('analyst') == prepared
