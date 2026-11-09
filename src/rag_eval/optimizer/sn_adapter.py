@@ -1050,7 +1050,7 @@ class SNAdapter(SystemAdapter):
         """
         import json as _json
         from rag_eval.workbench.agent_tools import task_run_ids
-        from rag_eval.workbench.gate import DEFAULT_RULE
+        from rag_eval.workbench.gate import RULE_V2
         from rag_eval.workbench.hypotheses import benchmark_material, scan_text, validate_card
         ops = self._require_round_ops("workspace")
         tree = ops._tree(iteration_id)
@@ -1059,7 +1059,9 @@ class SNAdapter(SystemAdapter):
         if record["status"] != "draft":
             return dict(status=record["status"])
         try:
-            card = validate_card(ops._raw_card(record["card"]), tree["protocol"].get("gate_rule", DEFAULT_RULE))
+            # The run's analysts draft lcd-v2 mechanism cards whatever the protocol
+            # recorded (hypotheses.card_rule); approval checks the same form.
+            card = validate_card(ops._raw_card(record["card"]), RULE_V2)
             material = benchmark_material(ops.api.views, task_run_ids(ops.api.views, task_id))
             visible = {k: card.get(k) for k in ("title", "component", "mechanism", "implementer_brief",
                                                 "possible_harm", "change_scope")}

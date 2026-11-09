@@ -244,11 +244,12 @@ class _FakeHypothesisStore:
 
 
 class _ApprovalOps:
+    # A deferred v4.1 iteration records the default lcd-v1 rule; approval must not read it.
     def __init__(self, store):
         self.api = type("Api", (), {"hypotheses": store, "views": object()})()
 
     def _tree(self, iteration_id):
-        return dict(task_id="T", protocol=dict(gate_rule={"id": "lcd-v2"}))
+        return dict(task_id="T", protocol=dict(gate_rule={"id": "lcd-v1", "tau": .5}))
 
     @staticmethod
     def _raw_card(card):
@@ -276,6 +277,16 @@ def test_approve_v3_card_without_cluster(monkeypatch):
     assert result == dict(status="approved")
     assert store.decisions[0][:3] == ("H1", "approve", "v3-test")
     assert "v3/R1/approve/H1" in store.decisions[0][3]
+
+
+def test_approve_checks_lcd_v2_mechanism_contracts(monkeypatch):
+    mechanism = dict(slice_predicate=dict(kind="range", field="trace.n_empty_retrievals", min=1),
+                     manipulation=dict(direction="decrease", threshold=.5), slice_effect=dict(direction="positive"))
+    result, _ = _approval(monkeypatch, dict(V3_CARD, contract=mechanism))
+    assert result == dict(status="approved")
+    v1 = dict(V3_CARD, contract=dict(predicted_flips=["c1"], guards=[], tau=.5))
+    result, store = _approval(monkeypatch, v1)
+    assert result["status"] == "rejected" and "contract invalid" in result["reason"] and not store.decisions
 
 
 def test_approve_rejects_invalid_card(monkeypatch):

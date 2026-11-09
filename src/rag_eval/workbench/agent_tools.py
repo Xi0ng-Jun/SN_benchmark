@@ -261,7 +261,7 @@ def dispatch(options, repository, views, store, policy):
         out = [dict(path=str(root / path), purpose=note) for path, note in ANALYST_DOCS]
     elif command == 'hypothesis-draft':
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
-        out = _draft_leak(views, task_id, card) or dict(
+        out = _invalid_card(store, task_id, card) or _draft_leak(views, task_id, card) or dict(
             saved=True, card=store.draft(task_id, card, author='agent:analyst'),
             next='a person approves or rejects it on the Changes page')
     elif command == 'proposal draft':
@@ -274,7 +274,7 @@ def dispatch(options, repository, views, store, policy):
         tools = IterationTools(repository, views, task_id, options.role)
         tools.own(parent)
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
-        out = _draft_leak(views, task_id, card) or dict(
+        out = _invalid_card(store, task_id, card) or _draft_leak(views, task_id, card) or dict(
             saved=True, card=tools.service.draft_proposal(parent, card, author='agent:analyst'),
             next='a person approves or rejects this proposal')
     elif command in ('iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
@@ -334,6 +334,15 @@ def search_evidence(repository, views, policy, task_id, options):
                        'mean is over measured attempts; failed = an attempt errored, is missing or scored below '
                        'success_threshold' + ('; only failed cases' if options.failed_only else ''))
     return dict(header=header, cases=table['cases'])
+
+
+def _invalid_card(store, task_id, card):
+    """A refusal when the card shape fails, checked before the (slow) leak scan; else None."""
+    try:
+        store.check_card(task_id, card)
+    except ValueError as exc:
+        return dict(saved=False, reason='invalid_card', error=str(exc)[:1000])
+    return None
 
 
 def _draft_leak(views, task_id, card):

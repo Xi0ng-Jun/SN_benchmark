@@ -622,6 +622,27 @@ def test_analyst_brief_follows_the_iteration_gate_rule(env):
     assert 'predicted_flips 非空' not in text
 
 
+V2_MECHANISM = dict(slice_predicate=dict(kind='regex', field='response.answer', pattern='(?i)cannot answer'),
+                    manipulation=dict(direction='decrease', threshold=.5), slice_effect=dict(direction='positive'))
+
+
+def test_automatic_run_cards_are_lcd_v2_whatever_the_protocol_recorded(env, tmp_path):
+    """A deferred v4.1 iteration froze lcd-v1 by default; its analysts are briefed for lcd-v2."""
+    from rag_eval.workbench import auto_runs
+    tree, root = evaluated_root(env)
+    assert tree['protocol']['gate_rule']['id'] == 'lcd-v1'
+    v2_card = dict(CARD, predictions=[], contract=V2_MECHANISM)
+    with pytest.raises(ValueError, match='predictions'):
+        env['service'].draft_proposal(root['id'], v2_card, author='agent:analyst')  # manual iteration: protocol rule
+    auto_runs.register(env['repo'], tree['id'], run_id='v41-' + tree['id'], state_dir=str(tmp_path / 'run'),
+                       actor='alice', method='method-v4')
+    card = env['service'].draft_proposal(root['id'], v2_card, author='agent:analyst')
+    assert card['card']['contract']['slice_predicate'] == V2_MECHANISM['slice_predicate']
+    v1_contract = dict(CARD, contract=dict(predicted_flips=['qasper:q'], guards=[], tau=.5))
+    with pytest.raises(ValueError, match='contract invalid'):
+        env['service'].draft_proposal(root['id'], v1_contract, author='agent:analyst')
+
+
 def test_rerun_counts_are_pre_registered_at_creation(env):
     default = iteration(env)
     assert default['protocol']['k_base'] == 2 and 'k_sealed' not in default['protocol']

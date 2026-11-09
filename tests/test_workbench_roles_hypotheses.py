@@ -134,6 +134,28 @@ def test_leak_scan_reports_case_and_kind_without_text():
     assert scan_text('rerank six chunks before synthesis', material) == []
 
 
+def test_invalid_card_is_refused_before_the_leak_scan(tmp_path, monkeypatch, capsys):
+    from rag_eval.workbench import agent_tools
+    from rag_eval.workbench.hypotheses import HypothesisStore
+    from rag_eval.workbench.repository import WorkbenchRepository
+    from rag_eval.workbench.run_views import RunEntry, RunViews
+    from synthetic_workbench_run import saved_qasper
+    RUN, SCORES, _ = saved_qasper(tmp_path)
+    repo = WorkbenchRepository(tmp_path / 'state')
+    workspace = repo.register_workspace('E', tmp_path)
+    task = repo.create_task(workspace['id'], 'T', 'goal', request_key='t')['id']
+    views = RunViews([RunEntry('e5', RUN, SCORES, task_id=task)])
+    monkeypatch.setattr(agent_tools, 'build', lambda state, config: (repo, views))
+    scans = []
+    monkeypatch.setattr(agent_tools, '_draft_leak', lambda *args: scans.append(args))
+    bad = tmp_path / 'bad.json'
+    bad.write_text(json.dumps({k: v for k, v in CARD.items() if k != 'mechanism'}))
+    agent_tools.main(['--task', task, 'hypothesis-draft', '--file', str(bad)])
+    out = json.loads(capsys.readouterr().out)
+    assert out['saved'] is False and out['reason'] == 'invalid_card' and 'mechanism' in out['error']
+    assert scans == [] and HypothesisStore(repo).list(task) == []
+
+
 def test_agent_tool_roles_and_draft_leak_guard(tmp_path, monkeypatch, capsys):
     from rag_eval.workbench import agent_tools
     from rag_eval.workbench.repository import WorkbenchRepository

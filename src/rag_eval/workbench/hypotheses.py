@@ -86,6 +86,20 @@ def validate_card(card, rule=None):
     return out
 
 
+def card_rule(repository, task_id, protocol):
+    """The contract form a card of *task_id* is validated against.
+
+    Automatic runs (method-v3/v4) brief their analysts for lcd-v2 mechanism cards
+    and never read the iteration gate rule, so their cards are lcd-v2 whatever
+    rule the protocol recorded (deferred v4.1 iterations default to lcd-v1).
+    """
+    from .auto_runs import task_binding
+    from .gate import RULE_V2
+    if task_binding(repository, task_id) is not None:
+        return dict(RULE_V2)
+    return (protocol or {}).get('gate_rule')
+
+
 def check_predictions(predictions, flips):
     """Compare each prediction with the paired flip row for its case."""
     rows = {row['case_id']: row for row in flips['rows']}
@@ -144,11 +158,16 @@ class HypothesisStore:
         with self.repository.connect() as conn:
             return self._get(conn, task_id, hypothesis_id)
 
-    def draft(self, task_id, card, *, author, parent_candidate_id=None):
+    def check_card(self, task_id, card):
+        """Shape check with the task's contract form, before any expensive scan; no write."""
         with self.repository.connect() as conn:
             row = (conn.execute('SELECT protocol_json FROM iterations WHERE task_id=?', (task_id,)).fetchone()
                    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='iterations'").fetchone() else None)
-        card = validate_card(card, (json.loads(row['protocol_json']) or {}).get('gate_rule') if row and row['protocol_json'] else None)
+        protocol = json.loads(row['protocol_json']) if row and row['protocol_json'] else None
+        return validate_card(card, card_rule(self.repository, task_id, protocol))
+
+    def draft(self, task_id, card, *, author, parent_candidate_id=None):
+        card = self.check_card(task_id, card)
         author = _text(author, 'author', limit=200)
         from .splits import Policy
         policy = Policy(self.repository, task_id)
