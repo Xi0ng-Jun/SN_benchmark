@@ -783,6 +783,9 @@ class SNAdapter(SystemAdapter):
         scoped = ComparisonService.scoped(node, scope)
         measurements = {m["execution_id"]: m for m in ComparisonService.terminal(scoped)}
         _, task_id = self._require_ids()
+        if node.get("iteration_id"):
+            # An imported calibration names the source root, whose jobs belong to its own Task.
+            task_id = self._require_round_ops("infrastructure").service.iteration_record(node["iteration_id"])["task_id"]
         out = []
         for r in comparisons._infrastructure(scoped)["attempts"]:
             row = dict(execution_id=r["execution_id"], scope=scope, state=r["execution_state"],

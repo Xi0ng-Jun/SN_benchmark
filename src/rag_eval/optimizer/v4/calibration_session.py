@@ -292,6 +292,8 @@ def import_baseline(adapter, seed, cfg, partitions, bundle, state_dir):
         path = Path(state_dir) / 'baseline-remainder.json' if state_dir else None
         identity = dict(seed=seed.content_hash, tasks=remaining, calibration=bundle.get('payload_sha256'))
         saved = _load(path) if path and path.exists() else None
+        if saved is None and path is not None:
+            saved = _imported_remainder(path, bundle, identity)
         if saved and saved['identity'] != identity:
             raise ValueError('baseline remainder identity changed')
         if saved:
@@ -304,6 +306,24 @@ def import_baseline(adapter, seed, cfg, partitions, bundle, state_dir):
     return dict(search=EvalResult(**bundle['results']['diagnosis']),
                 mb=decide.restrict(base, partitions['seed_minibatch']),
                 rest=decide.restrict(base, partitions['seed_rest']))
+
+
+def _imported_remainder(path, bundle, identity):
+    """A remainder baseline staged by a calibration import, when it measured exactly these tasks.
+
+    The staged result keeps its source identity; it is adopted only for the same
+    seed and remainder tasks of the very calibration the bundle was imported from.
+    Otherwise the remainder is measured as usual.
+    """
+    from .calibration_import import REMAINDER_IMPORT_FILE
+    staged_path = path.with_name(REMAINDER_IMPORT_FILE)
+    source = (bundle.get('imported_from') or {}).get('calibration_sha256')
+    if source is None or not staged_path.exists():
+        return None
+    staged = _load(staged_path)
+    if staged['identity'] != dict(identity, calibration=source):
+        return None
+    return _save(path, dict(identity=identity, result=staged['result'], provenance=staged['source']))
 
 
 def forecast(frozen, bundle, ledger=None):

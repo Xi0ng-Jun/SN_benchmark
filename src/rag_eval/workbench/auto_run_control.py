@@ -160,6 +160,9 @@ class AutoRunControl:
         if owner and owner['actor'] != self.api.actor:
             raise Conflict('Continue this run using its original operator identity')
         launch = self._read(root, 'launch.json') or {}
+        if action in ('calibrate', 'run', 'resume'):
+            from ..optimizer.v4.calibration_import import require_complete
+            require_complete(root)
         if command.recovery_execution_timeout_seconds is not None and action != 'calibrate':
             raise ValueError('恢复执行时限只用于校准')
         if action == 'calibrate':

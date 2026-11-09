@@ -286,6 +286,11 @@ def cmd_calibrate(args):
     root = Path(args.state_dir)
     root.mkdir(parents=True, exist_ok=True)
     with run_view.hold_run_lock(root):
+        from .calibration_import import ImportRefused, require_complete
+        try:
+            require_complete(root)
+        except ImportRefused as exc:
+            raise UsageError(str(exc)) from None
         _bind(services, args)
         adapter = services.adapter
         adapter.set_evidence_dir(root / EVIDENCE_DIR)
@@ -350,6 +355,11 @@ def cmd_calibrated_run(args):
     root = Path(args.state_dir)
     if Path(args.from_proposal).resolve() != (root / session.PROPOSAL_FILE).resolve():
         raise UsageError('--from-proposal must name proposal.json in this --state-dir')
+    from .calibration_import import ImportRefused, require_complete
+    try:
+        require_complete(root)
+    except ImportRefused as exc:
+        raise UsageError(str(exc)) from None
     bundle = session.load_bundle(root / session.CALIBRATION_FILE)
     settings = bundle['identity']['adapter_settings']
     services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=args.run_id,
@@ -497,6 +507,10 @@ def build_parser() -> argparse.ArgumentParser:
         help='preview recovery of the current analyst pre-dispatch refusal; never creates an Agent')
     recovery.add_argument('--intent-id', required=True)
     recovery.add_argument('--confirm', action='store_true', help='prepare one linked replacement; resume separately')
+    imported = sub.add_parser('import-calibration', parents=[common],
+        help='reuse a completed calibration of another iteration (same seed, input and pool); preview by default')
+    imported.add_argument('--from-iteration', required=True, help='the iteration whose calibration is reused')
+    imported.add_argument('--confirm', metavar='PLAN_SHA256', help='perform the previewed plan')
     calibration = sub.add_parser('calibrate', parents=[common], help='measure seed P/D on a deferred iteration')
     calibration.add_argument('--v4-config', required=True)
     calibration.add_argument('--calibration-k', type=int, choices=range(2, 6))
@@ -540,6 +554,30 @@ def cmd_figure(args) -> int:
     return EXIT_OK
 
 
+def cmd_import_calibration(args):
+    """Preview (default) or perform reuse of another iteration's completed calibration."""
+    from . import calibration_import as imp
+    _require(args, 'iteration', 'actor', 'from_iteration')
+    services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=None,
+                              adapter_settings={})
+    root = Path(args.state_dir) if args.state_dir else imp.default_dir(args.state, args.iteration)
+    service = services.adapter._round_ops.service
+    try:
+        planned = imp.plan(service, services.repository, source_iteration=args.from_iteration,
+                           target_iteration=args.iteration, actor=args.actor, target_dir=root)
+        if args.confirm is None:
+            print(json.dumps(planned, ensure_ascii=False, indent=2))
+            if not planned['ok']:
+                return EXIT_USAGE
+            print(f"next: rerun with --confirm {planned['plan_sha256']}", file=sys.stderr)
+            return EXIT_OK
+        receipt = imp.apply(service, services.repository, planned, confirm=args.confirm)
+    except (imp.ImportRefused, run_view.RunLocked) as exc:
+        raise UsageError(str(exc)) from None
+    print(json.dumps(dict(receipt, state_dir=str(root)), ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
 def cmd_recover_agent_creation(args):
     from .agent_recovery import command
     return command(args)
@@ -547,7 +585,7 @@ def cmd_recover_agent_creation(args):
 
 COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cmd_figure,
             'recover-agent-creation': cmd_recover_agent_creation,
-            'calibrate': cmd_calibrate, 'proposal': cmd_proposal}
+            'calibrate': cmd_calibrate, 'proposal': cmd_proposal, 'import-calibration': cmd_import_calibration}
 
 
 def main(argv: Optional[list[str]] = None) -> int:

@@ -638,6 +638,40 @@ class IterationService:
                                content=dict(probe=len(probe), diagnosis=len(diagnosis), actor=actor))
         return self.iteration(iteration_id)
 
+    def link_calibration_import(self, root_candidate_id, links, *, actor):
+        """Attach another iteration's seed measurements to this root (method-v4.1 calibration import).
+
+        Only the root of a native iteration whose deferred split is still pending
+        takes links; each names its source in ``basis`` and keeps the execution's
+        own Task. Replaying a link is a no-op; a different basis is a Conflict.
+        """
+        actor = _text(actor, 'actor', limit=200)
+        from .splits import pending
+        added = 0
+        with self.repository.connect(write=True) as conn:
+            candidate = self._candidate(conn, root_candidate_id)
+            iteration = self._iteration(conn, candidate['iteration_id'])
+            if (iteration['origin'] != 'native' or candidate['origin'] != 'root'
+                    or not pending(iteration.get('protocol') or {})):
+                raise Conflict('Calibration is imported only into the root of a pending deferred iteration')
+            for link in links:
+                basis = dict(link['basis'], kind='calibration_import')
+                row = conn.execute('SELECT basis_json FROM candidate_links WHERE candidate_id=? AND execution_id=?',
+                                   (root_candidate_id, link['execution_id'])).fetchone()
+                if row is not None:
+                    if json.loads(row['basis_json']) != basis:
+                        raise Conflict('This execution is already linked with a different basis')
+                    continue
+                conn.execute('INSERT INTO candidate_links VALUES(?,?,?,?,?,?)',
+                             (root_candidate_id, link['execution_id'], link['task_id'],
+                              json.dumps(basis, ensure_ascii=False, sort_keys=True), actor, now()))
+                added += 1
+            if added:
+                self.repository._event(conn, iteration['task_id'], 'candidate.calibration_imported', root_candidate_id,
+                                       dict(links=len(links), added=added, actor=actor,
+                                            from_iteration=(links[0]['basis'].get('from_iteration') if links else None)))
+        return self.candidate(root_candidate_id)
+
     def freeze_split(self, iteration_id, search, validation, *, actor):
         """Freeze a pending deferred split exactly once (method-v4.1 §3.7).
 
