@@ -345,6 +345,13 @@ class IterationAPI:
                 for key, value in (('run_id', bound['run_id']), ('iteration_id', iteration_id), ('actor', bound['actor'])):
                     if view['run'].get(key) is None:
                         view['run'][key] = value
+                open_round = next((rd for rd in view.get('rounds') or [] if rd.get('open')), None)
+                if open_round and open_round.get('parent_id'):
+                    # Outcome counts only (agent_tools.record_draft_attempt): no card text or case ids.
+                    from .agent_tools import draft_attempts
+                    open_round['analysis_attempts'] = draft_attempts(
+                        self.repository, service.iteration_record(iteration_id)['task_id'],
+                        open_round['parent_id'], open_round.get('started_at'))
                 return view
             from ..optimizer.run_view import read_run
             return read_run(bound['state_dir'])

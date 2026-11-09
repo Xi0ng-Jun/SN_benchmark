@@ -514,6 +514,16 @@ def test_sn_eval_drafts_under_the_analysts_own_node(env, monkeypatch, tmp_path, 
     agent_tools.main(base)
     drafted = json.loads(capsys.readouterr().out)['card']
     assert drafted['parent_candidate_id'] == root['id']
+    bad = tmp_path / 'bad.json'
+    bad.write_text(json.dumps({k: v for k, v in CARD.items() if k != 'mechanism'}))
+    agent_tools.main(['--task', tree['task_id'], '--node', root['id'], '--file', str(bad), 'proposal', 'draft'])
+    assert json.loads(capsys.readouterr().out)['reason'] == 'invalid_card'
+    # The progress view counts outcomes only; the history holds no card text.
+    counts = agent_tools.draft_attempts(env['repo'], tree['task_id'], root['id'])
+    assert (counts['saved'], counts['invalid_card'], counts['total']) == (1, 1, 2)
+    assert agent_tools.draft_attempts(env['repo'], tree['task_id'], root['id'], counts['last_at'])['total'] == 1
+    history = [e for e in env['repo'].task(tree['task_id'])['history'] if e['kind'] == agent_tools.DRAFT_ATTEMPT]
+    assert CARD['mechanism'] not in json.dumps(history, ensure_ascii=False)
 
 
 def test_root_adopts_configured_runs_and_children_reuse_preparation_through_the_cache(env, tmp_path):

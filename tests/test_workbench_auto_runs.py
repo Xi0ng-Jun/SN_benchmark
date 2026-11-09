@@ -142,3 +142,23 @@ def test_v41_calibration_without_cli_identity_projects_bound_run(app_env):
     assert view['run']['run_id'] == 'calibrating'
     assert view['run']['iteration_id'] == 'it1'
     assert view['run']['actor'] == 'a'
+
+
+def test_open_v4_round_projects_analyst_draft_outcomes(app_env):
+    from rag_eval.workbench.agent_tools import record_draft_attempt
+    client, repository, task_id, tmp_path = app_env
+    run = tmp_path / 'run'
+    run.mkdir()
+    auto_runs.register(repository, 'it1', run_id='v41-it1', state_dir=str(run), actor='a', method='method-v4')
+    record_draft_attempt(repository, task_id, 'root-it1', 'invalid_card')     # an earlier round: excluded
+    started = '2999-01-01T00:00:00+00:00'
+    state = dict(versions={'h0': dict(candidate_id='root-it1')}, rounds=[],
+                 current_round=dict(round=2, parent='h0', started_at=started, cards=None, records={}, decision=None))
+    (run / 'state.json').write_text(json.dumps(state))
+    rd = client.get('/api/iterations/it1/auto-run').json()['rounds'][-1]
+    assert rd['open'] and rd['analysis_attempts']['total'] == 0
+    state['current_round']['started_at'] = NOW
+    (run / 'state.json').write_text(json.dumps(state))
+    record_draft_attempt(repository, task_id, 'root-it1', 'leak_refused')
+    attempts = client.get('/api/iterations/it1/auto-run').json()['rounds'][-1]['analysis_attempts']
+    assert (attempts['invalid_card'], attempts['leak_refused'], attempts['total']) == (1, 1, 2)

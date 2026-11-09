@@ -300,9 +300,17 @@ def dispatch(options, repository, views, store, policy):
         tools = IterationTools(repository, views, task_id, options.role)
         tools.own(parent)
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
-        out = _invalid_card(store, task_id, card) or _draft_leak(repository, views, task_id, card) or dict(
-            saved=True, card=tools.service.draft_proposal(parent, card, author='agent:analyst'),
-            next='a person approves or rejects this proposal')
+        out = _invalid_card(store, task_id, card) or _draft_leak(repository, views, task_id, card)
+        if out is None:
+            try:
+                out = dict(saved=True, card=tools.service.draft_proposal(parent, card, author='agent:analyst'),
+                           next='a person approves or rejects this proposal')
+            except ValueError:
+                record_draft_attempt(repository, task_id, parent, 'refused')
+                raise
+        record_draft_attempt(repository, task_id, parent,
+                             'saved' if out.get('saved') else out.get('reason') == 'invalid_card' and 'invalid_card'
+                             or 'leak_refused')
     elif command in ('iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
                      *REQUEST_COMMANDS):
         out = IterationTools(repository, views, task_id, options.role).run(command, a, options)
@@ -360,6 +368,35 @@ def search_evidence(repository, views, policy, task_id, options):
                        'mean is over measured attempts; failed = an attempt errored, is missing or scored below '
                        'success_threshold' + ('; only failed cases' if options.failed_only else ''))
     return dict(header=header, cases=table['cases'])
+
+
+DRAFT_ATTEMPT = 'analysis.draft_attempt'
+DRAFT_OUTCOMES = ('saved', 'invalid_card', 'leak_refused', 'refused')
+
+
+def record_draft_attempt(repository, task_id, parent, outcome):
+    """One history row per proposal draft: the outcome only, never card text."""
+    with repository.connect(write=True) as conn:
+        repository._event(conn, task_id, DRAFT_ATTEMPT, parent, dict(outcome=outcome))
+
+
+def draft_attempts(repository, task_id, parent, since=None):
+    """Counts of an analyst's draft outcomes under *parent* since an ISO instant (progress view)."""
+    from datetime import datetime
+    start = datetime.fromisoformat(since) if since else None
+    counts, first, last = dict.fromkeys(DRAFT_OUTCOMES, 0), None, None
+    with repository.connect() as conn:
+        rows = conn.execute('SELECT content, registered_at FROM history WHERE task_id=? AND kind=? AND object_id=? '
+                            'ORDER BY seq', (task_id, DRAFT_ATTEMPT, parent)).fetchall()
+    for row in rows:
+        at = datetime.fromisoformat(row['registered_at'])
+        if start is not None and at < start:
+            continue
+        outcome = json.loads(row['content']).get('outcome')
+        if outcome in counts:
+            counts[outcome] += 1
+        first, last = first or row['registered_at'], row['registered_at']
+    return dict(counts, total=sum(counts.values()), first_at=first, last_at=last)
 
 
 def _invalid_card(store, task_id, card):
