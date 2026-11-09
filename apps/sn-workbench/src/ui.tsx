@@ -31,8 +31,8 @@ export function Copy({ children, muted = false, small = false, style, testID }: 
   const theme = useTheme();
   return <Text selectable testID={testID} style={[small ? s.hint : s.text, { color: muted ? theme.muted : theme.text }, style]}>{children}</Text>;
 }
-export function Button({ label, accessibilityLabel, accessibilityRole = 'button', onPress, icon: Icon, selected = false, disabled = false, primary = false, testID }: {
-  label: string; accessibilityLabel?: string; accessibilityRole?: 'button' | 'tab'; onPress: () => void; icon?: LucideIcon; selected?: boolean; disabled?: boolean; primary?: boolean; testID?: string;
+export function Button({ label, accessibilityLabel, accessibilityRole = 'button', onPress, icon: Icon, selected = false, disabled = false, primary = false, danger = false, testID }: {
+  label: string; accessibilityLabel?: string; accessibilityRole?: 'button' | 'tab'; onPress: () => void; icon?: LucideIcon; selected?: boolean; disabled?: boolean; primary?: boolean; danger?: boolean; testID?: string;
 }) {
   const theme = useTheme();
   const [hovered, setHovered] = React.useState(false);
@@ -41,10 +41,10 @@ export function Button({ label, accessibilityLabel, accessibilityRole = 'button'
     disabled={disabled} onPress={onPress} onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)} style={({ pressed }) => ({
       flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6,
       backgroundColor: primary ? (hovered || pressed ? theme.primaryHover : theme.primary) : selected || hovered || pressed ? theme.selected : 'transparent',
-      borderWidth: 1, borderColor: primary ? 'transparent' : selected ? theme.lineStrong : 'transparent', opacity: disabled ? .45 : 1,
+      borderWidth: 1, borderColor: primary ? 'transparent' : danger ? theme.danger : selected ? theme.lineStrong : 'transparent', opacity: disabled ? .45 : 1,
     })}>
     {Icon && <Icon size={14} strokeWidth={1.75} color={primary ? theme.onPrimary : theme.muted} />}
-    <Text style={{ color: primary ? theme.onPrimary : theme.text, fontSize: 13, fontWeight: '500', lineHeight: 18 }}>{label}</Text>
+    <Text style={{ color: primary ? theme.onPrimary : danger ? theme.danger : theme.text, fontSize: 13, fontWeight: '500', lineHeight: 18 }}>{label}</Text>
   </Pressable>;
 }
 export function Input({ value, onChange, placeholder, multiline = false, label, editable = true, testID }: {

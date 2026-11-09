@@ -3,6 +3,7 @@ import { View } from 'react-native';
 import { api, CreationProfile, useResource } from '../contracts';
 import { Button, Copy, Input, useTheme } from '../ui';
 import { Section } from '../tree/parts';
+import { CalibrationReuse } from './CalibrationReuse';
 import { CalibrationDetail, Confirmation, controlPath, Forecast, parameterLabels, patchProposal, ProposalItem, ProposalView, simulationKey } from './v41control';
 import { ForecastSummary, Tradeoff, V4Calibration } from './V4Calibration';
 import { duration } from './contracts';
@@ -172,7 +173,8 @@ export function NewAutoRunWizard({ iterationId, profiles = [], onStarted }: { it
       <Button label={authorized ? '终评授权：已登记' : '终评授权：未授权'} selected={authorized} disabled={inputLocked} onPress={() => setAuthorized(a => !a)} />
       <Copy small muted>终评使用封存题，需独立确认；此向导不会执行终评。</Copy>
       {calibration.data.alive ? <Copy testID="v41-calibrating">校准／顾问运行中 · 已用 {duration(calibration.data.elapsed_s)}：P {calibration.data.probe_size ?? calibration.data.summary?.n_probe ?? '待登记'} · D {calibration.data.diagnosis_size ?? calibration.data.summary?.n_diagnosis ?? '待登记'} · 执行并发上限 {calibration.data.calibration_concurrency ?? calibrationConcurrency} · P 已完成 {calibration.data.probe_completed_k ?? 0} 遍 · D 已完成 {calibration.data.diagnosis_completed_cases ?? 0} 题 · 已完成 {(calibration.data.completed_stages ?? []).join('、') || (calibration.data.complete ? '测量，等待顾问' : '等待测量回执')}</Copy>
-        : <Button label={calibration.data.phase === 'calibration' ? '预览恢复校准' : '预览校准'} primary disabled={locked} onPress={() => act('calibrate')} testID="v41-calibrate" />}
+        : <>{calibration.data.phase === 'not_started' && <CalibrationReuse iterationId={iterationId} disabled={locked} onImported={() => setTick(t => t + 1)} />}
+          <Button label={calibration.data.phase === 'calibration' ? '预览恢复校准' : '预览校准'} primary disabled={locked} onPress={() => act('calibrate')} testID="v41-calibrate" /></>}
     </> : proposal.data ? <>
       <Copy>{proposal.data.proposal.notes.advisor?.message ?? '使用规则建议。校准顾问未提供说明。'}</Copy>
       <ForecastSummary forecast={simulation ?? proposal.data.forecast} />

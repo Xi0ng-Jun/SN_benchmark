@@ -22,9 +22,10 @@ export function V4Controls({ view, onRefresh }: { view: V4RunView; onRefresh: ()
   };
   return <View style={{ gap: 8 }}>
     {preview ? <V4Confirmation preview={preview} busy={busy} onConfirm={() => request(preview.action, preview)} onCancel={() => setPreview(null)} /> : <View style={{ flexDirection: 'row', gap: 8 }}>
-      {view.run.alive ? <><Button label="暂停" disabled={busy} onPress={() => request('pause')} testID="v41-pause" /><Button label="停止" disabled={busy} onPress={() => request('stop')} testID="v41-stop" /></>
+      {view.run.alive ? <><Button label="暂停（可续跑）" disabled={busy} onPress={() => request('pause')} testID="v41-pause" /></>
         : view.progress && ['resume', 'retry', 'budget'].includes(view.next_action ?? '') ? <Button label="预览续跑" disabled={busy} onPress={() => request('resume')} testID="v41-resume" /> : null}
       <Button label="刷新状态" disabled={busy} onPress={onRefresh} />
+      {view.run.alive && <><View style={{ flex: 1 }} /><Button label="终止运行（不可恢复）" danger disabled={busy} onPress={() => request('stop')} testID="v41-stop" /></>}
     </View>}
     {!!error && <Copy small style={{ color: theme.error }}>{error}</Copy>}
   </View>;

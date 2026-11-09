@@ -43,7 +43,12 @@ export type V4Round = { forecast?: Forecast | null; round: number; parent: strin
   wall_s: number | null; analysis_s: number | null; decision_s: number | null; cards: number | null; cards_with_expectation: number;
   minibatch_size: number; rest_size: number; diagnosis_s: number | null; diagnosis_prefetched: boolean | null;
   timeboxed: boolean; not_started: number; open: boolean; records: V4Record[];
+  analysis_empty?: boolean; analysis_prefetched?: boolean | null; analysis_attempts?: V4AnalysisAttempts | null;
   queued: { card_index: number; title: string | null; has_expectation: boolean }[]; decision: V4Decision | null };
+// Outcome counts of the analyst's `proposal draft` calls in the open round (no card text).
+export type V4AnalysisAttempts = { saved: number; invalid_card: number; leak_refused: number; refused: number; total: number;
+  first_at: string | null; last_at: string | null };
+export type V4Session = { started_at: string; stopped?: boolean; cancellation?: unknown };
 export type V4Node = { index: number; version: string; candidate_id: string | null; kind: 'seed' | 'candidate' | 'merge'; round: number | null;
   parent: string | null; delta_val: number | null; se_val: number | null; tier: V4Tier | null; elapsed_s: number | null;
   titles: (string | null)[]; pruned: boolean };
@@ -75,7 +80,7 @@ export type V4RunView = {
   schema_version: number; method: 'v4';
   run: { method: 'v4'; run_id: string | null; iteration_id: string | null; actor: string | null; config_sha256: string | null;
     created_at: string | null; test_set: boolean; status: V4Status; alive: boolean; halt_reason?: string | null;
-    started_at?: string | null; updated_at?: string | null };
+    started_at?: string | null; updated_at?: string | null; sessions?: V4Session[] };
   phase: V4Phase | null; next_action: V4NextAction | null; progress: V4Progress | null;
   config: Record<string, unknown> | null; variants: Record<string, { value: unknown; default: unknown }>;
   calibration: V4Calibration | null; feasibility: V4Feasibility | null; lineage: V4Node[]; rounds: V4Round[];
@@ -88,12 +93,12 @@ export const isV4 = (view: unknown): view is V4RunView => !!view && (view as { m
 
 export const v4StatusLabels: Record<V4Status, string> = { running: '运行中', interrupted: '已中断', halted: '已停机', not_started: '未开始' };
 export const v4PhaseLabels: Record<V4Phase, string> = {
-  calibrating: '校准：种子 A/A', analysing: '分析 Agent 诊断失败', building: '实现、冒烟、小批、全验证集、机制检查',
+  calibrating: '校准：种子 A/A', analysing: '分析 Agent 正在诊断并起草卡片', building: '实现、冒烟、小批、全验证集、机制检查',
   deciding: '轮末决定', between_rounds: '准备下一轮', ablating: '消融剪枝', halted: '已停机',
 };
 // None of these means the room for improvement is used up (method-v4 §3.5).
 export const v4HaltLabels: Record<string, string> = {
-  stopped: '已停止', time_budget: '时间预算用完', no_adoption: '连续多轮没有采纳', max_rounds: '达到轮数上限',
+  stopped: '已终止（不可续跑）', time_budget: '时间预算用完', no_adoption: '连续多轮没有采纳', max_rounds: '达到轮数上限',
   process_failure: '流程故障', budget_exhausted: '花费预算用尽',
 };
 export const v4ActionTexts: Record<V4NextAction, { title: string; detail: string }> = {

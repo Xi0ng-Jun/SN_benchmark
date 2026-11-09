@@ -62,7 +62,14 @@ function Status({ view }: { view: V4RunView }) {
       <Copy small muted>{v4ActionTexts[action].detail}</Copy>
     </View>}
     {!!view.progress && !!view.startup_error && <Copy testID="v4-startup-error" small style={{ color: theme.error }}>{view.startup_error.message}。本次启动已退出，请修复后重新预览。</Copy>}
+    {run.halt_reason === 'stopped' && <Copy testID="v4-stopped" small style={{ color: theme.error }}>
+      此运行已被终止（取消在途执行、归档 Agent），不能续跑。已完成的校准与测量仍保留；继续实验请新建迭代并复用校准。</Copy>}
     {!!view.progress?.failure_detail && <View testID="v4-failure-detail" style={{ gap: 4 }}>
+      {(() => {
+        // "<role> <CODE> (<Type>): <reason> intent_id=<id>" (sn_adapter.refusal_reason)
+        const m = /^(\w+) ([A-Z][A-Z_]+) \(/.exec(view.progress.failure_detail ?? '');
+        return m ? <View style={{ flexDirection: 'row', gap: 6 }}><Badge label={m[1]} /><Badge label={m[2]} tone="danger" /></View> : null;
+      })()}
       <Copy small style={{ color: theme.error }}>{view.progress.failure_detail}</Copy>
       {view.progress.failure_kind === 'agent_request' && <Copy small muted>Agent 请求失败；已完成的测量已保留。请先核查创建或消息回执，再续跑。</Copy>}
     </View>}
@@ -100,6 +107,16 @@ function Lineage({ view, selected, onSelect }: { view: V4RunView; selected: stri
   </Section>;
 }
 
+function AnalystProgress({ round }: { round: V4Round }) {
+  const a = round.analysis_attempts;
+  const since = round.started_at ? Math.max(0, (Date.now() - Date.parse(round.started_at)) / 1000) : null;
+  return <View testID={`v4-analyst-progress-${round.round}`} style={{ gap: 2 }}>
+    <Copy small>分析 Agent 起草中{since !== null ? ` · 本轮已 ${duration(since)}` : ''}{round.analysis_prefetched ? ' · 上一轮测量期间已预先派发' : ''}</Copy>
+    <Copy small muted>{a && a.total ? `草稿 ${a.total} 次：保存 ${a.saved} · 格式不合格 ${a.invalid_card} · 含考题文本被拒 ${a.leak_refused} · 其他拒绝 ${a.refused}`
+      + (a.last_at ? ` · 最近一次 ${ago(a.last_at)}` : '') : '还没有提交草稿'}</Copy>
+  </View>;
+}
+
 function RoundView({ round, selected, onSelect }: { round: V4Round; selected: string | null; onSelect: (id: string | null) => void }) {
   const d = round.decision;
   const meta = round.open ? '进行中' : d?.adopted ? (d.merge?.adopt ? '采纳合并候选' : '有采纳') : '无采纳';
@@ -108,6 +125,8 @@ function RoundView({ round, selected, onSelect }: { round: V4Round; selected: st
       {round.cards !== null ? ` · 带行为预期 ${round.cards_with_expectation}/${round.cards}` : ''}{round.wall_s ? ` · 用时 ${duration(round.wall_s)}` : ''}
       {round.diagnosis_s !== null ? ` · 诊断 ${round.diagnosis_prefetched ? '已预取' : duration(round.diagnosis_s)}` : ''}
       {round.not_started ? ` · ${round.not_started} 张卡${round.timeboxed ? '因轮时间盒' : ''}未开始` : ''}</Copy>
+    {round.open && round.cards === null && <AnalystProgress round={round} />}
+    {round.analysis_empty && <Copy small muted>分析没有产出卡片，计为一次流程故障。</Copy>}
     <V4RoundChart round={round} onSelect={onSelect} />
     {round.records.map(r => <Row key={r.card_index} testID={`v4-record-${round.round}-${r.card_index}`} selected={selected === recordKey(round.round, r.card_index)}
       onPress={() => onSelect(recordKey(round.round, r.card_index))}>

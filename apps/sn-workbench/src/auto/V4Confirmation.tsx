@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View } from 'react-native';
-import { Button, Copy, useTheme } from '../ui';
+import { Button, Copy, Input, useTheme } from '../ui';
 import { Confirmation, parameterLabels } from './v41control';
 import { KeyValue, Section } from '../tree/parts';
 
@@ -8,12 +8,14 @@ export function V4Confirmation({ preview, busy, onConfirm, onCancel }: {
   preview: Confirmation; busy: boolean; onConfirm: () => void; onCancel: () => void;
 }) {
   const theme = useTheme();
+  const [typed, setTyped] = useState('');
+  const stop = preview.action === 'stop';
   const entries = Object.entries(preview.config ?? {}).flatMap(([key, value]) =>
     (key === 'adapter' || key === 'split') && value && typeof value === 'object'
       ? Object.entries(value).map(([nested, v]) => [key === 'adapter' ? `adapter.${nested}` : nested, v] as const)
       : [[key, value] as const]);
   return <View testID="v41-confirmation" style={{ padding: 14, gap: 10, borderWidth: 1, borderColor: theme.warning, borderRadius: 8 }}>
-    <Copy>确认{({ calibrate: '开始校准', run: '冻结并开始运行', resume: '续跑', pause: '暂停', stop: '停止' } as Record<string, string>)[preview.action]}</Copy>
+    <Copy>确认{({ calibrate: '开始校准', run: '冻结并开始运行', resume: '续跑', pause: '暂停', stop: '终止运行' } as Record<string, string>)[preview.action]}</Copy>
     {preview.incurs_cost && <>
       <Copy small>此操作会调用执行服务和 Agent，并产生费用。时间预算：{preview.budget_hours} 小时。</Copy>
       {preview.action === 'calibrate' && <Copy small>校准执行并发上限：{String(preview.config?.calibration_concurrency ?? 1)}。这是本次校准的上限，优化阶段并发在建议书中另行确定。</Copy>}
@@ -30,12 +32,17 @@ export function V4Confirmation({ preview, busy, onConfirm, onCancel }: {
         </KeyValue>)}
       </Section>
     </>}
-    {preview.action === 'pause' && <Copy small>暂停本地调度，保留远端工作，之后可续跑。</Copy>}
-    {preview.action === 'stop' && <Copy small>取消在途工作并归档 Agent，结束此次运行。</Copy>}
+    {preview.action === 'pause' && <Copy small>暂停本地调度，保留远端工作，之后可从原处续跑。</Copy>}
+    {stop && <View testID="v41-stop-warning" style={{ gap: 6 }}>
+      <Copy small style={{ color: theme.error }}>不可恢复：取消所有在途执行、归档 Agent，本次运行永久结束，之后不能续跑。已完成的校准与测量会保留，但继续实验需要新建迭代。</Copy>
+      <Copy small muted>只想暂时停下，请返回并使用“暂停（可续跑）”。</Copy>
+      <Input label="输入“终止”以确认" value={typed} onChange={setTyped} placeholder="终止" testID="v41-stop-typed" />
+    </View>}
     <Copy small muted>确认有效期 {Math.round(preview.expires_in_seconds / 60)} 分钟；配置变化后需要重新预览。</Copy>
     <View style={{ flexDirection: 'row', gap: 8 }}>
       <Button label="返回" onPress={onCancel} disabled={busy} />
-      <Button label={busy ? '提交中…' : '确认执行'} onPress={onConfirm} disabled={busy} primary testID="v41-confirm" />
+      <Button label={busy ? '提交中…' : stop ? '终止运行' : '确认执行'} onPress={onConfirm} disabled={busy || (stop && typed.trim() !== '终止')}
+        primary={!stop} danger={stop} testID="v41-confirm" />
     </View>
   </View>;
 }

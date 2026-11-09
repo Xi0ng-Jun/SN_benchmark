@@ -58,6 +58,7 @@ export async function checkV41({ browser, open, origin, shot }) {
   let calibrated = false, running = false, missingProposal = false, confirmations = 0, previews = 0, patches = 0;
   let startupError = { code: 'SCOPE_MISMATCH', message: 'Agent 启动预检失败：SCOPE_MISMATCH；任务目录与远端工作区目录不一致', command: 'calibrate', at: 1 };
   let epoch = 0, activeToken = null, calibrationInputs = null, recovering = false;
+  const imports = [];
   await page.route('**/api/iterations/v41-wizard/auto-run', async route => {
     await route.fulfill({ json: running ? { ...finished, run: { ...finished.run, run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'running', alive: true }, next_action: null }
       : { schema_version: 1, method: 'v4', run: { method: 'v4', run_id: 'v41-wizard', iteration_id: 'v41-wizard', status: 'not_started', alive: false },
@@ -75,6 +76,17 @@ export async function checkV41({ browser, open, origin, shot }) {
         sample.proposal.proposal.items[body.key].source = 'user';
       }
       return route.fulfill({ json: sample.proposal });
+    }
+    if (path === 'calibration-sources') return route.fulfill({ json: { sources: [
+      { iteration_id: 'f'.repeat(32), title: '旧迭代（已停止）', ok: true, failed: [], probe: 40, diagnosis: 40, remainder_tasks: 33 },
+      { iteration_id: 'e'.repeat(32), title: '另一起点', ok: false, failed: ['seed commit'] }] } });
+    if (path === 'import-calibration') {
+      imports.push(body);
+      assert.equal(body.source_iteration_id, 'f'.repeat(32));
+      return route.fulfill({ json: body.confirmation_token ? { accepted: true, status: 'complete' } : {
+        ok: true, checks: [{ check: 'seed commit', ok: true }], plan_sha256: 'plan', probe: 40, diagnosis: 40, remainder_tasks: 33,
+        links: 12, source_iteration_id: body.source_iteration_id, confirmation_token: 'import-token', expires_in_seconds: 600,
+        proposal: { values: {}, user_edited: ['validation_size'], advisor: 'complete' } } });
     }
     if (path === 'simulate') {
       if (body.params.b === 3) await new Promise(resolve => setTimeout(resolve, 650));
@@ -121,6 +133,16 @@ export async function checkV41({ browser, open, origin, shot }) {
   startupError = null;
   await page.reload();
   await page.getByTestId('v41-wizard').waitFor();
+  // Reusing a stopped iteration's calibration: preview names the checks, confirmation sends the one-time token.
+  await page.getByTestId('v41-calibration-reuse').waitFor();
+  assert.equal(await page.getByTestId('v41-import-' + 'e'.repeat(32)).getAttribute('aria-disabled'), 'true');
+  await page.getByTestId('v41-import-' + 'f'.repeat(32)).click();
+  await page.getByTestId('v41-import-preview').waitFor();
+  assert.match(await page.getByTestId('v41-import-preview').innerText(), /不产生费用/);
+  await shot(page, 'v41-import-preview');
+  await page.getByTestId('v41-import-confirm').click();
+  await page.getByTestId('v41-import-' + 'f'.repeat(32)).waitFor();
+  assert.deepEqual(imports.map(b => b.confirmation_token ?? null), [null, 'import-token']);
   await page.getByTestId('v41-k-3').click();
   await page.getByTestId('v41-hours').fill('8');
   assert.equal(await page.getByTestId('v41-calibration-concurrency').inputValue(), '2');
@@ -173,6 +195,16 @@ export async function checkV41({ browser, open, origin, shot }) {
   assert.match(await page.getByTestId('v41-confirmation').innerText(), /保留远端/);
   await page.getByTestId('v41-confirm').click();
   assert.equal(confirmations, 3);
+  // Stop is terminal: it is visually separate and needs the typed word before it can be confirmed.
+  await page.getByTestId('v41-stop').click();
+  await page.getByTestId('v41-stop-warning').waitFor();
+  assert.match(await page.getByTestId('v41-stop-warning').innerText(), /不可恢复/);
+  assert.equal(await page.getByTestId('v41-confirm').getAttribute('aria-disabled'), 'true');
+  await page.getByTestId('v41-stop-typed').fill('终止');
+  assert.notEqual(await page.getByTestId('v41-confirm').getAttribute('aria-disabled'), 'true');
+  await shot(page, 'v41-confirm-stop');
+  await page.getByText('返回', { exact: true }).click();
+  assert.equal(confirmations, 3, 'stop was not confirmed');
   // Persisted crash window: frozen configuration exists but no runtime state yet.
   running = false;
   sample.proposal.frozen = true;
@@ -219,6 +251,7 @@ export async function checkV41({ browser, open, origin, shot }) {
   await dialog.getByText('回答率允许下降（0.02 = 2 个百分点）', { exact: true }).waitFor();
   assert.match(await dialog.innerText(), /3 题/);
   assert.equal(createdBody.split_mode, 'deferred');
+  assert.equal(createdBody.method, 'method-v4.1');
   assert.deepEqual(createdBody.case_ids, ['q1', 'q2', 'q3']);
   assert.equal(createdBody.start_commit, 'a'.repeat(40));
   await shot(page, 'v41-new-wizard');
