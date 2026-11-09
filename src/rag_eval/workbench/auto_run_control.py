@@ -34,6 +34,12 @@ class Action(BaseModel):
     recovery_execution_timeout_seconds: int | None = Field(default=None, strict=True, ge=1, le=86400)
 
 
+class ImportAction(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source_iteration_id: str = Field(pattern='^[0-9a-f]{32}$')
+    confirmation_token: str | None = None
+
+
 class Edit(BaseModel):
     model_config = ConfigDict(extra='forbid')
     key: str
@@ -356,6 +362,70 @@ class AutoRunControl:
         return dict(session.public_summary(bundle), alive=self.busy(root), startup_error=startup_error, elapsed_s=elapsed_s, launch_inputs=launch_inputs,
                     **execution_limits)
 
+    # -- calibration import (reuse another iteration's completed calibration) --
+
+    def calibration_sources(self, iteration_id):
+        """Iterations with a completed v4.1 calibration and whether each can be imported here."""
+        from ..optimizer.v4 import calibration_import as imp
+        root = self.directory(iteration_id)
+        out = []
+        for source_id, bound in auto_runs.bindings(self.repository).items():
+            if source_id == iteration_id or bound.get('method') != 'method-v4':
+                continue
+            if not (Path(bound['state_dir']) / session.CALIBRATION_FILE).exists():
+                continue
+            try:
+                planned = imp.plan(self.api.service, self.repository, source_iteration=source_id,
+                                   target_iteration=iteration_id, actor=self.api.actor, target_dir=root)
+            except (ValueError, OSError) as exc:
+                out.append(dict(iteration_id=source_id, ok=False, reason=str(exc)[:300]))
+                continue
+            tree = self.api.service.iteration_record(source_id)
+            out.append(dict(iteration_id=source_id, title=tree.get('title'), ok=planned['ok'],
+                            failed=[c['check'] for c in planned['checks'] if not c['ok']],
+                            probe=planned['probe'], diagnosis=planned['diagnosis'],
+                            remainder_tasks=planned['remainder_tasks']))
+        return dict(sources=out)
+
+    def import_calibration(self, iteration_id, command):
+        """Preview (no token) or perform a calibration import; same token rules as run control."""
+        from ..optimizer.v4 import calibration_import as imp
+        self.api._write()
+        root = self.directory(iteration_id)
+        with self.control_lock(root):
+            if self.busy(root):
+                raise Conflict('An automatic process is already running')
+            planned = imp.plan(self.api.service, self.repository, source_iteration=command.source_iteration_id,
+                               target_iteration=iteration_id, actor=self.api.actor, target_dir=root)
+            public = {k: planned[k] for k in ('ok', 'checks', 'plan_sha256', 'probe', 'diagnosis',
+                                             'remainder_tasks', 'proposal', 'complete')}
+            public.update(links=len(planned['links']), source_iteration_id=command.source_iteration_id)
+            if not command.confirmation_token:
+                if not planned['ok']:
+                    return dict(public, action='import_calibration')
+                token = secrets.token_urlsafe(32)
+                ledger_io.atomic_write_json(root / 'confirmation.json', dict(
+                    token_hash=session.canonical_hash(token), config_sha256=planned['plan_sha256'],
+                    actor=self.api.actor, action='import_calibration', expires_at=time.time() + 600, consumed=False))
+                return dict(public, action='import_calibration', incurs_cost=False, confirmation_token=token,
+                            config_sha256=planned['plan_sha256'], expires_in_seconds=600)
+            saved = self._read(root, 'confirmation.json') or {}
+            if (saved.get('consumed') or saved.get('expires_at', 0) < time.time()
+                    or saved.get('actor') != self.api.actor or saved.get('action') != 'import_calibration'
+                    or saved.get('config_sha256') != planned['plan_sha256']
+                    or not secrets.compare_digest(saved.get('token_hash', ''),
+                                                  session.canonical_hash(command.confirmation_token))):
+                raise Conflict('Confirmation expired or configuration changed; preview again')
+            saved['consumed'] = True
+            ledger_io.atomic_write_json(root / 'confirmation.json', saved)
+            self._audit(iteration_id, 'import_calibration.confirmed', planned['plan_sha256'],
+                        source_iteration_id=command.source_iteration_id)
+            receipt = imp.apply(self.api.service, self.repository, planned, confirm=planned['plan_sha256'])
+            self._audit(iteration_id, 'import_calibration.completed', planned['plan_sha256'],
+                        source_iteration_id=command.source_iteration_id)
+            return dict(accepted=True, action='import_calibration', status=receipt['status'],
+                        config_sha256=planned['plan_sha256'])
+
     def read_proposal(self, iteration_id):
         root = self.directory(iteration_id)
         proposed, bundle = self._proposal(root)
@@ -427,4 +497,12 @@ class AutoRunControl:
         @router.post('/run/stop')
         def stop(iteration_id: str, command: Action):
             return self.execute(iteration_id, 'stop', command)
+
+        @router.get('/calibration-sources')
+        def calibration_sources(iteration_id: str):
+            return self.calibration_sources(iteration_id)
+
+        @router.post('/import-calibration')
+        def import_calibration(iteration_id: str, command: ImportAction):
+            return self.import_calibration(iteration_id, command)
         return router

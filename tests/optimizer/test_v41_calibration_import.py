@@ -183,3 +183,30 @@ def test_imported_remainder_for_other_tasks_is_measured_again(tmp_path):
     out = session.import_baseline(adapter, seed, cfg, partitions, bundle, tmp_path)
     assert adapter.measured == [['r1', 'r2']] and out['rest'].per_task_scores['r1'] == .25
     assert 'provenance' not in session._load(tmp_path / imp.REMAINDER_FILE)
+
+
+def test_workbench_import_lists_sources_and_needs_a_fresh_confirmation(rig4, env, calibrated, tmp_path):
+    from types import SimpleNamespace
+    from rag_eval.workbench.auto_run_control import AutoRunControl, ImportAction
+    from rag_eval.workbench.repository import Conflict
+    source, _ = calibrated
+    target = _deferred(rig4, env, 'web-target')
+    service = rig4.api.service
+    api = SimpleNamespace(repository=service.repository, service=service, actor='operator',
+                          _scope=lambda **kw: None, _write=lambda: None)
+    ctl = AutoRunControl(api, dict(_config_path=str(tmp_path / 'unused.json')))
+    listed = ctl.calibration_sources(target['id'])['sources']
+    assert [(s['iteration_id'], s['ok']) for s in listed] == [(source['id'], True)]
+    preview = ctl.import_calibration(target['id'], ImportAction(source_iteration_id=source['id']))
+    assert preview['ok'] and preview['incurs_cost'] is False and 'qasper:' not in json.dumps(preview)
+    assert service.candidate(target['root_candidate_id'])['links'] == []
+    with pytest.raises(Conflict):
+        ctl.import_calibration(target['id'], ImportAction(source_iteration_id=source['id'], confirmation_token='forged'))
+    token = preview['confirmation_token']
+    done = ctl.import_calibration(target['id'], ImportAction(source_iteration_id=source['id'], confirmation_token=token))
+    assert done['accepted'] and done['status'] == 'complete'
+    with pytest.raises(Conflict):   # a token is used once
+        ctl.import_calibration(target['id'], ImportAction(source_iteration_id=source['id'], confirmation_token=token))
+    assert service.candidate(target['root_candidate_id'])['state'] == 'evaluated'
+    assert ctl.calibration(target['id'])['complete'] is True
+    assert ctl.read_proposal(target['id'])['proposal']['notes']['imported_from']['iteration_id'] == source['id']
