@@ -79,6 +79,32 @@ def task_run_ids(views, task_id, runs=None):
     return ids
 
 
+
+def material_run_ids(repository, views, task_id):
+    """Runs whose benchmark text a card must not carry.
+
+    The Task's own runs plus the partition runs of executions its iteration links
+    from elsewhere (``candidate_links``, e.g. an imported calibration): those cases
+    are shown to the analyst even though another Task ran them.
+    """
+    ids = task_run_ids(views, task_id)
+    if repository is None:
+        return ids
+    with repository.connect() as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_links'").fetchone():
+            return ids
+        linked = [r['execution_id'] for r in conn.execute(
+            'SELECT l.execution_id FROM candidate_links l JOIN candidates c ON c.id=l.candidate_id '
+            'JOIN iterations i ON i.id=c.iteration_id WHERE i.task_id=? ORDER BY l.created_at', (task_id,))]
+    seen = set(ids)
+    for execution_id in linked:
+        for entry in views.execution_runs(execution_id):
+            if entry.id not in seen:
+                seen.add(entry.id)
+                ids.append(entry.id)
+    return ids
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='sn-eval', description=__doc__)
     local = Path('configs/sn-workbench-local.json').is_file()
@@ -261,7 +287,7 @@ def dispatch(options, repository, views, store, policy):
         out = [dict(path=str(root / path), purpose=note) for path, note in ANALYST_DOCS]
     elif command == 'hypothesis-draft':
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
-        out = _invalid_card(store, task_id, card) or _draft_leak(views, task_id, card) or dict(
+        out = _invalid_card(store, task_id, card) or _draft_leak(repository, views, task_id, card) or dict(
             saved=True, card=store.draft(task_id, card, author='agent:analyst'),
             next='a person approves or rejects it on the Changes page')
     elif command == 'proposal draft':
@@ -274,7 +300,7 @@ def dispatch(options, repository, views, store, policy):
         tools = IterationTools(repository, views, task_id, options.role)
         tools.own(parent)
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
-        out = _invalid_card(store, task_id, card) or _draft_leak(views, task_id, card) or dict(
+        out = _invalid_card(store, task_id, card) or _draft_leak(repository, views, task_id, card) or dict(
             saved=True, card=tools.service.draft_proposal(parent, card, author='agent:analyst'),
             next='a person approves or rejects this proposal')
     elif command in ('iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
@@ -290,7 +316,7 @@ def dispatch(options, repository, views, store, policy):
         if referenced_cluster(card['card']):
             out['cluster_id'] = referenced_cluster(card['card'])
     else:  # leak-check
-        out = leak_check(views, task_id, task_run_ids(views, task_id), hypothesis_id=options.hypothesis,
+        out = leak_check(views, task_id, material_run_ids(repository, views, task_id), hypothesis_id=options.hypothesis,
                          candidate_id=options.candidate)
         if options.role == 'implementer':
             out['findings'] = [dict(kind=f['kind'], source=f['source']) for f in out['findings']]
@@ -345,10 +371,10 @@ def _invalid_card(store, task_id, card):
     return None
 
 
-def _draft_leak(views, task_id, card):
+def _draft_leak(repository, views, task_id, card):
     """A refusal when implementer-facing fields overlap benchmark text, else None."""
     from .hypotheses import leak_check
-    leak = leak_check(views, task_id, task_run_ids(views, task_id),
+    leak = leak_check(views, task_id, material_run_ids(repository, views, task_id),
                       extra_texts=[('implementer_brief', str(card.get('implementer_brief', ''))),
                                    ('mechanism', str(card.get('mechanism', ''))),
                                    ('change_scope', '\n'.join(map(str, card.get('change_scope', []))))])

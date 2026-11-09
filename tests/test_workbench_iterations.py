@@ -505,7 +505,7 @@ def test_sn_eval_drafts_under_the_analysts_own_node(env, monkeypatch, tmp_path, 
                             admission=lambda run_id: dict(status='admitted', reason=None),
                             task_runs_context=lambda task_id: ('', json.dumps(dict(runs=[])), {}))
     monkeypatch.setattr(agent_tools, 'build', lambda state, config: (env['repo'], views))
-    monkeypatch.setattr(agent_tools, '_draft_leak', lambda views, task_id, card: None)
+    monkeypatch.setattr(agent_tools, '_draft_leak', lambda *args: None)
     card = tmp_path / 'card.json'
     card.write_text(json.dumps(CARD))
     base = ['--task', tree['task_id'], '--node', root['id'], '--file', str(card), 'proposal', 'draft']
@@ -654,3 +654,20 @@ def test_rerun_counts_are_pre_registered_at_creation(env):
     for bad in (dict(k_base=0), dict(k_base=5), dict(k_base='2'), dict(k_sealed=0), dict(k_sealed=9), dict(k_sealed=1.0)):
         with pytest.raises(ValueError):
             iteration(env, request_key='bad', **bad)
+
+
+def test_leak_material_includes_executions_the_iteration_links_from_another_task(env):
+    """An imported calibration's cases reach the analyst; its runs belong to the old Task."""
+    from types import SimpleNamespace
+    from rag_eval.workbench.agent_tools import material_run_ids
+    tree, old = iteration(env), iteration(env, request_key='old')
+    runs = {'exec-old': [SimpleNamespace(id='exec-old-1'), SimpleNamespace(id='exec-old-2')]}
+    views = SimpleNamespace(task_runs_context=lambda task_id: ('', json.dumps(dict(runs=[])), {}),
+                            execution_runs=lambda execution_id: runs.get(execution_id, []))
+    assert material_run_ids(env['repo'], views, tree['task_id']) == []
+    with env['repo'].connect(write=True) as conn:
+        conn.execute('INSERT INTO candidate_links VALUES(?,?,?,?,?,?)',
+                     (tree['root_candidate_id'], 'exec-old', old['task_id'], json.dumps(dict(kind='calibration_import')),
+                      'alice', '2026-11-09T00:00:00+00:00'))
+    assert material_run_ids(env['repo'], views, tree['task_id']) == ['exec-old-1', 'exec-old-2']
+    assert material_run_ids(None, views, tree['task_id']) == []

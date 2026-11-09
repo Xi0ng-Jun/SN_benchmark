@@ -263,8 +263,8 @@ class RoundOperations:
                 return False
             if rule.get('id') != 'lcd-v2' and not set(card['contract']['predicted_flips']) <= set(cluster['scan']['members']):
                 return False
-            from .agent_tools import task_run_ids
-            material = benchmark_material(self.api.views, task_run_ids(self.api.views, task_id))
+            from .agent_tools import material_run_ids
+            material = benchmark_material(self.api.views, material_run_ids(self.repository, self.api.views, task_id))
             visible = {k: card.get(k) for k in ('title', 'component', 'mechanism', 'implementer_brief',
                                                'possible_harm', 'change_scope')}
             return not scan_text(json.dumps(visible, ensure_ascii=False), material)

@@ -232,7 +232,7 @@ class IterationAPI:
 
     def check(self, candidate_id, *, comparison=None):
         """Check the proposal's predictions against the candidate's Δ父 record."""
-        from .agent_tools import task_run_ids
+        from .agent_tools import material_run_ids
         candidate = self.service.candidate(candidate_id)
         if candidate['proposal_id'] is None:
             raise ValueError('Only a candidate derived from a proposal has predictions to check')
@@ -240,7 +240,7 @@ class IterationAPI:
         if 'id' not in record:
             raise ValueError('Δ父 comparison unavailable: ' + str(record.get('reason')))
         task_id = self.service.view(candidate_id).task_id
-        leak = leak_check(self.views, task_id, task_run_ids(self.views, task_id), candidate_id=candidate_id)
+        leak = leak_check(self.views, task_id, material_run_ids(self.repository, self.views, task_id), candidate_id=candidate_id)
         flips = dict(metric=record['metric'], admission=record['admission']['status'], rows=record['rows'],
                      counts=record['counts'], note=record['admission']['reason'])
         return self.hypotheses.record_check(

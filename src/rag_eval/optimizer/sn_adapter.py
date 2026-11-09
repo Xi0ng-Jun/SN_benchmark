@@ -1049,7 +1049,7 @@ class SNAdapter(SystemAdapter):
         and the benchmark-text leak scan of implementer-visible fields stay.
         """
         import json as _json
-        from rag_eval.workbench.agent_tools import task_run_ids
+        from rag_eval.workbench.agent_tools import material_run_ids
         from rag_eval.workbench.gate import RULE_V2
         from rag_eval.workbench.hypotheses import benchmark_material, scan_text, validate_card
         ops = self._require_round_ops("workspace")
@@ -1062,7 +1062,7 @@ class SNAdapter(SystemAdapter):
             # The run's analysts draft lcd-v2 mechanism cards whatever the protocol
             # recorded (hypotheses.card_rule); approval checks the same form.
             card = validate_card(ops._raw_card(record["card"]), RULE_V2)
-            material = benchmark_material(ops.api.views, task_run_ids(ops.api.views, task_id))
+            material = benchmark_material(ops.api.views, material_run_ids(getattr(ops, 'repository', None), ops.api.views, task_id))
             visible = {k: card.get(k) for k in ("title", "component", "mechanism", "implementer_brief",
                                                 "possible_harm", "change_scope")}
             leaked = scan_text(_json.dumps(visible, ensure_ascii=False), material)

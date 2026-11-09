@@ -394,7 +394,9 @@ def create_app(state_root, config, *, actor='local-reviewer', access_token=None,
     tree_creation_enabled = config.get('task_worktrees', {}).get('create_from_hypothesis') is True
 
     def task_run_ids(task_id):
-        return views.task_run_ids(task_id)
+        # Leak material: own runs plus executions the task's iteration links (imported calibration).
+        from .agent_tools import material_run_ids
+        return material_run_ids(repository, views, task_id)
 
     @app.get('/api/tasks/{task_id}/hypotheses')
     def list_hypotheses(task_id: str):
