@@ -39,7 +39,7 @@ export type Iteration = {
   plan_id: string | null; plan_revision: string | null; root_candidate_id: string | null; created_at: string;
   // Set when an automatic run (method v3) drives this iteration; the page is read-only then.
   auto?: { run_id: string; alive: boolean } | null;
-  protocol: { splits?: { status?: string }; mode?: string; k_base?: number; gate_rule?: { id: string; tau?: number; eta?: string; z_screen?: number; z_confirm?: number }; request_revision?: string; input?: { input_id?: string; bundle_id?: string; suite?: string } } | null;
+  protocol: { splits?: { status?: string }; method?: string; mode?: string; k_base?: number; gate_rule?: { id: string; tau?: number; eta?: string; z_screen?: number; z_confirm?: number }; request_revision?: string; input?: { input_id?: string; bundle_id?: string; suite?: string } } | null;
 };
 export type IterationTree = Iteration & { candidates: Candidate[]; proposals: ProposalRow[]; unassigned_executions: string[] };
 

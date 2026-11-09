@@ -422,7 +422,7 @@ class IterationService:
                          case_ids, mode, actor, request_key, seeded_from=None, sealed_ref=None,
                          split_seed=0, fresh_batch_count=0, fresh_papers_per_batch=8, budget=None,
                          execution=None, round_settings=None, case_retry=None, gate_rule='lcd-v1', safeguards=None,
-                         k_base=2, k_sealed=None, split_mode='eager'):
+                         k_base=2, k_sealed=None, split_mode='eager', method=None):
         """Create the backing Task, freeze its plan, then provision root C0.
 
         ``split_mode='eager'`` (default) splits the selected papers 60/40 now.
@@ -467,6 +467,8 @@ class IterationService:
             raise ValueError("split_mode is 'eager' or 'deferred'")
         if split_mode == 'deferred' and fresh_batch_count:
             raise ValueError('A deferred split draws no fresh batches')
+        if method not in (None, 'method-v4.1') or (method and split_mode != 'deferred'):
+            raise ValueError("method is 'method-v4.1' with a deferred split, or omitted")
         case_retry_frozen = validate_case_retry(case_retry if case_retry is not None
                                                 else {'max_retries_per_case': 1})
         binding = ((self.preparation_config or {}).get('inputs') or {}).get(input_id)
@@ -493,6 +495,8 @@ class IterationService:
             payload['k_sealed'] = k_sealed
         if split_mode != 'eager':
             payload['split_mode'] = split_mode
+        if method is not None:
+            payload['method'] = method
         scope = 'iteration.create:' + workspace_id
         prior = self._receipt(scope, request_key, payload)
         if prior is not None:
@@ -553,6 +557,11 @@ class IterationService:
             protocol['safeguards'] = safeguards
         if k_sealed is not None:
             protocol['k_sealed'] = k_sealed
+        if method is not None:
+            # Automatic runs validate lcd-v2 mechanism cards (hypotheses.card_rule) and
+            # decide by the frozen v4 config; the recorded gate rule says the same.
+            protocol['method'] = method
+            protocol['gate_rule'] = dict(RULE_V2)
         if budget is not None:
             protocol['budget'] = budget
         protocol['round_settings'] = settings

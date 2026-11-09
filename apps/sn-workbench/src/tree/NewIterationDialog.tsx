@@ -34,7 +34,8 @@ export function NewIterationDialog({ open, inputs, profiles, onClose, onCreated 
     setBusy(true); setError('');
     try {
       const tree = await api<IterationTree>('/iterations', { title: title.trim(), start_commit: start.commit, input_id: descriptor.data.input_id,
-        expected_bundle_id: descriptor.data.bundle_id, case_ids: caseIds, mode, request_key: key, seeded_from: start.seeded_from, split_mode: automatic ? 'deferred' : 'eager' });
+        expected_bundle_id: descriptor.data.bundle_id, case_ids: caseIds, mode, request_key: key, seeded_from: start.seeded_from,
+        ...(automatic ? { split_mode: 'deferred', method: 'method-v4.1' } : { split_mode: 'eager' }) });
       setTitle(''); setStart(null); setCases(''); setKey(requestKey());
       setRegisteredCount(caseIds.length);
       if (automatic) setCreated(tree); else onCreated(tree);

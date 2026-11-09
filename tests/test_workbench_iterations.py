@@ -671,3 +671,17 @@ def test_leak_material_includes_executions_the_iteration_links_from_another_task
                       'alice', '2026-11-09T00:00:00+00:00'))
     assert material_run_ids(env['repo'], views, tree['task_id']) == ['exec-old-1', 'exec-old-2']
     assert material_run_ids(None, views, tree['task_id']) == []
+
+
+def test_automatic_iterations_record_their_method_and_lcd_v2_cards(env):
+    from rag_eval.workbench.gate import DEFAULT_RULE, RULE_V2
+    tree = iteration(env, request_key='auto', split_mode='deferred', method='method-v4.1')
+    assert tree['protocol']['method'] == 'method-v4.1' and tree['protocol']['gate_rule'] == RULE_V2
+    assert 'safeguards' not in tree['protocol']   # v4 safeguards live in the frozen v4 config
+    assert iteration(env, request_key='auto', split_mode='deferred', method='method-v4.1')['id'] == tree['id']
+    with pytest.raises(ValueError, match='method'):
+        iteration(env, request_key='eager-auto', method='method-v4.1')
+    with pytest.raises(ValueError, match='method'):
+        iteration(env, request_key='other', split_mode='deferred', method='method-v9')
+    legacy = iteration(env, request_key='plain-deferred', split_mode='deferred')
+    assert legacy['protocol']['gate_rule'] == DEFAULT_RULE and 'method' not in legacy['protocol']

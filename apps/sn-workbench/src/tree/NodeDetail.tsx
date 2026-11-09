@@ -173,6 +173,8 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
   const canImplement = c.state === 'implementing' && Boolean(proposal);
   const canCheck = Boolean(proposal && parentRecord?.id && ['approved', 'implementing', 'verified'].includes(proposal.status));
   const v2 = isV2(tree);
+  // Automatic runs decide on their own run page (v4 frozen config); no lcd gate applies here.
+  const automatic = Boolean(tree.auto) || Boolean(tree.protocol?.method);
   const stages = v2Stages(c.decision);
   const guards = stages.confirm ?? stages.screen;
   const unattributed = adoptedUnattributed(tree, c);
@@ -277,7 +279,16 @@ export function CandidateDetail({ tree, candidate, labels, proposal, requests, a
         : <View style={{ gap: 6 }}>{!!changes.data.diff_stat && <Mono size={11} muted>{changes.data.diff_stat.trim()}</Mono>}
           {(changes.data.files ?? []).map(file => <DiffFile key={file.path} file={file} />)}</View>}
     </Section>}
-    {v2 ? <>
+    {automatic ? <>
+    {agentsSection}
+    {runsSection}
+    {parentSection}
+    {rootSection}
+    <Section title="判定" testID="section-automatic-decision">
+      <Copy small muted>{tree.protocol?.method ?? '自动运行'}：分析卡按 lcd-v2 机制合同校验；采纳与拒绝由自动运行按冻结配置判定，见运行页。</Copy>
+    </Section>
+    {decisionSection}
+    </> : v2 ? <>
     {/* ── 3. 筛选 ── 验证池上的配对 Δ；单侧下界 > 0 才进入确认 */}
     {!isRoot && <Section title="筛选（验证池）" testID="section-screen"
       meta={stages.screen ? <Badge label={v2VerdictLabels[stages.screen.verdict]} tone={verdictTone(stages.screen.verdict)} testID="screen-verdict" /> : null}>

@@ -55,6 +55,8 @@ class CreateIteration(_Command):
     k_sealed: int | None = Field(default=None, ge=1, le=8)
     # method-v4.1: 'deferred' registers only the pool; the split is frozen after calibration.
     split_mode: str = Field(default='eager', pattern='^(eager|deferred)$')
+    # method-v4.1 automatic iterations record their method (cards are lcd-v2 mechanism contracts).
+    method: str | None = Field(default=None, pattern='^method-v4\\.1$')
 
 
 class Integration(_Command):
