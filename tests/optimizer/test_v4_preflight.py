@@ -229,6 +229,16 @@ def test_new_card_with_refs_cannot_fall_back_when_binding_is_missing(tmp_path):
         adapter._implementer_extra_text(Card('failure', 'change', ref='h'), {})
 
 
+def test_staged_evidence_counts_as_published_for_staleness(tmp_path, monkeypatch):
+    adapter = SNAdapterV4(CONFIG, evidence_dir=tmp_path)
+    assert adapter._published_evidence('round-1-P.md') is None
+    monkeypatch.setattr(adapter, '_write_evidence', lambda *args: (_ for _ in ()).throw(RuntimeError('crash')))
+    items = [('c1', 'failure', diagnostic_view(dict(status='success', prediction='a', product_record=dict(question='q'))))]
+    with pytest.raises(RuntimeError):
+        adapter._write_analysis_evidence('round-1-P.md', 'staged text', items, ['id'], 1)
+    assert adapter._published_evidence('round-1-P.md') == b'staged text'   # what a recovery would publish
+
+
 def test_analysis_recovers_staged_evidence_after_crash_before_main_publication(tmp_path, monkeypatch):
     adapter = SNAdapterV4(CONFIG, evidence_dir=tmp_path)
     original = [('c1', 'failure', diagnostic_view(dict(status='success', prediction='original-answer',

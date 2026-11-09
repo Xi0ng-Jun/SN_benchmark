@@ -1217,8 +1217,18 @@ class SNAdapter(SystemAdapter):
                    f"parent: {parent_cid}\ncases: {len(items)} with a view of {len(search_set_trajectories)} "
                    f"selected; {n_shown} shown, {n_omitted} omitted (budget {budget} chars)\n"
                    + stuck + "\n" + worktree_map + self._evidence_extra() + tried + evidence)
-        path, digest, reused = self._write_analysis_evidence(
-            f"round-{round_id}-{parent_cid[:12]}.md", content, items, ordered, n_shown)
+        name = f"round-{round_id}-{parent_cid[:12]}.md"
+        published = self._published_evidence(name)
+        if (published is not None and published != content.encode("utf-8")
+                and not self._analysis_dispatched(task_id, analyst_key)):
+            # Evidence published for an analysis that never reached an Agent (a refused
+            # or interrupted dispatch) went stale when the history changed. No message
+            # names it, so the current content gets its own file and analyst, keyed by
+            # content; the old file stays untouched.
+            tag = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+            name = f"round-{round_id}-{parent_cid[:12]}-{tag}.md"
+            analyst_key = self._request_key("analyse", round_id, parent_cid, tag)
+        path, digest, reused = self._write_analysis_evidence(name, content, items, ordered, n_shown)
         self._analysis_evidence_ready(path, digest, items, ordered, n_shown, reused)
         analyst_text = (
             f"Diagnose the parent version's failures and draft up to {n_cards} legal lcd-v2 mechanism cards, "
@@ -1277,6 +1287,24 @@ class SNAdapter(SystemAdapter):
 
     def _write_analysis_evidence(self, name, content, items, ordered, shown):
         return self._write_evidence(name, content)
+
+    def _published_evidence(self, name) -> Optional[bytes]:
+        """Bytes already published under *name* (what a replay would reuse), or None."""
+        path = self.evidence_dir / name
+        return path.read_bytes() if path.exists() else None
+
+    def _analysis_dispatched(self, task_id: str, key: str) -> bool:
+        """Whether an analyst creation was ever prepared under *key*; read-only."""
+        ops = self._round_ops
+        read = getattr(ops, "_get", None)
+        if read is not None:
+            prior = read(ops._key("agent-actor", key))
+            if not prior:
+                return False
+            actor = prior["actor"]
+        else:
+            actor = ops._agent_actor(key)
+        return ops.creations.store.find_request(task_id, ops._key("agent-create", key), actor=actor) is not None
 
     def _analysis_evidence_ready(self, path, digest, items, ordered, shown, reused):
         return None

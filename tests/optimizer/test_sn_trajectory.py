@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -292,6 +293,31 @@ def test_analyse_rerun_finds_cards_drafted_before_the_restart(tmp_path):
     assert len(ops.creations.store.intents) == 1
     assert first.last_analysis["evidence_sha256"] == replay.last_analysis["evidence_sha256"]
     assert replay.last_analysis["evidence_reused"] and not first.last_analysis["evidence_reused"]
+
+
+def test_stale_evidence_of_an_undispatched_analysis_is_versioned(tmp_path):
+    """Server incident: round-2 evidence was written with in_progress labels, the dispatch was
+    refused before any intent, and the resumed run reused that stale file for a new analyst."""
+    run = _write_run(tmp_path, [_row("a")])
+    hyps = _FakeHypotheses()
+    ops = _FakeRoundOps(hyps)
+    config = {"iteration_id": "I", "task_id": "T", "run_id": "R", "parent_candidate_id": "P"}
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    stale = evidence / "round-2-P.md"
+    stale.write_text("# evidence written before a refused dispatch\n- idea -> in_progress\n")
+    adapter = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0, evidence_dir=evidence)
+    history = [dict(title="idea", label="screen_fail")]
+    adapter.analyse(_stubs(run, ["a"]), 1, round_id=2, history=history)
+    info = adapter.last_analysis
+    path = Path(info["evidence_path"])
+    assert path != stale.resolve() and path.name.startswith("round-2-P-") and not info["evidence_reused"]
+    assert "idea -> screen_fail" in path.read_text() and "in_progress" in stale.read_text()   # old file untouched
+    assert ops.keys[0].startswith("v3/R/analyse/2/P/") and str(path) in ops.texts[0]
+    replay = SNAdapter(config, round_operations=ops, hypotheses=hyps, agent_poll_interval=0, evidence_dir=evidence)
+    replay.analyse(_stubs(run, ["a"]), 1, round_id=2, history=history)
+    assert replay.last_analysis["evidence_path"] == str(path) and ops.keys[1] == ops.keys[0]
+    assert len(ops.creations.store.intents) == 1
 
 
 def test_view_budget_is_bounded():

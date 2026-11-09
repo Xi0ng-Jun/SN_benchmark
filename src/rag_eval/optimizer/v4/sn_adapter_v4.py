@@ -250,6 +250,15 @@ class SNAdapterV4(SNAdapter):
             ledger_io.atomic_text(manifest, json.dumps(saved, ensure_ascii=False))
         return self._write_evidence(name, content)
 
+    def _published_evidence(self, name):
+        """The file, or the staged text a recovery would publish under *name*."""
+        published = super()._published_evidence(name)
+        manifest = (self.evidence_dir / name).with_suffix('.cases.json')
+        if published is None and manifest.exists():
+            text = json.loads(manifest.read_text(encoding='utf-8')).get('evidence_text')
+            return text.encode('utf-8') if isinstance(text, str) else b''
+        return published
+
     def _analysis_evidence_ready(self, path, digest, items, ordered, shown, reused):
         manifest = Path(path).with_suffix('.cases.json')
         if manifest.exists():
