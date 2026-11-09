@@ -87,6 +87,8 @@ def test_briefs_by_role(roles):
     analyst = created(creations, task, 'analyst')
     text = resolve_context(repo, task, {'kind': 'brief', 'session_id': analyst['session_id']})['text']
     assert '分析 Agent' in text and 'scripts/sn-eval' in text and 'docs/failure-ledger.md' in text
+    import shlex, sys
+    assert 'env ' + shlex.quote('SN_WORKBENCH_PYTHON=' + sys.executable) + ' ' in text  # Agents inherit no env
     assert '不要运行 run_notebook_benchmarks.py' in text
     brief = resolve_context(repo, task, {'kind': 'brief', 'session_id': implementer['session_id']})['text']
     assert '实现 Agent' in brief and CARD['implementer_brief'] in brief and str(tree) in brief

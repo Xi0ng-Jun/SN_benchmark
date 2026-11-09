@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+import sys
 from pathlib import Path
 
 from .ingest import read_case, read_result
@@ -59,7 +60,10 @@ def resolve_context(repository, task_id, reference, *, run_views=None):
     if kind == 'brief':
         from .briefs import resolve_brief
         workspace = next(w for w in repository.workspaces() if w['id'] == task['workspace_id'])
-        command = [str(Path(workspace['location']) / 'scripts/sn-eval'), '--state', str(repository.root)]
+        # Agent processes do not inherit this server's environment, and the evaluation
+        # checkout need not hold its own .venv: name the interpreter that serves it.
+        command = ['env', 'SN_WORKBENCH_PYTHON=' + sys.executable,
+                   str(Path(workspace['location']) / 'scripts/sn-eval'), '--state', str(repository.root)]
         config_path = getattr(run_views, 'command_config_path', None)
         if config_path is not None:
             command.extend(['--config', str(config_path)])
