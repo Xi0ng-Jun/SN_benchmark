@@ -88,7 +88,8 @@ def card(title, *, predicate=True):
     """A v2-legal lcd-v2 card; the contract's slice predicate reads a v3 trace feature."""
     out = dict(title=title, component='retrieval', mechanism='empty retrieval calls leave synthesis without evidence',
                falsification='empty retrievals unchanged or the validation score drops',
-               implementer_brief='Retry an empty retrieval once with the expanded sub-query before synthesis.',
+               # Distinct per card: a v4 analyst may not re-draft an identical brief under one parent.
+               implementer_brief=f'{title}: retry an empty retrieval once with the expanded sub-query before synthesis.',
                predictions=[], change_scope=['backend/app'])
     if predicate:
         out['contract'] = dict(slice_predicate=SLICE, manipulation=dict(direction='decrease', threshold=.5),

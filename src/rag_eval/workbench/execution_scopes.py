@@ -147,8 +147,10 @@ def split_plan(service, iteration, split):
 
 # method-v4 subsets: minibatch / rest of the validation split, diagnosis sample of the search split.
 # method-v4.1 adds the probe sample P (validation after the freeze).
-SUBSET_KINDS = ('mb', 'rest', 'diag', 'probe')
-SUBSET_SPLIT = dict(mb='validation', rest='validation', diag='search', probe='validation')
+# ``holdout``: cases outside the frozen pool (and outside the sealed set), measured after an
+# optimisation to draw an independent curve; never visible to the run's Agents.
+SUBSET_KINDS = ('mb', 'rest', 'diag', 'probe', 'holdout')
+SUBSET_SPLIT = dict(mb='validation', rest='validation', diag='search', probe='validation', holdout='validation')
 # While a deferred split is pending only the calibration samples run: probe ⊆ P, diag ⊆ D.
 PENDING_SAMPLE = dict(probe='probe', diag='diagnosis')
 
@@ -175,6 +177,10 @@ def subset_scope_id(protocol, kind, case_ids):
             raise SplitPending('Register the calibration samples before measuring a pending split')
         if not set(case_ids) <= set(splits[sample]):
             raise ValueError(f'Subset cases must be {sample} sample cases')
+    elif kind == 'holdout':
+        pool = set(splits.get('search', ())) | set(splits.get('validation', ()))
+        if set(case_ids) & (pool | set(splits.get('sealed') or ())):
+            raise ValueError('Holdout cases must lie outside the pool and the sealed selection')
     else:
         split = SUBSET_SPLIT[kind]
         if not set(case_ids) <= set(splits.get(split, ())):

@@ -44,9 +44,10 @@ export type V4Round = { forecast?: Forecast | null; round: number; parent: strin
   minibatch_size: number; rest_size: number; diagnosis_s: number | null; diagnosis_prefetched: boolean | null;
   timeboxed: boolean; not_started: number; open: boolean; records: V4Record[];
   analysis_empty?: boolean; analysis_prefetched?: boolean | null; analysis_attempts?: V4AnalysisAttempts | null;
+  analysis_drafts?: { attempts: Partial<V4AnalysisAttempts> | null; deduped: number; drafted: number | null } | null;
   queued: { card_index: number; title: string | null; has_expectation: boolean }[]; decision: V4Decision | null };
 // Outcome counts of the analyst's `proposal draft` calls in the open round (no card text).
-export type V4AnalysisAttempts = { saved: number; invalid_card: number; leak_refused: number; refused: number; total: number;
+export type V4AnalysisAttempts = { saved: number; invalid_card: number; duplicate?: number; leak_refused: number; refused: number; total: number;
   first_at: string | null; last_at: string | null };
 export type V4Session = { started_at: string; stopped?: boolean; cancellation?: unknown };
 export type V4Node = { index: number; version: string; candidate_id: string | null; kind: 'seed' | 'candidate' | 'merge'; round: number | null;

@@ -64,6 +64,15 @@ def build(adapter, snap, rec, card, candidate=None):
                                                              candidate=rec['candidate'], smoke=rec['smoke']))
             rec['attempt'] += 1
             rec['repaired'] = True
+        elif rec.get('carry_from'):
+            # A change measured as qualified on the previous parent: re-apply it, no Agent.
+            rec['attempt'] = 1
+            version = adapter.rebase(candidate, snap.parent)
+            if version is None:
+                return finish(rec, 'error', 'carry-over: the change does not apply to the new parent',
+                              failure_kind='workspace_error'), None
+            rec.update(stage='built', candidate=version.content_hash, touches_preparation=False)
+            return rec, version
         else:
             diff = adapter.implement(card, adapter.workspace(snap.parent, card))
             rec['attempt'] = 1

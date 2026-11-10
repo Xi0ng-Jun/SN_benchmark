@@ -221,8 +221,20 @@ def run_calibration(adapter, seed, service, iteration_id, actor, state_dir, user
 
 
 def materialize_split(bundle, groups, validation_size):
-    """Deterministic whole-paper subset sum; explicit sizes are never rounded."""
+    """Deterministic whole-paper subset sum; explicit sizes are never rounded.
+
+    An imported calibration with an extension fixes the validation set: the source's
+    validation set plus every extension question.
+    """
     probe, diagnosis = bundle['probe'], bundle['diagnosis']
+    extension = bundle.get('extension')
+    if extension:
+        validation = sorted(set(extension['base_validation']) | set(extension['cases']))
+        if validation_size != len(validation):
+            raise ValueError(f'this imported calibration fixes validation_size = {len(validation)} '
+                             f'(source validation plus the extension), got {validation_size}')
+        search = sorted({c for g in groups for c in g} - set(validation))
+        return search, validation
     remaining = [g for g in groups if not set(g) & set(probe + diagnosis)]
     choices = {0: []}
     for group in remaining:
@@ -287,7 +299,8 @@ def import_baseline(adapter, seed, cfg, partitions, bundle, state_dir):
     if not probe <= set(partitions['validation']) or not diagnosis <= set(partitions['search']):
         raise ValueError('frozen split violates the calibration samples')
     base = EvalResult(**bundle['results']['probe'])
-    remaining = sorted(set(partitions['validation']) - probe)
+    extension = sorted((bundle.get('extension') or {}).get('cases') or ())
+    remaining = sorted(set(partitions['validation']) - probe - set(extension))
     if remaining:
         path = Path(state_dir) / 'baseline-remainder.json' if state_dir else None
         identity = dict(seed=seed.content_hash, tasks=remaining, calibration=bundle.get('payload_sha256'))
@@ -303,9 +316,34 @@ def import_baseline(adapter, seed, cfg, partitions, bundle, state_dir):
             if path:
                 _save(path, dict(identity=identity, result=dataclasses.asdict(extra)))
         base = decide.combine(base, extra)
+    if extension:
+        base = decide.combine(base, _extension_baseline(adapter, seed, bundle, extension, state_dir))
     return dict(search=EvalResult(**bundle['results']['diagnosis']),
                 mb=decide.restrict(base, partitions['seed_minibatch']),
                 rest=decide.restrict(base, partitions['seed_rest']))
+
+
+EXTENSION_FILE = 'baseline-extension.json'
+EXTENSION_CHUNK = 45     # questions per execution: chunks run concurrently under the measurement slots
+
+
+def _extension_baseline(adapter, seed, bundle, extension, state_dir):
+    """The seed once (k=1) on the extension questions of an imported calibration; saved and replayable."""
+    path = Path(state_dir) / EXTENSION_FILE if state_dir else None
+    identity = dict(seed=seed.content_hash, tasks=extension, calibration=bundle.get('payload_sha256'))
+    if path is not None and path.exists():
+        saved = _load(path)
+        if saved['identity'] != identity:
+            raise ValueError('extension baseline identity changed')
+        return EvalResult(**saved['result'])
+    chunks = [extension[i:i + EXTENSION_CHUNK] for i in range(0, len(extension), EXTENSION_CHUNK)]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(chunks), thread_name_prefix='v4-extension') as pool:
+        parts = list(pool.map(lambda ids: adapter.evaluate_subset(seed, None, 'rest', ids, 1)[0], chunks))
+    result = decide.combine(*parts)
+    if path is not None:
+        _save(path, dict(identity=identity, result=dataclasses.asdict(result)))
+    return result
 
 
 def _imported_remainder(path, bundle, identity):

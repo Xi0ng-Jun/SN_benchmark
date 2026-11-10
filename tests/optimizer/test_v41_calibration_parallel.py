@@ -103,9 +103,9 @@ def test_serial_option_never_overlaps_and_legacy_resume_preserves_identity(calib
 
 
 def test_calibration_option_does_not_change_legacy_optimization_digest(tmp_path):
-    from rag_eval.optimizer.v4.config import V4Config, digest, load
+    from rag_eval.optimizer.v4.config import LATER_FIELDS, V4Config, digest, load
     cfg = V4Config(time_budget_hours=2)
-    legacy = dataclasses.asdict(cfg)
+    legacy = {k: v for k, v in dataclasses.asdict(cfg).items() if k not in LATER_FIELDS}
     assert digest(cfg) == hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     path = tmp_path / 'config.json'
     path.write_text(json.dumps(dict(time_budget_hours=2, calibration_concurrency=4)))

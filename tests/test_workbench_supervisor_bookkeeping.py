@@ -89,6 +89,8 @@ def test_timeout_finish_is_retried(tmp_path, monkeypatch):
 
 def test_real_writer_lock_delays_but_does_not_lose_terminal_state(tmp_path, monkeypatch):
     repo, task, job = fixture(tmp_path)
+    # The supervisor's own retry is under test, not the repository's write-lock retry.
+    monkeypatch.setattr(repo, 'LOCK_RETRIES', 0)
     store = JobExecutionStore(repo)
     monkeypatch.setattr(store, '_sleep', lambda seconds: time.sleep(0.05))
     run = tmp_path / 'run'

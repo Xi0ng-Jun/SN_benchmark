@@ -117,6 +117,14 @@ function AnalystProgress({ round }: { round: V4Round }) {
   </View>;
 }
 
+function draftSummary(round: V4Round): string {
+  const a = round.analysis_drafts?.attempts;
+  if (!a) return '';
+  const parts = [['saved', '已保存'], ['invalid_card', '格式不合法'], ['duplicate', '重复'], ['leak_refused', '泄漏扫描拒绝'], ['refused', '被拒']]
+    .filter(([k]) => (a as Record<string, number | undefined>)[k]).map(([k, label]) => `${label} ${(a as Record<string, number>)[k]}`);
+  return ` 本轮草稿 ${a.total ?? 0} 次${parts.length ? '：' + parts.join('，') : ''}。`;
+}
+
 function RoundView({ round, selected, onSelect }: { round: V4Round; selected: string | null; onSelect: (id: string | null) => void }) {
   const d = round.decision;
   const meta = round.open ? '进行中' : d?.adopted ? (d.merge?.adopt ? '采纳合并候选' : '有采纳') : '无采纳';
@@ -126,7 +134,8 @@ function RoundView({ round, selected, onSelect }: { round: V4Round; selected: st
       {round.diagnosis_s !== null ? ` · 诊断 ${round.diagnosis_prefetched ? '已预取' : duration(round.diagnosis_s)}` : ''}
       {round.not_started ? ` · ${round.not_started} 张卡${round.timeboxed ? '因轮时间盒' : ''}未开始` : ''}</Copy>
     {round.open && round.cards === null && <AnalystProgress round={round} />}
-    {round.analysis_empty && <Copy small muted>分析没有产出卡片，计为一次流程故障。</Copy>}
+    {round.analysis_empty && <Copy small muted>分析没有产出卡片，计为一次流程故障。{draftSummary(round)}</Copy>}
+    {!round.analysis_empty && round.analysis_drafts?.deduped ? <Copy small muted>{round.analysis_drafts.deduped} 张卡与已试过的卡重复，未进入流水线。</Copy> : null}
     <V4RoundChart round={round} onSelect={onSelect} />
     {round.records.map(r => <Row key={r.card_index} testID={`v4-record-${round.round}-${r.card_index}`} selected={selected === recordKey(round.round, r.card_index)}
       onPress={() => onSelect(recordKey(round.round, r.card_index))}>

@@ -114,7 +114,20 @@ def _round(rd: dict, versions: dict, *, open_: bool) -> dict:
                 minibatch_size=len(split.get("minibatch") or []), rest_size=len(split.get("rest") or []),
                 diagnosis_s=rd.get("diagnosis_s"), diagnosis_prefetched=rd.get("diagnosis_prefetched"),
                 analysis_empty=bool(rd.get("analysis_empty")), not_started=len(rd.get("not_started") or []),
+                analysis_drafts=_analysis_drafts(rd.get("analysis") or {}),
                 forecast=rd.get('forecast'), open=open_, records=[_record(r, versions) for r in records], queued=queued, decision=decision)
+
+
+def _analysis_drafts(analysis: dict):
+    """Outcome counts of the round's analyst drafts and of cards dropped as repeats (no card text)."""
+    stats = analysis.get("stats") or {}
+    attempts = stats.get("draft_attempts") if isinstance(stats.get("draft_attempts"), dict) else None
+    deduped = analysis.get("deduped") or []
+    if attempts is None and not deduped:
+        return None
+    return dict(attempts={k: attempts.get(k) for k in ("saved", "invalid_card", "duplicate", "leak_refused",
+                                                       "refused", "total") if k in attempts} if attempts else None,
+                deduped=len(deduped), drafted=stats.get("drafted"))
 
 
 def _phase(state: dict, alive: bool) -> str:

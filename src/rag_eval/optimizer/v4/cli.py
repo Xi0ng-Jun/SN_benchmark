@@ -122,6 +122,20 @@ def stop_on_sigterm():
         signal.signal(signal.SIGTERM, previous)
 
 
+def _require_credentials(adapter) -> None:
+    """Fail at start, not as endless transient dispatch retries, when model credentials are missing."""
+    service = getattr(getattr(adapter, "_round_ops", None), "service", None)
+    check = getattr(service, "preflight", None)
+    if not callable(check):
+        return
+    from rag_eval.workbench.job_execution import CredentialsUnavailable
+    try:
+        check(adapter._protocol())
+    except CredentialsUnavailable as exc:
+        raise UsageError(f"model credentials missing in this process: {exc}; load the credentials file "
+                         "into the environment that starts the run") from None
+
+
 def _settings(adapter_settings: dict) -> dict:
     """SNAdapterV4 keyword arguments from the config's adapter section."""
     return {k: v for k, v in adapter_settings.items()}
@@ -171,6 +185,7 @@ def cmd_run(args) -> int:
     adapter = services.adapter
     if not services.writable:
         raise UsageError("workbench config does not set task_worktrees.create_candidates=true")
+    _require_credentials(adapter)
     parts = adapter.partitions()
     cfg = loaded.config
     # method-v4.1: safeguards come from the v4 config; the protocol need not register any.
@@ -511,6 +526,17 @@ def build_parser() -> argparse.ArgumentParser:
         help='reuse a completed calibration of another iteration (same seed, input and pool); preview by default')
     imported.add_argument('--from-iteration', required=True, help='the iteration whose calibration is reused')
     imported.add_argument('--confirm', metavar='PLAN_SHA256', help='perform the previewed plan')
+    imported.add_argument('--extend-validation', type=int, default=0, metavar='N',
+                          help='also add N questions outside the source pool to the validation set')
+    held = sub.add_parser('holdout', parents=[common],
+        help='measure the seed and adopted nodes on questions outside the pool (preview by default)')
+    held.add_argument('--confirm', action='store_true', help='run the measurements')
+    held.add_argument('--nodes', choices=('lineage', 'seed_final'), default='lineage')
+    held.add_argument('--exclude-pool-of', action='append', metavar='ITERATION',
+                      help="also exclude another iteration's pool (repeatable), for a shared holdout")
+    held.add_argument('--chunk', type=int, default=160, help='questions per execution')
+    held.add_argument('--concurrency', type=int, choices=range(1, 17), help='executions at once')
+    held.add_argument('--allow-running', action='store_true', help=argparse.SUPPRESS)
     calibration = sub.add_parser('calibrate', parents=[common], help='measure seed P/D on a deferred iteration')
     calibration.add_argument('--v4-config', required=True)
     calibration.add_argument('--calibration-k', type=int, choices=range(2, 6))
@@ -564,9 +590,11 @@ def cmd_import_calibration(args):
     service = services.adapter._round_ops.service
     try:
         planned = imp.plan(service, services.repository, source_iteration=args.from_iteration,
-                           target_iteration=args.iteration, actor=args.actor, target_dir=root)
+                           target_iteration=args.iteration, actor=args.actor, target_dir=root,
+                           extend_validation=args.extend_validation)
         if args.confirm is None:
-            print(json.dumps(planned, ensure_ascii=False, indent=2))
+            shown = {k: v for k, v in planned.items() if k not in ('extension_cases', 'base_validation')}
+            print(json.dumps(shown, ensure_ascii=False, indent=2))
             if not planned['ok']:
                 return EXIT_USAGE
             print(f"next: rerun with --confirm {planned['plan_sha256']}", file=sys.stderr)
@@ -578,6 +606,55 @@ def cmd_import_calibration(args):
     return EXIT_OK
 
 
+def cmd_holdout(args):
+    """Preview (default) or measure the seed and adopted nodes on questions outside the pool."""
+    from . import holdout
+    from .loop import STATE_FILE as RUN_STATE
+    from rag_eval.workbench.run_views import PRIMARY_METRIC
+    _require(args, 'iteration', 'actor', 'state_dir')
+    state_dir = Path(args.state_dir)
+    st = _read(state_dir / RUN_STATE, 'run state')
+    ident = _read(state_dir / IDENTITY_FILE, 'run identity')
+    if ident.get('iteration_id') != args.iteration:
+        raise UsageError(f"{state_dir} belongs to iteration {ident.get('iteration_id')!r}, not {args.iteration!r}")
+    if not st.get('halt_reason') and not args.allow_running:
+        raise UsageError('the run has not stopped yet; measure its holdout after it halts (or --allow-running)')
+    settings = dict((ident.get('config_resolved') or {}).get('adapter') or {})
+    run_id = args.run_id or f'holdout-{args.iteration}'
+    services = build_services(args.config, args.state, args.iteration, actor=args.actor, run_id=run_id,
+                              adapter_settings=_settings(settings))
+    adapter, service = services.adapter, services.adapter._round_ops.service
+    try:
+        node_list = holdout.nodes(st, args.nodes)
+        ids, paper = holdout.cases(service, args.iteration, args.exclude_pool_of or [])
+    except ValueError as exc:
+        raise UsageError(str(exc)) from None
+    if not ids:
+        raise UsageError('no question lies outside the pool, the sealed selection and the excluded pools')
+    chunks = -(-len(ids) // args.chunk)
+    print(f"holdout: {len(ids)} questions outside the pool; {len(node_list)} node(s) x {chunks} chunk(s) "
+          f"= {len(node_list) * chunks} execution(s), k=1; finished chunks are replayed, not re-run")
+    for node in node_list:
+        print(f"  {node['index']}. {node['candidate_id']} {node.get('kind') or 'seed'} round {node.get('round')}")
+    if not args.confirm:
+        print('next: rerun with --confirm to measure', file=sys.stderr)
+        return EXIT_OK
+    _require_credentials(adapter)
+    workers = args.concurrency or settings.get('max_concurrent_measurements') or 3
+    adapter.configure_runtime(remaining=lambda: float('inf'), max_concurrent_executions=workers)
+    adapter._eval_poll_interval = min(adapter._eval_poll_interval, 10.)
+    protocol = service.iteration(args.iteration).get('protocol') or {}
+    with run_view.hold_run_lock(state_dir):
+        results = holdout.measure(adapter, node_list, ids, chunk=args.chunk, workers=workers)
+    rep_ = holdout.report(node_list, results, ids, paper, lineage=st['lineage'], ablation=st.get('ablation'),
+                          metric=PRIMARY_METRIC.get((protocol.get('input') or {}).get('suite')),
+                          safeguards=adapter.observe_safeguards)
+    paths = holdout.write(rep_, state_dir)
+    print(holdout.render(rep_))
+    print(json.dumps(paths, ensure_ascii=False))
+    return EXIT_OK
+
+
 def cmd_recover_agent_creation(args):
     from .agent_recovery import command
     return command(args)
@@ -585,7 +662,8 @@ def cmd_recover_agent_creation(args):
 
 COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cmd_figure,
             'recover-agent-creation': cmd_recover_agent_creation,
-            'calibrate': cmd_calibrate, 'proposal': cmd_proposal, 'import-calibration': cmd_import_calibration}
+            'calibrate': cmd_calibrate, 'proposal': cmd_proposal, 'import-calibration': cmd_import_calibration,
+            'holdout': cmd_holdout}
 
 
 def main(argv: Optional[list[str]] = None) -> int:

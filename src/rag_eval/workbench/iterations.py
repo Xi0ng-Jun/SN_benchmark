@@ -19,6 +19,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -647,6 +648,40 @@ class IterationService:
                                content=dict(probe=len(probe), diagnosis=len(diagnosis), actor=actor))
         return self.iteration(iteration_id)
 
+    def extend_pending_pool(self, iteration_id, case_ids, *, actor):
+        """Add whole papers to the pool of a pending deferred split (method-v4.1 calibration import).
+
+        Same bundle and sealed-paper checks as at creation; registered P/D stay as they are.
+        The base plan gets a revision with the larger selection so the freeze can assign
+        roles to every pool case. Replaying the same extension is a no-op.
+        """
+        actor = _text(actor, 'actor', limit=200)
+        from .splits import pending, register_pool
+        iteration, protocol, partitions = self._pending_split(iteration_id)
+        if not pending(protocol):
+            raise Conflict('The pool can only be extended while a deferred split is pending')
+        split = protocol['splits']
+        current = set(split['pool'])
+        wanted = current | set(case_ids)
+        if wanted == current:
+            return self.iteration(iteration_id)
+        pool = register_pool(partitions, sorted(wanted), sealed=split.get('sealed') or ())
+        from .splits import _owned
+        owned = _owned(partitions)
+        added = wanted - current
+        if {owned[c] for c in added} & {owned[c] for c in current}:
+            raise ValueError('An extension must add whole papers outside the pool')
+        head = self.plans.get(iteration['task_id'], iteration['plan_id'], iteration['plan_revision'])
+        plan = self.plans.save(task_id=iteration['task_id'], input_id=protocol['input']['input_id'],
+                               expected_bundle_id=protocol['input']['bundle_id'], case_ids=pool, title=head['title'],
+                               mode=protocol['mode'], actor=actor, request_key='iteration:extend-pool',
+                               plan_id=iteration['plan_id'], base_revision=iteration['plan_revision'])
+        self._replace_protocol(iteration_id, protocol, dict(protocol, splits=dict(split, pool=pool)),
+                               kind='iteration.split.pool_extended',
+                               content=dict(added=len(added), pool=len(pool), plan_revision=plan['revision'],
+                                            actor=actor), plan=plan)
+        return self.iteration(iteration_id)
+
     def link_calibration_import(self, root_candidate_id, links, *, actor):
         """Attach another iteration's seed measurements to this root (method-v4.1 calibration import).
 
@@ -843,11 +878,20 @@ class IterationService:
                             conn.execute('UPDATE candidate_worktrees SET workspace_json=?,updated_at=? '
                                          'WHERE candidate_id=?', (json.dumps(expected), now(), candidate_id))
                 self._reconcile(task_id, candidate_id, intent, expected)
-            except Exception:
-                # Raw errors may contain credentials, paths or daemon addresses.
+            except Exception as exc:
+                # Raw errors may contain credentials, paths or daemon addresses: keep the class only.
                 # Intent is already committed and every retry is read-only.
-                pass
+                self.provision_errors[candidate_id] = type(exc).__name__
+                logging.getLogger(__name__).warning('worktree provisioning of %s failed: %s',
+                                                    candidate_id, type(exc).__name__)
         return self.candidate(candidate_id)
+
+    @property
+    def provision_errors(self):
+        """Candidate id -> class of the last provisioning error in this process (diagnostics only)."""
+        if not hasattr(self, '_provision_errors'):
+            self._provision_errors = {}
+        return self._provision_errors
 
     def _reconcile(self, task_id, candidate_id, intent, expected=None):
         matches = []

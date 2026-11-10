@@ -6,6 +6,14 @@ import re
 
 # method-v4.1 §4.1: labels that count as "did not qualify" for the per-direction rule.
 NOT_QUALIFIED = ('below_threshold', 'minibatch_fail', 'smoke_fail', 'safeguard_breached', 'remeasure_failed')
+# Labels that count towards "this direction is not getting anywhere": measured non-qualification
+# plus repeated implementation failures (a direction that never finishes in time is fruitless too).
+FRUITLESS = NOT_QUALIFIED + ('implementation_failed',)
+# Coarse effect bands shown to the analyst instead of validation numbers.
+EFFECT_TEXT = {'worse': 'clearly worse than the parent', 'flat': 'no gain (about equal or slightly worse)',
+               'positive': 'a positive gain, but not adopted'}
+# Labels whose title may not be drafted again under the same parent (the measured verdict stands).
+FINAL_LABELS = NOT_QUALIFIED + ('preflight_skipped', 'adopted', 'in_progress', 'pruned')
 DIRECTION_LIMIT = 2            # this many non-qualifying attempts: change direction or state the difference
 DIRECTION_CHARS = 48
 # Labels SNAdapter's v4 history vocabulary does not know (rendered here).
@@ -64,6 +72,46 @@ def feedback(rec: dict, label: str) -> dict:
     return out
 
 
+def effect_band(rec: dict, label: str):
+    """'worse' / 'flat' / 'positive' from the record's own Δ and SE (never the numbers)."""
+    if label == 'minibatch_fail':
+        return 'worse'
+    delta, se = rec.get('delta_val'), rec.get('se_val')
+    if rec.get('stage') != 'measured' or delta is None or label == 'adopted':
+        return None
+    if se is not None and delta <= -se:
+        return 'worse'
+    return 'flat' if delta <= 0 else 'positive'
+
+
+def _norm(text) -> str:
+    return ' '.join(re.findall(r'[^\W_]+', str(text or '').casefold(), flags=re.UNICODE))
+
+
+MIN_CHANGE_CHARS = 60
+
+
+def drop_duplicates(cards: list[dict], history: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Cards without repeats of a settled card under this parent, or of each other (same title or change)."""
+    settled = {_norm(e.get('title')) for e in history
+               if not e.get('earlier_parent') and e.get('label') in FINAL_LABELS}
+    kept, dropped, titles, changes = [], [], set(), set()
+    for card in cards:
+        title, change = _norm(card.get('failure_mode_desc')), _norm(card.get('change_hypothesis'))
+        # A short change text says nothing about identity; only a substantive one counts.
+        change = change if len(change) >= MIN_CHANGE_CHARS else ''
+        reason = ('repeats a card already settled under this parent' if title and title in settled else
+                  'repeats another card of this round' if (title and title in titles) or (change and change in changes)
+                  else None)
+        if reason:
+            dropped.append(dict(title=card.get('failure_mode_desc'), ref=card.get('ref'), reason=reason))
+            continue
+        titles.add(title)
+        changes.add(change)
+        kept.append(card)
+    return kept, dropped
+
+
 def feedback_text(entry: dict) -> str:
     text = OUTCOMES.get(entry.get('outcome'), '')
     # Only source/local-check reports emitted before any measurement can carry free text.
@@ -96,6 +144,13 @@ def analysis_history(adapter, history: list[dict], budget: int, parent_id: str):
     path, digest, _ = adapter._write_evidence(f'adopted-{tag}.md', '\n'.join(lines) + '\n')
     pointer = f'Current adopted changes: read {path} (sha256 {digest}). This inventory is not trimmed.\n\n'
     summary = render_direction_summary(recent)
+    if len(summary) > budget // 2:     # many directions: keep the REQUIRED line and the newest rows
+        head, *rows = summary.rstrip('\n').split('\n')
+        required = [r for r in rows if r.startswith('REQUIRED')]
+        rows = [r for r in rows if not r.startswith('REQUIRED')]
+        while rows and len('\n'.join([head, *rows, *required])) > budget // 2:
+            rows.pop(0)
+        summary = '\n'.join([head, *rows, *required]) + '\n\n'
     text, shown, omitted = render_history(recent, max(0, budget - len(pointer) - len(summary)))
     return pointer + summary + text, shown, omitted
 
@@ -131,8 +186,8 @@ def direction_summary(history: list[dict]) -> list[dict]:
         row['labels'].append(label)
         row['inferred'] = row['inferred'] and inferred
     for row in rows.values():
-        row['not_qualified'] = sum(label in NOT_QUALIFIED for label in row['labels'])
-        row['change_required'] = row['not_qualified'] >= DIRECTION_LIMIT
+        row['not_qualified'] = sum(label in FRUITLESS for label in row['labels'])
+        row['change_required'] = row['not_qualified'] >= DIRECTION_LIMIT and 'adopted' not in row['labels'][-1:]
     return list(rows.values())
 
 
@@ -145,12 +200,16 @@ def render_direction_summary(history: list[dict]) -> str:
              'oldest first:']
     for row in rows:
         mark = ' (inferred from titles)' if row['inferred'] else ''
-        lines.append(f"- {row['direction']}{mark}: tried {len(row['labels'])}x: {', '.join(row['labels'])}")
+        counts: dict = {}
+        for label in row['labels']:
+            counts[label] = counts.get(label, 0) + 1
+        lines.append(f"- {row['direction']}{mark}: {len(row['labels'])}x ("
+                     + ', '.join(f'{k} {v}' for k, v in counts.items()) + f"; last {row['labels'][-1]})")
     stuck = [r['direction'] for r in rows if r['change_required']]
     if stuck:
         lines.append(f"REQUIRED: the direction(s) {', '.join(stuck)} already have {DIRECTION_LIMIT} or more attempts "
-                     "that did not qualify. Choose a different direction, or state in the card's mechanism the "
-                     "essential difference from the earlier attempts of that direction.")
+                     "that did not qualify or never finished implementing. Do not propose them again unless the card's "
+                     "mechanism states a concrete, essential difference; prefer a different direction.")
     return '\n'.join(lines) + '\n\n'
 
 
@@ -173,6 +232,8 @@ def _line(entry: dict):
     if not line:
         return None
     extra = ''
+    if entry.get('effect') in EFFECT_TEXT:
+        extra += f"; effect: {EFFECT_TEXT[entry['effect']]}"
     if entry.get('direction'):
         extra += f"; direction: {normalise_direction(entry['direction'])}"
     if entry.get('needs_human_review') is True:
@@ -189,8 +250,10 @@ def render_history(history: list[dict], budget_chars: int) -> tuple[str, int, in
         note = f'[{total - len(kept)} older entr(ies) omitted]\n' if len(kept) < total else ''
         return ('Hypotheses already tried in this run, on this parent and on earlier ones (outcome labels only, '
                 'oldest first). Do not duplicate adopted or in-progress changes. Refuted hypotheses need new evidence; '
-                'implementation/run failures and inconclusive checks do not refute a direction. '
-                'A qualified_not_adopted card may be reconsidered on this parent:\n' + note + ''.join(kept) + '\n')
+                'implementation/run failures and inconclusive checks do not refute a direction. Re-drafting a '
+                'card with the same title as a measured card under this parent is refused. A qualified_not_adopted '
+                'card measured a gain: re-draft it first on this parent (same title and direction):\n'
+                + note + ''.join(kept) + '\n')
     while lines and len(section(lines)) > budget_chars:
         lines.pop(0)
     if not lines:

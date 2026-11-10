@@ -358,7 +358,13 @@ class V4Run:
 
     def diagnosis_sample(self, version: Version) -> list[str]:
         search = self.partitions["search"]
-        ranked = sorted(search, key=lambda t: hashlib.sha256(f"diag:{version.content_hash}:{t}".encode()).hexdigest())
+        base = version.content_hash
+        if self.cfg.rotate_diagnosis and self.no_adoption >= 2:
+            # After 2 rounds without adoption, show the analyst new search cases: cycle through
+            # groups of diagnose_size, wrapping around. The hash stays deterministic for resume.
+            offset = (self.no_adoption // 2) % max(1, (len(search) + self.cfg.diagnose_size - 1) // self.cfg.diagnose_size)
+            base = hashlib.sha256(f"{version.content_hash}:offset{offset}".encode()).hexdigest()
+        ranked = sorted(search, key=lambda t: hashlib.sha256(f"diag:{base}:{t}".encode()).hexdigest())
         return sorted(ranked[:self.cfg.diagnose_size] if self.cfg.diagnose_size else ranked)
 
     def _diagnose(self, version: Version) -> EvalResult:
@@ -409,7 +415,31 @@ class V4Run:
                     log.warning("card direction unavailable for %r: %s", card.ref, exc)
             row["direction"], row["direction_inferred"] = agent_context.card_direction(raw, card.failure_mode_desc)
             out.append(row)
-        return dict(cards=out, roles=roles, wall_s=time.monotonic() - start)
+        out, deduped = agent_context.drop_duplicates(out, history)
+        stats = getattr(self.adapter, "last_analysis", None)
+        return dict(cards=out, roles=roles, wall_s=time.monotonic() - start, deduped=deduped,
+                    stats={k: v for k, v in (stats or {}).items() if k not in ("evidence_path",)})
+
+    def _carry_cards(self, parent: Version) -> list[dict]:
+        """Cards of the previous round's qualified-not-adopted changes, to be rebased onto *parent*.
+
+        Only after an adoption (a new parent), best first, at most ``carry_over``; they do not count
+        against the analyst's cards. A carried change keeps its card (title, direction, contract).
+        """
+        if not self.cfg.carry_over or not self.rounds:
+            return []
+        prev = self.rounds[-1]
+        if prev.get("parent") == parent.content_hash or (prev.get("decision") or {}).get("adopted") != parent.content_hash:
+            return []
+        rows = sorted((r for r in (prev.get("records") or {}).values()
+                       if r.get("label") == "qualified_not_adopted" and r.get("candidate") in self.versions),
+                      key=lambda r: (-(r.get("delta_val") or 0), r["card_index"]))
+        out = []
+        for r in rows[:self.cfg.carry_over]:
+            card = dict(prev["cards"][r["card_index"]])
+            card.update(carry_from=r["candidate"], carry_round=prev["round"], diff_lines=r.get("diff_lines"))
+            out.append(card)
+        return out
 
     def _remaining(self) -> float:
         return self.cfg.time_budget_hours * 3600 - self.elapsed()
@@ -632,13 +662,18 @@ class V4Run:
             if result is None:
                 result = self._analysis(parent, rd["round"], self.history_for(parent),
                                         self.analyst_shown.get(parent.content_hash, []), self.no_adoption)
+            carried = self._carry_cards(parent)
+            if carried:
+                kept, dropped = agent_context.drop_duplicates(carried + result["cards"], [])
+                result = dict(result, cards=kept, deduped=(result.get("deduped") or []) + dropped)
             shown = self.analyst_shown.get(parent.content_hash, [])
             failures = [t for t, role in result["roles"].items() if role == "failure"]
             self.analyst_shown[parent.content_hash] = list(dict.fromkeys(shown + failures))
             mb, rest = self.split_for(parent.content_hash)
             rd.update(cards=result["cards"], analysis_s=result["wall_s"], analysis_prefetched=future is not None,
                       split=dict(minibatch=mb, rest=rest),
-                      analysis=dict(failures_shown=len(failures), controls_shown=len(result["roles"]) - len(failures)))
+                      analysis=dict(failures_shown=len(failures), controls_shown=len(result["roles"]) - len(failures),
+                                    **{k: result[k] for k in ("deduped", "stats") if result.get(k)}))
             if not rd["cards"]:
                 # §4.6: a stuck analyst is a run failure, not a reason to loop until the budget ends.
                 rd["analysis_empty"] = True
@@ -667,10 +702,14 @@ class V4Run:
         cards = [ledger_io.card_from_dict(c) for c in rd["cards"]]
         records = rd["records"]
         for i, card in enumerate(cards):
+            carry = rd["cards"][i].get("carry_from")
             records.setdefault(str(i), dict(card_index=i, uid=f"{rd['round']}:{i}", title=card.failure_mode_desc,
                                             direction=rd["cards"][i].get("direction"),
                                             direction_inferred=rd["cards"][i].get("direction_inferred"),
-                                            card_ref=card.ref, parent=parent.content_hash, stage="pending", timings={}))
+                                            card_ref=card.ref, parent=parent.content_hash, stage="pending", timings={},
+                                            **(dict(carry_from=carry, candidate=carry,
+                                                    diff_lines=rd["cards"][i].get("diff_lines"))
+                                               if carry else {})))
         snap = self._snapshot(parent)
         failure = None
         prefetched = set(rd.get("prefetched", []))
@@ -854,10 +893,19 @@ class V4Run:
         stages.timed(rec, "remeasure_s", start)
         tier_ = (rec.get("mechanism") or {}).get("tier")
         q = decide.qualification(d["delta"], d["se"], tier_, sg, c=self.cfg.c, c_mech=self.cfg.c_mech)
-        return dict(status="measured", passed=q["qualified"], delta_val=d["delta"], se_val=d["se"],
-                    se_own=d["se_own"], se_floor=d["se_floor"], se_method=d["se_method"], n_val=d["n"],
-                    dropped_val=d["dropped"], single_attempt_tasks=single, safeguards=sg, qualification=q, tier=tier_,
-                    first=dict(delta_val=rec.get("delta_val"), se_val=rec.get("se_val")))
+        out = dict(status="measured", passed=q["qualified"], delta_val=d["delta"], se_val=d["se"],
+                   se_own=d["se_own"], se_floor=d["se_floor"], se_method=d["se_method"], n_val=d["n"],
+                   dropped_val=d["dropped"], single_attempt_tasks=single, safeguards=sg, qualification=q, tier=tier_,
+                   first=dict(delta_val=rec.get("delta_val"), se_val=rec.get("se_val")))
+        if self.cfg.remeasure_mode == "independent":
+            # The re-measurement alone must qualify too: with a low threshold the first
+            # measurement of the round's best is biased upwards (winner's curse).
+            second = second_measurement(merged, self.measure_val(cand, parent.content_hash), eligible)
+            di = decide.paired_delta(second, snap.parent_val, eligible, rerun_var=snap.rerun_var, families=snap.families)
+            qi = decide.qualification(di["delta"], di["se"], tier_, sg, c=self.cfg.c, c_mech=self.cfg.c_mech)
+            out["independent"] = dict(delta_val=di["delta"], se_val=di["se"], n_val=di["n"], qualification=qi)
+            out["passed"] = bool(q["qualified"] and qi["qualified"])
+        return out
 
     def _decide(self, rd: dict, parent: Version) -> None:
         t0 = self.clock()
@@ -872,6 +920,14 @@ class V4Run:
         decision = dict(qualified=[r["card_index"] for r in qualified], order=[r["card_index"] for r in order],
                         best=order[0]["card_index"] if order else None, remeasured=[], merge=None, adopted=None)
         chosen = None
+        if self.cfg.remeasure and self.cfg.remeasure_parallel and not self._out_of_time():
+            todo = [rec for rec in order if rec.get("remeasure") is None]
+            if len(todo) > 1:
+                with ThreadPoolExecutor(max_workers=len(todo), thread_name_prefix="v4-remeasure") as pool:
+                    results = list(pool.map(lambda r: self._remeasure(r, parent), todo))
+                for rec, rm in zip(todo, results):
+                    rec["remeasure"] = rm
+                self.save()
         for rec in order:
             if not self.cfg.remeasure:
                 chosen = rec
@@ -969,6 +1025,9 @@ class V4Run:
         tier_ = ((rec.get("mechanism") or {}).get("tier"))
         if stage == "measured" and tier_:
             entry["mechanism"] = tier_
+        effect = agent_context.effect_band(rec, label)
+        if effect:
+            entry["effect"] = effect
         return entry
 
     # -- ablation pruning (§4.2) --------------------------------------------
@@ -1163,6 +1222,21 @@ class V4Run:
 def final_version(lineage: list[dict], ablation: Optional[dict]) -> str:
     ab = ablation or {}
     return ab["final"] if ab.get("status") == "done" and ab.get("accepted") else lineage[-1]["version"]
+
+
+def second_measurement(merged: EvalResult, first: EvalResult, tasks) -> EvalResult:
+    """The re-measurement alone, from the two-attempt merge and the first measurement (k=1 each).
+
+    Each eligible task has exactly two attempts: the second is 2·mean − first, independent
+    of the order the attempts were recorded in.
+    """
+    attempts = decide.attempts_by_task(merged)
+    scores = {t: 2 * merged.per_task_scores[t] - first.per_task_scores[t] for t in tasks
+              if len(attempts.get(t, ())) == 2 and t in merged.per_task_scores and t in first.per_task_scores}
+    return EvalResult(per_task_scores=scores, trajectories={t: merged.trajectories.get(t, []) for t in scores},
+                      costs={t: 0.0 for t in scores}, error_classes={t: None for t in scores},
+                      safeguard_values=dict(merged.safeguard_values), context=dict(merged.context or {}),
+                      attempt_scores=[dict(scores)])
 
 
 def _failure(exc: EvaluationUnavailable) -> str:

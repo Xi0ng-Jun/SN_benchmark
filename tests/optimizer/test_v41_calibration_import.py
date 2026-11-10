@@ -223,3 +223,86 @@ def test_workbench_import_lists_sources_and_needs_a_fresh_confirmation(rig4, env
     assert service.candidate(target['root_candidate_id'])['state'] == 'evaluated'
     assert ctl.calibration(target['id'])['complete'] is True
     assert ctl.read_proposal(target['id'])['proposal']['notes']['imported_from']['iteration_id'] == source['id']
+
+
+# -- validation extension and the holdout curve ---------------------------------
+
+def test_import_extends_validation_then_holdout_measures_the_lineage(rig4, env, calibrated, capsys, monkeypatch):
+    source, source_dir = calibrated
+    source_validation = rig4.api.service.iteration(source['id'])['protocol']['splits']['validation']
+    target = _deferred(rig4, env, 'extended')
+    target_dir = imp.default_dir(rig4.tmp / 'state', target['id'])
+
+    assert _cli(rig4, 'import-calibration', target['id'], '--from-iteration', source['id'],
+                '--extend-validation', '3') == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview['ok'] and preview['extension']['added'] == 3 and 'extension_cases' not in preview
+    assert rig4.api.service.iteration(target['id'])['protocol']['splits']['pool'] == sorted(rig4.case_ids)
+    assert _cli(rig4, 'import-calibration', target['id'], '--from-iteration', source['id'],
+                '--extend-validation', '3', '--confirm', preview['plan_sha256']) == 0
+    capsys.readouterr()
+    # Replaying the confirmed extension converges on the same receipt.
+    assert _cli(rig4, 'import-calibration', target['id'], '--from-iteration', source['id'],
+                '--extend-validation', '3', '--confirm', preview['plan_sha256']) == 0
+    capsys.readouterr()
+    split = rig4.api.service.iteration(target['id'])['protocol']['splits']
+    added = sorted(set(split['pool']) - set(rig4.case_ids))
+    assert split['status'] == 'pending' and len(added) == 3 and len({c.rsplit('q', 1)[0] for c in added}) == 1
+    bundle = session.load_bundle(target_dir / session.CALIBRATION_FILE)
+    assert bundle['extension']['cases'] == added and bundle['summary']['pool_size'] == len(split['pool'])
+    proposed = json.loads((target_dir / session.PROPOSAL_FILE).read_text())
+    assert proposed['items']['validation_size']['value'] == len(source_validation) + 3
+
+    _use(rig4, rig4.api.service.iteration(target['id']), target_dir)
+    rig4.role.update({c: 'validation' for c in added})
+    monkeypatch.setattr(V4Run, '_stop_reason', rig4.one_round)
+    from .test_sn_rehearsal import GOOD, PAPERS, QUESTIONS, card
+    from .test_v4_rehearsal import first_round_only
+    rig4.effects = {'Fix empty retrievals': GOOD}
+    rig4.analyst_cards = first_round_only([card('Fix empty retrievals')])
+    with rig4:
+        assert _cli(rig4, 'run', target['id'], '--from-proposal', str(target_dir / 'proposal.json'),
+                    run_id='v41-' + target['id'], state_dir=target_dir) == 0
+    frozen = rig4.api.service.iteration(target['id'])['protocol']['splits']
+    assert frozen['validation'] == sorted(set(source_validation) | set(added))
+    assert frozen['search'] == rig4.api.service.iteration(source['id'])['protocol']['splits']['search']
+    root = rig4.api.service.candidate(target['root_candidate_id'])
+    seed_scopes = [a['batch_id'] for a in root['attempts']]
+    assert not [s for s in seed_scopes if s.startswith(('subset:probe', 'subset:diag'))], seed_scopes
+    assert (target_dir / session.EXTENSION_FILE).exists()
+    state = json.loads((target_dir / 'state.json').read_text())
+    assert len(state['lineage']) == 2, state.get('failure_detail')
+
+    # Holdout: questions outside the extended pool and the sealed paper, seed and adopted node.
+    capsys.readouterr()
+    assert _cli(rig4, 'holdout', target['id'], run_id='v41-' + target['id'], state_dir=target_dir) == 0
+    out = capsys.readouterr().out
+    assert 'holdout: 3 questions outside the pool; 2 node(s)' in out
+    assert not (target_dir / 'holdout').exists()
+    holdout_ids = sorted(c for c in [f'qasper:p{p}q{q}' for p in range(PAPERS) for q in range(QUESTIONS)] if c not in frozen['search'] + frozen['validation']
+                         and c not in frozen['sealed'])
+    rig4.role.update({c: 'fresh' for c in holdout_ids})
+    with rig4:
+        assert _cli(rig4, 'holdout', target['id'], '--confirm', run_id='v41-' + target['id'],
+                    state_dir=target_dir) == 0
+    report = json.loads((target_dir / 'holdout' / 'holdout.json').read_text())
+    seed_point, node = report['points']
+    assert report['n_cases'] == 3 and seed_point['delta'] is None
+    assert node['delta'] == pytest.approx(GOOD['fresh'] * (1 + .1 * 1), abs=.05) and node['n'] == 3
+    assert set(report['per_case'][node['candidate_id']]) == set(holdout_ids)
+    assert (target_dir / 'holdout' / 'holdout.md').exists()
+    # Replaying the holdout reuses the finished measurements.
+    executions = len(rig4.api.service.candidate(target['root_candidate_id'])['attempts'])
+    with rig4:
+        assert _cli(rig4, 'holdout', target['id'], '--confirm', run_id='v41-' + target['id'],
+                    state_dir=target_dir) == 0
+    assert len(rig4.api.service.candidate(target['root_candidate_id'])['attempts']) == executions
+
+
+def test_holdout_scope_refuses_pool_and_sealed_questions(rig4, calibrated):
+    from rag_eval.workbench.execution_scopes import subset_scope_id
+    protocol = rig4.api.service.iteration(calibrated[0]['id'])['protocol']
+    with pytest.raises(ValueError):
+        subset_scope_id(protocol, 'holdout', [protocol['splits']['validation'][0]])
+    with pytest.raises(ValueError):
+        subset_scope_id(protocol, 'holdout', [protocol['splits']['sealed'][0]])

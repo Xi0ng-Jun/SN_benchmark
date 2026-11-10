@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager, nullcontext
 import json
+import re
 import os
 import sys
 import time
@@ -300,7 +301,10 @@ def dispatch(options, repository, views, store, policy):
         tools = IterationTools(repository, views, task_id, options.role)
         tools.own(parent)
         card = json.loads(Path(options.file).read_text(encoding='utf-8'))
-        out = _invalid_card(store, task_id, card) or _draft_leak(repository, views, task_id, card)
+        from . import auto_runs
+        v4 = (auto_runs.task_binding(repository, task_id) or {}).get('method') == 'method-v4'
+        out = (_invalid_card(store, task_id, card) or (_duplicate_card(store, task_id, parent, card) if v4 else None)
+               or _draft_leak(repository, views, task_id, card))
         if out is None:
             try:
                 out = dict(saved=True, card=tools.service.draft_proposal(parent, card, author='agent:analyst'),
@@ -309,8 +313,8 @@ def dispatch(options, repository, views, store, policy):
                 record_draft_attempt(repository, task_id, parent, 'refused')
                 raise
         record_draft_attempt(repository, task_id, parent,
-                             'saved' if out.get('saved') else out.get('reason') == 'invalid_card' and 'invalid_card'
-                             or 'leak_refused')
+                             'saved' if out.get('saved') else out.get('reason') if out.get('reason') in
+                             ('invalid_card', 'duplicate') else 'leak_refused')
     elif command in ('iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
                      *REQUEST_COMMANDS):
         out = IterationTools(repository, views, task_id, options.role).run(command, a, options)
@@ -371,25 +375,58 @@ def search_evidence(repository, views, policy, task_id, options):
 
 
 DRAFT_ATTEMPT = 'analysis.draft_attempt'
-DRAFT_OUTCOMES = ('saved', 'invalid_card', 'leak_refused', 'refused')
+DRAFT_OUTCOMES = ('saved', 'invalid_card', 'duplicate', 'leak_refused', 'refused')
 
 
 def record_draft_attempt(repository, task_id, parent, outcome):
-    """One history row per proposal draft: the outcome only, never card text."""
-    with repository.connect(write=True) as conn:
-        repository._event(conn, task_id, DRAFT_ATTEMPT, parent, dict(outcome=outcome))
+    """One history row per proposal draft: the outcome only, never card text.
+
+    Progress bookkeeping only: a busy database must not turn a saved card into a
+    failed command (the analyst would then draft the same card again).
+    """
+    import sqlite3
+    try:
+        with repository.connect(write=True) as conn:
+            repository._event(conn, task_id, DRAFT_ATTEMPT, parent, dict(outcome=outcome))
+    except sqlite3.OperationalError as exc:
+        print(f'warning: draft outcome not recorded ({exc})', file=sys.stderr)
+
+
+def normalise_text(text):
+    """Case- and punctuation-insensitive form used to detect a re-drafted card."""
+    return ' '.join(re.findall(r'[^\W_]+', str(text or '').casefold(), flags=re.UNICODE))
+
+
+def _duplicate_card(store, task_id, parent, card):
+    """A refusal when an analyst card with the same title or implementer brief exists under *parent*."""
+    title, brief = normalise_text(card.get('title')), normalise_text(card.get('implementer_brief'))
+    for row in store.list(task_id):
+        if row.get('parent_candidate_id') != parent or row.get('author') != 'agent:analyst':
+            continue
+        old = row.get('card') or {}
+        if (title and normalise_text(old.get('title')) == title) or (
+                brief and normalise_text(old.get('implementer_brief')) == brief):
+            return dict(saved=False, reason='duplicate', duplicate_of=row.get('id'),
+                        error='a card with the same title or implementer_brief was already drafted under this '
+                              'parent (in this or an earlier round); draft a materially different card instead')
+    return None
 
 
 def draft_attempts(repository, task_id, parent, since=None):
     """Counts of an analyst's draft outcomes under *parent* since an ISO instant (progress view)."""
     from datetime import datetime
-    start = datetime.fromisoformat(since) if since else None
+    from datetime import timezone
+
+    def instant(stamp):
+        value = datetime.fromisoformat(str(stamp).replace('Z', '+00:00'))
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    start = instant(since) if since else None
     counts, first, last = dict.fromkeys(DRAFT_OUTCOMES, 0), None, None
     with repository.connect() as conn:
         rows = conn.execute('SELECT content, registered_at FROM history WHERE task_id=? AND kind=? AND object_id=? '
                             'ORDER BY seq', (task_id, DRAFT_ATTEMPT, parent)).fetchall()
     for row in rows:
-        at = datetime.fromisoformat(row['registered_at'])
+        at = instant(row['registered_at'])
         if start is not None and at < start:
             continue
         outcome = json.loads(row['content']).get('outcome')

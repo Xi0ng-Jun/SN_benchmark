@@ -135,6 +135,7 @@ export async function checkV41({ browser, open, origin, shot }) {
   await page.getByTestId('v41-wizard').waitFor();
   // Reusing a stopped iteration's calibration: preview names the checks, confirmation sends the one-time token.
   await page.getByTestId('v41-calibration-reuse').waitFor();
+  await page.getByTestId('v41-import-extend').waitFor();   // validation extension input (0 = same pool)
   assert.equal(await page.getByTestId('v41-import-' + 'e'.repeat(32)).getAttribute('aria-disabled'), 'true');
   await page.getByTestId('v41-import-' + 'f'.repeat(32)).click();
   await page.getByTestId('v41-import-preview').waitFor();

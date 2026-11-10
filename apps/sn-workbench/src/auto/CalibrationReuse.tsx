@@ -2,25 +2,28 @@ import React, { useState } from 'react';
 import { View } from 'react-native';
 import { api, useResource } from '../contracts';
 import { Badge, Section } from '../tree/parts';
-import { Button, Copy, useTheme } from '../ui';
+import { Button, Copy, Input, useTheme } from '../ui';
 import { controlPath, parameterLabels } from './v41control';
 
 type Source = { iteration_id: string; title?: string | null; ok: boolean; failed?: string[]; reason?: string;
   probe?: number; diagnosis?: number; remainder_tasks?: number };
 type ImportPreview = { ok: boolean; checks: { check: string; ok: boolean }[]; plan_sha256: string; probe: number; diagnosis: number;
   remainder_tasks: number; links: number; source_iteration_id: string; confirmation_token?: string; expires_in_seconds?: number;
-  proposal: { values: Record<string, unknown>; user_edited: string[]; advisor: string | null } };
+  proposal: { values: Record<string, unknown>; user_edited: string[]; advisor: string | null };
+  extension?: { requested: number; added: number; validation: number | null } | null };
 
 /** Reuse another iteration's completed calibration (same seed, input and pool) instead of measuring again. */
 export function CalibrationReuse({ iterationId, disabled, onImported }: { iterationId: string; disabled: boolean; onImported: () => void }) {
   const theme = useTheme(), base = controlPath(iterationId);
   const sources = useResource<{ sources: Source[] }>(base + '/calibration-sources');
   const [preview, setPreview] = useState<ImportPreview | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [extend, setExtend] = useState('0');
+  const extension = /^\d+$/.test(extend.trim()) ? Number(extend.trim()) : null;
   const call = async (source: string, token?: string) => {
     setBusy(true); setError('');
     try {
       const result = await api<ImportPreview & { accepted?: boolean }>(base + '/import-calibration',
-        { source_iteration_id: source, ...(token ? { confirmation_token: token } : {}) });
+        { source_iteration_id: source, extend_validation: extension ?? 0, ...(token ? { confirmation_token: token } : {}) });
       if (token) { setPreview(null); onImported(); } else setPreview(result);
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
@@ -31,6 +34,7 @@ export function CalibrationReuse({ iterationId, disabled, onImported }: { iterat
     {preview ? <View testID="v41-import-preview" style={{ gap: 6, padding: 10, borderWidth: 1, borderColor: theme.warning, borderRadius: 8 }}>
       <Copy small>来源迭代 {preview.source_iteration_id.slice(0, 8)} · P {preview.probe} 题 · D {preview.diagnosis} 题 · 剩余基线 {preview.remainder_tasks} 题 · 挂接执行 {preview.links} 个</Copy>
       {preview.checks.filter(c => !c.ok).map(c => <Copy key={c.check} small style={{ color: theme.error }}>不一致：{c.check}</Copy>)}
+      {preview.extension?.added ? <Copy small>扩展验证集：新增 {preview.extension.added} 道题池外的题，验证集共 {preview.extension.validation} 题；开跑时种子在新题上测 1 遍（命中导入缓存），建议书按扩大后的题池重算并保留你的修改。</Copy> : null}
       {preview.ok && <Copy small muted>{preview.checks.length} 项身份核对全部通过。导入不调用模型、不产生费用；来源迭代只读。</Copy>}
       <Copy small muted>建议书将作为默认值带入（用户改过：{preview.proposal.user_edited.map(k => parameterLabels[k] ?? k).join('、') || '无'}；顾问：{preview.proposal.advisor ?? '无'}），导入后可在建议书中调整，再预览冻结。</Copy>
       <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -38,12 +42,16 @@ export function CalibrationReuse({ iterationId, disabled, onImported }: { iterat
         {preview.ok && preview.confirmation_token && <Button label={busy ? '导入中…' : '确认复用'} primary disabled={busy || disabled}
           onPress={() => call(preview.source_iteration_id, preview.confirmation_token)} testID="v41-import-confirm" />}
       </View>
-    </View> : list.map(s => <View key={s.iteration_id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+    </View> : <>
+      <Input label="扩展验证集题数" value={extend} onChange={setExtend} placeholder="0：与来源迭代同一题池" testID="v41-import-extend" />
+      <Copy small muted>扩展验证集：从题池外按划分种子确定性地补入新题，全部进入验证集；P、D 与搜索集不变。0 表示不扩展。</Copy>
+      {extension === null && <Copy small style={{ color: theme.error }}>请输入非负整数</Copy>}
+      {list.map(s => <View key={s.iteration_id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <Badge label={s.ok ? '可复用' : '不兼容'} tone={s.ok ? 'success' : 'warning'} />
       <Copy small style={{ flex: 1 }}>{s.title ?? s.iteration_id.slice(0, 8)}{s.probe != null ? ` · P ${s.probe} / D ${s.diagnosis}` : ''}
         {!s.ok ? ` · ${s.reason ?? (s.failed ?? []).join('、')}` : ''}</Copy>
-      <Button label="预览复用此校准" disabled={busy || disabled || !s.ok} onPress={() => call(s.iteration_id)} testID={'v41-import-' + s.iteration_id} />
-    </View>)}
+      <Button label="预览复用此校准" disabled={busy || disabled || !s.ok || extension === null} onPress={() => call(s.iteration_id)} testID={'v41-import-' + s.iteration_id} />
+    </View>)}</>}
     {!!error && <Copy small style={{ color: theme.error }}>{error}</Copy>}
   </Section>;
 }

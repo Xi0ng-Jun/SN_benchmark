@@ -38,6 +38,7 @@ class ImportAction(BaseModel):
     model_config = ConfigDict(extra='forbid')
     source_iteration_id: str = Field(pattern='^[0-9a-f]{32}$')
     confirmation_token: str | None = None
+    extend_validation: int = Field(default=0, ge=0, le=2000)
 
 
 class Edit(BaseModel):
@@ -396,9 +397,10 @@ class AutoRunControl:
             if self.busy(root):
                 raise Conflict('An automatic process is already running')
             planned = imp.plan(self.api.service, self.repository, source_iteration=command.source_iteration_id,
-                               target_iteration=iteration_id, actor=self.api.actor, target_dir=root)
+                               target_iteration=iteration_id, actor=self.api.actor, target_dir=root,
+                               extend_validation=command.extend_validation)
             public = {k: planned[k] for k in ('ok', 'checks', 'plan_sha256', 'probe', 'diagnosis',
-                                             'remainder_tasks', 'proposal', 'complete')}
+                                             'remainder_tasks', 'proposal', 'complete', 'extension')}
             public.update(links=len(planned['links']), source_iteration_id=command.source_iteration_id)
             if not command.confirmation_token:
                 if not planned['ok']:

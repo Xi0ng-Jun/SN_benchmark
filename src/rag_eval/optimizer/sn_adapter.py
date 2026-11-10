@@ -133,6 +133,7 @@ class SNAdapter(SystemAdapter):
         worktree_timeout: float = 600.0,
         analyst_view_budget: int = 12000,
         analyst_view_budget_step: int = 0,
+        analyst_history_budget: int = 0,
         eval_poll_interval: float = 30.0,
         eval_timeout: float = 7200.0,
         infra_retry: int = 1,
@@ -172,6 +173,10 @@ class SNAdapter(SystemAdapter):
         if type(analyst_view_budget_step) is not int or analyst_view_budget_step < 0:
             raise ValueError("analyst_view_budget_step must be a non-negative int")
         self._analyst_view_budget_step = analyst_view_budget_step
+        # Characters of tried-card history in their own budget (0: a quarter of the evidence budget).
+        if type(analyst_history_budget) is not int or analyst_history_budget < 0:
+            raise ValueError("analyst_history_budget must be a non-negative int")
+        self._analyst_history_budget = analyst_history_budget
         self.evidence_dir = None
         if evidence_dir is not None:
             self.set_evidence_dir(evidence_dir)
@@ -571,6 +576,7 @@ class SNAdapter(SystemAdapter):
         execution_timeout = getattr(self, '_recovery_execution_timeout_seconds', None) or self._execution_timeout_seconds
         settle = 1.25 * execution_timeout * (retries + 1)
         deadline = time.monotonic() + max(self._eval_timeout, settle)
+        stalled: dict[str, int] = {}
         while True:
             for label, (key, call) in list(pending.items()):
                 self.check_runtime()
@@ -584,6 +590,7 @@ class SNAdapter(SystemAdapter):
                 if status == "complete":
                     del pending[label]
                 elif status == "running":
+                    self._note_dispatch_errors(label, key, result, stalled)
                     continue
                 elif status == "budget_exhausted":
                     raise BudgetExhausted(
@@ -604,6 +611,26 @@ class SNAdapter(SystemAdapter):
                     f"(keys={[k for k, _ in pending.values()]!r}); rerun resumes the same keys"
                 )
             self._runtime_wait(self._eval_poll_interval)
+
+    # Consecutive polls whose launch failed transiently: warn, then give up on the measurement
+    # (a stage failure, counted towards the run's consecutive failures) instead of retrying forever.
+    DISPATCH_WARN_POLLS = 10
+    DISPATCH_GIVE_UP_POLLS = 60
+
+    def _note_dispatch_errors(self, label, key, result, stalled):
+        errors = [e for e in (result.get("errors") or []) if isinstance(e, dict)]
+        if not errors:
+            stalled.pop(label, None)
+            return
+        n = stalled[label] = stalled.get(label, 0) + 1
+        kinds = sorted({str(e.get("type")) for e in errors})
+        import logging
+        if n % self.DISPATCH_WARN_POLLS == 0:
+            logging.getLogger(__name__).warning(
+                "%s: launch failed %d consecutive polls (%s); key=%r", label, n, ", ".join(kinds), key)
+        if n >= self.DISPATCH_GIVE_UP_POLLS:
+            raise EvaluationUnavailable(f"{label}: launch kept failing for {n} polls ({', '.join(kinds)}); "
+                                        f"key={key!r}; fix the cause, then resume")
 
     def _measure(self, candidate_ids: list[str], split: str) -> None:
         """v2 ``split`` each candidate on one whole split ('search' or 'validation').
@@ -1117,9 +1144,11 @@ class SNAdapter(SystemAdapter):
         deadline = time.monotonic() + self._worktree_timeout
         while not _worktree_ready(candidate):
             if time.monotonic() >= deadline:
+                error = getattr(service, 'provision_errors', {}).get(candidate_id)
                 raise TimeoutError(
                     f"Worktree of candidate {candidate_id!r} not ready within "
-                    f"{self._worktree_timeout}s (worktree={candidate.get('worktree')!r})"
+                    f"{self._worktree_timeout}s (worktree={candidate.get('worktree')!r}"
+                    + (f"; last provisioning error: {error}" if error else "") + ")"
                 )
             self._runtime_wait(self._agent_poll_interval)
             candidate = service.provision(candidate_id)
@@ -1211,8 +1240,9 @@ class SNAdapter(SystemAdapter):
             raise ValueError(f"no_adoption_rounds must be a non-negative int, got {no_adoption_rounds!r}")
         budget = min(MAX_ANALYST_VIEW_BUDGET,
                      self._analyst_view_budget + no_adoption_rounds * self._analyst_view_budget_step)
-        tried, n_hist_shown, n_hist_omitted = self._analysis_history(history or [], budget // 4, parent_cid)
-        evidence, n_shown, n_omitted = render_views(items, budget - len(tried))
+        separate = self._analyst_history_budget
+        tried, n_hist_shown, n_hist_omitted = self._analysis_history(history or [], separate or budget // 4, parent_cid)
+        evidence, n_shown, n_omitted = render_views(items, budget if separate else budget - len(tried))
         stuck = (f"no adoption under this parent for {no_adoption_rounds} consecutive round(s)\n"
                  if no_adoption_rounds else "")
         worktree_map = _render_worktree_map(self._round_ops, parent_cid)
@@ -1281,6 +1311,13 @@ class SNAdapter(SystemAdapter):
                  if r.get("parent_candidate_id") == parent_cid and r.get("status") in ("draft", "approved")
                  and r.get("author") == ANALYST_AUTHOR and _instant(r["created_at"]) >= since]
         cards = [_v2_card_to_v3_card(r) for r in fresh[:n_cards]]
+        self.last_analysis["drafted"] = len(fresh)
+        try:   # outcome counts only (no card text): explains an empty analysis
+            from rag_eval.workbench.agent_tools import draft_attempts
+            self.last_analysis["draft_attempts"] = draft_attempts(
+                self._round_ops.service.repository, task_id, parent_cid, since.isoformat())
+        except Exception as exc:  # noqa: BLE001  (diagnostics only)
+            self.last_analysis["draft_attempts"] = dict(unavailable=type(exc).__name__)
         self._cards_analysed(cards, path, digest)
         return cards
 
@@ -1593,8 +1630,26 @@ class SNAdapter(SystemAdapter):
             code, reason = refusal_reason(exc)
             raise AgentRequestFailed(f'{role} {code} ({type(exc).__name__}): {reason}{suffix}') from exc
 
+    # Roles whose timed-out Agent is archived at once: their card is abandoned, so a remote
+    # session left running only burns model capacity and keeps editing an unfrozen worktree.
+    # (The analyst is not: a resumed run inspects and replays its request.)
+    ARCHIVE_ON_TIMEOUT = ("implementer", "reviewer")
+
     def _poll_agent(self, role: str, candidate_id: Optional[str], call: dict) -> dict:
         """Call ``RoundOperations.agent`` with one key until the agent is idle."""
+        try:
+            return self._poll_agent_once(role, candidate_id, call)
+        except TimeoutError:
+            if role in self.ARCHIVE_ON_TIMEOUT:
+                self._archive_timed_out(call["key"])
+            raise
+
+    def _archive_timed_out(self, key: str) -> None:
+        with self._agent_requests_lock:
+            session_id = self._agent_requests.pop(key, None)
+        self._cancel_agent(key, session_id)     # records its own receipt; never raises
+
+    def _poll_agent_once(self, role: str, candidate_id: Optional[str], call: dict) -> dict:
         self.check_runtime()
         key = call['key']
         if self._runtime_remaining is not None:

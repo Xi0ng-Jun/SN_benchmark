@@ -15,6 +15,13 @@ every identity check; ``apply`` performs the import idempotently:
 5. write the calibration bundle under the new iteration identity, then mark
    the receipt complete.
 
+``extend_validation=N`` additionally grows the target pool by N questions outside the
+source pool (whole papers in split-seed hash order, never sealed). They all join the
+validation set: the frozen split is the source's validation ∪ the extension, search is
+unchanged, so P and D keep their calibration roles. The proposal is recomputed for the
+larger pool (user edits kept, validation_size set to the new size) and the seed is
+measured once on the extension at k=1 when the run starts.
+
 The source iteration, its run directory and its receipts are only read.
 """
 from __future__ import annotations
@@ -66,9 +73,27 @@ def _split_value(split, key):
     return split.get(key)
 
 
-def plan(service, repository, *, source_iteration, target_iteration, actor, target_dir):
+def _extension(service, protocol, pool, n):
+    """N or more questions outside *pool* and the sealed papers: whole papers in split-seed hash order."""
+    split = protocol.get('splits') or {}
+    partitions = service.plans.inputs.describe(protocol['input']['input_id'])['partitions']
+    sealed = set(split.get('sealed') or ())
+    groups = [sorted(p['case_ids']) for p in partitions
+              if p['case_ids'] and not set(p['case_ids']) & (set(pool) | sealed)]
+    groups.sort(key=lambda g: session.canonical_hash([split.get('seed'), g]))
+    out = []
+    for group in groups:
+        if len(out) >= n:
+            break
+        out.extend(group)
+    return sorted(out), sum(len(g) for g in groups)
+
+
+def plan(service, repository, *, source_iteration, target_iteration, actor, target_dir, extend_validation=0):
     """Every identity check with its outcome, the links to add and the plan digest. Read-only."""
     from rag_eval.workbench import auto_runs
+    if type(extend_validation) is not int or extend_validation < 0:
+        raise ImportRefused('extend_validation must be a non-negative integer')
     checks = []
 
     def check(name, ok, detail=None):
@@ -95,6 +120,9 @@ def plan(service, repository, *, source_iteration, target_iteration, actor, targ
               remainder['identity'].get('calibration') == bundle['payload_sha256']
               and remainder['identity'].get('seed') == identity['seed'])
 
+    receipt = (ledger_io.read_json(target_dir / IMPORT_FILE) if (target_dir / IMPORT_FILE).exists() else None)
+    # A replayed import already grew the pool: compare the source with the target's base pool.
+    stored = set(((receipt or {}).get('extension') or {}).get('cases') or ())
     source_tree, target = service.iteration(source_iteration), service.iteration(target_iteration)
     old_root, new_root = (service.candidate(source_tree['root_candidate_id']),
                           service.candidate(target['root_candidate_id']))
@@ -116,9 +144,14 @@ def plan(service, repository, *, source_iteration, target_iteration, actor, targ
         check('protocol ' + key, (source_tree['protocol'] or {}).get(key) == (target['protocol'] or {}).get(key))
     source_split = (source_tree['protocol'] or {}).get('splits') or {}
     for key in SPLIT_KEYS:
-        check('split ' + key, _split_value(source_split, key) == _split_value(split, key))
+        value = _split_value(split, key)
+        if key == 'pool' and value is not None:
+            value = sorted(set(value) - stored)
+        check('split ' + key, _split_value(source_split, key) == value)
+    groups = []
     try:
         _, groups = session._papers(service, target_iteration)
+        groups = [g for g in groups if not set(g) & stored]
         pool = sorted(c for g in groups for c in g)
         check('pool hash', session.canonical_hash(pool) == identity['pool_sha256'])
         check('paper order hash', session.canonical_hash(groups) == identity['papers_sha256'])
@@ -144,14 +177,27 @@ def plan(service, repository, *, source_iteration, target_iteration, actor, targ
     foreign_links = [l['execution_id'] for l in new_root.get('links') or [] if l['execution_id'] not in ours]
     check('target root has no measurements of its own', not new_root['attempts'] and not foreign_links)
 
-    receipt = (ledger_io.read_json(target_dir / IMPORT_FILE) if (target_dir / IMPORT_FILE).exists() else None)
+    extension = []
+    if receipt is not None and 'extension' in receipt:
+        extension = sorted(stored)
+        check('extension size matches the earlier import', receipt['extension'].get('requested') == extend_validation)
+    elif extend_validation:
+        extension, available = _extension(service, target['protocol'] or {},
+                                          sorted(c for g in groups for c in g), extend_validation)
+        check('extension questions available outside the pool', len(extension) >= extend_validation,
+              dict(requested=extend_validation, available=available))
+    base_validation = sorted(source_split.get('validation') or ())
+    if extension:
+        check('source split is frozen (its validation set is extended)',
+              base_validation and set(bundle['probe']) <= set(base_validation))
     source = dict(iteration_id=source_iteration, candidate_id=old_root['id'], state_dir=str(source_dir),
                   calibration_sha256=bundle['payload_sha256'],
                   proposal_sha256=session.canonical_hash(proposed.to_dict()),
                   remainder_sha256=(remainder or {}).get('payload_sha256'))
     digest = session.canonical_hash(dict(source=source, target=dict(iteration_id=target_iteration,
                                          candidate_id=new_root['id'], run_id=run_id, state_dir=str(target_dir)),
-                                         actor=actor, links=links))
+                                         actor=actor, links=links,
+                                         **({'extension': extension} if extension else {})))
     if receipt is not None:
         check('an earlier import of this directory is the same plan', receipt.get('plan_sha256') == digest)
     else:
@@ -166,7 +212,28 @@ def plan(service, repository, *, source_iteration, target_iteration, actor, targ
                 remainder_tasks=len((remainder or {}).get('identity', {}).get('tasks') or []),
                 proposal=dict(values=proposed.values(), user_edited=edited,
                               advisor=(proposed.notes.get('advisor') or {}).get('status')),
+                extension=dict(requested=extend_validation, added=len(extension),
+                               validation=len(base_validation) + len(extension) if extension else None,
+                               cases_sha256=session.canonical_hash(extension)) if extend_validation else None,
+                extension_cases=extension, base_validation=base_validation if extension else None,
                 complete=bool(receipt and receipt.get('status') == 'complete'))
+
+
+def extended_proposal(old, summary, history, validation_size, notes):
+    """Rule defaults for the extended pool with the user's edits re-applied; validation_size set by the import."""
+    fresh = proposal.rule_defaults(summary, old.inputs, history)
+    skipped = []
+    for key, item in sorted(old.items.items()):
+        if item.source != 'user' or key == 'validation_size':
+            continue
+        try:
+            fresh = proposal.apply_user_edit(fresh, key, item.value)
+        except (KeyError, ValueError) as exc:
+            skipped.append(dict(key=key, reason=str(exc)[:200]))
+    fresh = proposal.apply_user_edit(fresh, 'validation_size', validation_size)
+    fresh.items['validation_size'].reason = 'calibration import: source validation set plus the extension'
+    fresh.notes = dict(fresh.notes, **notes, **({'skipped_user_edits': skipped} if skipped else {}))
+    return fresh
 
 
 def apply(service, repository, planned, *, confirm):
@@ -189,6 +256,9 @@ def apply(service, repository, planned, *, confirm):
             receipt = dict(kind='method-v4.1-calibration-import', status='intent', plan_sha256=planned['plan_sha256'],
                            source=planned['source'], target=planned['target'], actor=planned['actor'],
                            links=len(planned['links']), at=datetime.now(timezone.utc).isoformat())
+            if planned.get('extension_cases'):
+                receipt['extension'] = dict(requested=planned['extension']['requested'],
+                                            cases=planned['extension_cases'])
             ledger_io.atomic_write_json(receipt_path, receipt)
         if receipt['status'] == 'complete':
             return receipt
@@ -200,14 +270,36 @@ def apply(service, repository, planned, *, confirm):
         auto_runs.register(repository, target_id, run_id=planned['target']['run_id'],
                            state_dir=planned['target']['state_dir'], actor=planned['actor'], method='method-v4')
         service.link_calibration_import(planned['target']['candidate_id'], planned['links'], actor=planned['actor'])
+        extension = (receipt.get('extension') or {}).get('cases') or []
+        if extension:
+            service.extend_pending_pool(target_id, extension, actor=planned['actor'])
         # The proposal precedes the bundle: a crash between them must not let the
         # calibration crash-recovery branch write rule defaults over the user's values.
         old = ledger_io.read_json(source / session.PROPOSAL_FILE)
         if session.canonical_hash(proposal.Proposal.from_dict(old).to_dict()) != planned['source']['proposal_sha256']:
             raise ImportRefused('source proposal changed since the preview')
-        imported = copy.deepcopy(old)
-        imported['notes'] = dict(imported.get('notes') or {}, imported_from=dict(
-            iteration_id=planned['source']['iteration_id'], proposal_sha256=planned['source']['proposal_sha256']))
+        origin = dict(iteration_id=planned['source']['iteration_id'], proposal_sha256=planned['source']['proposal_sha256'])
+        moved = copy.deepcopy(bundle)
+        moved['identity'] = dict(bundle['identity'], iteration_id=target_id, actor=planned['actor'])
+        moved['imported_from'] = planned['source']
+        if extension:
+            _, groups = session._papers(service, target_id)
+            added = [g for g in groups if set(g) <= set(extension)]
+            summary = dict(bundle['summary'], pool_size=bundle['summary']['pool_size'] + len(extension))
+            if summary.get('remaining_paper_sizes') is not None:
+                summary['remaining_paper_sizes'] = list(summary['remaining_paper_sizes']) + [len(g) for g in added]
+            moved['summary'] = summary
+            moved['identity'].update(pool_sha256=session.canonical_hash(sorted(c for g in groups for c in g)),
+                                     papers_sha256=session.canonical_hash(groups))
+            moved['extension'] = dict(cases=sorted(extension), base_validation=planned['base_validation'],
+                                      source_pool_sha256=bundle['identity']['pool_sha256'])
+            fresh = extended_proposal(proposal.Proposal.from_dict(old), summary, bundle['history'],
+                                      len(planned['base_validation']) + len(extension),
+                                      dict(imported_from=origin, extension=dict(added=len(extension))))
+            imported = fresh.to_dict()
+        else:
+            imported = copy.deepcopy(old)
+            imported['notes'] = dict(imported.get('notes') or {}, imported_from=origin)
         ledger_io.atomic_write_json(target / session.PROPOSAL_FILE, imported)
         for name in COPIED:
             if (source / name).exists():
@@ -216,9 +308,6 @@ def apply(service, repository, planned, *, confirm):
             remainder = session._load(source / REMAINDER_FILE)
             session._save(target / REMAINDER_IMPORT_FILE, dict(source=planned['source'], identity=remainder['identity'],
                                                                result=remainder['result']))
-        moved = copy.deepcopy(bundle)
-        moved['identity'] = dict(bundle['identity'], iteration_id=target_id, actor=planned['actor'])
-        moved['imported_from'] = planned['source']
         session._save(target / session.CALIBRATION_FILE, moved)
         receipt = dict(receipt, status='complete', completed_at=datetime.now(timezone.utc).isoformat())
         ledger_io.atomic_write_json(receipt_path, receipt)

@@ -27,8 +27,11 @@ def test_config_is_strict_and_reports_variants():
 
 def test_default_config_digest_preserves_existing_run_identity():
     # v4.1: digest includes all config fields (user keys + method constants)
+    # Fields added later (LATER_FIELDS) stay out of the digest at their defaults: recorded runs keep their identity.
+    from rag_eval.optimizer.v4.config import LATER_FIELDS
     cfg = V4Config(time_budget_hours=12)
-    expected = hashlib.sha256(json.dumps(dataclasses.asdict(cfg), sort_keys=True).encode()).hexdigest()
+    legacy = {k: v for k, v in dataclasses.asdict(cfg).items() if k not in LATER_FIELDS}
+    expected = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     assert digest(cfg) == expected
 
 

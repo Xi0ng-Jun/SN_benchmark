@@ -109,6 +109,17 @@ def _float(lo, hi):
 BOOL = dict(type="bool")
 TOLERANCES = dict(type="tolerances", min=0.0, max=10.0)
 
+# Method variants (§2.3 constants a run may deliberately change). They are absent from the rule
+# defaults, so earlier proposals stay valid; only the user sets them, ``freeze`` copies them into
+# the run config and ``V4Config.variants()`` reports them as method variants.
+VARIANT_RANGES = {
+    "c": _float(0, 2), "c_mech": _float(0, 2), "minibatch_kill": _float(0, 3),
+    "speculative_analysis": BOOL,
+    "remeasure_mode": dict(type="enum", values=["merged", "independent"]),
+    "remeasure_parallel": BOOL,
+    "carry_over": _int(0, 4), "rotate_diagnosis": BOOL,
+}
+
 
 def allowed_ranges(calibration: CalibrationSummary, inputs: dict) -> dict:
     """The whitelist (§3.6); ranges that depend on the pool or the budget come from the inputs."""
@@ -136,6 +147,8 @@ def check_range(value: Any, spec: dict) -> Optional[str]:
     kind = spec["type"]
     if kind == "bool":
         return None if type(value) is bool else "must be a boolean"
+    if kind == "enum":
+        return None if value in spec["values"] else f"must be one of {spec['values']}"
     if kind == "int":
         if type(value) is not int:
             return "must be an integer"
@@ -164,6 +177,10 @@ def _cross(values: dict, calibration: CalibrationSummary, *, include_dependencie
         out["cards_per_analysis"] = "cards_per_analysis must be at least b"
         if include_dependencies:
             out["b"] = out["cards_per_analysis"]
+    if values.get("c_mech", 0.5) > values.get("c", 1.0):
+        for key in ("c", "c_mech"):
+            if key in values:
+                out[key] = "c_mech must not exceed c (mechanism evidence only relaxes the threshold)"
     if values.get("diagnose_size", 0) < calibration.n_diagnosis:
         out['diagnose_size'] = 'diagnose_size cannot shrink the already observed whole-paper D'
     if calibration.remaining_paper_sizes is not None:
@@ -384,9 +401,10 @@ def _notes(proposal: Proposal, cal: CalibrationSummary, hist: History, sim: dict
 # ---------------------------------------------------------------- edits, guard rails, freeze
 def apply_user_edit(proposal: Proposal, key: str, value: Any) -> Proposal:
     """A copy with ``key`` set by the user (source ``user``); refuses unknown keys and out-of-range values."""
-    if key not in proposal.items:
+    if key not in proposal.items and key not in VARIANT_RANGES:
         raise KeyError(f"unknown proposal parameter {key!r}")
-    item = proposal.items[key]
+    item = proposal.items.get(key) or Item(value=None, source="user", reason="", confidence="high",
+                                           range=copy.deepcopy(VARIANT_RANGES[key]))
     problem = check_range(value, item.range)
     if problem:
         raise ValueError(f"{key}: {problem}")
@@ -443,7 +461,7 @@ def validate(proposal: Proposal, calibration: Any, history: Any = None) -> dict:
 
     for key in sorted(set(ranges) - set(out.items)):
         fatal.append(row(key, "missing mandatory parameter"))
-    for key in sorted(set(out.items) - set(ranges)):
+    for key in sorted(set(out.items) - set(ranges) - set(VARIANT_RANGES)):
         fatal.append(row(key, "unknown parameter", out.items[key]))
     if proposal.sim_id != baseline.sim_id or proposal.rule_params != baseline.rule_params:
         fatal.append(row("sim_id", "rule sim_id or parameters do not match a recomputation"))
@@ -458,6 +476,9 @@ def validate(proposal: Proposal, calibration: Any, history: Any = None) -> dict:
             return None
 
     def problem(key, item):
+        if key in VARIANT_RANGES:
+            reason = check_range(item.value, VARIANT_RANGES[key])
+            return reason or (None if item.source == "user" else "a method variant is set only by the user")
         reason = check_range(item.value, ranges[key])
         if reason:
             return reason
@@ -506,6 +527,11 @@ def validate(proposal: Proposal, calibration: Any, history: Any = None) -> dict:
             reject_or_restore(key, reason)
         out.items[key].range = copy.deepcopy(ranges[key])
         out.items[key].rule_value = copy.deepcopy(baseline.items[key].rule_value)
+    for key in sorted(set(out.items) & set(VARIANT_RANGES)):
+        reason = problem(key, out.items[key])
+        if reason:
+            fatal.append(row(key, reason, out.items[key]))
+        out.items[key].range = copy.deepcopy(VARIANT_RANGES[key])
     if not fatal:
         for key, reason in _cross(out.values(), cal, include_dependencies=True).items():
             if out.items[key].source == "agent":

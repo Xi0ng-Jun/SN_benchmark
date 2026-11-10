@@ -49,6 +49,12 @@ class V4Config:
     c_mech: float = 0.5                      # adoption threshold, mechanism confirmed
     safeguard_z: float = 2.0                 # breached iff harm > tolerance + z*SE_metric
     remeasure: bool = True                   # re-measure the chosen candidate before adopting (§4.4)
+    # "merged": the re-measurement is merged with the first (k=2) and re-judged; "independent": the
+    # re-measurement alone must also qualify (guards against the winner's curse at low thresholds).
+    remeasure_mode: str = "merged"
+    remeasure_parallel: bool = False         # re-measure every qualified candidate at once
+    carry_over: int = 0                      # qualified-not-adopted changes rebased onto the next parent
+    rotate_diagnosis: bool = False           # after 2 rounds without adoption, show the analyst new search cases
     minibatch_kill: float = 1.0              # stage 1: Δ_mb < -kill·SE_mb is eliminated
     smoke_repair_attempts: int = 1
     smoke_behaviour_check: bool = False
@@ -97,6 +103,8 @@ ADAPTER_DEFAULTS: dict[str, Any] = dict(
     agent_poll_interval=10.0, agent_timeout=3600.0, worktree_timeout=600.0,
     wait_for_running=False,  # optional positive-status waiting under the run's total deadline
     analyst_view_budget=12000, reviewer_view_budget=30000,
+    analyst_view_budget_step=0,      # extra evidence characters per round without adoption
+    analyst_history_budget=6000,     # characters of tried-card history, outside the evidence budget
     eval_poll_interval=30.0, eval_timeout=7200.0, infra_retry=1, execution_timeout_seconds=7200,
     max_concurrent_measurements=3,   # v2 measurements in flight at once (prep CPU and model-gate slots are shared)
 )
@@ -161,6 +169,10 @@ def validate(cfg: V4Config) -> V4Config:
         raise ConfigError("cards_per_analysis must be >= 1 or null")
     if not 0 < cfg.review_min_effect <= cfg.review_pairs:
         raise ConfigError("review_min_effect must be in [1, review_pairs]")
+    if cfg.carry_over < 0:
+        raise ConfigError("carry_over must be >= 0")
+    if cfg.remeasure_mode not in ("merged", "independent"):
+        raise ConfigError("remeasure_mode must be 'merged' or 'independent'")
     if cfg.endpoint_nodes not in ("seed_final", "lineage"):
         raise ConfigError("endpoint_nodes must be 'seed_final' or 'lineage'")
     for key, tol in cfg.safeguards.items():
@@ -216,5 +228,15 @@ def load(path: str | Path) -> LoadedConfig:
     return LoadedConfig(cfg, settings, hashlib.sha256(raw).hexdigest(), resolved, calibration_concurrency)
 
 
+# Fields added after runs were already recorded: left out of the digest while at their default,
+# so a run started before them resumes with the same digest.
+LATER_FIELDS = ("remeasure_mode", "remeasure_parallel", "carry_over", "rotate_diagnosis")
+
+
 def digest(cfg: V4Config) -> str:
-    return hashlib.sha256(json.dumps(dataclasses.asdict(cfg), sort_keys=True).encode()).hexdigest()
+    data = dataclasses.asdict(cfg)
+    defaults = {f.name: f.default for f in dataclasses.fields(V4Config) if f.name in LATER_FIELDS}
+    for name in LATER_FIELDS:
+        if data.get(name) == defaults[name]:
+            data.pop(name, None)
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()

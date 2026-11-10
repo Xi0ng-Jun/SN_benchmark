@@ -183,10 +183,19 @@ class SNAdapterV4(SNAdapter):
         advice = getattr(self._card_limit, 'calibration_advice', None)
         prefix = ('## Calibration advisor hypotheses (D only; verify independently)\n'
                   + json.dumps(advice, ensure_ascii=False) + '\n\n') if advice else ''
-        return prefix + (f"## Cost of a change\nPreparation cache sources are listed in {path} (sha256 {digest}). "
+        return self._task_note() + prefix + (f"## Cost of a change\nPreparation cache sources are listed in {path} (sha256 {digest}). "
                 "The ::symbol entries cover only those definitions, not the whole file. Changing covered sources "
                 "may require a new preparation snapshot; subsequent evaluations can reuse it. Prefer answer-path "
                 "changes when suitable, and draft the most promising card first.\n\n")
+
+    def _task_note(self) -> str:
+        from .task_notes import task_note
+        try:
+            iteration_id, _ = self._require_ids()
+            protocol = self._round_ops.service.iteration(iteration_id).get('protocol') or {}
+        except Exception:  # noqa: BLE001  (an adapter without the workbench has no note)
+            return ''
+        return task_note(protocol.get('input'))
 
     def analyse(self, *args, calibration_advice=None, **kwargs):
         self._card_limit.calibration_advice = calibration_advice
@@ -212,19 +221,26 @@ class SNAdapterV4(SNAdapter):
                 "already settle the premise. A brief that only restates the failure mode is not acceptable. ")
 
     def _analyst_stuck_text(self, no_adoption_rounds):
-        return (f"No hypothesis has been adopted under this parent for {no_adoption_rounds} consecutive "
-                "round(s): revisit unsupported assumptions and look for a more discriminating check. "
-                "Avoid identical adopted or in-progress proposals; revisit a refuted claim only with new "
-                "evidence that addresses the reported refutation. Inconclusive checks and infrastructure "
-                "failures do not refute a direction: identify the missing evidence or failed prerequisite "
-                "before proposing the next attempt. " if no_adoption_rounds else "")
+        if not no_adoption_rounds:
+            return ""
+        text = (f"No hypothesis has been adopted under this parent for {no_adoption_rounds} consecutive "
+                "round(s). Avoid identical adopted or in-progress proposals; revisit a refuted claim only with new "
+                "evidence that addresses the reported refutation. ")
+        if no_adoption_rounds >= 2:
+            text += ("Change direction: target failure modes, components or product stages different from every "
+                     "direction in the history (for example retrieval/evidence selection instead of answer wording, "
+                     "or the reverse), and re-read the task-and-metric section before choosing. ")
+        return text
 
     def _analyst_extra_text(self) -> str:
         return ("Separate observations from causal hypotheses in mechanism, and put the cheapest discriminating "
                 "source/test/probe check in falsification. Cite only actually displayed opaque case references in "
                 "search_refs (for example [\"c1\", \"c3\"]); use [] for a source-only hypothesis. "
                 "Draft the most promising card first: cards are implemented in draft order. Prefer changes outside "
-                "the preparation path when suitable. ")
+                "the preparation path when suitable. "
+                f"The implementer has at most {int(self._agent_timeout // 60)} minutes per card, including its checks: "
+                "keep each card a small, single-mechanism change; split a multi-step retrieval change (extra model "
+                "calls, retries, re-ranking) into one bounded step per card. ")
 
     def _write_analysis_evidence(self, name, content, items, ordered, shown):
         """Publish a durable text+mapping snapshot first, so an interrupted publication is recoverable."""
@@ -309,11 +325,27 @@ class SNAdapterV4(SNAdapter):
     # ------------------------------------------------------------------
 
     def _within_card_limit(self, call):
-        self._card_limit.deadline = time.monotonic() + self._agent_timeout
+        # The limit includes the worktree wait of ``workspace`` that preceded ``implement``.
+        start = getattr(self._card_limit, "started", None) or time.monotonic()
+        self._card_limit.started = None
+        self._card_limit.deadline = start + self._agent_timeout
         try:
             return call()
         finally:
             self._card_limit.deadline = None
+
+    def workspace(self, version, card=None):
+        start = time.monotonic()
+        self._card_limit.deadline = start + self._agent_timeout
+        try:
+            out = super().workspace(version, card)
+        except BaseException:
+            self._card_limit.started = None
+            raise
+        finally:
+            self._card_limit.deadline = None
+        self._card_limit.started = start
+        return out
 
     def implement(self, card: Card, workspace: Any) -> Diff:
         return self._within_card_limit(lambda: super(SNAdapterV4, self).implement(card, workspace))

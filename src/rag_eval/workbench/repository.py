@@ -81,15 +81,20 @@ class WorkbenchRepository:
         initialize_clusters(self)
         self.database.chmod(0o600)
 
+    # Busy wait per attempt and retries of the write lock. The optimizer, the server and
+    # diagnostic CLIs write concurrently; a lost lock must not discard an Agent's finished work.
+    BUSY_TIMEOUT_S = 60
+    LOCK_RETRIES = 3
+
     @contextmanager
     def connect(self, *, write=False):
-        conn = sqlite3.connect(self.database, timeout=10)
+        conn = sqlite3.connect(self.database, timeout=self.BUSY_TIMEOUT_S)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA foreign_keys=ON')
         conn.execute('PRAGMA synchronous=NORMAL')
         try:
             if write:
-                conn.execute('BEGIN IMMEDIATE')
+                _begin_immediate(conn, self.LOCK_RETRIES)
             yield conn
             conn.commit()
         except BaseException:
@@ -288,3 +293,16 @@ class WorkbenchRepository:
             self._event(conn, task_id, 'note.saved', result['id'], result)
             self._receipt(conn, scope, request_key, payload, result)
             return result
+
+
+def _begin_immediate(conn, retries):
+    """Take the write lock; nothing was done yet, so a locked database is safely retried with backoff."""
+    import time
+    for attempt in range(retries + 1):
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            return
+        except sqlite3.OperationalError as exc:
+            if 'locked' not in str(exc) and 'busy' not in str(exc) or attempt == retries:
+                raise
+            time.sleep(min(10.0, 0.5 * 2 ** attempt))
