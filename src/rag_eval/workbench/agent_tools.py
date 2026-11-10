@@ -461,15 +461,19 @@ def _invalid_card(store, task_id, card):
 
 
 def _draft_leak(repository, views, task_id, card):
-    """A refusal when implementer-facing fields overlap benchmark text, else None."""
+    """A refusal when implementer-facing fields overlap benchmark text, else None.
+
+    The same fields the coordinator's approval scans (``SNAdapter._approve``): a card
+    that passes here must not be refused at approval, after its round already waited on it.
+    """
     from .hypotheses import leak_check
-    leak = leak_check(views, task_id, material_run_ids(repository, views, task_id),
-                      extra_texts=[('implementer_brief', str(card.get('implementer_brief', ''))),
-                                   ('mechanism', str(card.get('mechanism', ''))),
-                                   ('change_scope', '\n'.join(map(str, card.get('change_scope', [])))),
-                                   ('edits', '\n'.join(str(e.get('replace', '')) for e in card.get('edits') or []
-                                                       if isinstance(e, dict)))])
-    findings = [f for f in leak['findings'] if f['source'] in ('implementer_brief', 'mechanism', 'change_scope', 'edits')]
+    texts = [(name, str(card.get(name) or '')) for name in ('title', 'component', 'mechanism',
+                                                             'implementer_brief', 'possible_harm')]
+    texts += [('change_scope', '\n'.join(map(str, card.get('change_scope') or []))),
+              ('edits', '\n'.join(str(e.get('replace', '')) for e in card.get('edits') or [] if isinstance(e, dict)))]
+    leak = leak_check(views, task_id, material_run_ids(repository, views, task_id), extra_texts=texts)
+    scanned = {name for name, _ in texts}
+    findings = [f for f in leak['findings'] if f['source'] in scanned]
     if findings:
         return dict(saved=False, reason='implementer-facing fields overlap benchmark text; rewrite them',
                     findings=findings)

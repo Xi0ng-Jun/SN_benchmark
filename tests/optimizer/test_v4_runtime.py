@@ -249,3 +249,23 @@ def test_candidate_exception_does_not_abort_sibling():
     mock.fail_once['smoke:bad'] = ValueError('candidate returned malformed response')
     run, reason = execute(mock)
     assert reason == 'script_end' and run.lineage[-1]['version'] == 'seed+r1-good'
+
+
+def test_diagnosis_prefetch_starts_with_the_minibatch_leader():
+    # The next parent's diagnosis overlaps the rest of the validation set, not only the decision.
+    started = threading.Event()
+    class Mock(V4Mock):
+        def evaluate_subset(self, version, reference, subset, task_ids, k):
+            if subset == 'rest' and k == 1 and version.content_hash != 'seed':   # the first measurement
+                self.overlapped = started.wait(2)
+            return super().evaluate_subset(version, reference, subset, task_ids, k)
+
+        def evaluate_search(self, version, task_ids, k):
+            if version.content_hash != 'seed':
+                started.set()
+            return super().evaluate_search(version, task_ids, k)
+
+    mock = Mock([[dict(name='A', delta=.1)]])
+    run, _ = execute(mock, config(minibatch=True))
+    assert mock.overlapped
+    assert run.rounds[0]['prefetched'] == [run.lineage[-1]['version']]

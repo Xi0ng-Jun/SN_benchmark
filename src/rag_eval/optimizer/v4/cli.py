@@ -534,6 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
     held.add_argument('--nodes', choices=('lineage', 'seed_final'), default='lineage')
     held.add_argument('--exclude-pool-of', action='append', metavar='ITERATION',
                       help="also exclude another iteration's pool (repeatable), for a shared holdout")
+    held.add_argument('--case-ids', metavar='FILE',
+                      help='only these holdout questions (one case id per line), e.g. those already prepared')
     held.add_argument('--chunk', type=int, default=160, help='questions per execution')
     held.add_argument('--concurrency', type=int, choices=range(1, 17), help='executions at once')
     held.add_argument('--allow-running', action='store_true', help=argparse.SUPPRESS)
@@ -629,6 +631,12 @@ def cmd_holdout(args):
         ids, paper = holdout.cases(service, args.iteration, args.exclude_pool_of or [])
     except ValueError as exc:
         raise UsageError(str(exc)) from None
+    if getattr(args, 'case_ids', None):
+        listed = {line.strip() for line in Path(args.case_ids).read_text(encoding='utf-8').splitlines() if line.strip()}
+        eligible = len(ids)
+        ids = [c for c in ids if c in listed]
+        print(f"holdout restricted by {args.case_ids}: {len(ids)} of {eligible} eligible questions; "
+              f"{len(listed - set(ids))} listed id(s) are not holdout questions and are ignored")
     if not ids:
         raise UsageError('no question lies outside the pool, the sealed selection and the excluded pools')
     chunks = -(-len(ids) // args.chunk)

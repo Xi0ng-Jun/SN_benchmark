@@ -359,7 +359,10 @@ class V4Run:
     def diagnosis_sample(self, version: Version) -> list[str]:
         search = self.partitions["search"]
         base = version.content_hash
-        if self.cfg.rotate_diagnosis and self.no_adoption >= 2:
+        # Only the stuck current parent rotates: a prefetched future parent starts at no_adoption 0,
+        # so its sample must not depend on the old parent's count (resume determinism).
+        current = bool(self.lineage) and self.lineage[-1]["version"] == base
+        if self.cfg.rotate_diagnosis and self.no_adoption >= 2 and current:
             # After 2 rounds without adoption, show the analyst new search cases: cycle through
             # groups of diagnose_size, wrapping around. The hash stays deterministic for resume.
             offset = (self.no_adoption // 2) % max(1, (len(search) + self.cfg.diagnose_size - 1) // self.cfg.diagnose_size)
@@ -381,6 +384,12 @@ class V4Run:
                 self._diagnostics[h] = self.adapter.evaluate_search(version, self.diagnosis_sample(version),
                                                                      self.cfg.diagnose_k)
         return self._diagnostics[h]
+
+    def _minibatch_leader(self, records: dict) -> Optional[dict]:
+        """The passed minibatch record with the largest positive Δ_mb (still measuring the rest), or None."""
+        passed = [r for r in records.values() if r["stage"] == "minibatch_pass" and r.get("candidate") in self.versions
+                  and (r.get("delta_mb") or 0) > 0]
+        return max(passed, key=lambda r: (r["delta_mb"], -r["card_index"]), default=None)
 
     def _start_prefetch(self, version: Version) -> bool:
         h = version.content_hash
@@ -786,9 +795,12 @@ class V4Run:
                         submit(rec, "measurement", self._next_stage(stage), snap, copy.deepcopy(rec), card, cand)
             qualified = [r for r in records.values() if r["stage"] == "measured" and r["qualification"]["qualified"]]
             best = decide.pick_best(qualified, self.cfg.tie_fraction)
-            if best and len(prefetched) < self.cfg.speculative_prefetches:
-                if self._start_prefetch(self.versions[best["candidate"]]):
-                    prefetched.add(best["candidate"])
+            # The next parent's diagnosis is on the critical path after an adoption: start it
+            # with the minibatch leader while the rest of the validation set is still measured.
+            lead = best or self._minibatch_leader(records)
+            if lead and len(prefetched) < self.cfg.speculative_prefetches:
+                if self._start_prefetch(self.versions[lead["candidate"]]):
+                    prefetched.add(lead["candidate"])
                     rd["prefetched"] = sorted(prefetched)
             if self.cfg.merge and len(qualified) >= 2 and count("measurement") < self.cfg.b:
                 second = max((r for r in qualified if r is not best), key=lambda r: (r["delta_val"], -r["card_index"]))

@@ -179,6 +179,11 @@ def test_agent_tool_roles_and_draft_leak_guard(tmp_path, monkeypatch, capsys):
     agent_tools.main(['--task', task, 'hypothesis-draft', '--file', str(leaking)])
     out = json.loads(capsys.readouterr().out)
     assert out['saved'] is False and out['findings'][0]['kind'] == 'question'
+    # Approval scans the title and possible harm too; drafting refuses them as well.
+    leaking.write_text(json.dumps({**CARD, 'title': 'Answer: ' + question}))
+    agent_tools.main(['--task', task, 'hypothesis-draft', '--file', str(leaking)])
+    out = json.loads(capsys.readouterr().out)
+    assert out['saved'] is False and out['findings'][0]['source'] == 'title'
     clean = tmp_path / 'card.json'
     clean.write_text(json.dumps(CARD))
     agent_tools.main(['--task', task, 'hypothesis-draft', '--file', str(clean)])

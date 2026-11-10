@@ -223,3 +223,17 @@ python -m rag_eval.optimizer.cli v4 holdout --config C --state S --iteration IT 
 扩展后，验证集 = 来源验证集 ∪ 新题。建议书按扩大后的题池重算，用户改过的值保留，`validation_size` 由导入确定。开跑时，种子在新题上测一遍（k=1，文件 `baseline-extension.json`）。
 
 留出集结果写在运行目录的 `holdout/` 下（json、md、png），只是观察，不是预注册终点 `v4 test`。比较两个迭代时，用 `--exclude-pool-of` 让双方使用同一组留出题。
+
+## 探索采纳、分析 Agent 直接改动与部署注意（2026-11-10）
+
+**探索采纳**（`explore_after`、`explore_margin`，默认关闭）：本轮按常规门槛没有采纳，且已连续 `explore_after` 轮没有采纳时，可以采纳一个“基本持平”的候选。条件：首测、合并复测、独立复测三个 Δ 都 ≥ −margin，且父版本相对种子的累计验证 Δ 加合并复测 Δ 之和 > 0（所以从种子出发不会探索）。节点 `kind="explore"`，历史标签 `explored`。谱系里有探索节点时，最终版本取累计验证 Δ 最大的节点，并跳过消融。
+
+**分析 Agent 直接改动**（`adapter.analyst_edits`，默认 false）：卡片可带 `edits: [{path, find, replace}]`（≤8 条，总长 ≤20000 字）。草稿时逐条校验 `find` 在父版本文件中恰好出现一次；实现时协调器直接替换、做泄漏扫描、写已接受的预检报告，不派发实现 Agent。任一条失败就还原 worktree 并回退到实现 Agent；记录字段 `edits` 为 `analyst_edits` 或 `fallback: <原因>`。
+
+**部署注意：Agent 端工具走工作区目录。** 分析 Agent 的 `proposal draft` / `source`、实现 Agent 的检查，调用的是 DB 中 `task.workspace.location` 下的 `scripts/sn-eval`，加载的是那个目录自己的 `src`，不是 optimizer 进程的 `PYTHONPATH`。新功能涉及草稿校验（`edits`、去重、草稿计数、泄漏扫描）时，必须把这个目录也升级到同一 commit，否则 Agent 端按旧规则校验。
+
+**草稿与审批扫描一致。** `proposal draft` 的泄漏扫描与协调器审批（`SNAdapter._approve`）扫描同样的字段（title、component、mechanism、implementer_brief、possible_harm、change_scope、edits 的 replace），并使用同样的题目范围（本 Task 的运行加上 `candidate_links` 挂接的外部执行，即导入的校准）。旧版本草稿只扫描本 Task 自己的运行，导入校准后第 1 轮诊断题来自挂接执行，草稿能过、审批被拒（`benchmark_text_leak`），卡片白白占掉一轮。
+
+**诊断预取。** 下一个父版本的诊断（`subset:diag`，`diagnose_size` 题）在关键路径上：采纳后要等它测完，分析 Agent 才能开始。现在小批通过且 Δ_mb > 0 的领先候选一出现就开始预取，与其余验证题和复测重叠；每轮最多 `speculative_prefetches` 个（默认 2），猜错的代价是一次诊断测量。诊断题轮换只作用于当前卡住的父版本，预取的候选不受影响，续跑时样本不变。
+
+**留出集限定题目。** `v4 holdout --case-ids FILE`（每行一个 case id）只测文件中列出的留出题，例如已经完成资料准备的题；不在留出集里的 id 会被忽略并报告数量。运行未停止（例如 SIGINT 暂停后）时，留出集需要 `--allow-running`；它与运行共用运行锁，运行进程在时无法同时测量。

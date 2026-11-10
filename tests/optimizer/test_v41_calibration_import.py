@@ -281,6 +281,11 @@ def test_import_extends_validation_then_holdout_measures_the_lineage(rig4, env, 
     assert not (target_dir / 'holdout').exists()
     holdout_ids = sorted(c for c in [f'qasper:p{p}q{q}' for p in range(PAPERS) for q in range(QUESTIONS)] if c not in frozen['search'] + frozen['validation']
                          and c not in frozen['sealed'])
+    listed = rig4.tmp / 'prepared.txt'
+    listed.write_text(holdout_ids[0] + '\nnot-a-case\n')
+    assert _cli(rig4, 'holdout', target['id'], '--case-ids', str(listed), run_id='v41-' + target['id'],
+                state_dir=target_dir) == 0
+    assert '1 of 3 eligible questions; 1 listed id(s)' in capsys.readouterr().out
     rig4.role.update({c: 'fresh' for c in holdout_ids})
     with rig4:
         assert _cli(rig4, 'holdout', target['id'], '--confirm', run_id='v41-' + target['id'],

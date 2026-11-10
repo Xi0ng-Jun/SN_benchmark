@@ -213,3 +213,13 @@ def test_edits_shape_and_exactly_once_application():
                 [dict(path='backend/app/a.py', find='a')]):
         with pytest.raises(ValueError):
             validate_edits(bad)
+
+
+def test_diagnosis_rotation_applies_only_to_the_current_parent():
+    from rag_eval.optimizer.adapter import Version
+    mock = V4Mock([[]], n_search=40)
+    r, _ = run(mock, cfg(diagnose_size=10, rotate_diagnosis=True))
+    future = Version("seed+r1-X", metadata=dict(candidate_id="x"))
+    before = r.diagnosis_sample(future)
+    r.no_adoption = 2
+    assert r.diagnosis_sample(future) == before            # a prefetched next parent keeps its own sample
