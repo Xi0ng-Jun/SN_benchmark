@@ -288,6 +288,7 @@ def test_import_extends_validation_then_holdout_measures_the_lineage(rig4, env, 
     report = json.loads((target_dir / 'holdout' / 'holdout.json').read_text())
     seed_point, node = report['points']
     assert report['n_cases'] == 3 and seed_point['delta'] is None
+    assert node['final'] and not seed_point['final'] and node['kind'] == 'candidate'
     assert node['delta'] == pytest.approx(GOOD['fresh'] * (1 + .1 * 1), abs=.05) and node['n'] == 3
     assert set(report['per_case'][node['candidate_id']]) == set(holdout_ids)
     assert (target_dir / 'holdout' / 'holdout.md').exists()
@@ -306,3 +307,84 @@ def test_holdout_scope_refuses_pool_and_sealed_questions(rig4, calibrated):
         subset_scope_id(protocol, 'holdout', [protocol['splits']['validation'][0]])
     with pytest.raises(ValueError):
         subset_scope_id(protocol, 'holdout', [protocol['splits']['sealed'][0]])
+
+
+# -- analyst edits applied without an implementer --------------------------------
+
+def _edit_card(rig4, root_id, title, find_suffix=''):
+    from rag_eval.workbench.frozen_source import candidate_blob
+    from .test_sn_rehearsal import card
+    text = candidate_blob(rig4.api.service, rig4.task_id, root_id, 'backend/app/__init__.py')
+    line = text.splitlines()[0]
+    out = card(title)
+    out['edits'] = [dict(path='backend/app/__init__.py', find=line + find_suffix, replace=line + '  # tuned')]
+    return out
+
+
+def test_analyst_edits_are_applied_without_an_implementer(rig4, env, calibrated, capsys, monkeypatch):
+    source, _ = calibrated
+    target = _deferred(rig4, env, 'edits')
+    target_dir = imp.default_dir(rig4.tmp / 'state', target['id'])
+    assert _cli(rig4, 'import-calibration', target['id'], '--from-iteration', source['id']) == 0
+    digest = json.loads(capsys.readouterr().out)['plan_sha256']
+    assert _cli(rig4, 'import-calibration', target['id'], '--from-iteration', source['id'], '--confirm', digest) == 0
+    assert v4cli.main(['proposal', 'set', 'adapter.analyst_edits=true', '--state-dir', str(target_dir)]) == 0
+    capsys.readouterr()
+    _use(rig4, rig4.api.service.iteration(target['id']), target_dir)
+    split = rig4.api.service.iteration(source['id'])['protocol']['splits']   # the target freezes the same split
+    rig4.role.update({c: 'validation' for c in split['validation']})
+    monkeypatch.setattr(V4Run, '_stop_reason', rig4.one_round)
+    from .test_sn_rehearsal import GOOD
+    from .test_v4_rehearsal import first_round_only
+    rig4.effects = {'Tune the prompt': GOOD}
+    rig4.analyst_cards = first_round_only([_edit_card(rig4, target['root_candidate_id'], 'Tune the prompt')])
+    with rig4:
+        assert _cli(rig4, 'run', target['id'], '--from-proposal', str(target_dir / 'proposal.json'),
+                    run_id='v41-' + target['id'], state_dir=target_dir) == 0
+    state = json.loads((target_dir / 'state.json').read_text())
+    rec = state['rounds'][0]['records']['0']
+    assert rec['edits'] == 'analyst_edits' and '# tuned' in rec['diff_excerpt'], state.get('failure_detail')
+    assert len(state['lineage']) == 2, {k: rec.get(k) for k in ('stage', 'reason', 'label', 'delta_val', 'qualification', 'smoke')}
+    assert rig4.intents('implementer') == []
+
+
+def test_edits_that_do_not_match_the_parent_are_refused_at_draft(rig4, calibrated):
+    from rag_eval.workbench.agent_tools import _invalid_edits
+    source, _ = calibrated
+    _use(rig4, rig4.api.service.iteration(source['id']), rig4.run_dir)
+    root = source['root_candidate_id']
+    good = _edit_card(rig4, root, 'Fine')
+    assert _invalid_edits(rig4.api.service, rig4.task_id, root, good) is None
+    missing = _edit_card(rig4, root, 'Missing', find_suffix=' not in the file')
+    refused = _invalid_edits(rig4.api.service, rig4.task_id, root, missing)
+    assert refused['reason'] == 'invalid_edits' and 'occurs 0 times' in refused['error']
+    private = dict(good, edits=[dict(path='backend/app/fixtures/x.py', find='a', replace='b')])
+    assert _invalid_edits(rig4.api.service, rig4.task_id, root, private)['reason'] == 'invalid_edits'
+
+
+def test_edits_that_fail_at_implementation_fall_back_to_the_implementer(rig4, env, calibrated, capsys, monkeypatch):
+    from rag_eval.optimizer.v4.sn_adapter_v4 import SNAdapterV4
+    source, _ = calibrated
+    target = _deferred(rig4, env, 'edits-fallback')
+    target_dir = imp.default_dir(rig4.tmp / 'state', target['id'])
+    assert _cli(rig4, 'import-calibration', target['id'], '--from-iteration', source['id']) == 0
+    digest = json.loads(capsys.readouterr().out)['plan_sha256']
+    assert _cli(rig4, 'import-calibration', target['id'], '--from-iteration', source['id'], '--confirm', digest) == 0
+    assert v4cli.main(['proposal', 'set', 'adapter.analyst_edits=true', '--state-dir', str(target_dir)]) == 0
+    capsys.readouterr()
+    _use(rig4, rig4.api.service.iteration(target['id']), target_dir)
+    monkeypatch.setattr(V4Run, '_stop_reason', rig4.one_round)
+    # The source moved after drafting: the edit no longer matches when the coordinator applies it.
+    monkeypatch.setattr(SNAdapterV4, '_card_edits', lambda self, card, ws: [
+        dict(path='backend/app/__init__.py', find='NOT IN THE FILE', replace='X = 1')])
+    from .test_sn_rehearsal import GOOD, card
+    from .test_v4_rehearsal import first_round_only
+    rig4.effects = {'Needs an implementer': GOOD}
+    rig4.analyst_cards = first_round_only([card('Needs an implementer')])
+    with rig4:
+        assert _cli(rig4, 'run', target['id'], '--from-proposal', str(target_dir / 'proposal.json'),
+                    run_id='v41-' + target['id'], state_dir=target_dir) == 0
+    rec = json.loads((target_dir / 'state.json').read_text())['rounds'][0]['records']['0']
+    assert rec['edits'].startswith('fallback: analyst edits not applied') and rec['stage'] == 'measured'
+    assert len(rig4.intents('implementer')) == 1
+    assert 'NOT IN THE FILE' not in rec['diff_excerpt'] and 'X = 1' not in rec['diff_excerpt']

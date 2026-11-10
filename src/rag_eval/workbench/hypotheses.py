@@ -20,7 +20,9 @@ CAUSES = ('supported', 'refuted', 'undecided')
 # -> verified (predictions checked) -> concluded.
 STATUSES = ('draft', 'approved', 'rejected', 'implementing', 'verified', 'concluded')
 _REQUIRED = ('title', 'component', 'mechanism', 'predictions', 'falsification', 'implementer_brief')
-_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract', 'cluster_id', 'search_refs', 'direction')
+_OPTIONAL = ('evidence', 'alternatives', 'expected_benefit', 'possible_harm', 'change_scope', 'contract', 'cluster_id', 'search_refs', 'direction',
+             'edits')
+MAX_EDITS, MAX_EDIT_CHARS = 8, 20000
 
 
 def _str(value, name, limit=4000):
@@ -76,6 +78,8 @@ def validate_card(card, rule=None):
     if 'direction' in card:
         # method-v4.1 §4.1: a short name grouping cards that pursue the same idea.
         out['direction'] = _str(card['direction'], 'direction', 64)
+    if 'edits' in card:
+        out['edits'] = validate_edits(card['edits'])
     if 'contract' in card:
         validators = {'lcd-v1': validate_contract, 'lcd-v2': validate_mechanism}
         if rule_id not in validators:
@@ -84,6 +88,43 @@ def validate_card(card, rule=None):
     from .clusters import referenced_cluster
     referenced_cluster(out)
     return out
+
+
+def validate_edits(edits):
+    """Shape of a card's direct find/replace edits (method-v4.1): the coordinator applies them verbatim."""
+    from .frozen_source import _source_path
+    if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_EDITS:
+        raise ValueError(f'edits must be a list of 1-{MAX_EDITS} {{path, find, replace}} objects')
+    out, total = [], 0
+    for i, edit in enumerate(edits, 1):
+        if not isinstance(edit, dict) or set(edit) != {'path', 'find', 'replace'}:
+            raise ValueError(f'edit {i} must have exactly path, find and replace')
+        if not isinstance(edit['find'], str) or not edit['find'].strip() or '\0' in edit['find']:
+            raise ValueError(f'edit {i}: find must be non-empty text copied verbatim from the parent source')
+        if not isinstance(edit['replace'], str) or '\0' in edit['replace'] or edit['replace'] == edit['find']:
+            raise ValueError(f'edit {i}: replace must be text that differs from find')
+        try:
+            path = _source_path(edit['path'])
+        except ValueError as exc:
+            raise ValueError(f'edit {i}: {exc}') from None
+        total += len(edit['find']) + len(edit['replace'])
+        out.append(dict(path=path, find=edit['find'], replace=edit['replace']))
+    if total > MAX_EDIT_CHARS:
+        raise ValueError(f'edits exceed {MAX_EDIT_CHARS} characters in total')
+    return out
+
+
+def apply_edits(read, edits):
+    """path -> new text, applying each edit to *read(path)* in order; each find must occur exactly once."""
+    files = {}
+    for i, edit in enumerate(edits, 1):
+        text = files[edit['path']] if edit['path'] in files else read(edit['path'])
+        count = text.count(edit['find'])
+        if count != 1:
+            raise ValueError(f"edit {i} ({edit['path']}): find occurs {count} times in the parent source; "
+                             'it must occur exactly once (copy it verbatim from the source command)')
+        files[edit['path']] = text.replace(edit['find'], edit['replace'], 1)
+    return files
 
 
 def card_rule(repository, task_id, protocol):

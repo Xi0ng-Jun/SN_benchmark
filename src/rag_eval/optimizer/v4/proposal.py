@@ -118,6 +118,9 @@ VARIANT_RANGES = {
     "remeasure_mode": dict(type="enum", values=["merged", "independent"]),
     "remeasure_parallel": BOOL,
     "carry_over": _int(0, 4), "rotate_diagnosis": BOOL,
+    "explore_after": _int(0, 10), "explore_margin": _float(0, 0.1),
+    "adapter.analyst_edits": BOOL,
+    "adapter.implementer_profile": dict(type="str"),
 }
 
 
@@ -147,6 +150,8 @@ def check_range(value: Any, spec: dict) -> Optional[str]:
     kind = spec["type"]
     if kind == "bool":
         return None if type(value) is bool else "must be a boolean"
+    if kind == "str":
+        return None if isinstance(value, str) and value.strip() and len(value) <= 200 else "must be a non-empty string"
     if kind == "enum":
         return None if value in spec["values"] else f"must be one of {spec['values']}"
     if kind == "int":

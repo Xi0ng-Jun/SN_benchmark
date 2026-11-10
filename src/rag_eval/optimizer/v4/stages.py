@@ -78,6 +78,8 @@ def build(adapter, snap, rec, card, candidate=None):
             rec['attempt'] = 1
         if diff.metadata.get('preflight'):
             rec['preflight'] = diff.metadata['preflight']
+        if diff.metadata.get('applied'):
+            rec['edits'] = diff.metadata['applied']
         if not (diff.content or '').strip():
             return finish(rec, 'error', 'implement: the implementer left no change', failure_kind='empty_diff'), candidate
         candidate = adapter.materialize(diff, snap.parent)

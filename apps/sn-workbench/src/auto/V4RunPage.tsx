@@ -97,10 +97,11 @@ function Lineage({ view, selected, onSelect }: { view: V4RunView; selected: stri
   return <Section title="谱系" meta={`${view.lineage.length - 1} 次采纳`} testID="v4-lineage">
     {view.lineage.map(n => <Row key={n.version} testID={`v4-node-${n.index}`} selected={selected === 'node:' + n.version} onPress={() => onSelect('node:' + n.version)}>
       <Mono size={11} muted>{n.index}</Mono>
-      <Badge label={kindLabels[n.kind] ?? n.kind} tone={n.kind === 'seed' ? undefined : 'success'} />
+      <Badge label={kindLabels[n.kind] ?? n.kind} tone={n.kind === 'seed' || n.kind === 'explore' ? undefined : 'success'} />
       <Copy small style={{ flex: 1 }}>{n.kind === 'seed' ? '种子版本' : n.titles.filter(Boolean).join(' + ') || short(n.candidate_id ?? n.version)}</Copy>
       {n.tier && <Badge label={`机制${tierLabels[n.tier]}`} tone={tierTone(n.tier)} />}
       {n.pruned && <Badge label="已剪除" tone="warning" />}
+      {n.final && view.lineage.some(x => x.kind === 'explore') && <Badge label="最终版本" tone="success" />}
       {n.kind !== 'seed' && <Delta value={n.delta_val} />}
       {n.round ? <Mono size={11} muted>第 {n.round} 轮</Mono> : null}
     </Row>)}
@@ -134,6 +135,7 @@ function RoundView({ round, selected, onSelect }: { round: V4Round; selected: st
       {round.diagnosis_s !== null ? ` · 诊断 ${round.diagnosis_prefetched ? '已预取' : duration(round.diagnosis_s)}` : ''}
       {round.not_started ? ` · ${round.not_started} 张卡${round.timeboxed ? '因轮时间盒' : ''}未开始` : ''}</Copy>
     {round.open && round.cards === null && <AnalystProgress round={round} />}
+    {d?.explore?.chosen != null && <Copy small muted>本轮未达门槛，探索采纳 #{d.explore.chosen + 1}：不比父版本差超过 {d.explore.margin}，作为后续轮次的起点，不计为提升。</Copy>}
     {round.analysis_empty && <Copy small muted>分析没有产出卡片，计为一次流程故障。{draftSummary(round)}</Copy>}
     {!round.analysis_empty && round.analysis_drafts?.deduped ? <Copy small muted>{round.analysis_drafts.deduped} 张卡与已试过的卡重复，未进入流水线。</Copy> : null}
     <V4RoundChart round={round} onSelect={onSelect} />
@@ -142,6 +144,9 @@ function RoundView({ round, selected, onSelect }: { round: V4Round; selected: st
       <Mono size={11} muted>#{r.card_index + 1}</Mono>
       <Copy small style={{ flex: 1 }}>{r.title ?? '—'}</Copy>
       {r.flags?.includes('needs_human_review') && <Badge label="需人工查看" tone="warning" />}
+      {r.edits === 'analyst_edits' && <Badge label="直接改动" />}
+      {r.edits?.startsWith('fallback') && <Badge label="改动回退给实现" tone="warning" />}
+      {r.carry_from && <Badge label="上轮带入" />}
       {r.mechanism?.tier && <Badge label={`机制${tierLabels[r.mechanism.tier]}`} tone={tierTone(r.mechanism.tier)} />}
       <Mono size={11}>{r.delta_val !== null ? `Δval ${num(r.delta_val)} ± ${num(r.se_val)}` : r.delta_mb !== null ? `Δmb ${num(r.delta_mb)}` : ''}</Mono>
       <Badge label={r.carried_to ? `转入第 ${r.carried_to} 轮` : r.halted ? '停机时在途' : r.label ? labelTexts[r.label] : stageLabels[r.stage]} tone={r.halted ? 'warning' : labelTone(r)} />

@@ -29,7 +29,8 @@ _RECORD_COPIED = ("card_index", "title", "card_ref", "stage", "label", "reason",
                   "touches_preparation", "parent", "preflight", "direction", "direction_inferred", "flags",
                   "failure_kind",
                   "halted", "unmeasured", "delta_mb", "se_mb", "n_mb", "delta_val", "se_val", "se_own", "se_floor",
-                  "se_method", "n_val", "dropped_val", "diff_lines", "timings", "started_at", "finished_at")
+                  "se_method", "n_val", "dropped_val", "diff_lines", "timings", "started_at", "finished_at",
+                  "edits", "carry_from")
 
 
 def _cid(versions: dict, h: Optional[str]) -> Optional[str]:
@@ -100,6 +101,7 @@ def _round(rd: dict, versions: dict, *, open_: bool) -> dict:
         decision = dict(qualified=decision.get("qualified") or [], best=decision.get("best"),
                         order=decision.get("order") or [], remeasured=decision.get("remeasured") or [],
                         adopted=decision.get("adopted"), adopted_id=_cid(versions, decision.get("adopted")),
+                        explore=decision.get("explore"),
                         merge=dict(of=merge.get("of"), adopt=merge.get("adopt"), skipped=merge.get("skipped"),
                                    delta_val=merge.get("delta_val"), se_val=merge.get("se_val"),
                                    candidate_id=_cid(versions, merge.get("candidate"))) if merge else None)
@@ -172,13 +174,17 @@ def _lineage(state: dict, versions: dict) -> list[dict]:
     ab = state.get("ablation") or {}
     pruned = set(ab.get("pruned") or [])          # lineage indices (1 = first adopted node)
     out = []
+    final = None
+    if state.get("lineage"):
+        from .loop import final_version
+        final = final_version(state["lineage"], ab)
     for i, n in enumerate(state.get("lineage") or []):
         out.append(dict(index=i, version=n["version"], candidate_id=_cid(versions, n["version"]), kind=n.get("kind"),
                         round=n.get("round"), parent=n.get("parent"), delta_val=n.get("delta_val"),
                         se_val=n.get("se_val"), tier=n.get("tier"), elapsed_s=n.get("elapsed_s"),
                         delta_first=n.get("delta_first"), remeasured=n.get("remeasured"), flags=n.get("flags") or [],
                         titles=[titles.get((n.get("round"), c)) for c in n.get("card_indices") or []],
-                        pruned=bool(ab.get("accepted")) and i in pruned))
+                        pruned=bool(ab.get("accepted")) and i in pruned, final=n["version"] == final))
     return out
 
 

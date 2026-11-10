@@ -86,6 +86,42 @@ def read_frozen_source(root, commit, *, path, query=None, start=1, lines=80):
     return out
 
 
+def read_frozen_blob(root, commit, path):
+    """The whole UTF-8 text of one product source blob at *commit*, under the same checks as the source command."""
+    path = _source_path(path)
+    if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', commit):
+        raise ValueError('source requires an exact frozen commit')
+    entry = _git(root, '--no-replace-objects', 'ls-tree', '-z', commit, '--', path, limit=2048)[0].split(b'\0')
+    if len(entry) != 2 or not entry[0]:
+        raise ValueError(f'{path} is absent from the frozen parent')
+    metadata, actual = entry[0].split(b'\t', 1)
+    mode, kind, oid = metadata.split()
+    if mode not in (b'100644', b'100755') or kind != b'blob' or actual.decode('utf-8') != path:
+        raise ValueError('source requires a regular product source file, not a symlink')
+    object_id = oid.decode('ascii')
+    if int(_git(root, '--no-replace-objects', 'cat-file', '-s', object_id, limit=32)[0]) > MAX_BLOB_BYTES:
+        raise ValueError('source blob exceeds inspection limit')
+    blob = _git(root, '--no-replace-objects', 'cat-file', 'blob', object_id, limit=MAX_BLOB_BYTES)[0]
+    try:
+        text = blob.decode('utf-8')
+    except UnicodeDecodeError:
+        raise ValueError('source requires UTF-8 text') from None
+    if '\0' in text:
+        raise ValueError('source does not read binary blobs')
+    return text
+
+
+def candidate_blob(service, task_id, node, path):
+    """read_frozen_blob for the node's frozen commit, checking the node belongs to *task_id*."""
+    candidate = service.candidate(node)
+    if service.iteration_record(candidate['iteration_id'])['task_id'] != task_id:
+        raise ValueError('source node belongs to another Task')
+    root = getattr(service.trees, 'project_root', None)
+    if root is None:
+        raise ValueError('source requires configured product repository')
+    return read_frozen_blob(root, candidate.get('frozen_commit'), path)
+
+
 def candidate_source(service, task_id, node, **kwargs):
     if not node:
         raise ValueError('source needs the analyst --node binding')

@@ -55,6 +55,11 @@ class V4Config:
     remeasure_parallel: bool = False         # re-measure every qualified candidate at once
     carry_over: int = 0                      # qualified-not-adopted changes rebased onto the next parent
     rotate_diagnosis: bool = False           # after 2 rounds without adoption, show the analyst new search cases
+    # Exploratory adoption: after explore_after rounds without an adoption (this round included), the best
+    # measured candidate not worse than the parent by more than explore_margin (first, merged and independent
+    # Δ) and above the seed becomes the next parent (kind "explore"); the final version is then the best node.
+    explore_after: int = 0
+    explore_margin: float = 0.01
     minibatch_kill: float = 1.0              # stage 1: Δ_mb < -kill·SE_mb is eliminated
     smoke_repair_attempts: int = 1
     smoke_behaviour_check: bool = False
@@ -105,6 +110,7 @@ ADAPTER_DEFAULTS: dict[str, Any] = dict(
     analyst_view_budget=12000, reviewer_view_budget=30000,
     analyst_view_budget_step=0,      # extra evidence characters per round without adoption
     analyst_history_budget=6000,     # characters of tried-card history, outside the evidence budget
+    analyst_edits=False,             # apply a card's find/replace edits directly; the implementer is the fallback
     eval_poll_interval=30.0, eval_timeout=7200.0, infra_retry=1, execution_timeout_seconds=7200,
     max_concurrent_measurements=3,   # v2 measurements in flight at once (prep CPU and model-gate slots are shared)
 )
@@ -171,6 +177,8 @@ def validate(cfg: V4Config) -> V4Config:
         raise ConfigError("review_min_effect must be in [1, review_pairs]")
     if cfg.carry_over < 0:
         raise ConfigError("carry_over must be >= 0")
+    if cfg.explore_after < 0 or not 0 <= cfg.explore_margin <= 0.1:
+        raise ConfigError("explore_after must be >= 0 and explore_margin in [0, 0.1]")
     if cfg.remeasure_mode not in ("merged", "independent"):
         raise ConfigError("remeasure_mode must be 'merged' or 'independent'")
     if cfg.endpoint_nodes not in ("seed_final", "lineage"):
@@ -230,7 +238,8 @@ def load(path: str | Path) -> LoadedConfig:
 
 # Fields added after runs were already recorded: left out of the digest while at their default,
 # so a run started before them resumes with the same digest.
-LATER_FIELDS = ("remeasure_mode", "remeasure_parallel", "carry_over", "rotate_diagnosis")
+LATER_FIELDS = ("remeasure_mode", "remeasure_parallel", "carry_over", "rotate_diagnosis", "explore_after",
+                "explore_margin")
 
 
 def digest(cfg: V4Config) -> str:

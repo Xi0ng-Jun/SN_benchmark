@@ -30,7 +30,7 @@ from typing import Any, Optional
 from .. import ledger_io
 from ..adapter import AgentRequestFailed, BudgetExhausted, EvalResult, EvaluationUnavailable, SystemAdapter, Version
 from ..loop import select_analysis_cases
-from . import agent_context, calibrate, decide, stages
+from . import agent_context, calibrate, decide, endpoint, stages
 from .config import V4Config, digest
 
 log = logging.getLogger(__name__)
@@ -963,9 +963,21 @@ class V4Run:
                                 delta_val=m["delta_val"], se_val=m["se_val"], tier=None, remeasured=False,
                                 flags=list(chosen.get("flags") or []),
                                 card_indices=sorted([chosen["card_index"], second["card_index"]]))
+        explored = None
+        if adopted is None and self._explore_due():
+            explored = self._explore(rd, parent, records, decision)
+            if explored is not None:
+                rm = explored["remeasure"]
+                adopted = self.versions[explored["candidate"]]
+                node = dict(kind="explore", components=[explored["candidate"]], delta_val=rm["delta_val"],
+                            se_val=rm["se_val"], delta_first=explored["delta_val"],
+                            tier=(explored.get("mechanism") or {}).get("tier"),
+                            flags=list(explored.get("flags") or []), remeasured=True,
+                            card_indices=[explored["card_index"]])
         in_lineage = set(node["card_indices"]) if node else set()
         for r in records:
-            self._label(r, parent, adopted=r["card_index"] in in_lineage)
+            self._label(r, parent, adopted=r["card_index"] in in_lineage,
+                        explored=explored is not None and r is explored)
         if adopted is not None:
             self.lineage.append(dict(node, version=adopted.content_hash, parent=parent.content_hash,
                                      round=rd["round"], elapsed_s=self.elapsed()))
@@ -977,14 +989,55 @@ class V4Run:
         rd["decision_s"] = self.clock() - t0
         self.save()
 
-    def _label(self, rec: dict, parent: Version, *, adopted: bool) -> None:
+    def _explore_due(self) -> bool:
+        """This round is the explore_after-th consecutive round without an ordinary adoption."""
+        return bool(self.cfg.explore_after) and self.no_adoption + 1 >= self.cfg.explore_after
+
+    def _explore(self, rd: dict, parent: Version, records: list, decision: dict) -> Optional[dict]:
+        """The best measured candidate not clearly worse than the parent and above the seed, re-measured; or None.
+
+        Not an improvement claim: it only moves the search to a new starting point. Every Δ against
+        the parent (first, merged re-measurement and, when on, the independent one) must be at least
+        −explore_margin; the cumulative validation Δ against the seed must stay positive.
+        """
+        margin = self.cfg.explore_margin
+        base = endpoint._cumulative_val(self.lineage, None).get(parent.content_hash, 0.0)
+        pool = [r for r in records if r["stage"] == "measured" and r["parent"] == parent.content_hash
+                and r.get("delta_val") is not None and r["delta_val"] >= -margin
+                and "safeguard_breached" not in (r.get("qualification") or {}).get("reasons", ())
+                and decide.NEEDS_HUMAN_REVIEW not in (r.get("flags") or [])]
+        pool.sort(key=lambda r: (-r["delta_val"], r["card_index"]))
+        tried = decision.setdefault("explore", dict(margin=margin, parent_cumulative=base, tried=[]))
+        for rec in pool:
+            rm = rec.get("remeasure")
+            if rm is None:
+                if self._out_of_time():
+                    tried["skipped"] = "time budget"
+                    return None
+                rm = rec["remeasure"] = self._remeasure(rec, parent)
+                self.save()
+            if rm.get("status") != "measured":
+                continue
+            deltas = [rec["delta_val"], rm.get("delta_val")]
+            if self.cfg.remeasure_mode == "independent":
+                deltas.append((rm.get("independent") or {}).get("delta_val"))
+            breached = "safeguard_breached" in ((rm.get("qualification") or {}).get("reasons") or ())
+            cumulative = base + (rm.get("delta_val") or 0.0)
+            ok = (not breached and all(d is not None and d >= -margin for d in deltas) and cumulative > 0)
+            tried["tried"].append(dict(card_index=rec["card_index"], deltas=deltas, cumulative=cumulative, ok=ok))
+            if ok:
+                tried["chosen"] = rec["card_index"]
+                return rec
+        return None
+
+    def _label(self, rec: dict, parent: Version, *, adopted: bool, explored: bool = False) -> None:
         """Publish the outcome once the round's decision is final."""
-        entry = self._history_entry(rec, adopted=adopted)
+        entry = self._history_entry(rec, adopted=adopted, explored=explored)
         if entry is not None:
             rec["label"] = entry["label"]
             self.history.append(entry)
 
-    def _history_entry(self, rec: dict, *, adopted: bool) -> Optional[dict]:
+    def _history_entry(self, rec: dict, *, adopted: bool, explored: bool = False) -> Optional[dict]:
         stage = rec["stage"]
         if rec.get("unmeasured") or stage not in TERMINAL:
             return None
@@ -998,6 +1051,8 @@ class V4Run:
             label = "smoke_fail"
         elif stage == "minibatch_fail":
             label = rec.get("label") or "minibatch_fail"
+        elif explored:
+            label = "explored"
         elif adopted:
             label = "adopted"
         elif rec["qualification"]["qualified"]:
@@ -1069,6 +1124,8 @@ class V4Run:
         units = self.lineage[1:]
         if not self.cfg.ablation:
             self.ablation = dict(status="skipped", reason="disabled")
+        elif any(n.get("kind") == "explore" for n in units):
+            self.ablation = dict(status="skipped", reason="exploratory lineage")
         elif not units:
             self.ablation = dict(status="skipped", reason="nothing adopted")
         if self.ablation is not None and self.ablation.get("status") == "skipped":
@@ -1220,8 +1277,15 @@ class V4Run:
 
 
 def final_version(lineage: list[dict], ablation: Optional[dict]) -> str:
+    """The pruned version when ablation accepted one; with exploratory nodes the best node by cumulative
+    validation Δ (an exploratory step is a new starting point, not an improvement); else the last node."""
     ab = ablation or {}
-    return ab["final"] if ab.get("status") == "done" and ab.get("accepted") else lineage[-1]["version"]
+    if ab.get("status") == "done" and ab.get("accepted"):
+        return ab["final"]
+    if any(n.get("kind") == "explore" for n in lineage):
+        cumulative = endpoint._cumulative_val(lineage, None)
+        return max(lineage, key=lambda n: (cumulative.get(n["version"], 0.0), -lineage.index(n)))["version"]
+    return lineage[-1]["version"]
 
 
 def second_measurement(merged: EvalResult, first: EvalResult, tasks) -> EvalResult:

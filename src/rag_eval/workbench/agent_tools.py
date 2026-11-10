@@ -304,6 +304,7 @@ def dispatch(options, repository, views, store, policy):
         from . import auto_runs
         v4 = (auto_runs.task_binding(repository, task_id) or {}).get('method') == 'method-v4'
         out = (_invalid_card(store, task_id, card) or (_duplicate_card(store, task_id, parent, card) if v4 else None)
+               or (_invalid_edits(tools.service, task_id, parent, card) if v4 else None)
                or _draft_leak(repository, views, task_id, card))
         if out is None:
             try:
@@ -314,7 +315,7 @@ def dispatch(options, repository, views, store, policy):
                 raise
         record_draft_attempt(repository, task_id, parent,
                              'saved' if out.get('saved') else out.get('reason') if out.get('reason') in
-                             ('invalid_card', 'duplicate') else 'leak_refused')
+                             ('invalid_card', 'duplicate', 'invalid_edits') else 'leak_refused')
     elif command in ('iteration show', 'iteration ledger', 'node list', 'node show', 'compare', 'requests', 'request withdraw',
                      *REQUEST_COMMANDS):
         out = IterationTools(repository, views, task_id, options.role).run(command, a, options)
@@ -375,7 +376,7 @@ def search_evidence(repository, views, policy, task_id, options):
 
 
 DRAFT_ATTEMPT = 'analysis.draft_attempt'
-DRAFT_OUTCOMES = ('saved', 'invalid_card', 'duplicate', 'leak_refused', 'refused')
+DRAFT_OUTCOMES = ('saved', 'invalid_card', 'duplicate', 'invalid_edits', 'leak_refused', 'refused')
 
 
 def record_draft_attempt(repository, task_id, parent, outcome):
@@ -395,6 +396,20 @@ def record_draft_attempt(repository, task_id, parent, outcome):
 def normalise_text(text):
     """Case- and punctuation-insensitive form used to detect a re-drafted card."""
     return ' '.join(re.findall(r'[^\W_]+', str(text or '').casefold(), flags=re.UNICODE))
+
+
+def _invalid_edits(service, task_id, parent, card):
+    """A refusal when a card's direct edits do not apply to the frozen parent source exactly; else None."""
+    if not card.get('edits'):
+        return None
+    from .frozen_source import candidate_blob
+    from .hypotheses import apply_edits, validate_edits
+    try:
+        apply_edits(lambda path: candidate_blob(service, task_id, parent, path), validate_edits(card['edits']))
+    except ValueError as exc:
+        return dict(saved=False, reason='invalid_edits', error=str(exc)[:1000],
+                    next='fix the edits (find copied verbatim from `source`, occurring once) or drop them')
+    return None
 
 
 def _duplicate_card(store, task_id, parent, card):
@@ -451,8 +466,10 @@ def _draft_leak(repository, views, task_id, card):
     leak = leak_check(views, task_id, material_run_ids(repository, views, task_id),
                       extra_texts=[('implementer_brief', str(card.get('implementer_brief', ''))),
                                    ('mechanism', str(card.get('mechanism', ''))),
-                                   ('change_scope', '\n'.join(map(str, card.get('change_scope', []))))])
-    findings = [f for f in leak['findings'] if f['source'] in ('implementer_brief', 'mechanism', 'change_scope')]
+                                   ('change_scope', '\n'.join(map(str, card.get('change_scope', [])))),
+                                   ('edits', '\n'.join(str(e.get('replace', '')) for e in card.get('edits') or []
+                                                       if isinstance(e, dict)))])
+    findings = [f for f in leak['findings'] if f['source'] in ('implementer_brief', 'mechanism', 'change_scope', 'edits')]
     if findings:
         return dict(saved=False, reason='implementer-facing fields overlap benchmark text; rewrite them',
                     findings=findings)

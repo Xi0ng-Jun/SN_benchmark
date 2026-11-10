@@ -648,7 +648,7 @@ def cmd_holdout(args):
         results = holdout.measure(adapter, node_list, ids, chunk=args.chunk, workers=workers)
     rep_ = holdout.report(node_list, results, ids, paper, lineage=st['lineage'], ablation=st.get('ablation'),
                           metric=PRIMARY_METRIC.get((protocol.get('input') or {}).get('suite')),
-                          safeguards=adapter.observe_safeguards)
+                          safeguards=adapter.observe_safeguards, final=final_version(st['lineage'], st.get('ablation')))
     paths = holdout.write(rep_, state_dir)
     print(holdout.render(rep_))
     print(json.dumps(paths, ensure_ascii=False))

@@ -13,11 +13,11 @@ FRUITLESS = NOT_QUALIFIED + ('implementation_failed',)
 EFFECT_TEXT = {'worse': 'clearly worse than the parent', 'flat': 'no gain (about equal or slightly worse)',
                'positive': 'a positive gain, but not adopted'}
 # Labels whose title may not be drafted again under the same parent (the measured verdict stands).
-FINAL_LABELS = NOT_QUALIFIED + ('preflight_skipped', 'adopted', 'in_progress', 'pruned')
+FINAL_LABELS = NOT_QUALIFIED + ('preflight_skipped', 'adopted', 'explored', 'in_progress', 'pruned')
 DIRECTION_LIMIT = 2            # this many non-qualifying attempts: change direction or state the difference
 DIRECTION_CHARS = 48
 # Labels SNAdapter's v4 history vocabulary does not know (rendered here).
-V41_LABELS = ('remeasure_failed',)
+V41_LABELS = ('remeasure_failed', 'explored')
 IMPLEMENTATION_FAILURE_KINDS = ('timeout', 'empty_diff', 'workspace_error', 'malformed_report')
 
 OUTCOMES = {
@@ -35,6 +35,8 @@ OUTCOMES = {
     'implementation_malformed_report': 'the preflight report was missing or malformed; the hypothesis is untested',
     'remeasure_not_confirmed': 'qualified once, but a re-measurement did not confirm the gain (first measurement likely high)',
     'guardrail_breached': 'a pre-registered safeguard blocked adoption',
+    'explored_without_gain': ('kept as the new starting point without a measured gain (not clearly worse than '
+                              'its parent); the parent you are analysing may be this version'),
 }
 
 
@@ -59,6 +61,8 @@ def feedback(rec: dict, label: str) -> dict:
         out['outcome'] = f'implementation_{kind}' if kind in IMPLEMENTATION_FAILURE_KINDS else 'implementation_failed'
     elif label == 'remeasure_failed':
         out['outcome'] = 'remeasure_not_confirmed'
+    elif label == 'explored':
+        out['outcome'] = 'explored_without_gain'
     elif label == 'safeguard_breached':
         out['outcome'] = 'guardrail_breached'
     elif label in ('below_threshold', 'smoke_fail', 'minibatch_fail'):
@@ -77,7 +81,7 @@ def effect_band(rec: dict, label: str):
     if label == 'minibatch_fail':
         return 'worse'
     delta, se = rec.get('delta_val'), rec.get('se_val')
-    if rec.get('stage') != 'measured' or delta is None or label == 'adopted':
+    if rec.get('stage') != 'measured' or delta is None or label in ('adopted', 'explored'):
         return None
     if se is not None and delta <= -se:
         return 'worse'

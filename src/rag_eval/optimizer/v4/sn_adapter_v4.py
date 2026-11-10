@@ -58,8 +58,11 @@ class SNAdapterV4(SNAdapter):
 
     def __init__(self, config: dict, *, reviewer_profile: Optional[str] = None, reviewer_view_budget: int = 30000,
                  calibrator_profile: Optional[str] = None,
-                 max_concurrent_measurements: int = 3, **kwargs) -> None:
+                 max_concurrent_measurements: int = 3, analyst_edits: bool = False, **kwargs) -> None:
         super().__init__(config, **kwargs)
+        if type(analyst_edits) is not bool:
+            raise ValueError("analyst_edits must be true or false")
+        self._analyst_edits = analyst_edits
         self._reviewer_profile = reviewer_profile or self._analyst_profile
         self._calibrator_profile = calibrator_profile or self._analyst_profile
         if type(reviewer_view_budget) is not int or reviewer_view_budget < 1:
@@ -238,6 +241,14 @@ class SNAdapterV4(SNAdapter):
                 "search_refs (for example [\"c1\", \"c3\"]); use [] for a source-only hypothesis. "
                 "Draft the most promising card first: cards are implemented in draft order. Prefer changes outside "
                 "the preparation path when suitable. "
+                + ("Direct edits: for a small change (typically a prompt or a few lines), add `edits`: "
+                   "[{\"path\", \"find\", \"replace\"}] (at most 8). `find` must be copied verbatim from the parent "
+                   "source as printed by `source` and occur exactly once in that file; `replace` is the new text. "
+                   "The coordinator applies them directly, no implementer is involved, so keep the change complete "
+                   "and self-consistent; drafting checks them and reports any edit that does not match. Leave "
+                   "`edits` out for multi-file logic or changes you cannot write exactly; implementer_brief is "
+                   "always required (the fallback). " if self._analyst_edits else "")
+                + 
                 f"The implementer has at most {int(self._agent_timeout // 60)} minutes per card, including its checks: "
                 "keep each card a small, single-mechanism change; split a multi-step retrieval change (extra model "
                 "calls, retries, re-ranking) into one bounded step per card. ")
@@ -348,7 +359,86 @@ class SNAdapterV4(SNAdapter):
         return out
 
     def implement(self, card: Card, workspace: Any) -> Diff:
-        return self._within_card_limit(lambda: super(SNAdapterV4, self).implement(card, workspace))
+        def run():
+            note = None
+            if self._analyst_edits:
+                applied, note = self._apply_analyst_edits(card, workspace)
+                if applied is not None:
+                    return applied
+            self._card_limit.edits_note = note
+            try:
+                diff = super(SNAdapterV4, self).implement(card, workspace)
+            finally:
+                self._card_limit.edits_note = None
+            if note:
+                diff.metadata["applied"] = "fallback: " + note
+            return diff
+        return self._within_card_limit(run)
+
+    def _card_edits(self, card: Card, workspace: dict) -> list:
+        hypothesis_id = workspace.get("hypothesis_id") or card.ref
+        if self._hypotheses is None or not hypothesis_id:
+            return []
+        raw = (self._hypotheses.get(self._require_ids()[1], hypothesis_id) or {}).get("card") or {}
+        return list(raw.get("edits") or [])
+
+    def _apply_analyst_edits(self, card: Card, workspace: dict):
+        """(Diff, None) when the card's find/replace edits applied to the candidate worktree, else (None, reason).
+
+        The edits were checked against the frozen parent at draft time; the worktree starts at that
+        commit, so a clean application is expected. Any failure leaves the worktree clean and hands the
+        card to the implementer Agent. No Agent is dispatched on success.
+        """
+        from rag_eval.workbench.hypotheses import apply_edits, benchmark_material, scan_text, validate_edits
+        from rag_eval.workbench.agent_tools import material_run_ids
+        from ..sn_adapter import _extract_worktree_diff
+        edits = self._card_edits(card, workspace)
+        if not edits:
+            return None, None
+        ops = self._require_round_ops("implement")
+        cid = workspace.get("candidate_id")
+        candidate = ops.service.candidate(cid)
+        if candidate.get("status") == "frozen":
+            return None, None        # crash after freeze: the ordinary replay path reconstructs it
+        root = Path(workspace["path"]).resolve()
+        try:
+            edits = validate_edits(edits)
+            task_id = self._require_ids()[1]
+            material = benchmark_material(ops.api.views, material_run_ids(getattr(ops, "repository", None),
+                                                                          ops.api.views, task_id))
+            if scan_text("\n".join(e["replace"] for e in edits), material):
+                raise ValueError("the replacement text overlaps benchmark material")
+
+            def read(path):
+                target = (root / path).resolve()
+                if root not in target.parents:
+                    raise ValueError(f"{path} leaves the candidate worktree")
+                return target.read_text(encoding="utf-8")
+            files = apply_edits(read, edits)
+            for path, text in files.items():
+                (root / path).write_text(text, encoding="utf-8")
+        except (ValueError, OSError) as exc:
+            self._clean_worktree(root)
+            return None, f"analyst edits not applied ({str(exc)[:300]})"
+        report = dict(candidate_id=cid, hypothesis_id=workspace.get("hypothesis_id") or card.ref,
+                      parent_candidate_id=workspace.get("parent_candidate_id"), decision="implement",
+                      reason="supported", summary="analyst edits applied by the coordinator (no implementer Agent)",
+                      checks=[dict(kind="source", target=e["path"][:500],
+                                   observation="find text matched exactly once in the frozen parent source")
+                              for e in edits][:32])
+        from .. import ledger_io
+        ledger_io.atomic_text(self._preflight_path(workspace).with_suffix(".accepted.json"),
+                              json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return Diff(content=_extract_worktree_diff(workspace), test_refs=(),
+                    metadata=dict(candidate_id=cid, hypothesis_id=report["hypothesis_id"],
+                                  parent_candidate_id=report["parent_candidate_id"], preflight=report,
+                                  applied="analyst_edits")), None
+
+    @staticmethod
+    def _clean_worktree(root: Path) -> None:
+        import subprocess
+        for args in (("checkout", "--", "."), ("clean", "-fdq")):
+            subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=60, check=False)
 
     def repair(self, *args, **kwargs):
         return self._within_card_limit(lambda: super(SNAdapterV4, self).repair(*args, **kwargs))
@@ -469,6 +559,10 @@ class SNAdapterV4(SNAdapter):
                      'inconclusive. Both decisions require nonempty concrete checks. Report actual checks and their limits; these are '
                      'implementer-reported findings, not independently proved conclusions. If skipping, leave no '
                      'product edits. The coordinator reads this report after you are idle, before freezing or measurement.')
+        note = getattr(self._card_limit, 'edits_note', None)
+        if note:
+            text += (f' The card also proposed direct edits, but they were not applied: {note}. Implement the '
+                     'intended change yourself; the worktree is clean.')
         return text
 
     # ------------------------------------------------------------------

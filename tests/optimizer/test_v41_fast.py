@@ -137,3 +137,79 @@ def test_task_note_is_selected_by_input_and_holds_no_case():
     note = task_note(dict(input_id="alce-asqa-input", suite="alce"))
     assert "str_em" in note and "ambiguous" in note
     assert task_note(dict(input_id="qasper-input", suite="qasper")) == ""
+
+
+# ---------------------------------------------------------------------------
+# exploratory adoption
+# ---------------------------------------------------------------------------
+
+FLAT = dict(delta=-0.004)     # within the 0.01 margin, never qualifies by the ordinary gate
+
+
+def test_exploration_moves_to_a_flat_candidate_and_keeps_the_best_node_final():
+    from rag_eval.optimizer.v4.loop import final_version
+    mock = V4Mock([[dict(name="A", delta=0.10)], [dict(name="B", **FLAT)]])
+    r, _ = run(mock, cfg(explore_after=1, remeasure_mode="independent"))
+    assert [n["kind"] for n in r.lineage] == ["seed", "candidate", "explore"]
+    assert r.lineage[-1]["version"] == "seed+r1-A+r2-B"
+    assert records(r, 1)["B"]["label"] == "explored"
+    explore = r.rounds[1]["decision"]["explore"]
+    assert explore["chosen"] == 0 and all(d >= -0.01 for d in explore["tried"][0]["deltas"])
+    assert final_version(r.lineage, r.ablation) == "seed+r1-A"     # the exploratory step is not an improvement
+    entry = next(e for e in r.history if e["title"] == "B")
+    assert entry["outcome"] == "explored_without_gain" and "effect" not in entry
+
+
+def test_exploration_waits_for_explore_after_rounds_without_adoption():
+    mock = V4Mock([[dict(name="A", delta=0.10)], [dict(name="B", **FLAT)], [dict(name="D", **FLAT)]])
+    r, _ = run(mock, cfg(explore_after=2))
+    assert [(n["kind"], n["round"]) for n in r.lineage] == [("seed", 0), ("candidate", 1), ("explore", 3)]
+    assert "explore" not in r.rounds[1]["decision"]
+
+
+def test_no_exploration_for_a_clearly_worse_candidate_or_from_the_seed():
+    worse, _ = run(V4Mock([[dict(name="A", delta=0.10)], [dict(name="C", delta=-0.2)]]), cfg(explore_after=1))
+    assert [n["kind"] for n in worse.lineage] == ["seed", "candidate"]
+    seed_only, _ = run(V4Mock([[dict(name="B", **FLAT)]]), cfg(explore_after=1))
+    assert len(seed_only.lineage) == 1
+    assert seed_only.rounds[0]["decision"]["explore"]["tried"][0]["ok"] is False   # cumulative Δ vs seed ≤ 0
+
+
+def test_exploration_is_off_by_default():
+    r, _ = run(V4Mock([[dict(name="A", delta=0.10)], [dict(name="B", **FLAT)]]), cfg())
+    assert [n["kind"] for n in r.lineage] == ["seed", "candidate"] and "explore" not in r.rounds[1]["decision"]
+
+
+def test_proposal_accepts_explore_and_agent_variants():
+    from .test_v4_proposal import INPUTS, cal
+    CAL = cal()
+    p = proposal.rule_defaults(CAL, INPUTS)
+    for key, value in (("explore_after", 2), ("explore_margin", 0.01), ("adapter.analyst_edits", True),
+                       ("adapter.implementer_profile", "claude-kimi-k3")):
+        p = proposal.apply_user_edit(p, key, value)
+    frozen = proposal.freeze(p, CAL)["config"]
+    assert frozen["explore_after"] == 2 and frozen["adapter"]["analyst_edits"] is True
+    assert frozen["adapter"]["implementer_profile"] == "claude-kimi-k3"
+    for key, bad in (("explore_margin", 0.5), ("adapter.implementer_profile", ""), ("adapter.analyst_edits", 1)):
+        with pytest.raises(ValueError):
+            proposal.apply_user_edit(p, key, bad)
+
+
+# ---------------------------------------------------------------------------
+# analyst edits: shape and application
+# ---------------------------------------------------------------------------
+
+def test_edits_shape_and_exactly_once_application():
+    from rag_eval.workbench.hypotheses import apply_edits, validate_edits
+    edits = validate_edits([dict(path='backend/app/a.py', find='X = 1', replace='X = 2'),
+                            dict(path='backend/app/a.py', find='Y = 1', replace='Y = 3')])
+    files = apply_edits(lambda p: 'X = 1\nY = 1\n', edits)
+    assert files == {'backend/app/a.py': 'X = 2\nY = 3\n'}
+    with pytest.raises(ValueError, match='occurs 2 times'):
+        apply_edits(lambda p: 'X = 1\nX = 1\n', edits[:1])
+    for bad in ([], [dict(path='backend/app/a.py', find='', replace='x')],
+                [dict(path='src/rag_eval/a.py', find='a', replace='b')],
+                [dict(path='backend/app/a.py', find='a', replace='a')],
+                [dict(path='backend/app/a.py', find='a')]):
+        with pytest.raises(ValueError):
+            validate_edits(bad)

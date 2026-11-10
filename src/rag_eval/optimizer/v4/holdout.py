@@ -100,7 +100,7 @@ def measure(adapter, node_list: list[dict], ids: list[str], *, chunk: int = CHUN
 
 
 def report(node_list: list[dict], results: dict, ids: list[str], paper: dict, *, lineage: list[dict],
-           ablation: Optional[dict], metric: Optional[str], safeguards=None) -> dict:
+           ablation: Optional[dict], metric: Optional[str], safeguards=None, final: Optional[str] = None) -> dict:
     seed = results[node_list[0]["candidate_id"]]
     cumulative = endpoint._cumulative_val(lineage, ablation)
     families = {c: str(paper.get(c, c)) for c in ids}
@@ -110,7 +110,7 @@ def report(node_list: list[dict], results: dict, ids: list[str], paper: dict, *,
         scored = [c for c in ids if c in res.per_task_scores]
         point = dict(node, score=statistics.mean(res.per_task_scores[c] for c in scored) if scored else None,
                      scored=len(scored), delta=None, se=None, ci95=None, n=None, dropped=None,
-                     delta_val_cumulative=cumulative.get(node["version"]))
+                     delta_val_cumulative=cumulative.get(node["version"]), final=node["version"] == final)
         if node["index"]:
             d = decide.paired_delta(res, seed, ids, rerun_var=0.0, families=families)
             both = [c for c in ids if c in res.per_task_scores and c in seed.per_task_scores]
@@ -143,7 +143,8 @@ def render(rep: dict) -> str:
         return "-" if v is None else (f"{v:+.4f}" if sign else f"{v:.4f}")
     for p in rep["points"]:
         ci = p.get("ci95")
-        lines.append(f"| {p['index']} {p['candidate_id'][:8]} | {p.get('round') or '-'} | {p.get('kind') or 'seed'} | "
+        mark = " (final)" if p.get("final") else ""
+        lines.append(f"| {p['index']} {p['candidate_id'][:8]}{mark} | {p.get('round') or '-'} | {p.get('kind') or 'seed'} | "
                      f"{num(p['score'])} | {num(p['delta'], True)} | "
                      f"{'-' if not ci else f'[{ci[0]:+.4f}, {ci[1]:+.4f}]'} | "
                      f"{num(p.get('delta_val_cumulative'), True)} | {p.get('n') or p['scored']} |")
@@ -169,7 +170,9 @@ def figure(rep: dict, out: Path) -> bool:
     for x, p in zip(xs, pts):
         if p.get("ci95"):
             ax.vlines(x, seed + p["ci95"][0], seed + p["ci95"][1], color="#888888", lw=0.8, zorder=1)
-        ax.scatter([x], [p["score"]], s=18, zorder=2, color="#888888" if p["index"] == 0 else "#2f6fde")
+        hollow = p.get("kind") == "explore"
+        color = "#888888" if p["index"] == 0 else "#2f6fde"
+        ax.scatter([x], [p["score"]], s=18, zorder=2, facecolors="none" if hollow else color, edgecolors=color)
     ax.set_xlabel("Adopted node (0 = seed)", fontsize=8)
     ax.set_ylabel(f"Holdout {rep.get('metric') or ''} (n={rep['n_cases']})", fontsize=8)
     ax.set_xticks(xs)

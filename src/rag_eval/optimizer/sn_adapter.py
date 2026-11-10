@@ -1095,6 +1095,7 @@ class SNAdapter(SystemAdapter):
             material = benchmark_material(ops.api.views, material_run_ids(getattr(ops, 'repository', None), ops.api.views, task_id))
             visible = {k: card.get(k) for k in ("title", "component", "mechanism", "implementer_brief",
                                                 "possible_harm", "change_scope")}
+            visible["edits"] = [e.get("replace") for e in card.get("edits") or []]
             leaked = scan_text(_json.dumps(visible, ensure_ascii=False), material)
         except (ValueError, KeyError) as exc:
             return dict(status="rejected", reason=f"invalid_card: {exc}")
