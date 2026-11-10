@@ -182,3 +182,44 @@ python -m rag_eval.optimizer.cli v4 import-calibration \
 
 `--state` 是工作台 state 目录（其中的 `workbench.sqlite` 由代码定位），不是数据库文件。默认运行目录为 `<state>/automatic-v41/<sha256(新迭代)[:24]>`，与网页一致。导入先写 `calibration-import.json` 意图，再登记 P/D、绑定、挂接执行、写建议书与校准；中途失败时校准和启动均被拒绝，重复同一确认即可补完。原迭代、原运行目录与原回执只读。导入后种子不再测 P/D；每个新运行仍会在 smoke 样本上测一次种子，这是正常轮次开销。
 
+
+## 快速变体、扩展验证集与留出集曲线（2026-11-10）
+
+背景：b84eabdc 跑了 11 轮 63 张卡，只采纳 1 个。下面这些变化都是可选项，默认值与此前完全相同；旧运行的配置摘要不变，可以照常续跑。
+
+**方法变体**：由用户写进建议书，记入 run identity，并标为 variants。
+- `c` / `c_mech`：采纳门槛系数。
+- `minibatch_kill`：小批淘汰的倍数。
+- `remeasure_mode`：`merged`（默认）或 `independent`。选 `independent` 时，复测必须单独过线，用来防止赢家诅咒。
+- `remeasure_parallel`：所有合格候选同时复测。
+- `carry_over`：本轮合格但未采纳的改动，下一轮直接 rebase 到新父版本上测，不调用 Agent。
+- `rotate_diagnosis`：连续两轮无采纳后，给分析 Agent 换一组搜索题。
+- `speculative_analysis`：是否预取下一轮分析。
+
+**分析 Agent**：
+- 按输入附一段固定的任务与指标说明。ALCE-ASQA 版讲歧义问题和 str_em 的覆盖口径，不含任何题目。
+- 历史有独立预算 `adapter.analyst_history_budget`，默认 6000 字。每张卡只给效果档位（变差 / 持平 / 正向未采纳），不给数值。
+- 同一父版本下的重复卡，在草稿时就被拒绝，循环里还会再丢一次。
+- 每轮记录草稿结果计数，空分析在界面上显示原因。
+
+**可靠性**：
+- SQLite 等锁 60 秒，写锁失败退避重试 3 次。
+- 实现或审查 Agent 超时后会被归档。
+- 启动时检查模型凭据，缺失立即失败。
+- 同类派发错误连续出现会告警，最终放弃该测量。
+
+```bash
+# 导入校准并把验证集扩大 N 题：题池外整篇按划分种子顺序选取，不含 sealed；P、D 和搜索集不变
+python -m rag_eval.optimizer.cli v4 import-calibration --config C --state S --iteration NEW --actor A \
+  --from-iteration SRC --extend-validation 127            # 预览
+python -m rag_eval.optimizer.cli v4 import-calibration ... --extend-validation 127 --confirm <plan_sha256>
+# 变体写进建议书（先设 c_mech 再设 c：c_mech 不能大于 c）
+python -m rag_eval.optimizer.cli v4 proposal set c_mech=0.0 --state-dir RUN_DIR
+# 留出集曲线：种子和谱系节点在题池外的题上测 k=1；不加 --confirm 只预览；已完成的块重放，不重测
+python -m rag_eval.optimizer.cli v4 holdout --config C --state S --iteration IT --actor A --state-dir RUN_DIR \
+  [--exclude-pool-of OTHER_IT] --confirm
+```
+
+扩展后，验证集 = 来源验证集 ∪ 新题。建议书按扩大后的题池重算，用户改过的值保留，`validation_size` 由导入确定。开跑时，种子在新题上测一遍（k=1，文件 `baseline-extension.json`）。
+
+留出集结果写在运行目录的 `holdout/` 下（json、md、png），只是观察，不是预注册终点 `v4 test`。比较两个迭代时，用 `--exclude-pool-of` 让双方使用同一组留出题。
