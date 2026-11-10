@@ -46,6 +46,8 @@ def main():
     parser.add_argument('--model-gate', type=Path,
                         help='Directory of cross-process model request slots shared by concurrent partitions')
     parser.add_argument('--model-gate-slots', type=int, help='Number of slots under --model-gate')
+    parser.add_argument('--model-gate-per-service', action='store_true',
+                        help='Cap each --model-config service at its max_concurrency; other requests use --model-gate')
     parser.add_argument('--project-root', type=Path, required=True)
     parser.add_argument('--request-revision', choices=REQUEST_REVISIONS, default=OFFICIAL_REQUEST_REVISION,
                         help='Generation request contract (default: v3 without gold fields); explicit v1/v2 preserve historical requests.')
@@ -104,17 +106,20 @@ def main():
         case_ids = None
     if (args.model_gate is None) != (args.model_gate_slots is None):
         parser.error('--model-gate and --model-gate-slots must be supplied together')
+    if args.model_gate_per_service and (args.model_gate is None or args.model_config is None):
+        parser.error('--model-gate-per-service needs --model-gate and --model-config')
     from rag_eval.run_report import write_report
     from rag_eval.system_runtime import is_cancellation
     run = args.run_dir.resolve()
     run_existed = run.exists()
     code = 0
-    from rag_eval.model_gate import ModelGate, install_request_hooks
+    from rag_eval.model_gate import ModelGate, ServiceGates, install_request_hooks
     from rag_eval.speed_diagnostics import SpeedObserver, observing
     observer = None
     try:
         from rag_eval.model_budget import install_budget_guard
-        gate = ModelGate(args.model_gate, args.model_gate_slots) if args.model_gate else None
+        gate = (ServiceGates(args.model_gate, args.model_gate_slots, args.model_config) if args.model_gate_per_service
+                else ModelGate(args.model_gate, args.model_gate_slots) if args.model_gate else None)
         observer = SpeedObserver(gate=gate)
         with install_budget_guard(args.budget_ledger) if args.budget_ledger else nullcontext(), \
                 install_request_hooks(gate=gate, observer=observer), observing(observer):

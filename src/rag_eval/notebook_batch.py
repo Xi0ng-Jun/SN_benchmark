@@ -41,7 +41,8 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
     A partition deadline is applied at launch (see ``_run_job``): gracefully
     inside the runner, and by killing the process ``PARTITION_KILL_GRACE``
     seconds later.
-    model_gate = (directory, slots) caps model requests across partitions.
+    model_gate = (directory, slots[, per_service]) caps model requests across partitions;
+    with per_service each model-config service is capped at its own max_concurrency.
     """
     from .bundle_index import find_installed_bundle, load_partition
     from .notebook_bundle import OFFICIAL_REQUEST_REVISION
@@ -123,6 +124,8 @@ def plan_batch(*, bundle, artifact_root, artifact_index_id, case_id_file, mode,
             argv.extend(['--case-deadline-seconds', str(case_deadline_seconds)])
         if model_gate is not None:
             argv.extend(['--model-gate', str(Path(model_gate[0]).resolve()), '--model-gate-slots', str(model_gate[1])])
+            if len(model_gate) > 2 and model_gate[2]:
+                argv.append('--model-gate-per-service')
         if shared_sn_source is not None:
             if sn_source_ref is None:
                 raise ValueError('A shared materialized source needs its captured source reference')

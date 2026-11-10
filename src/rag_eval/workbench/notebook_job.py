@@ -16,6 +16,9 @@ finished work is scored instead of killed. Optional server settings:
 - ``question_workers``, ``case_deadline_seconds``, ``partition_deadline_seconds``:
   questions asked at once inside a partition, and deadlines after which a
   question is saved as ``error`` and the partition finishes;
+- ``model_gate_per_service`` (bool): with ``model_concurrency``, cap each service of
+  the model config at its own ``max_concurrency`` instead; requests of no configured
+  service keep the ``model_concurrency`` cap (see ``model_gate.ServiceGates``);
 - ``model_concurrency``: model requests allowed at once across all partition
   processes of this server (a semaphore recorded under ``<output_root>/model-gate``);
   each partition saves ``speed-diagnostics.json`` (phase walls, gate waits,
@@ -105,6 +108,9 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
     gate = config.get('model_concurrency')
     if gate is not None and (type(gate) is not int or not 1 <= gate <= 256):
         raise ExecutionRejected('Invalid model_concurrency setting')
+    per_service = config.get('model_gate_per_service', False)
+    if type(per_service) is not bool or (per_service and gate is None):
+        raise ExecutionRejected('model_gate_per_service needs model_concurrency and must be true or false')
     policy = config.get('preparation_policy', DEFAULT_PREPARATION_POLICY)
     try:
         validate_preparation_policy(policy)
@@ -150,7 +156,7 @@ def execution_spec(jobs, task_id, job_id, preparation_id, config, *, request_key
         files=files, scorer_sources=config['scorer_sources'], budget=approved,
         task_worktree=config.get('task_worktree'), preparation_cache=cache or None,
         question_workers=workers, preparation_workers=preparation_workers, **deadlines,
-        model_gate=[str(output / 'model-gate'), gate] if gate is not None else None)
+        model_gate=([str(output / 'model-gate'), gate] + ([True] if per_service else [])) if gate is not None else None)
     script = Path(__file__).resolve().parents[3] / 'scripts/run_workbench_notebook.py'
     return dict(argv=[config['python'], str(script), '--payload', json.dumps(payload)],
                 run_dir=run_dir, preparation_id=preparation_id, budget=approved)

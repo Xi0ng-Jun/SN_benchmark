@@ -14,11 +14,11 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 
 def main():
-    from rag_eval.model_gate import gate_status
+    from rag_eval.model_gate import gate_status, service_gate_status
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
     args = parser.parse_args()
-    print(json.dumps(gate_status(args.directory), indent=2))
+    print(json.dumps(dict(gate_status(args.directory), services=service_gate_status(args.directory)), indent=2))
     return 0
 
 

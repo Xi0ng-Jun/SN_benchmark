@@ -32,12 +32,14 @@ from contextlib import contextmanager
 import ctypes
 import errno
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
 import threading
 import time
+from urllib.parse import urlsplit
 
 # Linux values (asm-generic, the same on every architecture).
 IPC_CREAT, IPC_EXCL, IPC_NOWAIT, IPC_RMID = 0o1000, 0o2000, 0o4000, 0
@@ -233,6 +235,103 @@ class ModelGate:
         return _status(self._libc, self._semid)
 
 
+SERVICES = 'services'
+ROUTE = 'route.json'
+
+
+def _endpoint(url):
+    parts = urlsplit(str(url))
+    return parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip('/')
+
+
+def service_routes(model_config):
+    """One route per (endpoint, model) of the SN model config, at its smallest ``max_concurrency``.
+
+    Only literal ``base_url`` / ``model`` / ``max_concurrency`` values form a route; a
+    service without them (or an unreadable config) has none and keeps the shared gate.
+    """
+    import tomllib
+    try:
+        with Path(model_config).open('rb') as handle:
+            parsed = tomllib.load(handle)
+    except (OSError, TypeError, tomllib.TOMLDecodeError):
+        return []
+    groups = {}
+    for service_id, service in (parsed.get('services') or {}).items():
+        if not isinstance(service, dict):
+            continue
+        base, model, limit = service.get('base_url'), service.get('model'), service.get('max_concurrency')
+        if not (isinstance(base, str) and '://' in base and isinstance(model, str) and model
+                and type(limit) is int and limit > 0):
+            continue
+        key = (*_endpoint(base), model)
+        slots, ids = groups.get(key, (limit, []))
+        groups[key] = (min(slots, limit), ids + [str(service_id)])
+    return [dict(endpoint=key[:3], model=key[3], slots=slots, services=sorted(ids))
+            for key, (slots, ids) in sorted(groups.items())]
+
+
+def _model_of(body):
+    if isinstance(body, str):
+        body = body.encode('utf-8', 'replace')
+    if not isinstance(body, (bytes, bytearray)) or not bytes(body[:64]).lstrip().startswith(b'{'):
+        return None
+    try:
+        value = json.loads(body).get('model')
+    except (ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+class ServiceGates:
+    """Per-service server-wide caps instead of one cap for every model request.
+
+    Each (endpoint, model) of the model config gets its own gate under
+    ``<directory>/services/<hash>`` with that service's ``max_concurrency`` slots,
+    so retrieval, rewriting and preparation requests no longer queue behind
+    answer requests. A request no route matches (other endpoint, no model in the
+    body) takes the shared gate under ``directory`` with ``slots``, as before.
+    Endpoints are never written; ``route.json`` names service ids, model and slots.
+    """
+
+    def __init__(self, directory, slots, model_config):
+        self.fallback = ModelGate(directory, slots)
+        self.routes = []
+        for route in service_routes(model_config):
+            name = hashlib.sha256(json.dumps([*route['endpoint'], route['model']]).encode()).hexdigest()[:16]
+            gate = ModelGate(Path(directory) / SERVICES / name, route['slots'])
+            record = dict(services=route['services'], model=route['model'], slots=route['slots'])
+            temporary = gate.directory / f'{ROUTE}.{os.getpid()}.{threading.get_ident()}.tmp'
+            temporary.write_text(json.dumps(record) + '\n', encoding='utf-8')
+            temporary.replace(gate.directory / ROUTE)
+            self.routes.append((route['endpoint'], route['model'], gate))
+        # Several caps: the speed summary's single-gate saturation does not apply.
+        self.slots = self.requested_slots = None
+
+    def route(self, url, body):
+        scheme, netloc, path = _endpoint(url)
+        model = None
+        for (s, n, p), m, gate in self.routes:
+            if s == scheme and n == netloc and (path == p or path.startswith(p + '/')):
+                if model is None:
+                    model = _model_of(body() if callable(body) else body) or ''
+                if model == m:
+                    return gate
+        return self.fallback
+
+
+def service_gate_status(directory):
+    """Each per-service gate under ``directory``: its route record and server-wide state."""
+    out = []
+    for path in sorted((Path(directory) / SERVICES).glob('*/' + ROUTE)):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            record = {}
+        out.append(dict(record, **gate_status(path.parent)))
+    return out
+
+
 @contextmanager
 def install_model_gate(directory, slots, *, observer=None):
     gate = ModelGate(directory, slots)
@@ -254,10 +353,11 @@ def install_request_hooks(*, gate=None, observer=None):
     original_http = httpx.Client.send
     original_requests = requests.Session.send
 
-    def enter(request_path):
+    def enter(request_path, url=None, body=None):
         started = observer.now() if observer is not None else None
         phase = observer.current() if observer is not None else None
-        fd = gate.acquire() if gate is not None else None
+        target = gate.route(url, body) if hasattr(gate, 'route') else gate
+        fd = target.acquire() if target is not None else None
         acquired = observer.now() if observer is not None else None
         done = []
 
@@ -268,13 +368,18 @@ def install_request_hooks(*, gate=None, observer=None):
             # Ended before the slot is given back: the next holder starts after it.
             ended = observer.now() if observer is not None else None
             if fd is not None:
-                gate.release(fd)
+                target.release(fd)
             if observer is not None:
                 observer.record(phase, request_path, started, acquired, ended, outcome)
         return leave
 
     def http_send(client, request, **kwargs):
-        leave = enter(request.url.path)
+        def body():
+            try:
+                return request.content
+            except Exception:  # a streamed request body that was not read
+                return None
+        leave = enter(request.url.path, request.url, body)
         try:
             response = original_http(client, request, **kwargs)
         except BaseException as exc:
@@ -296,7 +401,7 @@ def install_request_hooks(*, gate=None, observer=None):
         return response
 
     def request_send(session, request, **kwargs):
-        leave = enter(request.path_url)
+        leave = enter(request.path_url, request.url, lambda: request.body)
         outcome = 'error'
         try:
             response = original_requests(session, request, **kwargs)

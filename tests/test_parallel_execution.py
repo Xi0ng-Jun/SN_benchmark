@@ -385,3 +385,47 @@ def test_old_batch_plans_without_retries_are_still_discovered(tmp_path):
     record = dict(execution_id='old', task_id='task', run_dir=str(root), state='finished', terminal=True)
     [entry] = RunViews([], execution_records=lambda: [record]).execution_runs('old')
     assert entry.retries == () and entry.case_ids == ('a',)
+
+
+def test_service_gates_cap_each_service_and_keep_the_shared_gate_for_the_rest(gate_dir, tmp_path):
+    import httpx
+    import requests
+    from rag_eval.model_gate import ServiceGates, install_request_hooks, service_gate_status, service_routes
+    config = tmp_path / 'models.toml'
+    config.write_text('[services.answer]\nkind = "chat"\nbase_url = "https://model.invalid/v1"\nmodel = "a"\n'
+                      'max_concurrency = 1\n[services.general]\nkind = "chat"\nbase_url = "https://model.invalid/v1/"\n'
+                      'model = "g"\nmax_concurrency = 4\n[services.copy]\nkind = "chat"\n'
+                      'base_url = "https://MODEL.invalid/v1"\nmodel = "a"\nmax_concurrency = 3\n'
+                      '[services.env]\nkind = "chat"\nmodel = "e"\nmax_concurrency = 9\n')
+    routes = service_routes(config)
+    assert [(r['model'], r['slots'], r['services']) for r in routes] == [('a', 1, ['answer', 'copy']), ('g', 4, ['general'])]
+    active, peak, lock = {}, {}, threading.Lock()
+
+    def handler(request):
+        model = json.loads(request.content).get('model', 'none') if request.content else 'none'
+        with lock:
+            active[model] = active.get(model, 0) + 1
+            peak[model] = max(peak.get(model, 0), active[model])
+        time.sleep(0.1)
+        with lock:
+            active[model] -= 1
+        return httpx.Response(200, json={'ok': True})
+    gates = ServiceGates(gate_dir, 2, config)
+    with install_request_hooks(gate=gates):
+        def call(model, url='https://model.invalid/v1/chat/completions'):
+            with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+                assert client.post(url, json={'model': model}).json() == {'ok': True}
+        threads = [threading.Thread(target=call, args=(m,)) for m in ['a'] * 4 + ['g'] * 4 + ['zzz'] * 4]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+    assert peak == {'a': 1, 'g': 4, 'zzz': 2}
+    assert gates.route('https://model.invalid/v1/embeddings', b'{"model": "g"}').slots == 4
+    assert gates.route('https://other.invalid/v1/chat', b'{"model": "g"}') is gates.fallback
+    assert gates.route('https://model.invalid/v1/chat', None) is gates.fallback
+    prepared = requests.Request('POST', 'https://model.invalid/v1/chat', json={'model': 'a'}).prepare()
+    assert gates.route(prepared.url, prepared.body).slots == 1
+    status = service_gate_status(gate_dir)
+    assert [(s['model'], s['slots'], s['in_flight']) for s in status] == [('a', 1, 0), ('g', 4, 0)]
+    assert 'model.invalid' not in json.dumps(status)
+    assert httpx.Client.send.__name__ == 'send'
+

@@ -237,3 +237,5 @@ python -m rag_eval.optimizer.cli v4 holdout --config C --state S --iteration IT 
 **诊断预取。** 下一个父版本的诊断（`subset:diag`，`diagnose_size` 题）在关键路径上：采纳后要等它测完，分析 Agent 才能开始。现在小批通过且 Δ_mb > 0 的领先候选一出现就开始预取，与其余验证题和复测重叠；每轮最多 `speculative_prefetches` 个（默认 2），猜错的代价是一次诊断测量。诊断题轮换只作用于当前卡住的父版本，预取的候选不受影响，续跑时样本不变。
 
 **留出集限定题目。** `v4 holdout --case-ids FILE`（每行一个 case id）只测文件中列出的留出题，例如已经完成资料准备的题；不在留出集里的 id 会被忽略并报告数量。运行未停止（例如 SIGINT 暂停后）时，留出集需要 `--allow-running`；它与运行共用运行锁，运行进程在时无法同时测量。
+
+**按服务限流（`job_execution.model_gate_per_service`，默认 false）。** 原来的模型闸门（`model_concurrency` 槽）对每个模型请求都排队，不分服务。test5 实测多数执行有 50–69% 的请求时间花在排队上，资料准备、改写、检索都排在答题后面。打开后，模型配置里每个（base_url, model）各有一个服务器级闸门，槽数为该服务的 `max_concurrency`（多个服务指向同一模型时取最小值）。闸门在 `<output_root>/model-gate/services/<哈希>/`，`route.json` 只记服务 id、模型名和槽数，不记地址。匹配不到服务的请求（地址不同，或请求体里没有 model）仍走原来的 `model_concurrency` 闸门。需要设置 `model_concurrency`。这个开关只影响排队，不改请求内容，也不进入导入缓存键。服务器配置在 optimizer 启动时读取，修改后要暂停再续跑才生效；已在运行的执行仍用旧闸门。查看状态：`scripts/model_gate_status.py <output_root>/model-gate`（输出里的 `services` 一项）。

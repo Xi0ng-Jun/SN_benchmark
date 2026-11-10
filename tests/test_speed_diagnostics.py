@@ -240,3 +240,45 @@ def test_a_speed_summary_failure_never_fails_a_scored_execution(tmp_path, monkey
     assert execute(payload) == 0
     summary = json.loads((Path(payload['run_dir']) / SUMMARY).read_text())
     assert summary['scored'] == summary['planned'] and summary['speed']['error_type'] == 'ValueError'
+
+
+def test_per_service_gate_from_server_setting_to_partition(tmp_path, monkeypatch, request):
+    import httpx
+    import pytest
+    from rag_eval import notebook_runner, run_report
+    from rag_eval.model_gate import remove_gates, service_gate_status
+    from rag_eval.workbench.job_execution import ExecutionRejected
+    from test_workbench_seeded_execution import spec_for
+    # The server setting reaches the payload, and needs a shared cap for unmatched requests.
+    with pytest.raises(ExecutionRejected, match='model_gate_per_service'):
+        spec_for(tmp_path / 'a', model_gate_per_service=True)
+    _, payload, _ = spec_for(tmp_path / 'b', model_concurrency=8, model_gate_per_service=True)
+    assert payload['model_gate'][1:] == [8, True]
+    _, plain, _ = spec_for(tmp_path / 'c', model_concurrency=8)
+    assert plain['model_gate'][1:] == [8]
+    # The partition runner caps each configured service on its own.
+    gate = tmp_path / 'gate'
+    request.addfinalizer(lambda: [remove_gates(p.parent) for p in gate.glob('services/*/route.json')]
+                         + [remove_gates(gate)])
+    from test_notebook_cli_launch import _script, captured_argv
+    _, argv = captured_argv(tmp_path)
+    models = tmp_path / 'models.toml'
+    models.write_text('[services.answer]\nkind = "chat"\nbase_url = "http://model.invalid/v1"\nmodel = "a"\n'
+                      'max_concurrency = 2\n')
+    argv = list(argv)
+    if '--model-config' in argv:
+        argv[argv.index('--model-config') + 1] = str(models)
+    else:
+        argv += ['--model-config', str(models)]
+
+    def execute(*, run, **kwargs):
+        run.mkdir()
+        (run / 'state.json').write_text('{"phase": "finished"}')
+        with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))) as client:
+            client.post('http://model.invalid/v1/chat/completions', json={'model': 'a'})
+    monkeypatch.setattr(notebook_runner, 'execute', execute)
+    monkeypatch.setattr(run_report, 'write_report', lambda *a, **k: {'runs': []})
+    monkeypatch.setattr(sys, 'argv', argv + ['--model-gate', str(gate), '--model-gate-slots', '3',
+                                             '--model-gate-per-service'])
+    assert _script().main() == 0
+    assert [(s['services'], s['slots']) for s in service_gate_status(gate)] == [(['answer'], 2)]
