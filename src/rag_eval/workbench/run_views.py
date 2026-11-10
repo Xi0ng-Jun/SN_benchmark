@@ -215,6 +215,8 @@ class RunViews:
         self._partition_context = RunReadContext(partition_only=True)
         self._request_local = threading.local()
         self._discover_lock = threading.Lock()
+        # Sealed-case policy per task, outside request scopes too (the optimizer has none).
+        self._policy_cache, self._policy_lock, self._version_local = {}, threading.Lock(), threading.local()
         self._ledger_cache = None
 
     @contextmanager
@@ -566,18 +568,63 @@ class RunViews:
                         for r in self._ledger_rows() if str(Path(r.get('run_dir') or '').resolve()) not in registered]
         return dict(format=FORMAT, runs=runs, ledger_only=unregistered)
 
+    def _protocol_version(self, repository):
+        """(last history event, iteration count), read in one statement; None when unknown.
+
+        Every write of an iteration protocol records a history event in the same
+        transaction, and a new iteration adds a row, so an unchanged pair means every
+        protocol (and its sealed selection) is unchanged. One thread-local read
+        connection per database: no PRAGMAs and no schema reload per call.
+        """
+        import sqlite3
+        database = getattr(repository, 'database', None)
+        if database is None:
+            return None
+        conns = getattr(self._version_local, 'conns', None)
+        if conns is None:
+            conns = self._version_local.conns = {}
+        try:
+            conn = conns.get(str(database))
+            if conn is None:
+                conn = conns[str(database)] = sqlite3.connect(database, timeout=60)
+            seq = conn.execute('SELECT MAX(seq) FROM history').fetchone()[0]
+            # The iterations table is created on first use; until then there is no protocol.
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='iterations'").fetchone()
+            count = conn.execute('SELECT COUNT(*) FROM iterations').fetchone()[0] if exists else 0
+            return seq, count
+        except sqlite3.Error:
+            conns.pop(str(database), None)
+            return None
+
+    def _policy(self, repository, task_id):
+        """The task's sealed / hidden case policy, rebuilt only when a protocol may have changed.
+
+        Policy reads every iteration protocol and compiles a pattern of the hidden ids;
+        building it per partition run of every attempt made the optimizer's candidate
+        reads CPU-bound (a resumed test5 spent 20+ minutes before its first measurement).
+        """
+        from .splits import Policy
+        policies = getattr(self._request_local, 'policies', None)
+        if policies is not None and task_id in policies:
+            return policies[task_id]
+        # Read the version first: a policy built after it is at least that new.
+        version = self._protocol_version(repository)
+        with self._policy_lock:
+            cached = self._policy_cache.get(task_id)
+        if version is None or cached is None or cached[0] != version:
+            cached = (version, Policy(repository, task_id))
+            if version is not None:
+                with self._policy_lock:
+                    self._policy_cache[task_id] = cached
+        if policies is not None:
+            policies[task_id] = cached[1]
+        return cached[1]
+
     def _assert_unsealed(self, run_id, case_id=None):
         repository = getattr(self._worktree_service, 'repository', None)
         if repository is not None:
-            from .splits import Policy
             entry = self._entry(run_id)
-            # Splits are frozen with their iteration: one read per request, not one per partition run.
-            policies = getattr(self._request_local, 'policies', None)
-            policy = policies.get(entry.task_id) if policies is not None else None
-            if policy is None:
-                policy = Policy(repository, entry.task_id)
-                if policies is not None:
-                    policies[entry.task_id] = policy
+            policy = self._policy(repository, entry.task_id)
             ids = [case_id] if case_id else entry.case_ids
             if not ids and policy.sealed:
                 ids = [r['case_id'] for r in self._load(run_id)['cases']]

@@ -123,8 +123,9 @@ class SNAdapterV4(SNAdapter):
         measurements = self._v41_measurements
         self._gated(lambda: self._await({label: (key, lambda: measurements.subset(
             cid, subset, ids, k=k, paired=rcid is not None, key=key, **kwargs))}, {label: (cid, rcid)}))
-        return (measurements.read_result(cid, scope_id, k, key=key),
-                measurements.read_result(rcid, scope_id, k, key=key) if rcid is not None else None)
+        with self._read_scope():
+            return (measurements.read_result(cid, scope_id, k, key=key),
+                    measurements.read_result(rcid, scope_id, k, key=key) if rcid is not None else None)
 
     def evaluate_search(self, version: Version, task_ids: list[str], k: int) -> EvalResult:
         """Diagnosis: *version* alone on a search sample (``subset:diag``), k attempts."""

@@ -674,10 +674,23 @@ COMMANDS = {"run": cmd_run, "status": cmd_status, "test": cmd_test, "figure": cm
             'holdout': cmd_holdout}
 
 
+def _stack_dump_on_sigusr1():
+    """``kill -USR1 <pid>`` writes every thread's stack to stderr (the run's process.log); the run continues."""
+    import faulthandler
+    import signal
+    if hasattr(signal, "SIGUSR1"):
+        try:
+            faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True, chain=False)
+        except (RuntimeError, ValueError, OSError, AttributeError):
+            pass   # no usable stderr descriptor: diagnostics only
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     from rag_eval.workbench.agent_creations import CreationProfileUnavailable
     from rag_eval.workbench.agent_preflight import AgentPreflightError
     args = build_parser().parse_args(argv)
+    if argv is None:
+        _stack_dump_on_sigusr1()
     try:
         return COMMANDS[args.command](args)
     except (UsageError, CreationProfileUnavailable, AgentPreflightError) as exc:

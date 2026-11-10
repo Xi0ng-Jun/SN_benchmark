@@ -200,3 +200,38 @@ def test_concurrent_http_gets_of_one_tree_build_it_once(tree, monkeypatch):
     assert {r.status_code for r in burst} == {200} and len({r.headers['etag'] for r in burst}) == 1
     # One rebuild for the burst; the unchanged version is then served without another.
     assert later.status_code == 200 and len(calls) == 1
+
+
+def test_candidate_view_outside_a_request_discovers_once(tmp_path):
+    """The optimizer reads candidates without a web request: one view, one discovery, one check per execution."""
+    import json
+    import sqlite3
+    from rag_eval.workbench.comparisons import Admission
+    from rag_eval.workbench.iterations import IterationService
+    from rag_eval.workbench.run_views import RunViews
+    records, calls, checked = [], [], []
+    for e in range(3):
+        root = tmp_path / f'exec{e}'
+        plan = []
+        for p in range(4):
+            (root / f'partitions/{p}').mkdir(parents=True)
+            plan.append(dict(partition_id=f'p{p}', case_ids=[f'c{p}'], run_dir=str(root / f'partitions/{p}'),
+                             suite='qasper', mode='chunk', official_name=f'{p:04d}'))
+        (root / 'batch-plan.json').write_text(json.dumps(plan))
+        records.append(dict(execution_id=f'exec{e}', task_id='task', run_dir=str(root), state='finished', terminal=True))
+    views = RunViews([], execution_records=lambda: calls.append(1) or records)
+    views._assert_unsealed = lambda run_id, case_id=None: checked.append(run_id)
+    views.admission = lambda run_id, bundle=None: dict(status='admitted', reason=None)
+    service = IterationService.__new__(IterationService)
+    service.admission = Admission(views)
+    service.executions = type('E', (), {'get': lambda self, t, e: dict(state='finished', run_dir=str(tmp_path / e))})()
+    # Every execution measured twice (repeated attempts share executions in replays).
+    service._attempts = lambda conn, cid: [dict(attempt=i, task_id='task', execution_id=f'exec{i % 3}', batch_id='b')
+                                          for i in range(6)]
+    conn = sqlite3.connect(':memory:')
+    conn.row_factory = sqlite3.Row
+    conn.execute('CREATE TABLE candidate_links(candidate_id, created_at, basis_json)')
+    conn.execute('CREATE TABLE candidate_worktrees(candidate_id, status, branch, base_revision, binding_json)')
+    view = service._view(conn, dict(id='c', origin='native', status='frozen'))
+    assert view['reference'] is not None
+    assert len(calls) == 1 and len(checked) == 12      # 3 executions x 4 partition runs, each once

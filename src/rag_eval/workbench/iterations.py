@@ -244,14 +244,27 @@ class IterationService:
             measured['admission'] = self.admission(measured) if self.admission else None
         return measured
 
+    def _read_scope(self):
+        """The run views' read scope (one discovery, one sealed check per execution), or a no-op.
+
+        Web requests already hold one; the optimizer and CLIs do not. Without it every
+        attempt of a candidate view rescanned all execution records of the workspace and
+        rebuilt the sealed policy for each partition run: a resumed v4 run spent 20+
+        CPU-bound minutes reading candidates before its first new measurement.
+        """
+        from contextlib import nullcontext
+        scope = getattr(getattr(self.admission, 'views', None), 'request_scope', None)
+        return scope() if callable(scope) else nullcontext()
+
     def _view(self, conn, candidate):
-        attempts = [self._measured(a) for a in self._attempts(conn, candidate['id'])]
-        links = []
-        for row in conn.execute('SELECT * FROM candidate_links WHERE candidate_id=? ORDER BY created_at',
-                                (candidate['id'],)):
-            link = dict(row)
-            link['basis'] = json.loads(link.pop('basis_json'))
-            links.append(self._measured(link))
+        with self._read_scope():
+            attempts = [self._measured(a) for a in self._attempts(conn, candidate['id'])]
+            links = []
+            for row in conn.execute('SELECT * FROM candidate_links WHERE candidate_id=? ORDER BY created_at',
+                                    (candidate['id'],)):
+                link = dict(row)
+                link['basis'] = json.loads(link.pop('basis_json'))
+                links.append(self._measured(link))
         # The first admitted measurement, in recorded order and regardless of score.
         reference = next((dict(attempt=m.get('attempt'), execution_id=m['execution_id'])
                           for m in attempts + links if (m['admission'] or {}).get('status') == 'admitted'), None)
@@ -295,7 +308,7 @@ class IterationService:
 
     def iteration(self, iteration_id):
         """The iteration, its candidates in tree order, and its proposals."""
-        with self.repository.connect() as conn:
+        with self._read_scope(), self.repository.connect() as conn:
             iteration = self._iteration(conn, iteration_id)
             rows = [_candidate_record(r) for r in conn.execute(
                 'SELECT * FROM candidates WHERE iteration_id=? ORDER BY created_at,id', (iteration_id,))]

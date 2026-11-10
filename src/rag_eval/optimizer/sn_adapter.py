@@ -451,6 +451,21 @@ class SNAdapter(SystemAdapter):
             return self._run_views
         return self._require_round_ops("evaluate").api.views
 
+    def _read_scope(self):
+        """One read scope per measurement call, as the web server opens one per request.
+
+        Inside a scope run views discover executions once and check each execution's
+        sealed cases once. Without one, every candidate read rescanned every execution
+        record and plan file for each attempt and partition run: a resumed run spent
+        20+ minutes CPU-bound replaying its finished measurements.
+        """
+        from contextlib import nullcontext
+        try:
+            scope = getattr(self._views(), "request_scope", None)
+        except Exception:  # noqa: BLE001  (no views configured: nothing to scope)
+            scope = None
+        return scope() if callable(scope) else nullcontext()
+
     def _protocol(self) -> dict:
         """The frozen v2 iteration protocol (splits, fresh_batches, k_base)."""
         ops = self._require_round_ops("evaluate")
@@ -580,11 +595,12 @@ class SNAdapter(SystemAdapter):
         while True:
             for label, (key, call) in list(pending.items()):
                 self.check_runtime()
-                if label in planned:
-                    result = call() or {}
-                else:
-                    planned.add(label)
-                    result = self._first_call(tuple((touches or {}).get(label, ())), call) or {}
+                with self._read_scope():
+                    if label in planned:
+                        result = call() or {}
+                    else:
+                        planned.add(label)
+                        result = self._first_call(tuple((touches or {}).get(label, ())), call) or {}
                 self.check_runtime()
                 status = result.get("status")
                 if status == "complete":

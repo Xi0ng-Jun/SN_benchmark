@@ -126,3 +126,68 @@ def test_each_read_scope_discovers_again(tmp_path):
         assert views.execution_runs('e1') == []  # the same command keeps its snapshot
     with views.request_scope():
         assert [run.id for run in views.execution_runs('e1')] == ['e1-1']
+
+
+def test_sealed_policy_is_built_once_until_a_protocol_can_change(tmp_path, monkeypatch):
+    """Partition reads outside a request scope (the optimizer) reuse the task's sealed policy."""
+    from types import SimpleNamespace
+    from rag_eval.workbench import splits
+    from rag_eval.workbench.repository import WorkbenchRepository
+    from rag_eval.workbench.run_views import RunEntry, RunViews
+    from synthetic_workbench_run import saved_qasper
+    run, scores, case = saved_qasper(tmp_path)
+    repository = WorkbenchRepository(tmp_path / 'state')
+    workspace = repository.register_workspace('SN', tmp_path)
+    task = repository.create_task(workspace['id'], 'T', '', request_key='t')['id']
+    built = []
+
+    class Counting(splits.Policy):
+        def __init__(self, *args):
+            built.append(args[1])
+            super().__init__(*args)
+    monkeypatch.setattr(splits, 'Policy', Counting)
+    views = RunViews([RunEntry('e5', run, scores, task_id=task)],
+                     worktree_service=SimpleNamespace(repository=repository))
+    for _ in range(50):
+        views._assert_unsealed('e5')
+    assert built == [task]
+    with views.request_scope():
+        views._assert_unsealed('e5')
+    assert len(built) == 1
+    # Any recorded event (every protocol write records one) rebuilds it once.
+    with repository.connect(write=True) as conn:
+        repository._event(conn, task, 'iteration.split.frozen', 'x', {})
+    views._assert_unsealed('e5')
+    views._assert_unsealed('e5')
+    assert len(built) == 2
+
+
+def test_optimizer_measurement_polls_discover_once_per_call(tmp_path):
+    """The optimizer has no web request: each poll opens its own read scope (one discovery)."""
+    from types import SimpleNamespace
+    from rag_eval.optimizer.sn_adapter import SNAdapter
+    from rag_eval.workbench.run_views import RunViews
+    root = tmp_path / 'execution'
+    (root / 'partitions' / 'p').mkdir(parents=True)
+    (root / 'batch-plan.json').write_text(json.dumps([dict(run_dir=str(root / 'partitions' / 'p'), case_ids=['c'])]))
+    reads = []
+    record = dict(execution_id='e1', task_id='t1', run_dir=str(root), state='finished', terminal=True)
+    views = RunViews([], execution_records=lambda: reads.append(1) or [record])
+    polls = []
+
+    def call():
+        for _ in range(20):   # one candidate read: every attempt and link asks for its runs
+            assert [r.id for r in views.execution_runs('e1')] == ['e1-1']
+        polls.append(len(reads))
+        return dict(status='complete' if len(polls) == 3 else 'running')
+    fake = SimpleNamespace(_views=lambda: views, check_runtime=lambda: None, _infra_retry=0, key_generation=0,
+                           _execution_timeout_seconds=60, _eval_timeout=60, _wait_for_running=False,
+                           _runtime_remaining=None, _runtime_wait=lambda s: None, _eval_poll_interval=0,
+                           _first_call=lambda touched, c: c(), _note_dispatch_errors=lambda *a: None)
+    fake._read_scope = lambda: SNAdapter._read_scope(fake)
+    SNAdapter._await(fake, {'m': ('k', call)})
+    assert polls == [1, 2, 3]          # one discovery per poll, not one per run lookup
+    reads.clear()
+    for _ in range(5):
+        views.execution_runs('e1')
+    assert len(reads) == 5             # outside a scope nothing is remembered

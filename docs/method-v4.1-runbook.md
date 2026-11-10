@@ -239,3 +239,5 @@ python -m rag_eval.optimizer.cli v4 holdout --config C --state S --iteration IT 
 **留出集限定题目。** `v4 holdout --case-ids FILE`（每行一个 case id）只测文件中列出的留出题，例如已经完成资料准备的题；不在留出集里的 id 会被忽略并报告数量。运行未停止（例如 SIGINT 暂停后）时，留出集需要 `--allow-running`；它与运行共用运行锁，运行进程在时无法同时测量。
 
 **按服务限流（`job_execution.model_gate_per_service`，默认 false）。** 原来的模型闸门（`model_concurrency` 槽）对每个模型请求都排队，不分服务。test5 实测多数执行有 50–69% 的请求时间花在排队上，资料准备、改写、检索都排在答题后面。打开后，模型配置里每个（base_url, model）各有一个服务器级闸门，槽数为该服务的 `max_concurrency`（多个服务指向同一模型时取最小值）。闸门在 `<output_root>/model-gate/services/<哈希>/`，`route.json` 只记服务 id、模型名和槽数，不记地址。匹配不到服务的请求（地址不同，或请求体里没有 model）仍走原来的 `model_concurrency` 闸门。需要设置 `model_concurrency`。这个开关只影响排队，不改请求内容，也不进入导入缓存键。服务器配置在 optimizer 启动时读取，修改后要暂停再续跑才生效；已在运行的执行仍用旧闸门。查看状态：`scripts/model_gate_status.py <output_root>/model-gate`（输出里的 `services` 一项）。
+
+**读取开销与卡住时的诊断。** optimizer 没有网页请求，以前每读一次候选，都会对每个 attempt 重新读取全部执行记录，并为每个分区重建 sealed 策略。平时表现为常驻高 CPU；续跑时已完成的测量集中重放，test5 曾因此在第一个新测量前空转 20 多分钟。现在候选和迭代视图、测量轮询和结果读取都在一个读取范围内进行：一次读取只扫描一次执行，每个执行只做一次 sealed 检查；sealed 策略按任务缓存，数据库出现新事件时重建。进程看起来卡住时，用 `kill -USR1 <optimizer PID>` 把所有线程的栈写进 process.log，进程继续运行；不要为了抓栈发 SIGINT。
