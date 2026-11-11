@@ -147,8 +147,12 @@ def cmd_run(args) -> int:
     _logging(run_dir / "run.log")
     adapter, setup = _adapter(root, run_dir)
     ident_path = run_dir / IDENTITY_FILE
+    sizes = setup["splits"]
+    budget = args.max_executions if args.max_executions is not None else vero_budget(sizes)
     if ident_path.exists():
         ident = _read(ident_path)
+        if ident.get("max_executions") != budget:
+            raise UsageError(f"--max-executions {budget} differs from the run's {ident.get('max_executions')}")
         if ident["config_sha256"] != loaded.sha256:
             raise UsageError("the v4 config changed since the run started (pre-registered, read-only)")
         if ident["setup_sha256"] != digest_settings(setup) or ident["seed"] != adapter.seed_sha:
@@ -161,14 +165,18 @@ def cmd_run(args) -> int:
         ledger_io.atomic_write_json(ident_path, dict(
             method="v4.1", target="vero", preset=setup["preset"], seed=adapter.seed_sha,
             config_sha256=loaded.sha256, config_resolved=loaded.resolved, setup_sha256=digest_settings(setup),
+            max_executions=budget, budget_rule=("vero: 8 x (train + validation)" if args.max_executions is None
+                                                else "explicit"),
             created_at=_now()))
-    ids = split_ids(setup["splits"])
+    ids = split_ids(sizes)
+    adapter.evaluator.set_budget(budget)
     cfg = loaded.config
     missing = sorted(set(cfg.safeguards) - set(adapter.observable_safeguards()))
     if missing:
         raise UsageError(f"the v4 config names safeguard(s) {missing} the VeRO adapter cannot observe")
     print(f"run {run_dir.name}: preset={setup['preset']} search={len(ids['train'])} "
-          f"validation={len(ids['validation'])} test={len(ids['test'])} b={cfg.b} budget={cfg.time_budget_hours} h")
+          f"validation={len(ids['validation'])} test={len(ids['test'])} b={cfg.b} budget={cfg.time_budget_hours} h, "
+          f"{budget} executions ({adapter.evaluator.spent()} used)")
     run = V4Run(adapter, adapter.seed(), cfg, search=ids["train"], validation=ids["validation"],
                 test_size=len(ids["test"]), state_dir=run_dir)
     with stop_on_sigterm():
@@ -176,10 +184,15 @@ def cmd_run(args) -> int:
     print(f"halt reason: {reason}")
     print(f"rounds: {len(run.rounds)}; adopted nodes: {len(run.lineage) - 1}; final: {run.final_version()[:12]}")
     print(f"evaluator: {adapter.evaluator.calls} runner call(s), {adapter.evaluator.executions} sample execution(s) "
-          "this session")
+          f"this session; budget {adapter.evaluator.spent()} / {budget}")
     if run.failure_detail:
         print(f"failure: {run.failure_detail}")
     return EXIT_HALTED if reason in FAILURE_HALTS else EXIT_OK
+
+
+def vero_budget(sizes: dict) -> int:
+    """VeRO paper-v1 / GEPA budget in sample executions: B=8 full evaluations on train and on validation."""
+    return 8 * (sizes["train"] + sizes["validation"])
 
 
 def cmd_status(args) -> int:
@@ -283,6 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--state-root", required=True)
     s.add_argument("--run-dir", required=True)
     s.add_argument("--v4-config", required=True)
+    s.add_argument("--max-executions", type=int, help="sample executions on train+validation (default: VeRO's "
+                   "8 x (train + validation), the budget GEPA gets)")
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("status")

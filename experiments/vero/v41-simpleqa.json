@@ -1,0 +1,13 @@
+{
+  "time_budget_hours": 24,
+  "calibration_k": 2,
+  "b": 2,
+  "cards_per_analysis": 2,
+  "diagnose_size": 0,
+  "speculative_prefetches": 0,
+  "speculative_analysis": false,
+  "smoke": false,
+  "minibatch": false,
+  "review": false,
+  "ablation": false
+}

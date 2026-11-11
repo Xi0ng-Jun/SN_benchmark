@@ -127,3 +127,27 @@ def test_candidate_crash_scores_zero(world):
     res = ad.evaluate(broken, ids, 1)
     assert res.per_task_scores == {t: 0.0 for t in ids}
     assert all("candidate_crash" in (e or "") for e in res.error_classes.values())
+
+
+def test_execution_budget_halts_the_run_and_survives_resume(world, tmp_path):
+    # Calibration costs 2 x 20 validation + 12 train (diagnosis) = 52 executions; one candidate's validation
+    # measurement needs 20 more, so a budget of 70 halts inside the first round.
+    cfg = tmp_path / "v4.json"
+    cfg.write_text(json.dumps(dict(time_budget_hours=1, calibration_k=2, b=1, cards_per_analysis=1, diagnose_size=0,
+                                   agent_estimate_minutes=1, review=False, speculative_prefetches=0,
+                                   speculative_analysis=False)))
+    run_dir = world["root"] / "runs" / "budget"
+    args = ["run", "--state-root", str(world["root"]), "--run-dir", str(run_dir), "--v4-config", str(cfg),
+            "--max-executions", "70"]
+    assert cli.main(args) == cli.EXIT_HALTED
+    st = json.loads((run_dir / "state.json").read_text())
+    assert st["halt_reason"] == "budget_exhausted", st["halt_reason"]
+    used = cli.executions(run_dir / "evals")
+    assert used.get("validation", 0) + used.get("train", 0) <= 70
+    assert json.loads((run_dir / "identity.json").read_text())["max_executions"] == 70
+    # A resume must keep the pre-registered budget.
+    assert cli.main(args[:-1] + ["71"]) == cli.EXIT_USAGE
+    setup = json.loads((world["root"] / "setup.json").read_text())
+    ad = vero_adapter.VeROAdapter(setup, world["root"], run_dir)
+    ad.evaluator.set_budget(70)
+    assert 52 <= ad.evaluator.spent() <= 70                       # counted from the cache after a restart

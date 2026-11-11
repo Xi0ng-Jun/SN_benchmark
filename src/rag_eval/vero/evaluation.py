@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
 
-from rag_eval.optimizer.adapter import EvaluationCancelled, EvaluationUnavailable
+from rag_eval.optimizer.adapter import BudgetExhausted, EvaluationCancelled, EvaluationUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +100,29 @@ class Evaluator:
         self._cancelled = False
         self.calls = 0                 # runner subprocesses started (this process)
         self.executions = 0            # sample executions started (this process)
+        # Execution budget (VeRO-style, matched to GEPA): sample executions on budget_splits, counted
+        # from the cache at first use (survives resume) plus every execution started afterwards
+        # (infrastructure retries included). None = unlimited.
+        self.budget: Optional[int] = None
+        self.budget_splits: tuple = ("train", "validation")
+        self._spent: Optional[int] = None
+
+    def set_budget(self, budget: Optional[int], splits: tuple = ("train", "validation")) -> None:
+        self.budget, self.budget_splits, self._spent = budget, tuple(splits), None
+
+    def _budgeted(self, tid: str) -> bool:
+        return parse_task_id(tid)[0] in self.budget_splits
+
+    def spent(self) -> int:
+        """Budgeted sample executions so far (cached records at first use + executions started since)."""
+        with self._lock:
+            return self._spent_locked()
+
+    def _spent_locked(self) -> int:
+        if self._spent is None:
+            self._spent = sum(1 for f in self.cache_dir.glob("*/*/a*.json") if self._budgeted(f.parent.name)) \
+                if self.cache_dir.exists() else 0
+        return self._spent
 
     # -- control -----------------------------------------------------------
 
@@ -158,6 +181,15 @@ class Evaluator:
                     else:
                         events[key] = self._inflight[key] = threading.Event()
                         mine.setdefault(a, []).append(t)
+            if self.budget is not None and mine:
+                new = sum(self._budgeted(t) for ids in mine.values() for t in ids)
+                if new and self._spent_locked() + new > self.budget:
+                    for key, ev in events.items():
+                        self._inflight.pop(key, None)
+                        ev.set()
+                    raise BudgetExhausted(f"execution budget: {self._spent} of {self.budget} sample executions "
+                                          f"used, this request needs {new} more")
+                self._spent += new          # reserved at admission, so concurrent requests cannot overshoot
         try:
             if mine:
                 with ThreadPoolExecutor(max_workers=len(mine), thread_name_prefix="vero-eval") as pool:
@@ -175,9 +207,12 @@ class Evaluator:
     def _attempt(self, sha: str, attempt: int, ids: list[str]) -> None:
         todo = list(ids)
         last = None
-        for _ in range(1 + self.infra_retry):
+        for round_ in range(1 + self.infra_retry):
             if not todo:
                 return
+            if round_ and self.budget is not None:      # infrastructure retries are executions too
+                with self._lock:
+                    self._spent = self._spent_locked() + sum(self._budgeted(t) for t in todo)
             out = self._call(sha, attempt, todo)
             fatal = out.get("fatal")
             if fatal:

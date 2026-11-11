@@ -1,0 +1,21 @@
+# Local LiteLLM proxy for the VeRO experiment: every model name VeRO paper-v1 uses is served by
+# DeepSeek deepseek-flash, so VeRO code and task defaults stay untouched (same for GEPA and v4.1).
+#   gpt-4.1-mini-2025-04-14  web_search_agent target model (SimpleQA)
+#   gpt-4.1-mini             tau-bench agent and simulated user (Retail)
+#   gpt-4.1-2025-04-14       SimpleQA grader            -> deviation from the paper (GPT-4.1)
+#   optimizer                GEPA reflection model (our analyst/implementer use pi with the same model)
+model_list:
+  - model_name: gpt-4.1-mini-2025-04-14
+    litellm_params: {model: deepseek/deepseek-flash, api_key: os.environ/DEEPSEEK_API_KEY, api_base: https://api.deepseek.com}
+  - model_name: gpt-4.1-mini
+    litellm_params: {model: deepseek/deepseek-flash, api_key: os.environ/DEEPSEEK_API_KEY, api_base: https://api.deepseek.com}
+  - model_name: gpt-4.1-2025-04-14
+    litellm_params: {model: deepseek/deepseek-flash, api_key: os.environ/DEEPSEEK_API_KEY, api_base: https://api.deepseek.com}
+  - model_name: optimizer
+    litellm_params: {model: deepseek/deepseek-flash, api_key: os.environ/DEEPSEEK_API_KEY, api_base: https://api.deepseek.com}
+litellm_settings:
+  drop_params: true          # params DeepSeek does not accept are dropped instead of failing the call
+  request_timeout: 600
+  num_retries: 3
+general_settings:
+  master_key: os.environ/LITELLM_API_KEY
