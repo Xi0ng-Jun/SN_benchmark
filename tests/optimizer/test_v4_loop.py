@@ -298,6 +298,20 @@ def test_empty_analyses_are_run_failures():
     assert len(r.rounds) == 1 and r.rounds[0]["analysis_empty"]
 
 
+def test_failed_implementations_do_not_end_a_streak_of_empty_analyses():
+    # Regression: a failed implementation (stage "error") used to reset the run-failure count, so empty
+    # analyses alternating with failed implementations never halted and spun until the time budget.
+    mock = V4Mock([[], [dict(name="E1", implement_error=True)], [], [dict(name="E2", implement_error=True)], []])
+    r, reason = run(mock, cfg(b=1, max_consecutive_run_failures=2, speculative_analysis=False))
+    assert reason == "process_failure" and "no cards" in r.failure_detail
+    assert len(r.rounds) == 2 and r.current["round"] == 3
+    assert records(r, 1)["E1"]["stage"] == "error"
+    # A measured candidate (adopted or not) still ends the streak.
+    mock = V4Mock([[], [dict(name="A", delta=-0.1)], [], [dict(name="B", delta=-0.1)], []])
+    r, reason = run(mock, cfg(b=1, max_consecutive_run_failures=2, speculative_analysis=False))
+    assert reason == "script_end" and len(r.rounds) == 5
+
+
 def test_no_new_card_when_card_plus_remeasure_does_not_fit():
     # Before any card, the estimate falls back to agent_estimate_minutes + one validation measurement.
     mock = V4Mock([[dict(name="A", delta=0.1)]])
