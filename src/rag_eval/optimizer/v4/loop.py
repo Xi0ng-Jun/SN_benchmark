@@ -40,6 +40,10 @@ STATE_FILE, LEDGER_FILE = "state.json", "ledger.json"
 FAILURE_HALTS = ("process_failure", "budget_exhausted")
 STOPPED = "stopped"
 TERMINAL = frozenset({"measured", "minibatch_fail", "smoke_fail", "run_failed", "error", "preflight_skipped"})
+# Terminal stages that mean the candidate was measured: only these end a streak of run failures.
+# An implementation error (empty diff, timeout, ...), a declined preflight or a run failure does not,
+# so empty analyses alternating with failed implementations still reach max_consecutive_run_failures.
+MEASURED = frozenset({"measured", "minibatch_fail", "smoke_fail"})
 
 
 class RunStopRequested(BaseException):
@@ -741,7 +745,7 @@ class V4Run:
                 rec = job.get("record")
                 try:
                     completed = self._complete_job(job, fut)
-                    if completed is not None and completed["stage"] in TERMINAL:
+                    if completed is not None and completed["stage"] in MEASURED:
                         self.run_failures = 0
                 except Exception as exc:
                     unavailable = exc if isinstance(exc, EvaluationUnavailable) else EvaluationUnavailable(
