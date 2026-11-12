@@ -5,6 +5,7 @@
     python -m rag_eval.vero.cli run    --state-root S --run-dir S/runs/run1 --v4-config cfg.json
     python -m rag_eval.vero.cli status --run-dir S/runs/run1
     python -m rag_eval.vero.cli test   --state-root S --run-dir S/runs/run1 [--k 1]
+    python -m rag_eval.vero.cli agent-check --cmd "<agent command>"
 
 One state root = one target (preset, VeRO checkout, agent venv, dataset, task params, models, agent
 commands; ``setup.json``) and its git repo. Each run directory is one independent optimisation
@@ -17,9 +18,12 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,7 +32,8 @@ from rag_eval.optimizer.v4 import decide
 from rag_eval.optimizer.v4.config import ConfigError, load
 from rag_eval.optimizer.v4.loop import FAILURE_HALTS, STATE_FILE, RunStopRequested, V4Run, final_version
 
-from .adapter import PRESETS, VeROAdapter, digest_settings, split_ids
+from .adapter import PRESETS, VeROAdapter, agent_command, digest_settings, split_ids
+from .agent_dispatch import AgentCommandFailed, AgentRunner
 from .evaluation import describe
 from .target import TargetRepo
 
@@ -278,6 +283,38 @@ def cmd_test(args) -> int:
     return EXIT_OK
 
 
+def cmd_agent_check(args) -> int:
+    """Run each agent command exactly as a run does and check what the method needs from it:
+    reading a case file outside its working directory and editing a file inside it."""
+    base = Path(args.dir).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    failed = 0
+    for command in args.cmd:
+        tmp = Path(tempfile.mkdtemp(prefix="agent-check-", dir=base))
+        cases, work = tmp / "cases", tmp / "work"
+        cases.mkdir()
+        work.mkdir()
+        token = f"token-{uuid.uuid4().hex[:8]}"
+        (cases / "case-01.md").write_text(token + "\n")
+        (work / "module.py").write_text("x = 1\n")
+        subprocess.run(["git", "init", "-q", "."], cwd=work, check=False)
+        prompt = (f"Read the file {cases / 'case-01.md'}. Then edit module.py in the current directory so that "
+                  'its only line is\nx = "<the exact content of that file>"\nFinish with the word DONE.')
+        try:
+            AgentRunner(retries=0).run(agent_command(command, cases), prompt, cwd=work, timeout=args.timeout,
+                                       log_path=tmp / "agent.log")
+            problem = None if token in (work / "module.py").read_text() else "it ran but module.py lacks the token"
+        except (AgentCommandFailed, TimeoutError, OSError) as exc:
+            problem = str(exc)[:400]
+        if problem is None:
+            print(f"agent ok: {command}")
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            failed += 1
+            print(f"agent FAILED: {command}\n  {problem}\n  log: {tmp / 'agent.log'}")
+    return 1 if failed else EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -292,7 +329,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--agent-python", required=True, help="python of the agent project's venv (has scale-vero)")
     s.add_argument("--dataset-path", help="built dataset (default: <vero>/vero-benchmarking/datasets/<name>)")
     s.add_argument("--task-params", help='JSON passed to the task, e.g. {"model": "my-model"}')
-    s.add_argument("--analyst-cmd", default=DEFAULT_AGENT_CMD)
+    s.add_argument("--analyst-cmd", default=DEFAULT_AGENT_CMD,
+                   help="the prompt is appended as the last argument; {case_dir} = the analysis cases' directory")
     s.add_argument("--implementer-cmd", default=DEFAULT_AGENT_CMD)
     s.add_argument("--agent-timeout", type=float, default=1800)
     s.add_argument("--sample-concurrency", type=int, default=8)
@@ -331,6 +369,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--parallel", type=int, default=3)
     s.add_argument("--force", action="store_true")
     s.set_defaults(func=cmd_test)
+
+    s = sub.add_parser("agent-check", help="check that an analyst / implementer command can read cases and edit")
+    s.add_argument("--cmd", action="append", required=True, help="agent command; {case_dir} = the analysis cases")
+    s.add_argument("--dir", default=os.environ.get("VERO_STATE") or ".", help="where the scratch directory goes")
+    s.add_argument("--timeout", type=float, default=600)
+    s.set_defaults(func=cmd_agent_check)
     return p
 
 

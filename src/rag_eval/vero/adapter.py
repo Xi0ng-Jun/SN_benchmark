@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+import shlex
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -125,6 +126,12 @@ Rules:
   `python -m py_compile <file>`.
 - Finish with a 2-3 sentence summary of what you changed.
 """
+
+
+def agent_command(command: str, case_dir: Path) -> str:
+    """``{case_dir}`` in an agent command is the directory of the analysis cases, the only path outside
+    the worktree the analyst reads (for agent CLIs that confine file access, e.g. ``--add-dir {case_dir}``)."""
+    return command.replace("{case_dir}", shlex.quote(str(case_dir)))
 
 
 def setting(settings: dict, key: str, default: Any) -> Any:
@@ -346,8 +353,8 @@ class VeROAdapter(SystemAdapter):
                                            escalation=escalation, n_cards=n_cards)
             view = self.repo.new_workspace(parent.content_hash, f"analyst-{tag}-{uuid.uuid4().hex[:6]}", self.rules)
             try:
-                answer = self.agents.run(self.settings["analyst_cmd"], prompt, cwd=view, timeout=self.agent_timeout,
-                                         log_path=folder / "analyst.log")
+                answer = self.agents.run(agent_command(self.settings["analyst_cmd"], case_dir), prompt, cwd=view,
+                                         timeout=self.agent_timeout, log_path=folder / "analyst.log")
             except AgentCommandFailed as exc:
                 # The agent service is down, not the analysis: the loop halts (resumable) instead of crashing.
                 raise AgentRequestFailed(f"analyst: {exc}") from exc
@@ -392,8 +399,10 @@ class VeROAdapter(SystemAdapter):
                                            title=card.failure_mode_desc, hypothesis=card.change_hypothesis)
         log_path = self.evidence / "implement" / f"{workspace['name']}.log"
         try:
-            answer = self.agents.run(self.settings["implementer_cmd"], prompt, cwd=path, timeout=self.agent_timeout,
-                                     log_path=log_path)
+            # One command serves both roles: {case_dir} is the card's analysis cases (training cases only).
+            cases = self.evidence / f"analysis-{(card.ref or '').rpartition('-c')[0]}" / "cases"
+            answer = self.agents.run(agent_command(self.settings["implementer_cmd"], cases), prompt, cwd=path,
+                                     timeout=self.agent_timeout, log_path=log_path)
             diff, reverted = self.repo.stage_changes(path, workspace["parent"], self.rules)
         except AgentCommandFailed as exc:
             # Not an implementation failure: the card stays unmeasured (run_failed) and is not consumed.

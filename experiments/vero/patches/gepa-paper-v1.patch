@@ -1,5 +1,5 @@
 diff --git a/vero-benchmarking/src/vero_benchmarking/gepa.py b/vero-benchmarking/src/vero_benchmarking/gepa.py
-index fa3fbc6..8b639ce 100644
+index fa3fbc6..a0c40b6 100644
 --- a/vero-benchmarking/src/vero_benchmarking/gepa.py
 +++ b/vero-benchmarking/src/vero_benchmarking/gepa.py
 @@ -26,7 +26,7 @@ from vero.core.dataset import DatasetInfo
@@ -32,7 +32,7 @@ index fa3fbc6..8b639ce 100644
                  "--no-verify",
              ],
              cwd=self._repo_root,
-@@ -268,12 +270,13 @@ class VeroGEPAAdapter(
+@@ -268,12 +270,14 @@ class VeroGEPAAdapter(
  
          coro = run_evaluation(
              project_path=str(self._project_path),
@@ -44,6 +44,7 @@ index fa3fbc6..8b639ce 100644
              commit=commit,
              session_id=self.session_id,
 +            hooks=[],
++            max_concurrency=int(os.environ.get("VERO_GEPA_MAX_CONCURRENCY", "100")),
          )
          try:
              loop = asyncio.get_running_loop()

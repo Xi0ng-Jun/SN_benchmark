@@ -14,10 +14,9 @@ mkdir -p "$STATE"
 up() { curl -s -m 3 -o /dev/null "$1"; }
 
 entry() {   # entry <alias> <ROLE>
-  local model=VERO_$2_MODEL base=VERO_$2_API_BASE cap=VERO_$2_MAX_PARALLEL
+  local model=VERO_$2_MODEL base=VERO_$2_API_BASE
   printf '  - model_name: %s\n    litellm_params:\n      model: %s\n      api_base: %s\n      api_key: os.environ/VERO_%s_API_KEY\n' \
     "$1" "${!model}" "${!base}" "$2"
-  if [ -n "${!cap:-}" ]; then printf '      max_parallel_requests: %s\n' "${!cap}"; fi
 }
 
 config() {
@@ -36,13 +35,22 @@ litellm_settings:
 general_settings:
   master_key: os.environ/LITELLM_API_KEY
 YAML
-  } > "$STATE/litellm.yaml"
+  } > "$1"
 }
 
 start() {
-  if up "http://127.0.0.1:$LITELLM_PORT/health/liveliness"; then echo "litellm: already up (stop first to apply a new model mapping)"; else
+  config "$STATE/litellm.yaml.new"
+  if up "http://127.0.0.1:$LITELLM_PORT/health/liveliness" && ! cmp -s "$STATE/litellm.yaml.new" "$STATE/litellm.yaml"; then
+    echo "litellm: the model mapping changed; restarting"
+    if [ -f "$STATE/litellm.pid" ]; then kill "$(cat "$STATE/litellm.pid")" 2>/dev/null; rm -f "$STATE/litellm.pid"; fi
+    for _ in $(seq 1 30); do up "http://127.0.0.1:$LITELLM_PORT/health/liveliness" || break; sleep 1; done
+    if up "http://127.0.0.1:$LITELLM_PORT/health/liveliness"; then
+      echo "litellm: port $LITELLM_PORT is served by a process this script did not start; stop it first"; exit 1
+    fi
+  fi
+  if up "http://127.0.0.1:$LITELLM_PORT/health/liveliness"; then echo "litellm: already up"; rm -f "$STATE/litellm.yaml.new"; else
     command -v litellm >/dev/null || { echo "litellm not found: uv tool install 'litellm[proxy]'"; exit 2; }
-    config
+    mv "$STATE/litellm.yaml.new" "$STATE/litellm.yaml"
     setsid nohup litellm --config "$STATE/litellm.yaml" --port "$LITELLM_PORT" --host 127.0.0.1 \
       > "$STATE/litellm.log" 2>&1 < /dev/null & echo $! > "$STATE/litellm.pid"
     echo -n "litellm: starting"
@@ -70,7 +78,12 @@ wiki_up() { curl -s -m 3 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$WIKI_
 status() {
   local rc=0
   if up "http://127.0.0.1:$LITELLM_PORT/health/liveliness"; then
-    echo "litellm: up (:$LITELLM_PORT) target=$VERO_TARGET_MODEL grader=$VERO_GRADER_MODEL optimizer=$VERO_OPTIMIZER_MODEL"
+    # The proxy must serve the models of this environment (baseline.sh leaves its last candidate behind).
+    config "$STATE/litellm.yaml.check.$$"
+    if cmp -s "$STATE/litellm.yaml.check.$$" "$STATE/litellm.yaml"; then
+      echo "litellm: up (:$LITELLM_PORT) target=$VERO_TARGET_MODEL grader=$VERO_GRADER_MODEL optimizer=$VERO_OPTIMIZER_MODEL"
+    else echo "litellm: up (:$LITELLM_PORT) with ANOTHER model mapping than this environment; run: services.sh start"; rc=1; fi
+    rm -f "$STATE/litellm.yaml.check.$$"
   else echo "litellm: DOWN"; rc=1; fi
   if wiki_up; then echo "wiki proxy: up (:$WIKI_PROXY_PORT) upstream=${UPSTREAM_PROXY:-direct}"; else echo "wiki proxy: DOWN"; rc=1; fi
   return $rc

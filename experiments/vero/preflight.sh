@@ -2,6 +2,7 @@
 # Checks before any run: services, tool calling through every proxy alias, Wikipedia, the agent command.
 #   experiments/vero/preflight.sh ["<analyst/implementer command>" ...]
 # e.g. experiments/vero/preflight.sh "pi -p --no-session --model deepseek-flash"
+#      experiments/vero/preflight.sh "claude -p --add-dir {case_dir} --permission-mode acceptEdits"
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/env.sh" || exit 2
@@ -49,14 +50,10 @@ done > "$VERO_STATE/preflight-wiki.txt"; wait
 ok=$(grep -c '^200$' "$VERO_STATE/preflight-wiki.txt")
 say "Wikipedia burst (12 searches)" "$([ "$ok" = 12 ] && echo ok || echo "WARNING: only $ok of 12 served (throttled? see $VERO_STATE/wiki-proxy.log; lower WIKI_RATE)")"
 
-# The agent must read a file outside its working directory (analysis cases) and edit a file inside it.
+# The agent command, run exactly as a run does (prompt appended, {case_dir} replaced): it must read a case
+# file outside its working directory and edit a file inside it.
 for cmd in "$@"; do
-  tmp=$(mktemp -d); mkdir -p "$tmp/outside" "$tmp/work"; echo "token-$RANDOM" > "$tmp/outside/case.md"
-  (cd "$tmp/work" && git init -q . && echo "x = 1" > module.py)
-  prompt="Read the file $tmp/outside/case.md. Then edit module.py in the current directory so that its only line is: x = \"<the exact content of that file>\". Reply DONE."
-  (cd "$tmp/work" && timeout 300 bash -c 'p=$2; eval "set -- $1"; "$@" "$p"' _ "$cmd" "$prompt" > "$tmp/agent.out" 2>&1 < /dev/null); rc=$?
-  if [ $rc = 0 ] && grep -q "$(cat "$tmp/outside/case.md")" "$tmp/work/module.py"; then say "agent: $cmd" "ok"; rm -rf "$tmp"
-  else say "agent: $cmd" "FAILED (exit $rc; output in $tmp/agent.out)"; fail=1; fi
+  PYTHONPATH="$HERE/../../src" "$VERO_PYTHON" -m rag_eval.vero.cli agent-check --dir "$VERO_STATE" --cmd "$cmd" || fail=1
 done
 [ $fail = 0 ] && echo "preflight passed" || echo "preflight FAILED"
 exit $fail

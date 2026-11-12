@@ -9,5 +9,9 @@
   "smoke": false,
   "minibatch": false,
   "review": false,
-  "ablation": false
+  "ablation": false,
+  "safeguards": {
+    "tokens_per_task_ratio": 1.0,
+    "answer_produced_rate": 0.02
+  }
 }

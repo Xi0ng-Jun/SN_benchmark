@@ -228,3 +228,21 @@ def test_state_root_is_bound_to_its_models(world, monkeypatch):
     assert cli.main(["eval", "--state-root", str(world["root"]), "--split", "validation", "--limit", "2"]) == cli.EXIT_USAGE
     monkeypatch.setenv("VERO_TARGET_MODEL", "openai/model-a")
     assert cli.main(["eval", "--state-root", str(world["root"]), "--split", "validation", "--limit", "2"]) == cli.EXIT_OK
+
+
+def test_agent_command_placeholder_and_agent_check(world, tmp_path, capsys):
+    from rag_eval.vero.adapter import agent_command
+    assert agent_command("agent --add-dir {case_dir} --mode x", Path("/a b/cases")) == "agent --add-dir '/a b/cases' --mode x"
+    assert agent_command("agent -p", Path("/x")) == "agent -p"
+    # A command that receives the case directory as an argument, reads the case and makes the edit.
+    good = tmp_path / "good.py"
+    good.write_text("import pathlib, sys\n"
+                    "token = (pathlib.Path(sys.argv[1]) / 'case-01.md').read_text().strip()\n"
+                    "pathlib.Path('module.py').write_text(f'x = \"{token}\"\\n')\nprint('DONE')\n")
+    bad = tmp_path / "bad.py"
+    bad.write_text("print('DONE')\n")
+    scratch = tmp_path / "scratch"
+    assert cli.main(["agent-check", "--dir", str(scratch), "--cmd", f"{sys.executable} {good} {{case_dir}}"]) == 0
+    assert not list(scratch.iterdir())                                      # removed after success
+    assert cli.main(["agent-check", "--dir", str(scratch), "--cmd", f"{sys.executable} {bad}"]) == 1
+    assert "agent FAILED" in capsys.readouterr().out and len(list(scratch.iterdir())) == 1
