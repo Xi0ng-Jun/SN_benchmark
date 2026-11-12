@@ -46,3 +46,4 @@ apps/sn-agent-bridge/.send-test-*/
 cluster-report-*.html
 cluster-report-*.json
 .vero-state/
+experiments/vero/env.local.sh

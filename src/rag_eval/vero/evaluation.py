@@ -102,7 +102,8 @@ class Evaluator:
         self.executions = 0            # sample executions started (this process)
         # Execution budget (VeRO-style, matched to GEPA): sample executions on budget_splits, counted
         # from the cache at first use (survives resume) plus every execution started afterwards
-        # (infrastructure retries included). None = unlimited.
+        # (retries of unscored samples included; a runner call that returns no sample is not an
+        # execution). None = unlimited.
         self.budget: Optional[int] = None
         self.budget_splits: tuple = ("train", "validation")
         self._spent: Optional[int] = None
@@ -225,6 +226,9 @@ class Evaluator:
                     return
                 last = f"runner {fatal.get('phase')} failure: {tb.strip().splitlines()[-1] if tb.strip() else '?'}"
                 log.warning("%s (commit %s, attempt %d); retrying", last, sha[:12], attempt)
+                if self.budget is not None:             # the call returned no sample: nothing was executed
+                    with self._lock:
+                        self._spent = self._spent_locked() - sum(self._budgeted(t) for t in todo)
                 continue
             failed = {}
             for rec in out.get("samples", []):

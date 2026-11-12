@@ -151,3 +151,80 @@ def test_execution_budget_halts_the_run_and_survives_resume(world, tmp_path):
     ad = vero_adapter.VeROAdapter(setup, world["root"], run_dir)
     ad.evaluator.set_budget(70)
     assert 52 <= ad.evaluator.spent() <= 70                       # counted from the cache after a restart
+
+
+def _fast_agent_retries(root: Path) -> dict:
+    setup = json.loads((root / "setup.json").read_text())
+    setup.update(agent_retries=1, agent_retry_wait=0)
+    (root / "setup.json").write_text(json.dumps(setup))
+    return setup
+
+
+def test_agent_outage_halts_resumably_instead_of_crashing(world, tmp_path):
+    # The analyst command exits non-zero (model service down): retried, then a resumable process_failure.
+    setup = _fast_agent_retries(world["root"])
+    analyst = Path(setup["analyst_cmd"].split()[-1])
+    working = analyst.read_text()
+    analyst.write_text("import sys\nsys.stderr.write('402 Insufficient Balance')\nsys.exit(1)\n")
+    cfg = tmp_path / "v4.json"
+    cfg.write_text(json.dumps(dict(time_budget_hours=1, calibration_k=2, b=1, cards_per_analysis=1, diagnose_size=0,
+                                   agent_estimate_minutes=1, max_consecutive_run_failures=2, review=False,
+                                   speculative_prefetches=0, speculative_analysis=False)))
+    run_dir = world["root"] / "runs" / "outage"
+    args = ["run", "--state-root", str(world["root"]), "--run-dir", str(run_dir), "--v4-config", str(cfg)]
+    assert cli.main(args) == cli.EXIT_HALTED
+    st = json.loads((run_dir / "state.json").read_text())
+    assert st["halt_reason"] == "process_failure" and st["failure_kind"] == "agent_request", st
+    assert "Insufficient Balance" in st["failure_detail"]
+    assert not any((rd.get("records") or {}) for rd in st["rounds"] + [st["current_round"]] if rd)
+    log = (run_dir / "agents" / f"analysis-r001-{st['seed'][:12]}" / "analyst.log").read_text()
+    assert log.count("--- stdout ---") == 2                      # one retry
+    # Service restored: the same command resumes and the card is measured.
+    analyst.write_text(working)
+    cli.main(args)
+    st = json.loads((run_dir / "state.json").read_text())
+    assert len(st["lineage"]) >= 2, json.dumps(st["rounds"], indent=1)[:3000]
+
+
+def test_implementer_outage_is_not_an_implementation_failure(world):
+    from rag_eval.optimizer.adapter import Card, EvaluationUnavailable
+    setup = _fast_agent_retries(world["root"])
+    Path(setup["implementer_cmd"].split()[-1]).write_text("import sys\nsys.exit(1)\n")
+    ad = vero_adapter.VeROAdapter(setup, world["root"], world["root"] / "adhoc")
+    ws = ad.workspace(ad.seed(), None)
+    with pytest.raises(EvaluationUnavailable, match="implementer agent unavailable"):
+        ad.implement(Card(failure_mode_desc="t", change_hypothesis="h", predicate=None, ref="c1"), ws)
+    assert not Path(ws["path"]).exists()
+
+
+def test_grader_outage_is_unavailable_and_runner_failures_cost_no_budget(world, monkeypatch):
+    from rag_eval.optimizer.adapter import EvaluationUnavailable
+    setup = json.loads((world["root"] / "setup.json").read_text())
+    ids = vero_adapter.split_ids(setup["splits"])["validation"]
+    ad = vero_adapter.VeROAdapter(setup, world["root"], world["root"] / "down")
+    ad.evaluator.set_budget(1000)
+    monkeypatch.setenv("FAKE_GRADER_DOWN", "1")
+    with pytest.raises(EvaluationUnavailable, match="have no score"):
+        ad.evaluate(ad.seed(), ids, 1)
+    assert cli.executions(world["root"] / "down" / "evals") == {}          # nothing unscored is cached
+    assert ad.evaluator.spent() == 2 * len(ids)                            # executed twice (one retry): charged
+    monkeypatch.delenv("FAKE_GRADER_DOWN")
+    assert set(ad.evaluate(ad.seed(), ids, 1).per_task_scores) == set(ids)
+    # A runner call that fails before any sample ran (here: the dataset is gone) is not an execution.
+    broken = dict(setup, dataset_path=str(world["tmp"] / "missing"))
+    ad2 = vero_adapter.VeROAdapter(broken, world["root"], world["root"] / "broken")
+    ad2.evaluator.set_budget(1000)
+    with pytest.raises(EvaluationUnavailable, match="runner"):
+        ad2.evaluate(ad2.seed(), ids, 1)
+    assert ad2.evaluator.spent() == 0
+
+
+def test_state_root_is_bound_to_its_models(world, monkeypatch):
+    monkeypatch.setenv("VERO_TARGET_MODEL", "openai/model-a")
+    setup = json.loads((world["root"] / "setup.json").read_text())
+    (world["root"] / "setup.json").write_text(json.dumps(dict(setup, models=cli.current_models())))
+    assert cli.main(["status", "--run-dir", str(world["root"])]) == cli.EXIT_USAGE     # no state.json there
+    monkeypatch.setenv("VERO_TARGET_MODEL", "openai/model-b")
+    assert cli.main(["eval", "--state-root", str(world["root"]), "--split", "validation", "--limit", "2"]) == cli.EXIT_USAGE
+    monkeypatch.setenv("VERO_TARGET_MODEL", "openai/model-a")
+    assert cli.main(["eval", "--state-root", str(world["root"]), "--split", "validation", "--limit", "2"]) == cli.EXIT_OK

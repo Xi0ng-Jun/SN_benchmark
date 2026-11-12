@@ -303,13 +303,34 @@ def test_failed_implementations_do_not_end_a_streak_of_empty_analyses():
     # analyses alternating with failed implementations never halted and spun until the time budget.
     mock = V4Mock([[], [dict(name="E1", implement_error=True)], [], [dict(name="E2", implement_error=True)], []])
     r, reason = run(mock, cfg(b=1, max_consecutive_run_failures=2, speculative_analysis=False))
-    assert reason == "process_failure" and "no cards" in r.failure_detail
-    assert len(r.rounds) == 2 and r.current["round"] == 3
-    assert records(r, 1)["E1"]["stage"] == "error"
+    # The round whose only card failed to build is itself the second run failure.
+    assert reason == "process_failure" and "no candidate reached measurement" in r.failure_detail
+    assert len(r.rounds) == 1 and r.current["round"] == 2
+    assert [rec["stage"] for rec in r.current["records"].values()] == ["error"]
     # A measured candidate (adopted or not) still ends the streak.
     mock = V4Mock([[], [dict(name="A", delta=-0.1)], [], [dict(name="B", delta=-0.1)], []])
     r, reason = run(mock, cfg(b=1, max_consecutive_run_failures=2, speculative_analysis=False))
     assert reason == "script_end" and len(r.rounds) == 5
+
+
+def test_rounds_without_a_measured_candidate_are_run_failures():
+    # Regression: an analyst that keeps proposing cards the implementer cannot build never produced an
+    # empty analysis, so the run repeated rounds until the time budget (seen with speculative_analysis off).
+    failing = [[dict(name=f"E{i}", implement_error=True)] for i in range(1, 8)]
+    r, reason = run(V4Mock(failing), cfg(b=1, max_consecutive_run_failures=3, speculative_analysis=False))
+    assert reason == "process_failure" and "no candidate reached measurement" in r.failure_detail
+    assert len(r.rounds) == 2 and r.current["round"] == 3 and r.current["nothing_measured"]
+    assert r.current["decision"] is not None           # the round is closed: a resume starts the next one
+    # A measured candidate in between ends the streak.
+    mixed = [[dict(name="E1", implement_error=True)], [dict(name="E2", implement_error=True)],
+             [dict(name="A", delta=-0.1)], [dict(name="E3", implement_error=True)],
+             [dict(name="E4", implement_error=True)]]
+    r, reason = run(V4Mock(mixed), cfg(b=1, max_consecutive_run_failures=3, speculative_analysis=False))
+    assert reason == "script_end" and len(r.rounds) == 5
+    # One failed card next to a measured one is an ordinary round.
+    both = [[dict(name=f"E{i}", implement_error=True), dict(name=f"A{i}", delta=-0.1)] for i in range(1, 6)]
+    r, reason = run(V4Mock(both), cfg(b=2, max_consecutive_run_failures=2, speculative_analysis=False))
+    assert reason == "script_end" and not any(rd.get("nothing_measured") for rd in r.rounds)
 
 
 def test_no_new_card_when_card_plus_remeasure_does_not_fit():

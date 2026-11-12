@@ -42,7 +42,8 @@ STOPPED = "stopped"
 TERMINAL = frozenset({"measured", "minibatch_fail", "smoke_fail", "run_failed", "error", "preflight_skipped"})
 # Terminal stages that mean the candidate was measured: only these end a streak of run failures.
 # An implementation error (empty diff, timeout, ...), a declined preflight or a run failure does not,
-# so empty analyses alternating with failed implementations still reach max_consecutive_run_failures.
+# so empty analyses alternating with failed implementations still reach max_consecutive_run_failures;
+# a round in which no card reaches measurement adds to the streak (V4Run._nothing_measured).
 MEASURED = frozenset({"measured", "minibatch_fail", "smoke_fail"})
 
 
@@ -701,6 +702,28 @@ class V4Run:
             if failure:
                 return failure
             self._decide(rd, parent)
+            return self._nothing_measured(rd)
+        return None
+
+    def _nothing_measured(self, rd: dict) -> Optional[str]:
+        """§4.6: a round whose cards all failed before measurement is a run failure, like an empty analysis.
+
+        Without it, an analyst that keeps proposing cards the implementer cannot build (or an implementer
+        that cannot edit at all) repeats rounds until the time budget ends. A run failure of a record is
+        already counted by ``_record_failure``; cards cut by the time budget are not failures.
+        """
+        records = list(rd["records"].values())
+        if (not records or any(r.get("unmeasured") for r in records)
+                or any(r["stage"] in MEASURED or r["stage"] == "run_failed" for r in records)):
+            return None
+        rd["nothing_measured"] = True
+        self.run_failures += 1
+        self.save()
+        if self.run_failures >= self.cfg.max_consecutive_run_failures:
+            reasons = "; ".join(sorted({str(r.get("reason") or r["stage"])[:100] for r in records}))
+            self.failure_detail = (f"{self.run_failures} consecutive rounds (or other runs) failed; last: "
+                                   f"no candidate reached measurement ({reasons})")[:500]
+            return "process_failure"
         return None
 
     def _next_stage(self, stage: str):
@@ -1336,7 +1359,8 @@ DEVIATIONS = [
     "are dropped from paired comparisons (at most 10% of the full validation set)",
     "the remaining-time rule (one card + one re-measurement) uses observed means, else the calibration's validation "
     "wall and agent_estimate_minutes",
-    "an analysis that yields no card counts as a run failure (max_consecutive_run_failures halts the run)",
+    "an analysis that yields no card counts as a run failure (max_consecutive_run_failures halts the run); so does "
+    "a round in which every card fails before measurement (implementation error or declined preflight)",
     "ablation removes one lineage node at a time; a merge node (two cards) is removed as one unit",
     "the analyst sees categorical validation outcomes, mechanism tiers and per-direction summaries, never "
     "validation scores/cases or reviewer prose",

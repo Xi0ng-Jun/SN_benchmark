@@ -8,8 +8,11 @@ Wikipedia proxy up):
 The paper calls ``run_gepa(task_name, model)`` with the function's defaults (budget 8 x train + 8 x
 validation sample executions, reflection minibatch 32, GEPA seed 0, initial and final test
 evaluation). The only change: the reflection model is the proxy alias ``optimizer``
-(deepseek-flash), the model our analyst and implementer use. Output: ``--out/<task>/<run>/``
-(GEPA run dir, ``summary.json``, ``gepa.log``).
+(``VERO_OPTIMIZER_MODEL``), the model our analyst and implementer use, and the VeRO checkout carries
+``experiments/vero/patches/gepa-paper-v1.patch`` (paper-v1's gepa.py calls three vero functions with
+signatures the tag no longer has, and its default logging hook needs a package web_search_agent lacks).
+Output: ``--out/<task>/<run>/`` (GEPA run dir, ``summary.json``, ``gepa.log``); an unfinished attempt is
+moved to ``<run>.failed-<time>`` and the run restarts from scratch.
 """
 from __future__ import annotations
 
@@ -28,13 +31,16 @@ def main() -> int:
     p.add_argument("--task", required=True, choices=("simpleqa", "tau-bench"))
     p.add_argument("--run", required=True, help="run label, e.g. run1")
     p.add_argument("--model-alias", default="optimizer", help="proxy model name used as GEPA's reflection model")
-    p.add_argument("--out", default=str(Path(__file__).resolve().parents[2] / ".vero-state" / "gepa"))
+    p.add_argument("--out", default=str(Path(os.environ.get("VERO_STATE") or Path(__file__).resolve().parents[2]
+                                             / ".vero-state") / "gepa"))
     args = p.parse_args()
 
     out = Path(args.out) / args.task / args.run
     if (out / "summary.json").exists():
         print(f"{out} already finished: {(out / 'summary.json').read_text()}")
         return 0
+    if out.exists() and any(out.iterdir()):     # an unfinished attempt: GEPA restarts from scratch, keep its logs apart
+        out.rename(out.with_name(f"{out.name}.failed-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"))
     out.mkdir(parents=True, exist_ok=True)
     os.chdir(out)                       # GEPA writes results/<run_name>/ relative to the cwd
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -50,7 +56,9 @@ def main() -> int:
     result = run_gepa(task_name=args.task, model="deepseek", enable_wandb=False)
     summary = dict(task=args.task, run=args.run, final_test_score=result["final_score"],
                    gepa_run_name=result["run_name"], vero_session_id=result["session_id"],
-                   reflection_model=args.model_alias, train_budget=task.train_budget,
+                   reflection_model=args.model_alias,
+                   models={r: os.environ.get(f"VERO_{r.upper()}_MODEL") for r in ("target", "grader", "optimizer")},
+                   train_budget=task.train_budget,
                    validation_budget=task.validation_budget, wall_h=(time.time() - started) / 3600,
                    finished_at=datetime.now(timezone.utc).isoformat())
     (out / "summary.json").write_text(json.dumps(summary, indent=1))

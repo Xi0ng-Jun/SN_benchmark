@@ -24,11 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from rag_eval.optimizer.adapter import (Card, Diff, EvalResult, Predicate, SystemAdapter, Version)
+from rag_eval.optimizer.adapter import (AgentRequestFailed, Card, Diff, EvalResult, EvaluationUnavailable, Predicate,
+                                        SystemAdapter, Version)
 from rag_eval.optimizer.v4.decide import paired_safeguard_means
 
 from .access import WEB_SEARCH_AGENT_RULES, AccessRules
-from .agent_dispatch import AgentRunner, last_json, parse_json_strings, shorten
+from .agent_dispatch import AgentCommandFailed, AgentRunner, last_json, parse_json_strings, shorten
 from .evaluation import Evaluator, parse_task_id
 from .target import TargetRepo
 
@@ -143,7 +144,8 @@ class VeROAdapter(SystemAdapter):
             raise ValueError(f"no access rules for preset {self.preset.name}")
         self.rules = AccessRules(rules)
         self.evidence = self.run_dir / "agents"
-        self.agents = AgentRunner()
+        self.agents = AgentRunner(retries=int(setting(settings, "agent_retries", 2)),
+                                  retry_wait=float(setting(settings, "agent_retry_wait", 30.0)))
         self.agent_timeout = float(setting(settings, "agent_timeout", 1800))
         self.evaluator = Evaluator(
             python=settings["agent_python"], dataset_path=settings["dataset_path"], module=self.preset.module,
@@ -207,7 +209,15 @@ class VeROAdapter(SystemAdapter):
 
     def _measure(self, version: Version, ids: list[str], k: int) -> EvalResult:
         self.evaluator.ensure(version.content_hash, list(ids), k)
-        return self._result(version.content_hash, list(ids), k)
+        result = self._result(version.content_hash, list(ids), k)
+        # A few unscored samples are dropped by the loop's pairing rules. An attempt with most samples
+        # unscored is a service outage (grader or model down), not a measurement of this version.
+        for attempt, scores in enumerate(result.attempt_scores[:k]):
+            if ids and 2 * len(scores) < len(ids):
+                raise EvaluationUnavailable(
+                    f"VeRO evaluation of {version.content_hash[:12]}: {len(ids) - len(scores)} of {len(ids)} "
+                    f"sample(s) of attempt {attempt} have no score (model or grader service failure)")
+        return result
 
     def _both(self, version: Version, reference: Version, ids: list[str], k: int) -> tuple[EvalResult, EvalResult]:
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vero-pair") as pool:
@@ -338,6 +348,9 @@ class VeROAdapter(SystemAdapter):
             try:
                 answer = self.agents.run(self.settings["analyst_cmd"], prompt, cwd=view, timeout=self.agent_timeout,
                                          log_path=folder / "analyst.log")
+            except AgentCommandFailed as exc:
+                # The agent service is down, not the analysis: the loop halts (resumable) instead of crashing.
+                raise AgentRequestFailed(f"analyst: {exc}") from exc
             finally:
                 self.repo.remove_worktree(view)
             raw = last_json(answer)
@@ -382,6 +395,10 @@ class VeROAdapter(SystemAdapter):
             answer = self.agents.run(self.settings["implementer_cmd"], prompt, cwd=path, timeout=self.agent_timeout,
                                      log_path=log_path)
             diff, reverted = self.repo.stage_changes(path, workspace["parent"], self.rules)
+        except AgentCommandFailed as exc:
+            # Not an implementation failure: the card stays unmeasured (run_failed) and is not consumed.
+            self.repo.remove_worktree(path)
+            raise EvaluationUnavailable(f"implementer agent unavailable: {exc}") from exc
         except BaseException:
             self.repo.remove_worktree(path)
             raise

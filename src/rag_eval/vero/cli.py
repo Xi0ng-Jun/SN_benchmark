@@ -6,7 +6,7 @@
     python -m rag_eval.vero.cli status --run-dir S/runs/run1
     python -m rag_eval.vero.cli test   --state-root S --run-dir S/runs/run1 [--k 1]
 
-One state root = one target (preset, VeRO checkout, agent venv, dataset, task params, agent
+One state root = one target (preset, VeRO checkout, agent venv, dataset, task params, models, agent
 commands; ``setup.json``) and its git repo. Each run directory is one independent optimisation
 run with its own evaluation cache (N=3 runs = three run directories).
 """
@@ -16,6 +16,7 @@ import argparse
 import contextlib
 import json
 import logging
+import os
 import signal
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from .target import TargetRepo
 
 SETUP_FILE, IDENTITY_FILE, ENDPOINT_FILE = "setup.json", "identity.json", "endpoint.json"
 DEFAULT_AGENT_CMD = "pi -p --no-session"
+MODEL_ENV = dict(target="VERO_TARGET_MODEL", grader="VERO_GRADER_MODEL", optimizer="VERO_OPTIMIZER_MODEL")
 EXIT_OK, EXIT_USAGE, EXIT_HALTED = 0, 2, 3
 
 
@@ -74,8 +76,26 @@ def _setup(state_root: Path) -> dict:
     return _read(state_root / SETUP_FILE)
 
 
+def current_models() -> dict:
+    """Upstream models behind the proxy aliases VeRO uses, as exported by experiments/vero/env.sh."""
+    return {role: os.environ.get(var) or None for role, var in MODEL_ENV.items()}
+
+
+def _check_models(setup: dict) -> None:
+    """The evaluation cache is keyed by commit, not by model: one state root serves one target and grader."""
+    recorded, now = setup.get("models"), current_models()
+    if not recorded:
+        return
+    changed = {r: (recorded.get(r), now[r]) for r in ("target", "grader") if recorded.get(r) != now[r]}
+    if changed:
+        raise UsageError("this state root was initialised with other models "
+                         + ", ".join(f"{r}: {a} -> {b}" for r, (a, b) in changed.items())
+                         + "; source the matching environment or use a new --state-root")
+
+
 def _adapter(state_root: Path, run_dir: Path) -> tuple[VeROAdapter, dict]:
     setup = _setup(state_root)
+    _check_models(setup)
     return VeROAdapter(setup, state_root, run_dir), setup
 
 
@@ -101,7 +121,7 @@ def cmd_init(args) -> int:
                     analyst_cmd=args.analyst_cmd, implementer_cmd=args.implementer_cmd,
                     agent_timeout=args.agent_timeout, sample_concurrency=args.sample_concurrency,
                     sample_timeout=args.sample_timeout, call_timeout=args.call_timeout, infra_retry=1,
-                    show_gold=not args.hide_gold, extra_sys_path=extra, splits=sizes)
+                    show_gold=not args.hide_gold, extra_sys_path=extra, splits=sizes, models=current_models())
     path = root / SETUP_FILE
     if path.exists() and not args.force:
         old = _read(path)
@@ -111,7 +131,7 @@ def cmd_init(args) -> int:
     _, seed = TargetRepo.create(root / "target", source,
                                 f"seed: VeRO {preset.agent_subdir} @ {vero_commit[:12]}")
     ledger_io.atomic_write_json(path, settings)
-    print(f"target repo: {root / 'target' / 'repo'}\nseed: {seed}\nsplits: {sizes}")
+    print(f"target repo: {root / 'target' / 'repo'}\nseed: {seed}\nsplits: {sizes}\nmodels: {settings['models']}")
     return EXIT_OK
 
 

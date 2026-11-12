@@ -1,0 +1,49 @@
+diff --git a/vero-benchmarking/src/vero_benchmarking/gepa.py b/vero-benchmarking/src/vero_benchmarking/gepa.py
+index fa3fbc6..8b639ce 100644
+--- a/vero-benchmarking/src/vero_benchmarking/gepa.py
++++ b/vero-benchmarking/src/vero_benchmarking/gepa.py
+@@ -26,7 +26,7 @@ from vero.core.dataset import DatasetInfo
+ from vero.core.db.dataset import DatasetSample
+ from vero.core.db.result import SampleResult
+ from vero.core.resource import ResourceDiscovery, StaticResourceInfo
+-from vero.core.sessions import create_session_dir, get_session_dir
++from vero.core.sessions import create_session_dir, get_session_dir, get_vero_home_dir
+ from vero.evaluator import run_evaluation
+ from vero.utils import random_readable_id
+ 
+@@ -61,9 +61,10 @@ class VeroGEPAAdapter(
+ 
+         # Isolate the project into a fresh repo under a session directory
+         self.session_id = str(uuid4())
+-        create_session_dir(self.session_id)
++        sessions_dir = get_vero_home_dir() / "sessions"
++        create_session_dir(sessions_dir, self.session_id)
+ 
+-        isolated_dir = get_session_dir(self.session_id) / self.project_path.name
++        isolated_dir = get_session_dir(sessions_dir, self.session_id) / self.project_path.name
+         isolated_dir.mkdir(parents=True, exist_ok=True)
+ 
+         repo_root_result = subprocess.run(
+@@ -233,6 +234,7 @@ class VeroGEPAAdapter(
+                 "commit",
+                 "-m",
+                 "GEPA candidate evaluation",
++                "--allow-empty",
+                 "--no-verify",
+             ],
+             cwd=self._repo_root,
+@@ -268,12 +270,13 @@ class VeroGEPAAdapter(
+ 
+         coro = run_evaluation(
+             project_path=str(self._project_path),
+-            dataset_path=str(self.dataset_path),
++            dataset=str(self.dataset_path),
+             task=self.task,
+             split=split,
+             sample_ids=sample_ids,
+             commit=commit,
+             session_id=self.session_id,
++            hooks=[],
+         )
+         try:
+             loop = asyncio.get_running_loop()

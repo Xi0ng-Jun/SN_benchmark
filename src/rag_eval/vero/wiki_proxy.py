@@ -68,19 +68,38 @@ class Upstream:
 
     Wikimedia's API gateway answers bursts with 429 + Retry-After (~40 s) for the whole client. Every
     request therefore waits for its pacing slot and for the end of any cooldown; a request that cannot be
-    served within *deadline* seconds fails fast (502) so the agent's own 30 s timeout and retry loop apply.
+    served within *deadline* seconds is answered 502 at the deadline (below the agent's 30 s timeout), so
+    the agent's three attempts span a cooldown instead of failing within a second.
     """
+
+    RESET_AFTER = 4
 
     def __init__(self, proxy: Optional[str], connections: int, attempts: int, rate: float = 2.0,
                  deadline: float = 25.0, user_agent: Optional[str] = None):
-        limits = httpx.Limits(max_connections=connections, max_keepalive_connections=connections)
-        self.client = httpx.Client(follow_redirects=True, trust_env=False, timeout=httpx.Timeout(20, connect=8),
-                                   transport=httpx.HTTPTransport(proxy=proxy, retries=3, limits=limits))
+        self._proxy, self._connections = proxy, connections
+        self.client = self._new_client()
+        self._transport_errors = 0        # consecutive; the pool is rebuilt after RESET_AFTER of them
         self.attempts, self.interval, self.deadline, self.user_agent = attempts, 1.0 / rate, deadline, user_agent
         self.stats = dict(fetched=0, cached=0, retried=0, failed=0, throttled=0)
         self.lock = threading.Lock()
         self._next_slot = 0.0
         self._cooldown_until = 0.0
+
+    def _new_client(self) -> httpx.Client:
+        limits = httpx.Limits(max_connections=self._connections, max_keepalive_connections=self._connections)
+        return httpx.Client(follow_redirects=True, trust_env=False, timeout=httpx.Timeout(20, connect=8),
+                            transport=httpx.HTTPTransport(proxy=self._proxy, retries=3, limits=limits))
+
+    def _transport_error(self) -> None:
+        """A pool left with dead connections after an upstream outage keeps failing: replace it."""
+        with self.lock:
+            self._transport_errors += 1
+            if self._transport_errors < self.RESET_AFTER:
+                return
+            self._transport_errors = 0
+            old, self.client = self.client, self._new_client()
+        log.warning("%d consecutive transport errors: connection pool rebuilt", self.RESET_AFTER)
+        threading.Thread(target=old.close, daemon=True).start()   # requests in flight on it finish or fail
 
     def count(self, key: str) -> None:
         with self.lock:
@@ -91,9 +110,13 @@ class Upstream:
         with self.lock:
             now = time.monotonic()
             slot = max(now, self._next_slot, self._cooldown_until)
-            if slot > deadline:
-                return False
-            self._next_slot = slot + self.interval
+            if slot <= deadline:
+                self._next_slot = slot + self.interval
+        if slot > deadline:
+            # Hold the client until the deadline instead of failing at once: the agent retries a failed
+            # request within a second, and instant failures during a cooldown burn its turn limit.
+            time.sleep(max(0.0, deadline - time.monotonic()))
+            return False
         time.sleep(max(0.0, slot - time.monotonic()))
         return True
 
@@ -119,9 +142,11 @@ class Upstream:
                 break
             try:
                 r = self.client.get(url, headers=headers)
-            except httpx.TransportError as exc:
+            except (httpx.TransportError, RuntimeError) as exc:     # RuntimeError: the pool was just replaced
                 last = exc
+                self._transport_error()
                 continue
+            self._transport_errors = 0
             if r.status_code == 429:
                 self._cool_down(r)
                 last = RuntimeError("HTTP 429")
