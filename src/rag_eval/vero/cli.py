@@ -147,6 +147,10 @@ def cmd_eval(args) -> int:
     ids = split_ids(setup["splits"])[args.split][:args.limit or None]
     version = adapter.version_for(args.commit or adapter.seed_sha)
     adapter.evaluator.set_parallel(args.parallel)
+    if args.fresh:      # a health probe must measure now, never replay a result cached during an outage
+        for tid in ids:
+            for attempt in range(args.k):
+                adapter.evaluator.path(version.content_hash, tid, attempt).unlink(missing_ok=True)
     result = adapter.evaluate(version, ids, args.k, purpose="baseline")
     _print_result(version.content_hash, ids, result, args.k)
     return EXIT_OK
@@ -348,6 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--k", type=int, default=1)
     s.add_argument("--limit", type=int)
     s.add_argument("--parallel", type=int, default=3)
+    s.add_argument("--fresh", action="store_true", help="drop cached attempts of these samples and evaluate them now")
     s.set_defaults(func=cmd_eval)
 
     s = sub.add_parser("run", help="run (or resume) method-v4.1")

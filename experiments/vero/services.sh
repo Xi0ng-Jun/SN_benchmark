@@ -31,7 +31,12 @@ config() {
 litellm_settings:
   drop_params: true          # parameters the upstream does not accept are dropped instead of failing the call
   request_timeout: 600
-  num_retries: 3
+  # The upstream returns 429/500 in bursts and the agent tolerates no failed call: retry here, both methods.
+  num_retries: 6
+  retry_policy:
+    RateLimitErrorRetries: 6
+    InternalServerErrorRetries: 6
+    TimeoutErrorRetries: 3
 general_settings:
   master_key: os.environ/LITELLM_API_KEY
 YAML

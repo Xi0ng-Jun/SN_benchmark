@@ -13,6 +13,15 @@ evaluation). The only change: the reflection model is the proxy alias ``optimize
 signatures the tag no longer has, and its default logging hook needs a package web_search_agent lacks).
 Output: ``--out/<task>/<run>/`` (GEPA run dir, ``summary.json``, ``gepa.log``); an unfinished attempt is
 moved to ``<run>.failed-<time>`` and the run restarts from scratch.
+
+``summary.json`` is written only after ``rag_eval.vero.integrity.gepa_verdict`` accepts the run's log: the
+seed test score must be at least ``--floor`` (``GATE_FLOOR``, default 0.25), the error rate at most
+``--max-error-rate`` (default 0.2), and enough samples must be measurable. Otherwise the service was
+unhealthy and the number means nothing: the run writes only ``invalid.json`` (failed rules, report, error
+rate, seed score) and leaves no summary for the result tables.
+
+Exit codes: 0 = valid completed run; 3 = measurement invalid (service unhealthy, rerun it later); any other
+= failure (the run raised, e.g. a crash or an interrupted run, and the exception propagates).
 """
 from __future__ import annotations
 
@@ -25,17 +34,24 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from rag_eval.vero.integrity import gepa_verdict  # noqa: E402 - needs the sys.path entry above
+
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--task", required=True, choices=("simpleqa", "tau-bench"))
     p.add_argument("--run", required=True, help="run label, e.g. run1")
     p.add_argument("--model-alias", default="optimizer", help="proxy model name used as GEPA's reflection model")
+    p.add_argument("--floor", type=float, default=float(os.environ.get("GATE_FLOOR") or 0.25),
+                   help="lowest seed test score for a valid measurement (default: GATE_FLOOR or 0.25)")
+    p.add_argument("--max-error-rate", type=float, default=0.2,
+                   help="highest fraction of failed sample executions for a valid measurement (default: 0.2)")
     p.add_argument("--out", default=str(Path(os.environ.get("VERO_STATE") or Path(__file__).resolve().parents[2]
                                              / ".vero-state") / "gepa"))
     args = p.parse_args()
 
-    out = Path(args.out) / args.task / args.run
+    out = (Path(args.out) / args.task / args.run).resolve()
     if (out / "summary.json").exists():
         print(f"{out} already finished: {(out / 'summary.json').read_text()}")
         return 0
@@ -54,13 +70,28 @@ def main() -> int:
     task = load_task(args.task)
     started = time.time()
     result = run_gepa(task_name=args.task, model="deepseek", enable_wandb=False)
+    finished_at = datetime.now(timezone.utc).isoformat()
+    verdict = gepa_verdict((out / "gepa.log").read_text(errors="replace"),
+                           floor=args.floor, max_error_rate=args.max_error_rate)
+    if not verdict["valid"]:
+        invalid = dict(reason="; ".join(verdict["reasons"]), reasons=verdict["reasons"], at=finished_at,
+                       report=verdict["report"], error_rate=verdict["error_rate"],
+                       seed_score=verdict["seed_score"])
+        (out / "invalid.json").write_text(json.dumps(invalid, indent=1))
+        print(f"{args.task} {args.run}: measurement invalid, no summary.json written (see {out / 'invalid.json'})")
+        print(f"  seed test score {verdict['seed_score']}, error rate {verdict['error_rate']}")
+        print("  rules failed:")
+        for reason in verdict["reasons"]:
+            print(f"    - {reason}")
+        return 3
     summary = dict(task=args.task, run=args.run, final_test_score=result["final_score"],
                    gepa_run_name=result["run_name"], vero_session_id=result["session_id"],
                    reflection_model=args.model_alias,
                    models={r: os.environ.get(f"VERO_{r.upper()}_MODEL") for r in ("target", "grader", "optimizer")},
                    train_budget=task.train_budget,
                    validation_budget=task.validation_budget, wall_h=(time.time() - started) / 3600,
-                   finished_at=datetime.now(timezone.utc).isoformat())
+                   finished_at=finished_at,
+                   integrity={k: v for k, v in verdict.items() if k != "reasons"})
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     print(json.dumps(summary, indent=1))
     return 0

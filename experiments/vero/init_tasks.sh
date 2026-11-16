@@ -9,9 +9,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/env.sh"
 cd "$HERE/../.."
 cmd=${1:?the analyst / implementer command}
+force=""; [ -n "${INIT_FORCE:-}" ] && force="--force"   # re-write setup.json (the target repo and its seed are reused)
 for t in simpleqa:simple_qa:web_search_agent retail:retail:tau-bench; do
   IFS=: read -r name preset agent <<< "$t"
   PYTHONPATH=src "$VERO_PYTHON" -m rag_eval.vero.cli init --state-root "$VERO_STATE/$name" --preset "$preset" \
     --vero-root "$VERO_ROOT" --agent-python "$VERO_ROOT/vero-agents/agents/$agent/.venv/bin/python" \
-    --analyst-cmd "$cmd" --implementer-cmd "$cmd" --sample-timeout 180 --sample-concurrency "$VERO_SAMPLE_CONCURRENCY"
+    --analyst-cmd "$cmd" --implementer-cmd "$cmd" --sample-timeout 180 --sample-concurrency "$VERO_SAMPLE_CONCURRENCY" \
+    $force
 done

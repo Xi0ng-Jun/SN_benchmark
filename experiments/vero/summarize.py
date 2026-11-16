@@ -48,6 +48,8 @@ def v41_runs(root: Path) -> tuple[list[dict], list[str]]:
     done, open_ = [], []
     for run in sorted((root / "runs").glob("*")) if (root / "runs").exists() else []:
         st, ep = read(run / "state.json") or {}, read(run / "endpoint.json")
+        if (run / "invalid.json").exists():
+            continue                                    # archived by run_series.sh; listed under the archive section of main()
         if ep is None:
             open_.append(f"method-v4.1 {root.name} {run.name}: halt reason {st.get('halt_reason') or 'none (running or crashed)'}"
                          + (f"; {st['failure_detail'][:160]}" if st.get("failure_detail") else ""))
@@ -68,6 +70,10 @@ def gepa_runs(root: Path) -> tuple[list[dict], list[str]]:
     done, open_ = [], []
     for run in sorted(root.glob("*")) if root.exists() else []:
         if not run.is_dir() or ".failed-" in run.name:
+            continue
+        if (run / "invalid.json").exists():
+            open_.append(f"GEPA {root.name} {run.name}: measurements invalid, no result "
+                         f"({(read(run / 'invalid.json') or {}).get('reason', '')[:160]})")
             continue
         summary = read(run / "summary.json")
         if summary is None:
@@ -143,6 +149,15 @@ def main() -> int:
     if unfinished:
         print("\n## 未进入表格的运行\n")
         for line in unfinished:
+            print(f"- {line}")
+    archived = []
+    for run in sorted((state / "archive").glob("*")) if (state / "archive").exists() else []:
+        info = read(run / "invalid.json") or {}
+        if info:
+            archived.append(f"{run.name}: {info.get('reason', '?')} ({info.get('at', '')})")
+    if archived:
+        print("\n## 因服务不健康而被移出、未进入表格的运行\n")
+        for line in archived:
             print(f"- {line}")
     return 0
 

@@ -16,5 +16,13 @@ export VERO_TARGET_API_KEY=<key>                    # or: $(some-command-that-pr
 # export VERO_OPTIMIZER_MODEL=openai/<model>        # GEPA reflection model = the analyst/implementer's model
 # export VERO_OPTIMIZER_API_BASE=... VERO_OPTIMIZER_API_KEY=...
 
-# export VERO_SAMPLE_CONCURRENCY=6                  # one series sends at most 3 x this many requests at once
+# Concurrency and gate/retry settings of unattended runs (run_queue.sh, gate.sh). 3 is the stability default:
+# one series then sends at most 3 x 3 = 9 requests at once. At 6 (18 requests) a single series already trips
+# the upstream's channel limit.
+# export VERO_SAMPLE_CONCURRENCY=3     # one series sends at most 3 x this many requests; 6 trips the upstream channel limit
+# export GATE_FLOOR=0.25               # the seed probe must score at least this on validation before a run starts
+# export GATE_PROBE_N=12               # validation samples in the probe
+# export RETRY_WAIT=900                # seconds between retries of an unhealthy or failed series
+# export SERIES_DEADLINE_H=12          # give up on one series after this many hours
+# export MAX_RESTARTS=3                # restart a run from scratch at most this many times when its measurements are invalid
 # export UPSTREAM_PROXY=                            # "" = reach Wikipedia directly (default: $https_proxy)

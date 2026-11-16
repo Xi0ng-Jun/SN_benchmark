@@ -51,8 +51,9 @@ Needs `git`, `uv`, `curl`, and access to GitHub, PyPI and Wikipedia.
 
 The PID printed by the shell is the wrapper's: check `pgrep -af "rag_eval.vero.cli|run_gepa.py"`.
 
-- One series sends at most `3 x VERO_SAMPLE_CONCURRENCY` (default 3 x 6 = 18) model requests at once, for
-  both methods. Four series: 72. Keep the total below the endpoint's limit; the proxy does not queue.
+- One series sends at most `3 x VERO_SAMPLE_CONCURRENCY` model requests at once, for both methods. The
+  stability default is 3 (9 requests per series); 6 (18) already trips the upstream channel limit
+  occasionally. The proxy does not queue.
 - v4.1: a `process_failure` halt is resumed after `RESUME_WAIT` seconds (default 600), at most
   `MAX_RESUMES` times (default 3). If the method itself is stuck (no new card, or no card reaches
   measurement) the run ends there and is tested; an outage, a crash or a stop ends the series, and later
@@ -66,6 +67,54 @@ Progress and results:
 
 Stop: SIGINT to the `rag_eval.vero.cli run` process pauses (resumable); SIGTERM ends the run for good
 (`stopped`). Stop the `run_series.sh` wrapper first. Kill by PID, never `pkill -f` (it matches the caller).
+
+## Unattended runs
+
+With the environment sourced (`source experiments/vero/env.sh`), one command runs the four series in order:
+v41 retail, gepa retail (tau-bench), v41 simpleqa, gepa simpleqa. The health gate runs before each series;
+a series starts only when the gate passes.
+
+    setsid nohup experiments/vero/run_queue.sh > $VERO_STATE/queue.log 2>&1 < /dev/null &
+
+`experiments/vero/gate.sh <simpleqa|retail>` passes only when all three checks pass:
+
+- The services are up; if they are not, the gate tries `experiments/vero/services.sh start` first.
+- `$VERO_STATE/litellm.log` has no `LiteLLM Proxy:ERROR` line in the last `GATE_QUIET_MIN` minutes
+  (default 15).
+- A small probe of the seed on the validation split (`cli eval --split validation --limit N --fresh`,
+  `N` = `GATE_PROBE_N`, default 12) scores at least `GATE_FLOOR` (default 0.25). SimpleQA also needs an
+  answered rate of at least `GATE_ANSWERED_FLOOR` (default 0.4).
+
+A failed gate is retried after `RETRY_WAIT` seconds (default 900); no run is started while the gate fails.
+
+Why the gate (measured on 2026-11-16):
+
+- Four series started together (4 x 18 concurrent requests) drove the upstream into a 500 storm: 4690 `500`
+  responses in two hours.
+- v41-simpleqa's seed calibration fell into that window: all 45 validation questions scored 0, twice. None
+  of the 10 candidates could be adopted.
+- gepa-simpleqa: every sample failed, but the run still wrote a summary with `final_test_score=0.0`, which
+  reads like a real result.
+
+A failed call looks like a wrong answer, so a run that loses its samples to the endpoint records low scores
+instead of an error. `src/rag_eval/vero/integrity.py` decides whether a run's measurements are usable:
+
+- v4.1: `state.json`'s `calibration.validation.mean` is below the floor.
+- GEPA: the log's initial test score, the final evaluation's error rate and its sample count.
+
+An invalid run is moved to `$VERO_STATE/archive/` (never deleted). It is left out of the result tables and
+does not count as finished, so the queue can start it again from scratch. `summarize.py` lists invalid runs
+in a separate environment-invalid section.
+
+For unattended runs `VERO_SAMPLE_CONCURRENCY=3` is the stability default: one series sends at most 3 x 3 = 9
+requests at once. 6 (18 requests) already trips `Channel concurrency limit exceeded` occasionally with a
+single series; four series at that level (72 requests) is the load that produced the storm above.
+
+First look after an overnight queue:
+
+    tail -n 50 $VERO_STATE/queue.log
+    cat $VERO_STATE/series-status.json
+    $VERO_PYTHON experiments/vero/summarize.py
 
 ## Method parameters (`v41-simpleqa.json`, `v41-retail.json`)
 
