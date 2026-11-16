@@ -99,3 +99,12 @@ def test_gepa_invalid_attempt_is_archived_and_retried(world, tmp_path):  # noqa:
     assert out.returncode == 1, out.stdout[-3000:] + out.stderr[-1000:]
     assert out.stdout.count("measurements invalid") == 2 and "series stopped" in out.stdout
     assert not (world["root"].parent / "gepa" / "simpleqa" / "run1" / "summary.json").exists()
+
+
+def test_queue_stops_starting_series_after_its_deadline(world, tmp_path):  # noqa: F811
+    # The queue gives up on the remaining series once its deadline passed, and still writes the report.
+    out = subprocess.run([str(REPO / "experiments" / "vero" / "run_queue.sh")],
+                         env=_env(world, tmp_path, QUEUE_DEADLINE_H="0"), capture_output=True, text=True, timeout=120)
+    assert out.returncode == 1, out.stdout[-2000:] + out.stderr[-1000:]
+    assert out.stdout.count("skipped, the queue deadline") == 4
+    assert (world["root"].parent / "report.md").exists()
