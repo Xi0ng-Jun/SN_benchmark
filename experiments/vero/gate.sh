@@ -36,7 +36,7 @@ fi
 errors=$("$VERO_PYTHON" - "$VERO_STATE/litellm.log" "$QUIET_MIN" <<'PY'
 import re, sys, time
 path, minutes = sys.argv[1], int(sys.argv[2])
-now = time.gmtime()
+now = time.localtime()      # LiteLLM stamps its log in local time (datefmt %H:%M:%S), not UTC
 now_min = now.tm_hour * 60 + now.tm_min
 try:
     text = open(path, errors="replace").read()

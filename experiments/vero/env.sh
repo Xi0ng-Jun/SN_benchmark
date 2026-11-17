@@ -66,6 +66,9 @@ export no_proxy=$NO_PROXY
 export WIKI_PROXY_PORT=${WIKI_PROXY_PORT:-4010}
 export WIKI_USER_AGENT=${WIKI_USER_AGENT:-"SNBenchmarkEval/0.1 (research benchmark) python-httpx/0.28"}
 export WIKI_RATE=${WIKI_RATE:-4}
+# Hard limit of one analyst / implementer call, in seconds (overrides setup.json without changing the run
+# identity). 1800 was too short for the retail analyst behind a slow optimizer model (3 timeouts, 2026-11-16).
+export VERO_AGENT_TIMEOUT=${VERO_AGENT_TIMEOUT:-3600}
 export HTTP_PROXY=http://127.0.0.1:$WIKI_PROXY_PORT
 export http_proxy=$HTTP_PROXY
 unset _p _role _f _v _t _u _h _hosts

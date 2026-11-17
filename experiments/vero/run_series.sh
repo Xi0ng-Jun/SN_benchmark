@@ -165,7 +165,7 @@ v41_halt() {  # 0 when run $1 is halted with plausible measurements, 1 when the 
 }
 
 v41_one() {
-  local r=$1 dir=$root/runs/$1 restarts=0 retests
+  local r=$1 dir=$root/runs/$1 retests
   if [ -f "$dir/endpoint.json" ]; then note "$task $r: already finished"; return 0; fi
   while :; do
     v41_halt "$r" || return 1
@@ -180,14 +180,11 @@ v41_one() {
       note "$task $r: the test split was measured while the services were down; measuring it again ($retests/3)"
       sleep "$RETRY_WAIT"
     done
-    mark_invalid "$dir" "the test split could not be measured on healthy services"
-    archive "$dir" "$method-$task-$r-invalid-endpoint"
-    restarts=$((restarts + 1))
-    if [ $restarts -gt "$MAX_RESTARTS" ] || expired; then
-      note "$task $r: endpoint invalid $restarts times; series stopped"; return 1
-    fi
-    note "$task $r: endpoint invalid; restarting from scratch ($restarts/$MAX_RESTARTS)"
-    sleep "$RETRY_WAIT"
+    # The optimisation itself is valid (its calibration passed): keep the run and stop here. Re-running the
+    # series later measures the test split again; nothing is archived or optimised twice.
+    clear_test "$dir"
+    note "$task $r: the test split could not be measured on healthy services; run kept, series stopped"
+    return 1
   done
 }
 

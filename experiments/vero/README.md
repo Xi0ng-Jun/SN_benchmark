@@ -140,3 +140,10 @@ after 3 consecutive run failures). The time budget (24 h) is not meant to bind; 
   `VERO_GEPA_MAX_CONCURRENCY` samples at once instead of 100.
 - Wikipedia requests go through a local pacing/caching proxy with its own User-Agent (same for both methods).
 - Retail's validation split has 20 tasks (method-v4.1 asks for at least 40).
+- Sample concurrency 3 (`VERO_SAMPLE_CONCURRENCY`), a stability setting for the shared model gateway.
+- Agent call limit: 60 min (`VERO_AGENT_TIMEOUT`, env.sh) instead of setup.json's 30 min, and the analyst prompt
+  states a 30-minute target. Introduced after the retail analyst timed out three times in round 2 of run1
+  (2026-11-16); retail round 1 and SimpleQA rounds 1-3 of run1 ran with the old limit and prompt.
+
+`experiments/vero/collect.sh` writes a read-only, redacted digest of every run (state, agent timings and
+transcripts, GEPA evaluations, service counters) to `$VERO_STATE/collect-<time>.txt`.

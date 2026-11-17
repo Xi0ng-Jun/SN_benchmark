@@ -62,7 +62,7 @@ def v41_runs(root: Path) -> tuple[list[dict], list[str]]:
                          rounds=s["rounds"], adopted=s["adopted"], halt=s["halt_reason"], hours=s["elapsed_h"],
                          measured=sum(r["stage"] in MEASURED for r in records), cards=len(records),
                          val=[n.get("delta_val") for n in st.get("lineage", [])[1:]],
-                         used=sum(used.values()), budget=(read(run / "identity.json") or {}).get("max_executions")))
+                         used=sum(n for split, n in used.items() if split != "test"), budget=(read(run / "identity.json") or {}).get("max_executions")))
     return done, open_
 
 

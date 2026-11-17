@@ -48,7 +48,7 @@ def test_gate_refuses_a_dead_probe(tmp_path):
 
 def test_gate_refuses_after_recent_upstream_errors(tmp_path):
     env = _env(tmp_path, PROBE)
-    stamp = time.strftime("%H:%M:%S", time.gmtime())
+    stamp = time.strftime("%H:%M:%S", time.localtime())   # LiteLLM logs in local time
     (tmp_path / "state" / "litellm.log").write_text(f"{stamp} - LiteLLM Proxy:ERROR:boom\n")
     out = subprocess.run([str(GATE), "retail"], env=env, capture_output=True, text=True, timeout=60)
     assert out.returncode == 1

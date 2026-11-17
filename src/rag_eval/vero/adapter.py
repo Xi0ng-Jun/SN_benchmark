@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shlex
 import threading
@@ -94,6 +95,8 @@ Task: read the code and the cases, identify recurring failure modes that a chang
 prompts or tools could fix, and propose up to {n_cards} independent changes, most promising first.
 Each change must generalise: never special-case particular questions, never embed answers, never touch
 evaluation or grading.
+Time limit: answer within {minutes} minutes. A longer analysis is killed and discarded, so read the code and
+the cases, then answer; do not execute the agent or reconstruct the task definitions.
 
 Answer with a JSON array as the LAST fenced ```json block of your reply:
 [{{"title": "<short failure-mode title, at most 80 characters>",
@@ -153,7 +156,9 @@ class VeROAdapter(SystemAdapter):
         self.evidence = self.run_dir / "agents"
         self.agents = AgentRunner(retries=int(setting(settings, "agent_retries", 2)),
                                   retry_wait=float(setting(settings, "agent_retry_wait", 30.0)))
-        self.agent_timeout = float(setting(settings, "agent_timeout", 1800))
+        # VERO_AGENT_TIMEOUT overrides setup.json at run time: an operational limit, not part of the run identity,
+        # so a slow agent model can be given more time without invalidating a resumable run.
+        self.agent_timeout = float(os.environ.get("VERO_AGENT_TIMEOUT") or setting(settings, "agent_timeout", 1800))
         self.evaluator = Evaluator(
             python=settings["agent_python"], dataset_path=settings["dataset_path"], module=self.preset.module,
             task=self.preset.task, import_root=self.preset.import_root, cache_dir=self.run_dir / "evals",
@@ -350,7 +355,8 @@ class VeROAdapter(SystemAdapter):
                           "modes or different components than the ones tried above.\n")
             prompt = ANALYST_PROMPT.format(description=self.preset.description, rules=self.rules.describe(),
                                            case_dir=case_dir, case_list="\n".join(listing), history=hist,
-                                           escalation=escalation, n_cards=n_cards)
+                                           escalation=escalation, n_cards=n_cards,
+                                           minutes=max(5, int(self.agent_timeout // 120)))
             view = self.repo.new_workspace(parent.content_hash, f"analyst-{tag}-{uuid.uuid4().hex[:6]}", self.rules)
             try:
                 answer = self.agents.run(agent_command(self.settings["analyst_cmd"], case_dir), prompt, cwd=view,
