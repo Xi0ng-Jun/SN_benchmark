@@ -82,6 +82,10 @@ class Upstream:
                         data = f"event: {ev['type']}\ndata: {json.dumps(ev)}\n\n".encode()
                         self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
                         self.wfile.flush()
+                        if body.get("mock_truncate") and ev["type"] == "content_block_delta":
+                            self.close_connection = True      # upstream dies mid-stream
+                            return
+                    time.sleep(float(body.get("mock_tail_delay") or 0.0))
                     self.wfile.write(b"0\r\n\r\n")
                     return
                 msg = json.dumps({"model": model, "usage": {"input_tokens": 10, "output_tokens": 5,
@@ -208,6 +212,78 @@ def test_proxy_unreachable_upstream_is_502_and_unrecovered():
         assert px.stats("t0")["unrecovered_gateway_error"]
 
 
+def _raw_sse_then_reset(proxy: hr.MeteringProxy, tok: str, body: dict, until: bytes) -> bytes:
+    """Send a streaming request on a raw socket, read until *until* is seen, then abort the
+    connection with an RST (SO_LINGER 0), as a killed / exiting ``claude`` process does."""
+    import socket
+    import struct
+    data = json.dumps(body).encode()
+    s = socket.create_connection(("127.0.0.1", proxy.port), timeout=30)
+    s.sendall(b"POST /v1/messages HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\n"
+              + f"x-api-key: {tok}\r\ncontent-length: {len(data)}\r\n\r\n".encode() + data)
+    got = b""
+    while until not in got:
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        got += chunk
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    s.close()
+    return got
+
+
+def _wait_disconnect(px: hr.MeteringProxy, trial: str, timeout: float = 10.0) -> dict:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        s = px.stats(trial)
+        if s["client_disconnects"] >= 1:
+            return s
+        time.sleep(0.05)
+    return px.stats(trial)
+
+
+def test_proxy_client_closes_mid_sse_stream_is_not_gateway_error(upstream):
+    """T_soft SIGTERM: the agent closes its socket while the SSE stream is still running."""
+    with hr.MeteringProxy(upstream.url, ["upkey-zero"], model=MODEL) as px:
+        tok = px.new_trial("t0")
+        got = _raw_sse_then_reset(px, tok, {"model": MODEL, "stream": True}, b"message_start")
+        s = _wait_disconnect(px, "t0")
+    assert b"message_start" in got and b"message_delta" not in got
+    assert s["client_disconnects"] == 1 and s["unrecovered_gateway_error"] is False
+    assert s["unrecovered_gateway_errors"] == 0 and s["proxy_requests"] == 1
+    assert s["input_tokens"] == 100                     # usage read before the client left
+    assert hr.infra_reasons(s, wall_sec=100.0) == []
+
+
+def test_proxy_client_closes_before_chunked_terminator_is_not_gateway_error(upstream):
+    """--max-turns reached: the agent exits right after the final SSE event, before ``0\\r\\n\\r\\n``."""
+    with hr.MeteringProxy(upstream.url, ["upkey-zero"], model=MODEL) as px:
+        tok = px.new_trial("t0")
+        got = _raw_sse_then_reset(px, tok, {"model": MODEL, "stream": True,
+                                            "mock_tail_delay": 0.5}, b"message_delta")
+        s = _wait_disconnect(px, "t0")
+    assert b"message_delta" in got and not got.endswith(b"0\r\n\r\n")
+    assert s["client_disconnects"] == 1 and s["unrecovered_gateway_error"] is False
+    assert (s["input_tokens"], s["output_tokens"], s["cached_tokens"]) == (100, 25, 40)
+    assert hr.infra_reasons(s, wall_sec=100.0) == []
+
+
+def test_proxy_upstream_truncation_while_client_listens_is_gateway_error(upstream):
+    with hr.MeteringProxy(upstream.url, ["upkey-zero"], model=MODEL) as px:
+        tok = px.new_trial("t0")
+        c = http.client.HTTPConnection("127.0.0.1", px.port, timeout=30)
+        c.request("POST", "/v1/messages", body=json.dumps({"model": MODEL, "stream": True,
+                                                           "mock_truncate": True}).encode(),
+                  headers={"content-type": "application/json", "x-api-key": tok})
+        r = c.getresponse()
+        with pytest.raises(http.client.IncompleteRead):   # no terminator: client sees truncation
+            r.read()
+        c.close()
+        s = px.stats("t0")
+    assert s["unrecovered_gateway_error"] is True and s["client_disconnects"] == 0
+    assert "unrecovered_gateway_error" in hr.infra_reasons(s, wall_sec=100.0)
+
+
 def test_sticky_multi_key_sharding_with_custom_upstream_header(upstream):
     keys = ["upkey-zero", "upkey-one"]
     with hr.MeteringProxy(upstream.url, keys, model=SPEC, upstream_auth_header="authorization",
@@ -315,14 +391,18 @@ def test_persisted_job_config_is_scrubbed(tmp_path, monkeypatch):
 
 def test_apply_cli_overrides():
     out = hr.apply_cli_overrides(CFG, model=SPEC, parallel=6, t_warn=100, t_soft=200, delta_t_rep=50,
-                                 theta_gw_max=0.2, agent_image="img:1", timeout_s=300)
+                                 theta_gw_max=0.2, agent_image="img:1", timeout_s=300,
+                                 delta_s_rep=40)
     assert out["agent"]["model_name"] == SPEC and out["run"]["parallel"] == 6
+    assert out["watermarks"]["delta_s_rep_turns"] == 40 and CFG["watermarks"]["delta_s_rep_turns"] == 80
     assert out["watermarks"]["t_max_sec"] == 300 and out["gateway"]["theta_gw_max"] == 0.2
     assert out["images"]["agent_image"] == "img:1" and CFG["images"]["agent_image"] != "img:1"
     with pytest.raises(ValueError):
         hr.apply_cli_overrides(CFG, parallel=7)
     with pytest.raises(ValueError):
         hr.apply_cli_overrides(CFG, t_warn=9990, t_soft=9900)
+    with pytest.raises(ValueError):
+        hr.apply_cli_overrides(CFG, delta_s_rep=0)
 
 
 def test_infra_reasons():
@@ -412,6 +492,27 @@ def test_stateless_repair_invocation_from_archived_snapshot(tmp_path):
                                                 proxy_url="http://127.0.0.1:1", trial_token="t",
                                                 max_turns=7)
     assert inv2.timeout_sec == 780.0 and inv2.argv[-1] == "7" and "--model" in inv2.argv
+    # turn limit: archived gate_report value, then the locked Delta_S_rep default (80)
+    inv3 = aw.build_stateless_repair_invocation(pre, mcr / "gate_report.json", model=MODEL,
+                                                proxy_url="http://127.0.0.1:1", trial_token="t")
+    assert inv3.argv[-2:] == ["--max-turns", "15"] and inv3.max_turns == 15
+    (mcr / "gate_report.json").write_text(json.dumps({**gate, "granted_repair_turns": None}))
+    (mcr / "fork_meta.json").write_text(json.dumps({
+        "granted_repair_budget_sec": 780.0, "phase_a_elapsed_sec": 9900.0,
+        "phase_a_argv": ["--verbose", "--settings", "/tmp/claude-code-settings/settings.json",
+                         "--output-format=stream-json", "--print"]}))
+    inv4 = aw.build_stateless_repair_invocation(pre, mcr / "gate_report.json", model=MODEL,
+                                                proxy_url="http://127.0.0.1:1", trial_token="t")
+    assert inv4.argv[-2:] == ["--max-turns", "80"] and inv4.max_turns == 80
+    assert aw.DEFAULT_REPAIR_TURNS == 80 and "80 turns" in inv4.prompt
+    i = inv4.argv.index("--settings")
+    assert inv4.argv[i + 1] == "/opt/harness/settings.json"
+    assert not any("/tmp/claude-code-settings" in a for a in inv4.argv)
+    from ssap.checkers.alw import repair as rep
+    assert rep.phase_b_args(["--settings=/tmp/claude-code-settings/s.json", "-p"], 80) == \
+        ["--settings=/opt/harness/settings.json", "-p", "--no-session-persistence", "--max-turns", "80"]
+    assert rep.phase_b_args(["--settings", "/work/custom.json"], 3)[:2] == ["--settings", "/work/custom.json"]
+    assert rep.phase_b_args(["--settings=/work/custom.json"], 3)[0] == "--settings=/work/custom.json"
     with pytest.raises(ValueError):
         aw.build_stateless_repair_invocation(pre, mcr / "gate_report.json", model="",
                                              proxy_url="http://127.0.0.1:1", trial_token="t")

@@ -18,7 +18,7 @@
 | **任务切分与防泄漏** | `configs/alw/split.json`（种子 `ssap-alw-v2-19`），按 32 个保守簇（严格覆盖 35 个硬簇）零跨切分泄漏划分：`dev = 12` 题（`G_dev = 10` 簇，`binned=3`，`magic_netgen=1 [#2]`：`2, 7, 11, 12, 13, 15, 16, 18, 19, 21, 27, 38`）；`val = 14` 题（`G_val = 14 硬 / 12 保守`，`binned=3`：`1, 3, 5, 6, 8, 17, 20, 22, 25, 26, 34, 35, 36, 37`）；`test = 14` 题（`G_test = 11 硬 / 10 保守`，`binned=3`，`magic_netgen=1 [#10]`：`4, 9, 10, 14, 23, 24, 28, 29, 30, 31, 32, 33, 39, 40`）。因 $G_{\mathrm{dev}}=10 \ge 8$，Stage 0 启用**内部盲簇模式（冻结 3/10 个 `dev` 簇）**。 |
 | **保底镜像向量 $\mathbf{m}_{\mathrm{base}}$** | 6 维第 I 类镜像组件（唯一具覆写权，附 Tier 0 非空文件保底与 `T=0` `.mcr/trusted_task/` 只读隔离；详见 [fable-5.2-plan-review.md](fable-5.2-plan-review.md)）：Tier 1 字典序 `m_1`（`m_gds`，无 symlink + KLayout **38** 制造层正面积 bbox 非空 + 精确 `top_cell`；`src/*.py` 缺失列为第 II 类告警以确保 $C^\star=1\implies m_1=1$）；Tier 2 字典序 `m_2`（`m_lvs`，由 `eda_env.sh` 是否导出 `ALB_NETGEN_BIN` 区分 KLayout `sky130.lvs` vs `#2/#10` Magic+Netgen，并由 Harbor `stdin` 捕获的 `.mcr/task_prompt.txt` 与引号/层次感知 `circuit.spice` 互校确定 `top_cell/ports/lvs_sub`）；Tier 3 帕累托序 `m_3..m_6`：`m_3`（`m_shape`: $q \le 4.0-\epsilon_3$，另设第 II 类建议 `advisory_aspect_gt_3` 提醒 $3.0<q\le 4.0$）、`m_4`（`m_fill`: $\hat{\rho}\ge 0.10+\epsilon_4$，按提取 `WL+AS+AD` 计算）、`m_5`（`m_morph`: 无标注 `meaningless` 筛查，`magic_netgen` 为 1）、`m_6`（`m_drc`: `sky130A_mr.drc` 违例 $=0$）；同层级按 `mcr-formal.tex` 规则 2(b) 非严格 `>=`（已过二值门裕量饱和于 `0.0`）晋升，允许后仿真修复自由更新。 |
 | **容器工作区与快照路径** | 自由草稿区 `/alb-workspace/work/draft/{layout.gds, src/}`（零步级强制回滚）；规范提交区 `/alb-workspace/submission/{layout.gds, src/}`（`layout.gds` 经 `os.replace()` 原子替换，`src/` 经暂存目录 `src -> src.old -> 改名 -> 清理` 切换）；内核状态 `/alb-workspace/.mcr/{input_hashes.json, task_prompt.txt, best/, staging/, handoff.json, gate_report.json}`；宿主工具挂载 `/opt/harness/{settings.json, bin/{mcr_entrypoint.py, mcr_hook.py, mcr_check, mcr_promote}, python/ssap/}`；导出快照 `/logs/agent/mcr_snapshot/{pre_repair/, post_repair/, artifact_summary.json, artifact_summary.md}`（Harbor 导出至 `<trial>/agent/mcr_snapshot/`，可选配宿主机挂载防 `SIGKILL` 丢失）。 |
-| **双水位线与无状态补救** | 已核验容器硬上限 `T_max = 10800s`、外层 Verifier `3600s`（内部软预算 `ALB_VERIFIER_BUDGET_SEC=3300`）、单并发 `6 CPU / 32 GiB`。暂定 `H_base` 水位线：`T_warn = 9000s`（150 min）、`T_soft = 9900s`（165 min），预留 `Delta_T_rep = 900s`、`Delta_S_rep = 15` 轮。Phase A 结束且 `T_max - elapsed >= 180s` 时，若 `m_base(w_best) != (1,1,1,1,1,1)` 或存在未晋升新版草稿或命中 `advisory_aspect_gt_3`，启动独立无状态 `claude -p`（**禁用 `--resume`**）进入 Phase B。 |
+| **双水位线与无状态补救** | 已核验容器硬上限 `T_max = 10800s`、外层 Verifier `3600s`（内部软预算 `ALB_VERIFIER_BUDGET_SEC=3300`）、单并发 `6 CPU / 32 GiB`。`H_base` 水位线（Phase 1b 后锁定）：`T_warn = 8400s`（140 min，距 `T_soft` 余 25 min）、`T_soft = 9900s`（165 min），预留 `Delta_T_rep = 900s`、`Delta_S_rep = 80` 轮（Phase 1b 运行时为 `T_warn = 9000s`、`Delta_S_rep = 15` 轮，见 [alw-deployment-log.md](alw-deployment-log.md) §4）。Phase A 结束且 `T_max - elapsed >= 180s` 时，若 `m_base(w_best) != (1,1,1,1,1,1)` 或存在未晋升新版草稿或命中 `advisory_aspect_gt_3`，启动独立无状态 `claude -p`（**禁用 `--resume`**）进入 Phase B。 |
 | **`infra_error` 与纯 `C1` 红线** | `infra_error` 判据：OOM（`exit_code == 137`）、Docker/Harbor 异常、`evaluation_error == true` 或非提交故障的 `tool_error/interrupted`、未恢复网关 `5xx/429`、`proxy_requests == 0`、或 `gateway_wait_seconds / wall_seconds > theta_gw_max`（暂定 `0.35`）。任务失败记 `0.0` 分从不剔除。**严禁**任何装饰性统计否决门（零 `W_i`、零 `0.49/|B|`、零 McNemar、零 `n_10<=1`、零 `p<=0.05` 门槛、零 `P-SHA`）。 |
 
 ### 0.2 相对于 `method-v5` 的保留与删除清单 `[事实 + 判断]`
@@ -62,7 +62,8 @@
    - **验收目的**：验证容器内 `claude-code` 安装、透传计量代理/网关连通、`/opt/harness` 只读挂载、`settings.json` 钩子触发、`handoff.json` 更新、`mcr_snapshot/{pre_repair/, artifact_summary.*}` 导出至 `<trial>/agent/mcr_snapshot/`，以及外层 `metrics.json` 完整落盘。
 2. **Phase 1b：代表性 3 题全预算（`10800s`）小批量验证（3 次运行）**
    - 抽取覆盖两套 LVS 后端与不同器件规模的 3 道 `dev` 题：**`#21`**（6 器件，`klayout`）、**`#38`**（`sky130-local-comparator-layout`，17 器件，`klayout`，论文附录 E.2 案例）、**`#2`**（`sky130-adb-buf-ppsf-bs-gain1-sfdr90-layout`，39 器件，`magic_netgen` 后端）。
-   - **验收目的**：核实 `T_warn=9000s` / `T_soft=9900s` 在 3 小时满预算下的实际耗时分布、无状态 `claude -p` 终局补救在真超时/门控触发时的行为、`magic_netgen` 镜像校验耗时及内存峰值（防 32 GiB OOM 137）。据此实测分布复核（必要时固化）$\Delta T_{\mathrm{rep}}$，一旦锁定不再调参。
+   - **验收目的**：核实水位线（Phase 1b 当时配置 `T_warn=9000s` / `T_soft=9900s` / `Delta_S_rep=15` 轮）在 3 小时满预算下的实际耗时分布、无状态 `claude -p` 终局补救在真超时/门控触发时的行为、`magic_netgen` 镜像校验耗时及内存峰值（防 32 GiB OOM 137）。据此实测分布复核（必要时固化）$\Delta T_{\mathrm{rep}}$，一旦锁定不再调参。
+   - **Phase 1b 结论（已执行，详见 [alw-deployment-log.md](alw-deployment-log.md) §4）**：15 min 预警窗不足、15 轮修复仅用掉预算的 `6.4%–22.3%`，故 pre-Phase-1c 锁定 `T_warn = 8400s`（140 min）、`Delta_S_rep = 80` 轮（`T_max` / `T_soft` / `Delta_T_rep = 900s` 等其余水位线不变），同时修复代理客户端断开误记网关故障、Phase B `--settings` 路径与离线轮数来源，并新增 `ssap alw-harvest`。
 3. **Phase 1c：全量 `dev` 基线（`12` 题 $\times K_0=2$ 种子 = `24` 次 `H_base`；可选加测 `12` 次 `H_raw`）**
    - 在 12 道 `dev` 题上运行 $H_{\mathrm{base}}$ 独立 2 种子（`24` 次完整尝试），同步归档全部 `pre_repair/` / `post_repair/` 容器快照、草稿里程碑 GDS 与 `artifact_summary.json`。
    - 若预算允许，可同阶段跑 `1` 种子（`12` 次）裸宿主 `H_raw`（空挂载）以在开发阶段即观测 `H_raw -> H_base` 保底收益（正式三段归因仍在最终密封 `test` 上以 3 种子完成）。
@@ -125,7 +126,7 @@
    - **Path 1（仅限 `scope="terminal_only"` 的第 I/II 类终局门控候选，主力路径；若改动中途 `mcr_promote` 则归入 Path 2）**：
      - 分叉点精准落于 Phase A 退出瞬间完整归档 `/alb-workspace/` 的 `pre_repair/` 快照（`fork_meta.json` 固化 `phase_a_elapsed_sec` 与 `granted_repair_budget_sec`）：
        - **未触发分叉任务**（候选门控决策及诊断与 $H_{\mathrm{inc}}$ 一致）：**0 次模型调用、0 次验证器调用**，相对 $H_{\mathrm{inc}}$ 效应差精确记为 $\Delta Y^\star \equiv 0$；
-       - **触发分叉任务**：直接挂载完整归档 `pre_repair/` 工作区与候选 `gate_report.json` + 原 `handoff.json`，在隔离容器内运行无状态 `claude -p --no-session-persistence` 修复子调用（独立 `CLAUDE_CONFIG_DIR`，$R_{\mathrm{rep}} = 3$ 种子取均值，预算沿用 `granted_repair_budget_sec` 与 $\Delta S_{\mathrm{rep}} \le 15$），经棘轮判定后调用 `alw verify`，并以 **卫冕者终态 $Y^\star(x_e, w_{\mathrm{inc\_final}})$**（防止重复计入 $H_{\mathrm{inc}}$ 自身 Phase B 已救回分值）为基准计算 $\Delta Y^\star_e = Y^\star(x_e, w_{\mathrm{cand\_post}}) - Y^\star(x_e, w_{\mathrm{inc\_final}})$。
+       - **触发分叉任务**：直接挂载完整归档 `pre_repair/` 工作区与候选 `gate_report.json` + 原 `handoff.json`，在隔离容器内运行无状态 `claude -p --no-session-persistence` 修复子调用（独立 `CLAUDE_CONFIG_DIR`，$R_{\mathrm{rep}} = 3$ 种子取均值，预算沿用 `granted_repair_budget_sec` 与归档的 `granted_repair_turns`（$\Delta S_{\mathrm{rep}} \le 80$，读不到时默认 `80`；Phase 1b 归档为 `15`）），经棘轮判定后调用 `alw verify`，并以 **卫冕者终态 $Y^\star(x_e, w_{\mathrm{inc\_final}})$**（防止重复计入 $H_{\mathrm{inc}}$ 自身 Phase B 已救回分值）为基准计算 $\Delta Y^\star_e = Y^\star(x_e, w_{\mathrm{cand\_post}}) - Y^\star(x_e, w_{\mathrm{inc\_final}})$。
      - 记入确定性 **救回事件账本（`event_ledger.jsonl`）**：
        - **救回（Rescued）**：$\Delta Y^\star_e > 0$；
        - **无效（Neutral）**：$\Delta Y^\star_e = 0$（包括修坏被 `H_base` 棘轮安全挡回原备份的情形）；
@@ -175,7 +176,7 @@ ssap/
 │   ├── settings.json                    # Claude Code 原生钩子配置（PreToolUse/PostToolUse/Stop）
 │   ├── bin/                             # 均注入 PYTHONPATH=/opt/harness/python，零容器内 pip 安装
 │   │   ├── mcr_entrypoint.py            # 容器主入口：锁输入哈希、转储 .mcr/task_prompt.txt、Phase A 计时(T_soft)、Phase B(claude -p)、归档
-│   │   ├── mcr_hook.py                  # 钩子：PostToolUse 覆写防护、T_warn=9000s 提醒、Stop 检查
+│   │   ├── mcr_hook.py                  # 钩子：PostToolUse 覆写防护、T_warn=8400s 提醒、Stop 检查
 │   │   ├── mcr_check                    # 调用 checkers/alw 产出 m_base, u_base 与 gate_report.json
 │   │   └── mcr_promote                  # 调用 kernel/promote 执行暂存校验 + 原子/安全目录切换晋升
 │   ├── python/ssap/                     # 构建挂载包时由 agent_wrapper.py 从 src/ssap/{kernel,checkers/alw} 同步暂存
@@ -390,7 +391,7 @@ ssap alw-report --config configs/alw/config.server.json --split test --seeds 3 -
 | 跨模型 Token 区间 | 表 1 全配置单次区间 | `11.2M`（GPT-6 Astra）– `38.0M`（GLM-5.3 Flash） | `[事实]` | `paper_reference.json`（表 1） |
 | 日志密度基线 | 每 100 调用轨迹体积 | 原始 ~`50 MB`，压缩 ~`23 MB` | `[事实]` | `review-2026-11.md` 实测（`ssap` 不存 `O(T^2)` blob） |
 | 实际单次耗时 | 典型全量尝试墙钟 | Agent ~`1.5 h` + Verifier ~`0.3 h` = **`~1.8 h`**（上界 `4.0 h`） | `[暂定]` | Phase 1b/1c 实测后校准 |
-| 终局补救成本 | 单次 Phase B 补救（`claude -p`） | 墙钟 `~0.43 h`（`0.18 h` 补救 + `0.25 h` 复签，上界 `1.25 h`）；约 **`1.5M tokens`**（~`11%` 全程） | `[暂定]` | 受限 $\Delta T_{\mathrm{rep}}=900\text{ s}, \Delta S_{\mathrm{rep}}=15$ |
+| 终局补救成本 | 单次 Phase B 补救（`claude -p`） | 墙钟 `~0.43 h`（`0.18 h` 补救 + `0.25 h` 复签，上界 `1.25 h`）；约 **`1.5M tokens`**（~`11%` 全程） | `[暂定]` | 受限 $\Delta T_{\mathrm{rep}}=900\text{ s}, \Delta S_{\mathrm{rep}}=80$（墙钟/token 估算原基于 15 轮设定，`[未核验]`，待 Phase 1c 实测更新；墙钟上界仍由 $\Delta T_{\mathrm{rep}}$ 封顶） |
 | Round 1 触发率 | Path 1 门控在 `dev` 触发比 | $p_{\mathrm{trig}} \approx 4/12$（`33.3%`），取 $R_{\mathrm{rep}}=3$ 种子 | `[暂定]` | 参考论文低 LVS/高 `q` 占比估计 |
 | 单次磁盘沉淀 | 每 Trial 快照 + 报告 | **`~200 MB / trial`**（含 `pre_repair/`, `post_repair/`, `verifier/`） | `[暂定]` | 含 GDS、提取网表与日志 |
 

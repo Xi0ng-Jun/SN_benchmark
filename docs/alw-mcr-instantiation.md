@@ -161,8 +161,8 @@
 
 1. **双层水位线配置**：
    - **已验证硬上限 `[事实]`**：Harbor `agent.timeout_sec = 10800.0`（$T_{\max} = 10800\text{ s}$），`verifier.timeout_sec = 3600.0`，`ALB_VERIFIER_BUDGET_SEC = 3300`。
-   - **暂定初始水位线 `[暂定]`**（Phase 0/1 实测镜像耗时 $P_{95}$ 与单轮冷启动修复耗时后再锁定，不作自由调参）：
-     - **预警线 `T_warn = 9000s`（150 min，余 30 min）**：由 `mcr_hook.py` 在跨越 `elapsed >= 9000s` 的首次工具调用后注入非阻塞提醒（`additionalContext`），督促 Agent 收敛当前修改、调用 `mcr_promote` 同步 `work/draft/` 并更新交接单 `/alb-workspace/.mcr/handoff.json`。
+   - **初始水位线 `[暂定]` → Phase 1b 实测后锁定**（Phase 1b `phase1b-3tasks` 原用 `T_warn = 9000s`、$\Delta S_{\mathrm{rep}} = 15$ 轮；实测见 [alw-deployment-log.md](alw-deployment-log.md) §4，pre-Phase-1c 锁定为下列值，不作自由调参）：
+     - **预警线 `T_warn = 8400s`（140 min，距 `T_soft` 余 25 min、距 `T_max` 余 40 min）**：由 `mcr_hook.py` 在跨越 `elapsed >= 8400s` 的首次工具调用后注入非阻塞提醒（`additionalContext`），督促 Agent 收敛当前修改、调用 `mcr_promote` 同步 `work/draft/` 并更新交接单 `/alb-workspace/.mcr/handoff.json`。
      - **软截止线 `T_soft = 9900s`（165 min，预留 $\Delta T_{\mathrm{rep}} = 900\text{ s}$）**：由容器入口封装 `mcr_entrypoint.py` 启动主阶段 Phase A 的硬计时器（`9900s`）。无论主 Agent 是提前正常退出（`Stop`）还是撞线 `T_soft` 被 `mcr_entrypoint.py` 干净终止（`SIGTERM` $\to$ 5s 后 `SIGKILL` 主进程组），容器仍保有 $\ge 900\text{ s}$ 缓冲才触及 Harbor 10800s 强杀。
 2. **结构化轻量交接单（`/alb-workspace/.mcr/handoff.json`）**：Agent 按系统规范在里程碑及 `T_warn` 更新以下 JSON（上限约 4 KB，防上下文爆炸）：
    ```json
@@ -188,7 +188,7 @@
 4. **门控诊断、触发条件与无状态独立补救子调用（Phase B）**：
    - Phase A 结束时（注意 Harbor 通过 `printf "$instr" | claude ... --print` 启动，`mcr_entrypoint.py` 作为 `claude` 透明包装器捕获 `stdin` 提示并管理计时），若存在尚未经 `mcr_promote` 评估过的新草稿（由 `.mcr/last_evaluated_draft.json` 去重防已拒草稿重触发），先对其执行一次 `mcr_promote`；随后 `mcr_check` 生成确定性 `/alb-workspace/.mcr/gate_report.json`（含 `phase_a_elapsed_sec` 与 `granted_repair_budget_sec`，保证离线重放与线上门控/预算完全一致）。
    - **`gate_triggered == true` 判据**：当剩余预算 `T_max - phase_a_elapsed_sec >= 180s` 且满足任一条件时触发：（a）$\mathbf{m}_{\mathrm{base}}(w_{\mathrm{best}}) \neq \mathbf{1}$（含仅 `terminal_only` 注册的扩展第 I 类门控）；（b）存在未评估的新版草稿；（c）激活的第 II 类建议触发器命中（`H_base` 中为 `advisory_aspect_gt_3`：$3.0 < q \le 4.0$）。否则直接跳过 Phase B（`repair_ran = false`，零额外 token）。
-   - **无状态调用与会话目录隔离规范**：启动全新独立的真实 `claude -p` 进程（显式带 `--no-session-persistence`、**严禁 `--resume` / `--continue`**、设置独立 `CLAUDE_CONFIG_DIR=/alb-workspace/.mcr/phase_b_sessions` 与 `MCR_PHASE=B` 关闭 `T_warn`，并将 stdout 单独重定向至 `mcr_snapshot/phase_b_stream.jsonl`，防止污染 Harbor 对 `/logs/agent/sessions` 单会话 ATIF 的解析），预算受限于 $\Delta S_{\mathrm{rep}} \le 15$ 轮与 `granted_repair_budget_sec = min(Delta_T_rep, T_max - phase_a_elapsed_sec - tail_buffer_sec)`（默认 `tail_buffer_sec=120s`）。退出后清理子进程并执行 `mcr_promote`，仅当满足棘轮序 $\succ$ 时覆盖 `submission/`。
+   - **无状态调用与会话目录隔离规范**：启动全新独立的真实 `claude -p` 进程（显式带 `--no-session-persistence`、**严禁 `--resume` / `--continue`**、设置独立 `CLAUDE_CONFIG_DIR=/alb-workspace/.mcr/phase_b_sessions` 与 `MCR_PHASE=B` 关闭 `T_warn`，并将 stdout 单独重定向至 `mcr_snapshot/phase_b_stream.jsonl`，防止污染 Harbor 对 `/logs/agent/sessions` 单会话 ATIF 的解析），预算受限于 $\Delta S_{\mathrm{rep}} \le 80$ 轮（Phase 1b 原为 15 轮，实测 15 轮仅用掉 `57.6–200.8s`，见部署实录 §4；现以归档 `granted_repair_turns` 传入 `--max-turns`）与 `granted_repair_budget_sec = min(Delta_T_rep, T_max - phase_a_elapsed_sec - tail_buffer_sec)`（默认 `tail_buffer_sec=120s`）。退出后清理子进程并执行 `mcr_promote`，仅当满足棘轮序 $\succ$ 时覆盖 `submission/`。
 5. **离线分叉评估与线上部署的前缀同分布等价性证明简述 `[判断]`**：
    - 设 Phase A 主会话在 `Stop` 或 `T_soft` 结束时构成自然分叉点 $t_{\mathrm{fork}}$，产出完整文件快照 $S_{\mathrm{pre}}$（写入 `pre_repair/`）。
    - **线上部署**：Phase B 从干净 `claude -p` 启动，仅依赖 $S_{\mathrm{pre}}$ 与门控函数 $G(S_{\mathrm{pre}})$，与 Phase A 的内部隐式 KV 缓存或会话内存完全独立。
@@ -214,7 +214,7 @@
 | 维度 | 旧方案（`method-v5` / 归档 `ssap.tex` v1） | MCR v2（`docs/alw-mcr-instantiation.md` 锁定规范） | 移除理由（依据 `review-2026-11.md` 与 `mcr-formal.tex`） |
 |---|---|---|---|
 | **评估重放范式** | 请求级拦截重放 + 7 次二分调用定位（`method-v5` 代理重放 / `ssap.tex` 后缀唤醒） | 三条分叉点物理路径（Path 1 终局无状态补救重放；Path 2 条件钩子+前缀泄漏审计；Path 3 全局配对） | ALW 工具读写有状态磁盘、KLayout 多线程日志非确定、后处理钩子在模型调用之外改写产物（复审 #11, #21）；`T_soft` 无状态子调用保证线上线下严格同构 |
-| **超时管理** | `enforce_virtual_deadline` 虚拟时间累计（`method-v5`） | 真实墙钟双水位线（`T_warn=9000s`, `T_soft=9900s` < `T_max=10800s`） | 并发工具耗时累加失真（复审 #10）且前缀工具必须重跑（`alw-plan.tex` §2.3）；真实现场预留窗口无漂移 |
+| **超时管理** | `enforce_virtual_deadline` 虚拟时间累计（`method-v5`） | 真实墙钟双水位线（`T_warn=8400s`, `T_soft=9900s` < `T_max=10800s`） | 并发工具耗时累加失真（复审 #10）且前缀工具必须重跑（`alw-plan.tex` §2.3）；真实现场预留窗口无漂移 |
 | **中间状态保护** | `ssap.tex` $M_2$ 步级帕累托回滚或无保底裸跑 | 自由草稿区零强制回滚 + 第 I 类镜像认证原子写穿透棘轮 $H_{\mathrm{base}}$ | 步级强回滚掐死跨临时不合法态的正确重构路径；原子棘轮实现不变量 1 写穿透保底 |
 | **检查器权限** | 通用合法性谓词 $V(x,w)$ 与四元算子耦合（`M_1..M_4`） | 严格四分类：**仅第 I 类镜像检查器有覆写权**；第 II 类启发探针零覆写权；第 III 类观测映射 | 彻底隔离经验/幻觉探针污染正确解（不变量 2）；不强绑定固定 4 槽避免跨槽接口死锁 |
 | **搜索筛选与指标** | `ssap.tex` 跨槽 P-SHA + `0.49/|B|` 复合分 $\mathcal{J}_B$ + 单模块嫁接 | 单点原子变异 + 分叉对齐净增晋级（`Path 1` 事件账本 / `Path 2,3` 原生 $Y^\star$ 全集均值）+ 零救回清理（$K_{\mathrm{idle}}=2$） | 消除人为代理标量化与多步短视截断偏差；重型小样本直接按原生指标与事件账本归因 |

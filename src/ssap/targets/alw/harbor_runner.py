@@ -67,7 +67,8 @@ RETRY_STATUSES = {429, 500, 502, 503, 504, 529}
 def apply_cli_overrides(cfg: Mapping, *, model: str | None = None, parallel: int | None = None,
                         t_warn: float | None = None, t_soft: float | None = None,
                         delta_t_rep: float | None = None, theta_gw_max: float | None = None,
-                        agent_image: str | None = None, timeout_s: float | None = None) -> dict:
+                        agent_image: str | None = None, timeout_s: float | None = None,
+                        delta_s_rep: int | None = None) -> dict:
     """Deep copy of *cfg* with command-line overrides applied and validated."""
     out = copy.deepcopy(dict(cfg))
     if model:
@@ -84,7 +85,9 @@ def apply_cli_overrides(cfg: Mapping, *, model: str | None = None, parallel: int
                      ("delta_t_rep_sec", delta_t_rep), ("t_max_sec", timeout_s)):
         if val is not None:
             wm[key] = float(val)
-    Watermarks.from_mapping(wm)                    # ordering T_warn <= T_soft <= T_max
+    if delta_s_rep is not None:
+        wm["delta_s_rep_turns"] = int(delta_s_rep)
+    Watermarks.from_mapping(wm)                    # T_warn <= T_soft <= T_max, Delta_S_rep >= 1
     if theta_gw_max is not None:
         if not 0.0 < float(theta_gw_max) <= 1.0:
             raise ValueError("theta_gw_max must be in (0, 1]")
@@ -314,6 +317,7 @@ class TrialStats:
     gateway_wait_seconds: float = 0.0
     llm_stream_seconds: float = 0.0
     retries: int = 0
+    client_disconnects: int = 0                  # informational only, never an infra_error
 
     def as_dict(self, expected_model: str | None = None) -> dict:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -526,11 +530,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _reply(self, status: int, obj: dict) -> None:
         body = json.dumps(obj).encode()
-        self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:                           # client already gone: nothing to report to
+            self.close_connection = True
 
     def do_GET(self):
         self._forward()
@@ -631,44 +638,60 @@ class _Handler(BaseHTTPRequestHandler):
         ctype = resp.getheader("content-type") or ""
         sse = "text/event-stream" in ctype
         parser = _UsageParser(sse)
-        self.send_response(resp.status)
-        for k, v in resp.getheaders():
-            if k.lower() not in HOP_BY_HOP and k.lower() != "content-encoding":
-                self.send_header(k, v)
         length = resp.getheader("content-length")
         chunked = sse or length is None
-        if chunked:
-            self.send_header("transfer-encoding", "chunked")
-        else:
-            self.send_header("content-length", length)
-        self.end_headers()
         t0 = time.monotonic()
+        # Every client-socket write is guarded: the agent CLI may close its connection at any
+        # time (``--max-turns`` reached right after ``message_stop``, ``T_soft`` SIGTERM). A
+        # client disconnect is informational (``client_disconnects``), never a gateway error;
+        # only an upstream read failure while the client is still listening is one.
         client_ok = True
         try:
-            while True:
+            self.send_response(resp.status)
+            for k, v in resp.getheaders():
+                if k.lower() not in HOP_BY_HOP and k.lower() != "content-encoding":
+                    self.send_header(k, v)
+            if chunked:
+                self.send_header("transfer-encoding", "chunked")
+            else:
+                self.send_header("content-length", length)
+            self.end_headers()
+        except OSError:
+            client_ok = False
+        upstream_complete = False
+        while client_ok:
+            try:
                 chunk = resp.read1(65536) if sse else resp.read(65536)
-                if not chunk:
-                    break
-                parser.feed(chunk)
-                if client_ok:
-                    try:
-                        if chunked:
-                            self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
-                        else:
-                            self.wfile.write(chunk)
-                        self.wfile.flush()
-                    except OSError:
-                        client_ok = False
-            if chunked and client_ok:
+            except (OSError, http.client.HTTPException):
+                with px._lock:
+                    st.unrecovered_gateway_error = True
+                    st.unrecovered_gateway_errors += 1
+                break
+            if not chunk:
+                upstream_complete = True
+                break
+            parser.feed(chunk)
+            try:
+                if chunked:
+                    self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                else:
+                    self.wfile.write(chunk)
+                self.wfile.flush()
+            except OSError:
+                client_ok = False
+        if chunked and client_ok and upstream_complete:
+            try:                                   # no terminator on a truncated upstream read
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
-        except (OSError, http.client.HTTPException):
-            with px._lock:
-                st.unrecovered_gateway_error = True
-                st.unrecovered_gateway_errors += 1
+            except OSError:
+                client_ok = False
+        if not (upstream_complete and client_ok):
+            self.close_connection = True
         stream = time.monotonic() - t0
         parser.close()
         with px._lock:
+            if not client_ok:
+                st.client_disconnects += 1
             st.gateway_wait_seconds += wait
             st.llm_stream_seconds += stream
             st.input_tokens += parser.input

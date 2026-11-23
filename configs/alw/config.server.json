@@ -83,10 +83,10 @@
   },
   "watermarks": {
     "t_max_sec": 10800,
-    "t_warn_sec": 9000,
+    "t_warn_sec": 8400,
     "t_soft_sec": 9900,
     "delta_t_rep_sec": 900,
-    "delta_s_rep_turns": 15,
+    "delta_s_rep_turns": 80,
     "min_remaining_for_repair_sec": 180,
     "tail_buffer_sec": 120,
     "kill_grace_sec": 5,

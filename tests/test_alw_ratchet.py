@@ -269,9 +269,12 @@ def test_handoff_roundtrip_and_deterministic_truncation(tmp_path):
 def test_watermarks_fork_meta_and_gate():
     cfg = json.loads((ROOT / "configs/alw/config.server.json").read_text())["watermarks"]
     wm = Watermarks.from_mapping(cfg)
-    assert (wm.t_warn_sec, wm.t_soft_sec, wm.tail_buffer_sec) == (9000, 9900, 120)
+    assert (wm.t_warn_sec, wm.t_soft_sec, wm.tail_buffer_sec) == (8400, 9900, 120)
+    assert wm.delta_s_rep_turns == 80 and wm == Watermarks()      # config locks the defaults
     fm = wm.fork_meta(9900.0)
     assert fm["granted_repair_budget_sec"] == 780.0 and fm["repair_eligible"]
+    assert fm["granted_repair_turns"] == 80
+    assert not wm.warn_due(8399.9) and wm.warn_due(8400.0)
     assert wm.fork_meta(4000)["granted_repair_budget_sec"] == 900.0
     late = wm.fork_meta(10700)
     assert late["remaining_sec"] == 100 and not late["repair_eligible"]

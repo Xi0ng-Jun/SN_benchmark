@@ -11,3 +11,4 @@ runs/
 *.aux
 *.log
 *.out
+docs/server-info/

@@ -3,6 +3,7 @@
 ``alw-check-split``  split / leak invariants R1-R5
 ``alw-concordance``  offline container smoke, B_dev build, 0-token mutations, blind freeze, eps_k
 ``alw-diagnose``     the four zero-LLM dev diagnostics on archived H_base runs
+``alw-harvest``      Harbor job directory -> run records, Path 1 archive, B_dev samples, summaries
 ``alw-eval``         smoke-10m | subset | baseline (Harbor jobs), fork-path1 (Path 1), c1-val
 ``alw-loop``         round-by-round Path 1 outer loop with K_idle pruning
 ``alw-report``       sealed test report (single unblind, R >= 3 seeds)
@@ -43,6 +44,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--t-warn", type=float, default=None)
     g.add_argument("--t-soft", type=float, default=None)
     g.add_argument("--delta-t-rep", type=float, default=None)
+    g.add_argument("--delta-s-rep", type=int, default=None, help="Delta_S_rep repair turn limit")
     g.add_argument("--theta-gw-max", type=float, default=None)
     g.add_argument("--agent-image", default=None)
     g.add_argument("--dry-run", action="store_true", help="plan / stage only; no containers or model calls")
@@ -54,7 +56,7 @@ def _cfg(args: argparse.Namespace) -> dict:
     return apply_cli_overrides(cfg, model=args.model, parallel=args.parallel, t_warn=args.t_warn,
                                t_soft=args.t_soft, delta_t_rep=args.delta_t_rep,
                                theta_gw_max=args.theta_gw_max, agent_image=args.agent_image,
-                               timeout_s=args.timeout_s)
+                               timeout_s=args.timeout_s, delta_s_rep=args.delta_s_rep)
 
 
 def _state(args: argparse.Namespace, cfg: dict) -> Path:
@@ -250,6 +252,68 @@ def _diagnose(args: argparse.Namespace) -> int:
     _emit({"out_dir": str(out_dir), "taxonomy": rep["taxonomy"]["counts"],
            "module_switches": rep["module_switches"],
            "sigma_seed": rep["seed_noise_floor"]["sigma_seed"]})
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# alw-harvest
+# ---------------------------------------------------------------------------------------------
+
+def _harvest(args: argparse.Namespace) -> int:
+    from .kernel.artifact_summary import literal_secrets_from_env
+    from .targets.alw import harvest as hv
+    cfg = _cfg(args)
+    state = _state(args, cfg)
+    if bool(args.tag) == bool(args.job_dir):
+        print("alw-harvest needs exactly one of --tag or --job-dir", file=sys.stderr)
+        return 2
+    job_dir = Path(args.job_dir) if args.job_dir else state / "jobs" / args.tag
+    catalog, _, split = _alw_data(cfg)
+    try:
+        hs, source = hv.harvest_job(job_dir, theta_gw_max=_theta(cfg))
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"alw-harvest: {exc}", file=sys.stderr)
+        return 2
+    dev_ids = _split_ids(split, "dev")
+    if args.out_archive or args.out_samples:
+        foreign = sorted({str(h.run["task_id"]) for h in hs} - set(dev_ids))
+        if foreign:
+            print(f"Path 1 archives and B_dev samples are built from dev executions only; "
+                  f"non-dev tasks: {foreign}", file=sys.stderr)
+            return 2
+    secrets = literal_secrets_from_env()
+    cluster = {t: split["cluster_of"][str(n)] for t, n in zip(dev_ids, split["splits"]["dev"])}
+    q_max = {t["task_id"]: t.get("q_max") for t in catalog["tasks"]}
+    written: list[str] = []
+    skipped: list[dict] = []
+    if not args.dry_run:
+        if args.out_runs:
+            text = "".join(json.dumps(h.run, sort_keys=True, default=str) + "\n" for h in hs)
+            written.append(str(hv.atomic_write_text(args.out_runs, text)))
+        if args.out_archive:
+            arch = []
+            for h in hs:
+                if not h.scored:
+                    skipped.append({"run_id": h.run["run_id"], "archive": "not_scored"})
+                    continue
+                try:
+                    arch.append(hv.archive_record(h))
+                except ValueError as exc:
+                    skipped.append({"run_id": h.run["run_id"], "archive": str(exc)})
+            written.append(str(hv.atomic_write_text(args.out_archive,
+                                                    json.dumps(arch, indent=1, default=str))))
+        if args.out_samples:
+            rows = [hv.bank_sample(h, cluster_id=cluster[str(h.run["task_id"])],
+                                   q_max=q_max.get(h.run["task_id"]))
+                    for h in hs if h.run.get("Y_star") is not None]
+            text = "".join(json.dumps(r, sort_keys=True, default=str) + "\n" for r in rows)
+            written.append(str(hv.atomic_write_text(args.out_samples, text)))
+        if args.backfill_summaries:
+            for h in hs:
+                written += [str(p) for p in hv.write_merged_summary(h, secrets)]
+    out = hv.harvest_summary(hs, written, source, secrets)
+    out |= {"job_dir": str(job_dir), "dry_run": args.dry_run, "skipped": skipped}
+    _emit(out)
     return 0
 
 
@@ -653,6 +717,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", default=None)
     p.add_argument("--k0", type=int, default=2)
     p.set_defaults(fn=_diagnose)
+
+    p = sub.add_parser("alw-harvest", help="Harbor job directory -> runs / Path 1 archive / B_dev samples")
+    _add_common(p)
+    p.add_argument("--tag", default=None, help="job tag (reads STATE/jobs/<tag>/)")
+    p.add_argument("--job-dir", default=None, help="job directory (instead of --tag)")
+    p.add_argument("--out-runs", default=None, help="JSONL of run records (alw-diagnose / alw-report)")
+    p.add_argument("--out-archive", default=None, help="JSON Path 1 archive of scored dev runs")
+    p.add_argument("--out-samples", default=None, help="JSONL of terminal B_dev BankSamples (dev only)")
+    p.add_argument("--backfill-summaries", action="store_true",
+                   help="write artifact_summary_merged.{json,md} into each mcr_snapshot/")
+    p.set_defaults(fn=_harvest)
 
     p = sub.add_parser("alw-eval", help="Harbor runs, Path 1 fork replay or C1 validation")
     _add_common(p)

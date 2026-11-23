@@ -443,7 +443,7 @@ def test_server_config_schema():
     wm = raw["watermarks"]
     assert (wm["t_max_sec"], wm["t_warn_sec"], wm["t_soft_sec"], wm["delta_t_rep_sec"],
             wm["delta_s_rep_turns"], wm["min_remaining_for_repair_sec"], wm["tail_buffer_sec"],
-            wm["kill_grace_sec"]) == (10800, 9000, 9900, 900, 15, 180, 120, 5)
+            wm["kill_grace_sec"]) == (10800, 8400, 9900, 900, 80, 180, 120, 5)
     assert raw["images"]["agent_image"] == "${SSAP_AGENT_IMAGE:-}"
     assert re.fullmatch(r"ghcr\.io/.+@sha256:[0-9a-f]{64}", raw["images"]["eda_base_image"])
     slots = raw["model_homogeneity"]["slots"]

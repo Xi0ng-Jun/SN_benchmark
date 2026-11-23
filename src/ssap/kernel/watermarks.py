@@ -20,10 +20,10 @@ from typing import Iterable, Sequence
 @dataclass(frozen=True)
 class Watermarks:
     t_max_sec: float = 10800.0
-    t_warn_sec: float = 9000.0
+    t_warn_sec: float = 8400.0
     t_soft_sec: float = 9900.0
     delta_t_rep_sec: float = 900.0
-    delta_s_rep_turns: int = 15
+    delta_s_rep_turns: int = 80
     min_remaining_for_repair_sec: float = 180.0
     tail_buffer_sec: float = 120.0
     kill_grace_sec: float = 5.0

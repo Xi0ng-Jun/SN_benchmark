@@ -178,6 +178,9 @@ def find_fork_meta(snapshot_pre_dir: Path, gate_report_path: Path | None = None)
     return _first_file(c)
 
 
+DEFAULT_REPAIR_TURNS = 80          # Delta_S_rep locked after the Phase 1b run
+
+
 @dataclass
 class RepairInvocation:
     argv: list[str]
@@ -214,7 +217,7 @@ class RepairInvocation:
 
 def build_stateless_repair_invocation(snapshot_pre_dir: str | Path, gate_report_path: str | Path, *,
                                       model: str, proxy_url: str, trial_token: str,
-                                      max_turns: int = 15,
+                                      max_turns: int | None = None,
                                       claude_bin: str = REAL_CLAUDE_IN_IMAGE,
                                       workspace: str = CONTAINER_WORKSPACE,
                                       config_dir: str | None = None,
@@ -225,7 +228,9 @@ def build_stateless_repair_invocation(snapshot_pre_dir: str | Path, gate_report_
     The budget is ``granted_repair_budget_sec`` of the archived ``fork_meta.json`` (fallback:
     ``gate_report.json``); it is never recomputed from replay wall-clock. Phase A arguments are
     taken from ``fork_meta.phase_a_argv`` when archived, else *base_argv*, else the Harbor default
-    stream-json arguments. The session directory is a fresh isolated ``CLAUDE_CONFIG_DIR``."""
+    stream-json arguments. The session directory is a fresh isolated ``CLAUDE_CONFIG_DIR``.
+    The turn limit is *max_turns* when given, else the archived ``granted_repair_turns``
+    (``fork_meta.json``, then ``gate_report.json``), else ``DEFAULT_REPAIR_TURNS``."""
     if not trial_token:
         raise ValueError("a per-trial proxy token is required")
     if not proxy_url.startswith(("http://", "https://")):
@@ -238,8 +243,12 @@ def build_stateless_repair_invocation(snapshot_pre_dir: str | Path, gate_report_
     granted = fork.get("granted_repair_budget_sec", gate.get("granted_repair_budget_sec"))
     if granted is None:
         raise ValueError("neither fork_meta.json nor gate_report.json records granted_repair_budget_sec")
+    if max_turns is None:          # archived Delta_S_rep, never a hardcoded turn limit
+        max_turns = int(fork.get("granted_repair_turns") or gate.get("granted_repair_turns")
+                        or DEFAULT_REPAIR_TURNS)
+    max_turns = int(max_turns)
     fork_view = {"granted_repair_budget_sec": float(granted),
-                 "granted_repair_turns": int(max_turns),
+                 "granted_repair_turns": max_turns,
                  "phase_a_elapsed_sec": fork.get("phase_a_elapsed_sec", gate.get("phase_a_elapsed_sec"))}
     ws_dir = snap / "workspace" if (snap / "workspace").is_dir() else snap
     handoff_path = ws_dir / ".mcr" / "handoff.json"

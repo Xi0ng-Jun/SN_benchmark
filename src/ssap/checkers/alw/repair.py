@@ -12,14 +12,29 @@ from typing import Iterable
 DROP_WITH_VALUE = {"--resume", "-r", "--session-id"}
 DROP_FLAGS = {"--print", "-p", "--continue", "-c", "--fork-session"}
 WORKSPACE = "/alb-workspace"
+# Harbor writes its settings to an ephemeral per-container path that does not exist in a fresh
+# Path 1 replay container; the identical harness copy is mounted read-only in both live Phase B
+# and offline replay.
+EPHEMERAL_SETTINGS_DIR = "/tmp/claude-code-settings/"
+HARNESS_SETTINGS = "/opt/harness/settings.json"
+
+
+def _settings_path(path: str) -> str:
+    return HARNESS_SETTINGS if path.startswith(EPHEMERAL_SETTINGS_DIR) else path
 
 
 def phase_b_args(argv: Iterable[str], turns: int) -> list[str]:
-    """Phase A arguments without session-resume flags, plus the stateless Phase B flags."""
-    out, skip = [], False
+    """Phase A arguments without session-resume flags, plus the stateless Phase B flags.
+    A ``--settings`` file under Harbor's ephemeral ``/tmp/claude-code-settings/`` is rewritten
+    to the mounted harness copy; any other ``--settings`` path is kept."""
+    out, skip, settings_next = [], False, False
     for a in argv:
         if skip:
             skip = False
+            continue
+        if settings_next:
+            settings_next = False
+            out.append(_settings_path(a))
             continue
         key = a.split("=", 1)[0]
         if key in DROP_WITH_VALUE:
@@ -30,6 +45,11 @@ def phase_b_args(argv: Iterable[str], turns: int) -> list[str]:
         if key == "--max-turns":
             skip = "=" not in a
             continue
+        if key == "--settings":
+            if "=" in a:
+                a = "--settings=" + _settings_path(a.split("=", 1)[1])
+            else:
+                settings_next = True
         out.append(a)
     return out + ["-p", "--no-session-persistence", "--max-turns", str(int(turns))]
 
