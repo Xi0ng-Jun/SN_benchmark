@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "_comment": "Server template. Host paths, model, gateway and keys come only from environment variables (${VAR} or ${VAR:-default}); no value in this file is secret. Relative paths are relative to the ssap checkout. Resolved non-secret values are recorded in artifact_summary.json; key values are never written anywhere.",
+  "alw": {
+    "repo": "${ALW_REPO}",
+    "paper_dir": "${ALW_PAPER_DIR:-}",
+    "commit": "d5236c886fefb5f5cedb0c755f3b3a949f1f2423",
+    "catalog": "configs/alw/catalog.json",
+    "clusters": "configs/alw/clusters.json",
+    "split": "configs/alw/split.json",
+    "paper_reference": "configs/alw/paper_reference.json"
+  },
+  "state": "${SSAP_STATE}",
+  "agent": {
+    "name": "claude-code",
+    "model_name": "${SSAP_MODEL}",
+    "kwargs": {"version": "2.1.302", "reasoning_effort": "max"}
+  },
+  "images": {
+    "eda_base_image": "ghcr.io/nova-silicon/analoglayoutworld@sha256:f922e79ebbac026ed9d15987924867ba6fef4270a5c4994579500e9138bf8338",
+    "agent_image": "${SSAP_AGENT_IMAGE:-}",
+    "agent_image_build_arg": "ALW_BASE_IMAGE",
+    "verifier_image": "unchanged task verifier image (eda_base_image)"
+  },
+  "gateway": {
+    "upstream_base": "${SSAP_GATEWAY}",
+    "upstream_key_env": "SSAP_UPSTREAM_KEY",
+    "upstream_keys_env": "SSAP_UPSTREAM_KEYS",
+    "multi_key_policy": "sticky per trial, balanced across paired arms; only for -spec/-special models unless explicitly enabled",
+    "multi_key_enabled": false,
+    "upstream_auth_header": "${SSAP_UPSTREAM_AUTH_HEADER:-x-api-key}",
+    "upstream_auth_prefix": "${SSAP_UPSTREAM_AUTH_PREFIX:-}",
+    "accept_client_auth": ["x-api-key", "authorization-bearer"],
+    "proxy_bind": "${SSAP_PROXY_BIND:-0.0.0.0}",
+    "proxy_port": 8791,
+    "proxy_advertise": "host.docker.internal:8791",
+    "cache": "none (zero-cache metering pass-through)",
+    "log_response_model": true,
+    "gateway_wait_seconds": "upstream TTFB (request sent -> first response byte) + HTTP 429/5xx retry backoff; streaming time logged separately as llm_stream_seconds",
+    "theta_gw_max": 0.35
+  },
+  "launch_env": {
+    "ANTHROPIC_BASE_URL": "http://{proxy_advertise}",
+    "ANTHROPIC_API_KEY": "{per_trial_token}"
+  },
+  "model_homogeneity": {
+    "pin_to": "${SSAP_MODEL}",
+    "slots": [
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL",
+      "CLAUDE_CODE_AUTO_MODE_MODEL",
+      "CLAUDE_CODE_BG_CLASSIFIER_MODEL"
+    ],
+    "fixed": {
+      "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+      "CLAUDE_CODE_TWO_STAGE_CLASSIFIER": "false",
+      "API_TIMEOUT_MS": "3000000"
+    }
+  },
+  "host_env_policy": {
+    "mode": "allowlist",
+    "allow": ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR", "DOCKER_HOST", "DOCKER_CONFIG", "VIRTUAL_ENV"],
+    "strip_prefixes": ["ANTHROPIC_", "CLAUDE_", "AWS_", "SSAP_UPSTREAM_"],
+    "strip_names": ["MAX_THINKING_TOKENS", "DISABLE_PROMPT_CACHING"],
+    "strip_patterns": ["(?i)^.*_proxy$"],
+    "forbid_in_harbor_env": ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"],
+    "redact_regex": "([a-zA-Z][a-zA-Z0-9+.-]*://)[^\\s@]+@",
+    "redact_literal_envs": ["SSAP_UPSTREAM_KEY", "SSAP_UPSTREAM_KEYS"]
+  },
+  "container_env": {
+    "NO_PROXY": "host.docker.internal,172.17.0.1,localhost,127.0.0.1,::1,0.0.0.0",
+    "no_proxy": "host.docker.internal,172.17.0.1,localhost,127.0.0.1,::1,0.0.0.0"
+  },
+  "run": {
+    "parallel": "${SSAP_PARALLEL:-4}",
+    "parallel_max": 6,
+    "trial_cpus": 6,
+    "trial_memory_mb": 32768
+  },
+  "watermarks": {
+    "t_max_sec": 10800,
+    "t_warn_sec": 9000,
+    "t_soft_sec": 9900,
+    "delta_t_rep_sec": 900,
+    "delta_s_rep_turns": 15,
+    "min_remaining_for_repair_sec": 180,
+    "tail_buffer_sec": 120,
+    "kill_grace_sec": 5,
+    "verifier_timeout_sec": 3600,
+    "verifier_budget_sec": 3300
+  },
+  "environment": {
+    "type": "docker",
+    "delete": true,
+    "extra_docker_compose": ["configs/alw/compose.host-gateway.yaml"]
+  }
+}

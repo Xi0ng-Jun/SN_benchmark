@@ -1,0 +1,14 @@
+# Harbor compose overlay (environment.extra_docker_compose) for ALW agent containers.
+# - host.docker.internal resolves to the Docker host, where the zero-cache metering proxy listens
+#   (proxy_port in config.server.json). Needed on Linux; Docker Desktop provides the name.
+# - Loopback / host-gateway traffic bypasses any proxy. No proxy URL or credential is passed into
+#   the container (docs/fable-5.2-plan-review.md A3); the agent image is selected by a separately
+#   generated overlay (services.main.build.args.ALW_BASE_IMAGE), never here.
+# The agent service of Harbor's docker environment is `main` (harbor 0.24.0).
+services:
+  main:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      NO_PROXY: "host.docker.internal,172.17.0.1,localhost,127.0.0.1,::1,0.0.0.0"
+      no_proxy: "host.docker.internal,172.17.0.1,localhost,127.0.0.1,::1,0.0.0.0"

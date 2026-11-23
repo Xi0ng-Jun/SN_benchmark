@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1.7
+# Thin agent image over the pinned ALW EDA image: adds Claude Code at a fixed version and a
+# /usr/local/bin/claude dispatcher that routes through the read-only mounted MCR harness
+# (/opt/harness/bin/mcr_entrypoint.py) when present, else to the real binary.
+#
+# Build (optional proxy only for this build step, never stored in the image):
+#   DOCKER_BUILDKIT=1 docker build --network=host -f container/alw/Dockerfile.agent \
+#     --secret id=build_proxy,src=$HOME/.config/ssap/build_proxy.txt -t alw-eda-claude:2.1.302 .
+ARG ALW_BASE_IMAGE=ghcr.io/nova-silicon/analoglayoutworld@sha256:f922e79ebbac026ed9d15987924867ba6fef4270a5c4994579500e9138bf8338
+FROM ${ALW_BASE_IMAGE}
+ARG CLAUDE_CODE_VERSION=2.1.302
+USER root
+
+RUN --mount=type=secret,id=build_proxy,required=false \
+    set -eu; \
+    npm_extra=""; \
+    if [ -s /run/secrets/build_proxy ]; then \
+      proxy="$(cat /run/secrets/build_proxy)"; \
+      unset NODE_USE_ENV_PROXY || true; \
+      export http_proxy="$proxy" https_proxy="$proxy" HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" \
+             npm_config_strict_ssl=false NODE_TLS_REJECT_UNAUTHORIZED=0; \
+      npm_extra="--strict-ssl=false"; \
+    fi; \
+    command -v npm >/dev/null 2>&1 || { echo "npm is required in the base image" >&2; exit 1; }; \
+    npm install -g --no-audit --no-fund $npm_extra --prefix /opt/claude-code \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
+    npm cache clean --force >/dev/null 2>&1 || true; \
+    rm -rf /root/.npm; \
+    /opt/claude-code/bin/claude --version; \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ -f /opt/harness/bin/mcr_entrypoint.py ]; then' \
+      '  P=/opt/analog-layout/python/bin/python3.12; [ -x "$P" ] || P=python3' \
+      '  exec "$P" /opt/harness/bin/mcr_entrypoint.py "$@"' \
+      'fi' \
+      'exec /opt/claude-code/bin/claude "$@"' \
+      > /usr/local/bin/claude; \
+    for tool in mcr_check mcr_promote; do \
+      printf '%s\n' \
+        '#!/bin/sh' \
+        "if [ -f /opt/harness/bin/${tool} ]; then" \
+        '  P=/opt/analog-layout/python/bin/python3.12; [ -x "$P" ] || P=python3' \
+        "  exec \"\$P\" /opt/harness/bin/${tool} \"\$@\"" \
+        'fi' \
+        "echo \"${tool}: /opt/harness is not mounted\" >&2; exit 127" \
+        > "/usr/local/bin/${tool}"; \
+      chmod 0755 "/usr/local/bin/${tool}"; \
+    done; \
+    chmod 0755 /usr/local/bin/claude; \
+    chmod -R a+rX /opt/claude-code
+
+ENV MCR_REAL_CLAUDE=/opt/claude-code/bin/claude \
+    PYTHONPATH=/opt/harness/python:/opt/analog-layout/pdks/sky130/python
+WORKDIR /alb-workspace

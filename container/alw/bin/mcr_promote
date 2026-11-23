@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""mcr_promote: certify a draft layout and promote it to submission/ iff ratchet-better.
+
+Usage: mcr_promote [--gds work/draft/layout.gds] [--src work/draft/src]
+Prints one JSON object: promoted, reason, the candidate certificate and the certified best.
+The draft area is never modified; submission/ only changes through this tool.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mcr_common as mc  # noqa: E402
+from ssap.kernel.promote import load_best_dict, promote  # noqa: E402
+
+
+def main(argv=None) -> int:
+    ws = mc.workspace()
+    ap = argparse.ArgumentParser(prog="mcr_promote")
+    ap.add_argument("--gds", default=str(ws.draft_artifact))
+    ap.add_argument("--src", default=None, help="auxiliary source tree (default: draft src/)")
+    args = ap.parse_args(argv)
+    gds = os.path.abspath(args.gds)
+    src = args.src if args.src is not None else (str(ws.draft_aux) if ws.draft_aux.is_dir() else None)
+    suite = mc.suite()
+    res = promote(ws, gds, os.path.abspath(src) if src else None, suite.evaluate, suite.tier_spec,
+                  validate=suite.validate)
+    out = {"tool": "mcr_promote", "candidate": gds, "promoted": res.promoted, "reason": res.reason,
+           "candidate_cert": mc.cert_view(res.cert),
+           "best_cert": mc.cert_view(load_best_dict(ws)),
+           "mirror_names": list(suite.tier_spec.names), "notes": res.notes}
+    print(json.dumps(out, indent=1, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

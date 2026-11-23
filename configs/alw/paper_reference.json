@@ -1,0 +1,492 @@
+{
+ "schema_version": 1,
+ "source": {
+  "arxiv": "2611.16991",
+  "version": "v1",
+  "title": "AnalogLayoutWorld: An Open Benchmark for Agentic Analog Layout Design",
+  "parsed_from": [
+   "paper.html (Tables 1-3)",
+   "paper.txt (Table 1 cross-check, prose)"
+  ],
+  "note": "Table 1 rows are means over 40 tasks x 3 attempts; percentages as printed"
+ },
+ "weights": {
+  "gds": 0.1,
+  "lvs": 0.1,
+  "drc": 0.1,
+  "area": 0.2,
+  "quality": 0.1,
+  "postsim": 0.4,
+  "gamma": 2,
+  "rho_min": 0.1,
+  "q_max_values": [
+   3.0,
+   4.0
+  ],
+  "rho_star_range": [
+   0.6,
+   1.1
+  ]
+ },
+ "table1": [
+  {
+   "system": "Novara Agent System",
+   "setting": "locally deployed",
+   "harness": null,
+   "drc": 97.5,
+   "lvs": 100.0,
+   "sim": 75.0,
+   "acc": 72.5,
+   "area": 52.2,
+   "quality": 0.816,
+   "tool_calls": null,
+   "tokens_m": null,
+   "score": 0.8154
+  },
+  {
+   "system": "DeepSeek V4 Pro",
+   "setting": "max",
+   "harness": "Claude Code",
+   "drc": 23.3,
+   "lvs": 23.3,
+   "sim": 12.5,
+   "acc": 3.3,
+   "area": 11.3,
+   "quality": 0.049,
+   "tool_calls": 226.9,
+   "tokens_m": 23.8,
+   "score": 0.1504
+  },
+  {
+   "system": "DeepSeek V4.1 Flash",
+   "setting": "max",
+   "harness": "Claude Code",
+   "drc": 41.7,
+   "lvs": 29.2,
+   "sim": 17.5,
+   "acc": 8.3,
+   "area": 35.0,
+   "quality": 0.086,
+   "tool_calls": 134.0,
+   "tokens_m": 13.2,
+   "score": 0.1974
+  },
+  {
+   "system": "DeepSeek V4.1 Flash",
+   "setting": "max",
+   "harness": "DSH",
+   "drc": 37.5,
+   "lvs": 30.0,
+   "sim": 17.5,
+   "acc": 9.2,
+   "area": 44.5,
+   "quality": 0.118,
+   "tool_calls": 133.1,
+   "tokens_m": 14.7,
+   "score": 0.2246
+  },
+  {
+   "system": "GLM-5.2 FP8",
+   "setting": "max",
+   "harness": "OpenCode",
+   "drc": 10.0,
+   "lvs": 10.0,
+   "sim": 5.0,
+   "acc": 0.0,
+   "area": 21.3,
+   "quality": 0.0,
+   "tool_calls": 242.3,
+   "tokens_m": 18.3,
+   "score": 0.1075
+  },
+  {
+   "system": "GLM-5.3",
+   "setting": "max",
+   "harness": "OpenCode",
+   "drc": 80.0,
+   "lvs": 69.2,
+   "sim": 42.5,
+   "acc": 35.0,
+   "area": 35.6,
+   "quality": 0.358,
+   "tool_calls": 264.8,
+   "tokens_m": 34.5,
+   "score": 0.4779
+  },
+  {
+   "system": "GLM-5.3",
+   "setting": "max",
+   "harness": "InternBootcamp",
+   "drc": 55.0,
+   "lvs": 65.0,
+   "sim": 45.0,
+   "acc": 27.5,
+   "area": 49.8,
+   "quality": 0.35,
+   "tool_calls": 253.3,
+   "tokens_m": 30.3,
+   "score": 0.4632
+  },
+  {
+   "system": "GLM-5.3 Flash",
+   "setting": "max",
+   "harness": "OpenCode",
+   "drc": 44.2,
+   "lvs": 33.3,
+   "sim": 22.5,
+   "acc": 14.2,
+   "area": 27.8,
+   "quality": 0.146,
+   "tool_calls": 239.1,
+   "tokens_m": 31.7,
+   "score": 0.2555
+  },
+  {
+   "system": "GLM-5.3 Flash",
+   "setting": "max",
+   "harness": "InternBootcamp",
+   "drc": 40.0,
+   "lvs": 30.0,
+   "sim": 22.5,
+   "acc": 12.5,
+   "area": 26.3,
+   "quality": 0.117,
+   "tool_calls": 310.8,
+   "tokens_m": 38.0,
+   "score": 0.2378
+  },
+  {
+   "system": "Kimi-K2.6",
+   "setting": "max",
+   "harness": "Kimi Code",
+   "drc": 0.8,
+   "lvs": 0.0,
+   "sim": 0.0,
+   "acc": 0.0,
+   "area": null,
+   "quality": 0.0,
+   "tool_calls": 235.0,
+   "tokens_m": 23.0,
+   "score": 0.0958
+  },
+  {
+   "system": "Kimi-K3",
+   "setting": "max",
+   "harness": "Kimi Code",
+   "drc": 50.0,
+   "lvs": 40.0,
+   "sim": 30.0,
+   "acc": 20.0,
+   "area": 37.5,
+   "quality": 0.167,
+   "tool_calls": 142.0,
+   "tokens_m": 12.2,
+   "score": 0.29
+  },
+  {
+   "system": "Qwen3.8 Flash Next",
+   "setting": "xhigh",
+   "harness": "Qwen Code",
+   "drc": 40.0,
+   "lvs": 41.7,
+   "sim": 25.0,
+   "acc": 14.2,
+   "area": 32.9,
+   "quality": 0.14,
+   "tool_calls": 217.4,
+   "tokens_m": 21.6,
+   "score": 0.2633
+  },
+  {
+   "system": "GPT-6 Astra",
+   "setting": "max",
+   "harness": "Codex",
+   "drc": 99.2,
+   "lvs": 98.3,
+   "sim": 82.5,
+   "acc": 70.8,
+   "area": 59.5,
+   "quality": 0.566,
+   "tool_calls": 111.8,
+   "tokens_m": 11.2,
+   "score": 0.7483
+  },
+  {
+   "system": "GPT-6.1 Sol",
+   "setting": "max",
+   "harness": "Codex",
+   "drc": 92.5,
+   "lvs": 91.7,
+   "sim": 80.0,
+   "acc": 62.5,
+   "area": 60.5,
+   "quality": 0.498,
+   "tool_calls": 131.6,
+   "tokens_m": 14.5,
+   "score": 0.7023
+  }
+ ],
+ "table2_ldo_decomposition": [
+  {
+   "submission": "GPT-6 Astra",
+   "gds": 0.1,
+   "lvs": 0.1,
+   "drc": 0.1,
+   "area": 0.1651,
+   "quality": 0.0929,
+   "sim": 0.4,
+   "total": 0.958
+  },
+  {
+   "submission": "DeepSeek V4.1 Flash",
+   "gds": 0.1,
+   "lvs": 0.1,
+   "drc": 0.1,
+   "area": 0.0956,
+   "quality": 0.0462,
+   "sim": 0.4,
+   "total": 0.8418
+  }
+ ],
+ "table3_geometry": {
+  "1": {
+   "q_max": 3.0,
+   "rho_star": 1.05
+  },
+  "2": {
+   "q_max": 4.0,
+   "rho_star": 1.1
+  },
+  "3": {
+   "q_max": 4.0,
+   "rho_star": 1.05
+  },
+  "4": {
+   "q_max": 4.0,
+   "rho_star": 0.6
+  },
+  "5": {
+   "q_max": 3.0,
+   "rho_star": 0.9
+  },
+  "6": {
+   "q_max": 4.0,
+   "rho_star": 0.9
+  },
+  "7": {
+   "q_max": 3.0,
+   "rho_star": 0.9
+  },
+  "8": {
+   "q_max": 3.0,
+   "rho_star": 0.9
+  },
+  "9": {
+   "q_max": 4.0,
+   "rho_star": 0.6
+  },
+  "10": {
+   "q_max": 3.0,
+   "rho_star": 0.9
+  },
+  "11": {
+   "q_max": 3.0,
+   "rho_star": 0.9
+  },
+  "12": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "13": {
+   "q_max": 4.0,
+   "rho_star": 0.65
+  },
+  "14": {
+   "q_max": 4.0,
+   "rho_star": 0.9
+  },
+  "15": {
+   "q_max": 3.0,
+   "rho_star": 0.6
+  },
+  "16": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "17": {
+   "q_max": 4.0,
+   "rho_star": 0.7
+  },
+  "18": {
+   "q_max": 4.0,
+   "rho_star": 0.95
+  },
+  "19": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "20": {
+   "q_max": 4.0,
+   "rho_star": 0.65
+  },
+  "21": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "22": {
+   "q_max": 3.0,
+   "rho_star": 1.1
+  },
+  "23": {
+   "q_max": 4.0,
+   "rho_star": 0.65
+  },
+  "24": {
+   "q_max": 3.0,
+   "rho_star": 1.0
+  },
+  "25": {
+   "q_max": 4.0,
+   "rho_star": 0.8
+  },
+  "26": {
+   "q_max": 3.0,
+   "rho_star": 0.85
+  },
+  "27": {
+   "q_max": 4.0,
+   "rho_star": 0.6
+  },
+  "28": {
+   "q_max": 4.0,
+   "rho_star": 0.8
+  },
+  "29": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "30": {
+   "q_max": 4.0,
+   "rho_star": 0.9
+  },
+  "31": {
+   "q_max": 3.0,
+   "rho_star": 0.75
+  },
+  "32": {
+   "q_max": 4.0,
+   "rho_star": 1.1
+  },
+  "33": {
+   "q_max": 3.0,
+   "rho_star": 0.8
+  },
+  "34": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "35": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "36": {
+   "q_max": 3.0,
+   "rho_star": 0.95
+  },
+  "37": {
+   "q_max": 4.0,
+   "rho_star": 0.9
+  },
+  "38": {
+   "q_max": 3.0,
+   "rho_star": 0.8
+  },
+  "39": {
+   "q_max": 3.0,
+   "rho_star": 0.8
+  },
+  "40": {
+   "q_max": 3.0,
+   "rho_star": 1.1
+  }
+ },
+ "statistics": {
+  "abstract_tasks": {
+   "where": "abstract",
+   "values": {
+    "tasks": 40
+   },
+   "quote": "We introduce AnalogLayoutWorld, an open-source agent benchmark with 40 expert-reviewed tasks for end-to-end layout generation from fixed transistor-level netlists."
+  },
+  "abstract_submission_acceptance": {
+   "where": "abstract",
+   "values": {
+    "configurations": 13,
+    "gds_produced_pct": 91.1,
+    "accepted_pct": 21.3
+   },
+   "quote": "Across 13 model-harness configurations, 91.1% of attempts produce GDS layouts, but only 21.3% satisfy the benchmark’s acceptance criteria."
+  },
+  "trials_per_task": {
+   "where": "section 4.1",
+   "values": {
+    "trials": 3
+   },
+   "quote": "Using the environment, three-hour agent budget, and independent evaluation protocol described in Section 3, we run three independent trials per task."
+  },
+  "agent_budget_hours": {
+   "where": "section 3.2",
+   "values": {
+    "hours": 3
+   },
+   "quote": "Each attempt has a three-hour wall-clock budget for layout generation, debugging, and self-checks."
+  },
+  "repeated_verification": {
+   "where": "section 5.1",
+   "values": {
+    "drc_first_pass_after_first_call_pct": 90.3,
+    "lvs_first_pass_after_first_call_pct": 66.8
+   },
+   "quote": "Among trajectories with a recovered passing self-check, 90.3% of DRC first passes and 66.8% of LVS first passes occur after the first verification call."
+  },
+  "difficulty_vs_size": {
+   "where": "section 5.2",
+   "values": {
+    "spearman_score_vs_devices": -0.73
+   },
+   "quote": "Averaging final scores across the six plotted configurations yields a negative task-level correlation with device count ( $\\rho_{s}=-0.73$ ), indicating that larger circuits tend to be more difficult for the evaluated systems."
+  },
+  "time_limit_hits": {
+   "where": "section 5.3",
+   "values": {
+    "glm53_flash_hits": 51,
+    "attempts": 120
+   },
+   "quote": "GLM-5.3 Flash reaches the agent time limit in 51 of 120 attempts, compared with none for GPT-6 Astra."
+  },
+  "aspect_failure_task9": {
+   "where": "section 6.1",
+   "values": {
+    "q_low": 22.63,
+    "q_high": 26.31,
+    "q_bound": 4.0
+   },
+   "quote": "Nevertheless, their aspect ratios range from 22.63 to 26.31, exceeding the evaluation bound of 4."
+  },
+  "task40_comparison": {
+   "where": "appendix E.1",
+   "values": {
+    "gpt61_sol": 0.9617,
+    "deepseek_v41_flash": 0.7712
+   },
+   "quote": "The area-score contributions are consequently 0.2000 and 0.0108, accounting for $99.4\\%$ of the total-score difference (0.9617 versus 0.7712)."
+  },
+  "task38_score": {
+   "where": "appendix E.2",
+   "values": {
+    "gpt61_sol": 0.8231
+   },
+   "quote": "GPT-6.1 Sol passes LVS and all prescribed post-layout tests, scoring 0.8231: 0.3 for submission and physical verification, 0.0333 for area, 0.0898 for engineering quality, and 0.4 for electrical verification."
+  }
+ }
+}

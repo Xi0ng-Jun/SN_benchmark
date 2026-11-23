@@ -1,0 +1,524 @@
+% !TEX program = xelatex
+% 编译：xelatex ssap.tex（两遍），或 tectonic ssap.tex。
+% 正文位于 “BEGIN METHOD” 与 “END METHOD” 两行之间，可整体移入论文主文件。
+% 状态（2026-11-21）：SSAP 的核心算法说明；当前处于算法设计定稿阶段，尚未编写实现，
+% 在模拟目标与真实目标系统上均无任何实验结果。
+\documentclass[UTF8,a4paper,10.5pt]{ctexart}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+\usepackage[hidelinks]{hyperref}
+
+\setlist{nosep,leftmargin=1.8em}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\floatname{algorithm}{算法}
+\renewcommand{\algorithmicrequire}{\textbf{输入：}}
+\renewcommand{\algorithmicensure}{\textbf{输出：}}
+\newtheorem{prop}{性质}
+\renewcommand{\proofname}{证明}
+
+% 方法名占位：定名后改这一处。
+\newcommand{\method}{SSAP}
+\newcommand{\Ddev}{\mathcal{D}_{\mathrm{dev}}}
+\newcommand{\Dval}{\mathcal{D}_{\mathrm{val}}}
+\newcommand{\Dtest}{\mathcal{D}_{\mathrm{test}}}
+\newcommand{\Sclean}{\mathcal{S}^+_{\mathrm{clean}}}
+\newcommand{\Ssilent}{\mathcal{S}^-_{\mathrm{silent}}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Ind}{\mathbb{I}}
+\newcommand{\clip}{\operatorname{clip}}
+\newcommand{\sgn}{\operatorname{sign}}
+
+\begin{document}
+\pagestyle{plain}
+
+% ======================= BEGIN METHOD =======================
+\section{方法}
+\label{sec:method}
+
+harness 优化的通行做法把目标系统当作黑盒：一个版本在任务上执行，返回一个终局标量分数，外层流程据此变异提示词或控制代码~\cite{vero,hob,metaharness}。
+另一类做法在无状态边界上记录请求与响应，通过逐请求重放比较不同版本或定位单步故障。
+当目标系统通过外部工程工具（编译器、仿真器、综合与版图引擎）持续读写有状态的工作区产物，并由隐藏的多分项验证器做终局签核时，这两类做法同时受阻：
+有状态文件变更与多线程工具输出破坏了无状态边界重放的前提，且对在所有运行中均失败的任务无法通过轨迹方差定位；
+更关键的是，系统在运行期只能观测自身的内部自检 $\hat{C}_H$，而最终成败取决于部署期不可见的外部签核器 $C^\star$。
+
+\method{}（Signoff-Surrogate Alignment and Active Probe Co-Evolution，内外签核失真对齐与主动探针共演化）围绕这一认识论断层重新组织外层优化。算法建立在三项机制之上：
+\begin{enumerate}
+  \item \emph{零重放白盒失真归因与确定性零误杀契约。}利用搜索集上可见的分项签核真值与运行期自检之间的不一致集，无需重放即可将故障直接归因至可编辑算子槽位；新门控在已验证的干净产物集上离线执行确定性零误杀回测（$k_{\mathrm{FP}}=0$），不消耗模型调用。
+  \item \emph{主动探针双端合成与运行期软硬分权。}针对缺乏报错信号的结构性失败，合成内生诊断探针并在隔离沙盒中检验其对“缺陷初态—参考真解”的双端判别力；部署运行期将硬回滚权严格限制于客观刚性不变量，阻断幻觉探针污染正确修改。
+  \item \emph{槽内微探针、批归一化字典序竞速与簇分层确认。}在各算子槽位内部以低成本闭环微探针初筛，避免跨槽异构量纲混比；跨槽候选与单模块渐进嫁接体回到起点，在批容量归一化的严格字典序指标下执行配对分层连续减半，最终在验证集上经簇分层置换检验与净胜底线一次性确认。
+\end{enumerate}
+
+% ------------------------------------------------------------
+\subsection{问题设定与记号}
+\label{sec:setup}
+
+设任务空间为 $\mathcal{X}$，任务总体分布为 $\mathcal{P}$。任务常按底层共享载体（例如同一代码仓库或同一电路网表，统称为\emph{簇}）成组出现，同簇任务之间存在正相关。
+任务池按簇互不重叠地划分为搜索集 $\Ddev$、验证集 $\Dval$ 与封存测试集 $\Dtest$：
+\begin{equation}
+  \Ddev = \bigsqcup_{g=1}^{G_{\mathrm{dev}}} \mathcal{C}^{\mathrm{dev}}_g,\qquad
+  \Dval = \bigsqcup_{g=1}^{G_{\mathrm{val}}} \mathcal{C}^{\mathrm{val}}_g,\qquad
+  \Dtest = \bigsqcup_{g=1}^{G_{\mathrm{test}}} \mathcal{C}^{\mathrm{test}}_g,
+\end{equation}
+记 $n_{\mathrm{dev}}=|\Ddev|$，$n_{\mathrm{val}}=|\Dval|$，$n_{\mathrm{test}}=|\Dtest|$。
+$\Ddev$ 对外层演化算法可见；$\Dval$ 仅用于终局确认；$\Dtest$ 全程封存，仅对确认后的唯一版本评测一次~\cite{dwork2015}。
+
+\paragraph{有状态工作区与轨迹。}
+给定任务 $x$（含公开规格说明、初始工作区 $w_0(x)\in\mathcal{W}$ 与公开基础测试），一个 harness 版本 $H$ 围绕冻结的语言模型运行，在执行随机源 $\xi$（模型采样及工具非确定性）下产生至多 $S_{\max}$ 步的工作区序列
+\begin{equation}
+  \tau = (w_0, o_0, a_1, w_1, o_1, \dots, a_S, w_S), \qquad S \le S_{\max},
+\end{equation}
+并提交终态产物 $W = w(H, x, \xi) = w_S$。其中 $w_s\in\mathcal{W}$ 为第 $s$ 步后的工作区状态，$o_s$ 为解析算子向模型提供的压缩观测，$a_s$ 为模型或内部算子发出的动作。
+
+\paragraph{三层验证信号与信息边界。}
+对任意任务 $x$ 与工作区 $w\in\mathcal{W}$，区分三类谓词与指标：
+\begin{itemize}
+  \item \emph{客观合法性不变量} $V(x, w)\in\{0,1\}$：在运行期完全可观测、无随机性的刚性约束合取（如语法与编译通过、公开回归测试全通过、接口签名与只读约束文件哈希未篡改、拓扑连通与器件守恒）。违反任一刚性约束时 $V(x,w)=0$。
+  \item \emph{外部真值签核器} $C^\star(x, w)\in\{0,1\}$：评测系统持有的独立验收判据，由合法性不变量与 $K$ 个分项签核谓词合取而成：
+  \begin{equation}
+    C^\star(x, w) = V(x, w)\prod_{k=1}^{K} c^\star_k(x, w), \qquad c^\star_k(x, w)\in\{0,1\}.
+  \end{equation}
+  同时记归一化连续进展指标 $Q(x, w)\in[0,1]$，度量未过签核产物距离签核阈值的相对改进幅度；当 $V(x,w)=0$ 时约定 $Q(x,w)=0$。
+  \item \emph{内部代理验证器} $\hat{C}_H(x, w)\in\{0,1\}$：嵌入在版本 $H$ 中、运行期仅凭公开信息与工作区即可确定性执行的自检谓词，满足 $\hat{C}_H(x,w)\le V(x,w)$（种子版本默认取 $\hat{C}_{H_0}=V$），并辅以内部连续标量评估 $\hat{q}_H(x, w)$。
+\end{itemize}
+信息边界由阶段严格限定：在 $\Dval$ 与 $\Dtest$ 的运行期内，隐藏分项 $\mathbf{c}^\star=(c^\star_1,\dots,c^\star_K)$ 对 $H$ 完全不可见；
+在离线搜索期，$\Ddev$ 上的执行结束后，外层确定性记账程序可读取 $\mathbf{c}^\star(x, W)$ 与 $Q(x, W)$ 用于归因与筛选，但验证脚本与参考补丁源码对提议和实现 Agent 保持隔离。
+版本 $H$ 的总体期望签核率为 $\mu(H)=\E_{x\sim\mathcal{P},\,\xi}\bigl[C^\star\bigl(x, w(H,x,\xi)\bigr)\bigr]$。
+
+% ------------------------------------------------------------
+\subsection{内外签核失真与同算力采样上界}
+\label{sec:alignment}
+
+固定任务 $x$ 与版本 $H$，记单次执行产物 $W=w(H,x,\xi)$ 通过内部自检且通过外部签核的概率为 $p_+(H,x)$，通过内部自检但未通过外部签核（\emph{静默漏检}）的概率为 $p_{\mathrm{sf}}(H,x)$：
+\begin{equation}
+  p_+(H,x) = \Pr_\xi\bigl(\hat{C}_H(x,W)=1 \land C^\star(x,W)=1\bigr),\qquad
+  p_{\mathrm{sf}}(H,x) = \Pr_\xi\bigl(\hat{C}_H(x,W)=1 \land C^\star(x,W)=0\bigr).
+\end{equation}
+评估 harness 优化时，一项基本对照是将离线搜索算力折算为测试期对种子版本 $H_0$ 的多次独立采样（$\text{Best-of-}N$）~\cite{rethinking}。
+在部署期 $C^\star$ 不可见的约束下，$N$ 次独立执行 $W_1,\dots,W_N$ 只能依据内部自检集 $\mathcal{I}_+=\{j\in\{1,\dots,N\}:\hat{C}_H(x,W_j)=1\}$ 进行盲选：当 $\mathcal{I}_+\neq\varnothing$ 时从中均匀随机选取（或取首个通过自检的样本，二者因独立同分布而同分布），否则返回 $W_1$；记该盲选输出为 $W^{(N)}_{\mathrm{BoN}}(H,x)$。
+
+\begin{prop}[盲选采样的静默失真上界]
+\label{prop:bon}
+设在任务 $x$ 上内部验证器不误拒真解，即 $\Pr_\xi\bigl(\hat{C}_H(x,W)=0 \land C^\star(x,W)=1\bigr)=0$（当 $\hat{C}_{H_0}=V$ 时因 $C^\star\le V$ 恒成立）。简记 $p_+=p_+(H,x)$，$p_{\mathrm{sf}}=p_{\mathrm{sf}}(H,x)$。对任意采样次数 $N\ge 1$：
+\begin{enumerate}
+  \item 若 $p_+=0$（结构赤字任务），则 $\Pr\bigl(C^\star(x, W^{(N)}_{\mathrm{BoN}}(H,x))=1\bigr) = 0$；
+  \item 若 $p_++p_{\mathrm{sf}}>0$，则
+  \begin{equation}
+    \Pr\bigl(C^\star\bigl(x, W^{(N)}_{\mathrm{BoN}}(H,x)\bigr)=1\bigr)
+    = \frac{p_+}{p_++p_{\mathrm{sf}}}\Bigl(1 - (1 - p_+ - p_{\mathrm{sf}})^N\Bigr)
+    \le \frac{p_+}{p_++p_{\mathrm{sf}}}.
+    \label{eq:bon}
+  \end{equation}
+\end{enumerate}
+\end{prop}
+\begin{proof}
+由不误拒假设，$\Pr(C^\star(x,W)=1)=p_+$。
+当 $p_+=0$ 时，由布尔不等式 $\Pr(\exists j,\,C^\star(x,W_j)=1)\le N p_+=0$，结论 1 成立。
+当 $p_++p_{\mathrm{sf}}>0$ 时，在事件 $\mathcal{I}_+=\varnothing$ 上所有样本均满足 $\hat{C}_H(x,W_j)=0$，由不误拒假设知 $C^\star(x,W_j)=0$ 几乎必然成立。
+在事件 $\mathcal{I}_+\neq\varnothing$ 上，取 $J=\min\mathcal{I}_+$（与在 $\mathcal{I}_+$ 上均匀抽样同分布）；由 $W_1,\dots,W_N$ 相互独立，事件 $\{J=j\}$ 仅依赖 $W_1,\dots,W_{j-1}$ 未过 $\hat{C}_H$ 且 $\hat{C}_H(x,W_j)=1$，故
+$\Pr(C^\star(x,W_j)=1\mid J=j)=\Pr(C^\star(x,W_j)=1\mid \hat{C}_H(x,W_j)=1)=p_+/(p_++p_{\mathrm{sf}})$。
+对 $j=1,\dots,N$ 求和并代入 $\Pr(\mathcal{I}_+\neq\varnothing)=1-(1-p_+-p_{\mathrm{sf}})^N$，即得式~\eqref{eq:bon}。
+\end{proof}
+
+性质~\ref{prop:bon} 指出测试期盲选的两道闭式上限：在 $p_+=0$ 的任务上重复采样恒为零；在 $p_{\mathrm{sf}}>0$ 的任务上，即便 $N\to\infty$ 至少撞出一次真解的概率趋于 $1$，盲选成功率仍收敛至 $p_+/(p_++p_{\mathrm{sf}})<1$。
+\method{}据此将外层优化形式化为双层对齐合成问题：内层在 $\Ddev$ 上合成主动探针以在 $p_+=0$ 的任务上推高 $p_+>0$，并在零误拒约束下加固 $\hat{C}_H$ 以压低 $p_{\mathrm{sf}}\to 0$；外层最大化期望签核率 $\mu(H)$。
+设整个离线搜索消耗 $B_{\mathrm{search}}$ 个完整运行当量（Full-Run Equivalents, FRE），在规模为 $n_{\mathrm{test}}$ 的测试集上单次运行 $H^\star$ 的摊销总成本对应同算力基线 $\text{Best-of-}N_{\mathrm{eq}}(H_0)$，其中 $N_{\mathrm{eq}}=\lceil 1 + B_{\mathrm{search}}/n_{\mathrm{test}}\rceil$。
+
+% ------------------------------------------------------------
+\subsection{零重放白盒归因与离线零误杀契约}
+\label{sec:attribution}
+
+\paragraph{基线锚点与难度分层。}
+演化开始前，种子版本 $H_0$ 在 $\Ddev$ 上独立执行 $K_0\ge 2$ 次（默认 $K_0=2$），构建离线证据库 $\mathcal{B}_{\mathrm{dev}}$。
+每条轨迹只归档每步源码级轻量文本差异，以及除终态 $w_S$ 外至多三个稀疏里程碑处（初始态 $w_0$、内部指标峰值步 $w_{s^\star}$ 与提交前一步 $w_{S-1}$）的工具原始输出，并记录终态签核真值 $(\mathbf{c}^\star, Q)$，重型二进制产物不写入步级历史。
+按任务在基线下的通过次数 $\hat{k}_0(x)=\sum_{r=1}^{K_0} C^\star(x, w^{(r)}_S)$，将 $\Ddev$ 划分为三层用于白盒归因：
+结构赤字层 $\mathcal{S}_{\mathrm{def}}=\{x\in\Ddev:\hat{k}_0(x)=0\}$、边界敏感层 $\mathcal{S}_{\mathrm{bnd}}=\{x\in\Ddev:0<\hat{k}_0(x)<K_0\}$ 与全过层 $\mathcal{S}_{\mathrm{guard}}=\{x\in\Ddev:\hat{k}_0(x)=K_0\}$；同时单独用第 $1$ 次锚点运行定义护栏参考集 $\mathcal{G}_{\mathrm{guard}}=\{x\in\Ddev:C^\star(x,w^{(1)}_S)=1\}$，将与之相互独立的第 $2$ 次运行 $w^{(2)}_S$ 留作在线非劣效检验的无偏配对基准（第~\ref{sec:funnel} 节）。
+
+\paragraph{零重放落差归因。}
+不调用语言模型的确定性记账程序从 $\mathcal{B}_{\mathrm{dev}}$ 直接提取四类归因信号，分别指向第~\ref{sec:modules} 节的四类算子槽位：
+\begin{enumerate}
+  \item \emph{签核失真矩阵 $\mathbf{D}_{\mathrm{gap}}$}：逐分项统计终态满足 $\hat{C}_{H_0}(x,w_S)=1 \land c^\star_k(x,w_S)=0$ 的静默漏检频次，直接定位缺失的内部门控谓词或缺失的故障激励。
+  \item \emph{工作区峰终遗憾} $R_{\mathrm{regret}}(\tau)=\max_{0\le s\le S}\hat{q}_{H_0}(x,w_s)-\hat{q}_{H_0}(x,w_S)$：度量运行期内可观测指标冲高回落的退化幅度，定位状态回滚策略的余量。
+  \item \emph{观测膨胀与脱靶率}：统计原始工具输出占上下文比例 $\phi_{\mathrm{raw}}(\tau)$，以及报错后连续多步未消除同一错误码或修改无关文件的比例，定位观测压缩与故障溯源解析器。
+  \item \emph{冷启动结构赤字}：在 $\mathcal{S}_{\mathrm{def}}$ 上区分前两步高频接口异常（指向符号检索）、无故障复现信号或连续标量盲猜停滞（指向主动探针与求解卸载），以及跨任务形态的控制流冲突（指向条件路由）。
+\end{enumerate}
+各槽位每代的变异名额按归因失真质量加权分配，同时为每个槽位保留不低于 $\epsilon_{\mathrm{cov}}>0$ 的最小探索比例，避免局部归因噪声饿死上游耦合槽位~\cite{harnessevo,coverage}。
+
+\paragraph{干净产物集与确定性零误杀契约。}
+为防止过严的候选门控 $G_{\mathrm{cand}}:\mathcal{X}\times\mathcal{W}\to\{0,1\}$ 误拦合法好解，同时避免两类常见偏差——其一，在缺陷修复任务中把本身带缺陷的初始工作区 $w_0(x)$（$C^\star(x,w_0(x))=0$）当作正样本会导致正负反转，封杀一切能检出原缺陷的断言；其二，在小规模固定产物集上套用二项抽样置信上界（如要求 95\% 置信上界低于 $2\%$）会使零误杀的确定性函数也因样本量有限而被全部拒之门外——记账程序严格收集经外部签核确认为真解（$C^\star=1$）的快照构成\emph{干净产物集}，并与静默失败快照集配对：
+\begin{align}
+  \Sclean &= \bigl\{(x, w_{\mathrm{ref}}(x)) : x\in\mathcal{D}_{\mathrm{ref}}\bigr\}
+             \cup \bigl\{(x, w^{(r)}_S)\in\mathcal{B}_{\mathrm{dev}} : C^\star(x,w^{(r)}_S)=1\bigr\}, \\
+  \Ssilent &= \bigl\{(x, w^{(r)}_S)\in\mathcal{B}_{\mathrm{dev}} : \hat{C}_{H_0}(x,w^{(r)}_S)=1 \land C^\star(x,w^{(r)}_S)=0\bigr\},
+\end{align}
+其中 $\mathcal{D}_{\mathrm{ref}}\subseteq\Ddev$ 表示搜索集中附带参考真解补丁的任务子集，$w_{\mathrm{ref}}(x)$ 为打上该补丁后的干净工作区，满足 $C^\star(x,w_{\mathrm{ref}}(x))=1$（存放于隔离裁判沙盒内，不对 Agent 暴露）；$(x,w^{(r)}_S)\in\mathcal{B}_{\mathrm{dev}}$ 遍历归档的基线终态产物。
+记候选门控在两集合上的离线误拦数与捕获数分别为
+\begin{equation}
+  k_{\mathrm{FP}}(G_{\mathrm{cand}})=\sum_{(x,w)\in\Sclean}\Ind\bigl[G_{\mathrm{cand}}(x,w)=0\bigr],\qquad
+  k_{\mathrm{TP}}(G_{\mathrm{cand}})=\sum_{(x,w)\in\Ssilent}\Ind\bigl[G_{\mathrm{cand}}(x,w)=0\bigr].
+\end{equation}
+
+\begin{prop}[离线零误杀契约与静默失真压缩]
+\label{prop:zerofp}
+设父验证器 $\hat{C}_{H_0}$ 在 $\Sclean$ 上无误拦（当 $\hat{C}_{H_0}=V$ 时因 $C^\star\le V$ 恒成立）。对确定性谓词 $G_{\mathrm{cand}}$，令复合内部验证器为 $\hat{C}_{H'}(x,w)=\hat{C}_{H_0}(x,w)\cdot G_{\mathrm{cand}}(x,w)$。
+\begin{enumerate}
+  \item 在归档快照 $\Sclean\sqcup\Ssilent$ 上，$G_{\mathrm{cand}}$ 无执行随机性；若满足契约 $k_{\mathrm{FP}}(G_{\mathrm{cand}})=0$ 且 $k_{\mathrm{TP}}(G_{\mathrm{cand}})>0$，则 $\hat{C}_{H'}$ 无需模型调用即保留 $\Sclean$ 中全部真解，并将归档静默漏检数严格降为 $|\Ssilent|-k_{\mathrm{TP}}(G_{\mathrm{cand}})$。
+  \item 在同一产物提议分布下，设任务 $x$ 满足 $p_+(H_0,x)>0$。若对真解零误拒 $\Pr_\xi(G_{\mathrm{cand}}(x,W)=0 \land C^\star(x,W)=1)=0$，且捕获概率 $\Delta_{\mathrm{sf}}(x)=\Pr_\xi(\hat{C}_{H_0}(x,W)=1 \land G_{\mathrm{cand}}(x,W)=0 \land C^\star(x,W)=0)$ 大于零，则性质~\ref{prop:bon} 中的盲选渐近上界严格提高：
+  \begin{equation}
+    \frac{p_+(H',x)}{p_+(H',x)+p_{\mathrm{sf}}(H',x)}
+    = \frac{p_+(H_0,x)}{p_+(H_0,x)+p_{\mathrm{sf}}(H_0,x)-\Delta_{\mathrm{sf}}(x)}
+    > \frac{p_+(H_0,x)}{p_+(H_0,x)+p_{\mathrm{sf}}(H_0,x)}.
+  \end{equation}
+\end{enumerate}
+\end{prop}
+\begin{proof}
+对结论 1，$\Sclean$ 中元素均满足 $\hat{C}_{H_0}(x,w)=1$，而 $k_{\mathrm{FP}}(G_{\mathrm{cand}})=0$ 等价于对所有 $(x,w)\in\Sclean$ 有 $G_{\mathrm{cand}}(x,w)=1$，故 $\hat{C}_{H'}(x,w)=1$；在 $\Ssilent$ 上 $\hat{C}_{H_0}(x,w)=1$，故 $\hat{C}_{H'}(x,w)=1$ 当且仅当 $G_{\mathrm{cand}}(x,w)=1$，求和即得剩余静默漏检数 $|\Ssilent|-k_{\mathrm{TP}}(G_{\mathrm{cand}})$。
+对结论 2，由 $\hat{C}_{H'}=\hat{C}_{H_0}\cdot G_{\mathrm{cand}}$ 及对 $C^\star=1$ 零误拒，有 $p_+(H',x)=p_+(H_0,x)>0$，而 $p_{\mathrm{sf}}(H',x)=p_{\mathrm{sf}}(H_0,x)-\Delta_{\mathrm{sf}}(x)<p_{\mathrm{sf}}(H_0,x)$；分母严格减小而分子为正且不变，不等式得证。
+\end{proof}
+
+% ------------------------------------------------------------
+\subsection{四元共演化算子与内生探针防投毒}
+\label{sec:modules}
+
+若将系统拆解为过多彼此正交变异的细碎钩子，现实预算下绝大多数高维组合格点为空；更严重的是，把不同父代的观测解析器与门控回滚器盲目拼装，会因中间状态字段失配而引发死锁~\cite{gcjr}。
+\method{}围绕固定的核心编辑状态机，将可编辑部分收敛为四个高内聚的可执行算子单元（表~\ref{tab:modules}）：
+\begin{equation}
+  H = (M_1, M_2, M_3, M_4).
+\end{equation}
+存在强数据耦合的部件被绑定在同一单元内成对共演化：$M_1=(\Pi_{\mathrm{probe}}, P_{\mathrm{obs}})$ 同时定义主动探针动作与消费该探针输出的压缩解析器；$M_2=(\hat{C}_H, \hat{q}_H, R_{\mathrm{ckpt}})$ 同时定义内部门控谓词、连续进展度量与基于轻量文本快照的帕累托回滚规则（重型二进制产物不进入步级版本控制）。
+$M_3$ 执行基于环境内省或抽象语法树（AST）的确定性接口符号检索；$M_4$ 仅依据初始工作区 $w_0(x)$ 的静态遥测分派阶段控制流。
+所有候选算子代码在进入评估前须通过静态 AST 审计：禁止外部网络与工作区外路径访问，禁止包含针对特定任务标识或常数字面量的分支。
+
+\begin{table}[t]
+\centering\small
+\caption{四个高内聚共演化算子单元及其前两阶证伪契约。}
+\label{tab:modules}
+\begin{tabular}{L{2.5cm}L{3.5cm}L{4.2cm}L{4.2cm}}
+\toprule
+算子单元 & 归因信号来源 & Rung-0 离线契约（0 调用） & Rung-1 槽内闭环微探针 \\
+\midrule
+$M_1$\quad 探针与解析 & 观测膨胀 $\phi_{\mathrm{raw}}$、无复现信号的冷启动赤字 & 输出确定性、token 压缩比 $\le\kappa_{\max}$、历史故障码召回率 $\ge\tau_{\mathrm{rec}}$ & 从 $w_0$ 执行 $K_{\mathrm{pre}}$ 步前缀；双端探针净鉴别率与解析进展 \\
+$M_2$\quad 门控与回滚 & 签核失真矩阵 $\mathbf{D}_{\mathrm{gap}}$、峰终遗憾 $R_{\mathrm{regret}}$ & 在 $\Sclean$ 上误拦数 $k_{\mathrm{FP}}=0$、对 $\Ssilent$ 捕获 $k_{\mathrm{TP}}>0$、单次耗时受限 & 从提交前快照 $w_{S-1}$ 唤醒 $K_{\mathrm{suf}}$ 步后缀（或轻量任务短流程） \\
+$M_3$\quad 符号检索 & 前两步高频接口或语法异常 & 历史报错符号的静态覆盖率与摘要长度上限 & 从 $w_0$ 执行 $K_{\mathrm{pre}}$ 步前缀；前序步骤接口消错率 \\
+$M_4$\quad 条件路由 & 跨任务形态的控制流退化冲突 & 路由谓词仅读 $w_0$ 静态遥测、分支覆盖确定性校验 & 在异构抽样任务上执行 $K_{\mathrm{pre}}$ 步前缀；无死锁有效推进率 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{内生探针的双端黑盒契约。}
+在公开基础测试默认通过而隐藏签核失败的任务上，$M_1$ 需要根据公开规格说明合成内生复现探针 $T=\Pi_{\mathrm{probe}}(x,w_0(x))$（例如自测激励或断言脚本），以激发可观测的故障轨迹。
+直接由模型合成探针存在核心风险：若模型误读了接口时序（如一拍延迟偏差或复位有效极性反转），会产生\emph{幻觉探针}；一旦将其接入硬门控，系统将被迫改坏原本正确的实现去迎合错误的探针。
+
+在 $\Ddev$ 离线筛选期，隔离裁判沙盒利用参考真解工作区 $w_{\mathrm{ref}}(x)$ 对合成探针执行双端黑盒判别（提议与实现 Agent 不可见 $w_{\mathrm{ref}}(x)$，仅接收抽样集上的聚合计数）：
+\begin{equation}
+  \mathrm{ValidProbe}(T; x) \iff
+  \bigl(\mathrm{Run}(w_0(x), T) = \mathrm{FAIL}\bigr) \land
+  \bigl(\mathrm{Run}(w_{\mathrm{ref}}(x), T) = \mathrm{PASS}\bigr).
+  \label{eq:validprobe}
+\end{equation}
+记 $T_x=\Pi_{\mathrm{probe}}(x,w_0(x))$。候选 $M_1$ 在探针抽样集 $D_{\mathrm{probe}}\subseteq\mathcal{S}_{\mathrm{def}}\cap\mathcal{D}_{\mathrm{ref}}$ 上必须同时满足有效鉴别率与真解误报率约束：
+\begin{align}
+  \hat{D}_{\mathrm{repro}}(M_1) &= \frac{1}{|D_{\mathrm{probe}}|}\sum_{x\in D_{\mathrm{probe}}}\Ind\bigl[\mathrm{ValidProbe}(T_x;x)\bigr] \ge \tau_{\mathrm{disc}}, \\
+  \hat{F}_{\mathrm{repro}}(M_1) &= \frac{1}{|D_{\mathrm{probe}}|}\sum_{x\in D_{\mathrm{probe}}}\Ind\bigl[\mathrm{Run}(w_{\mathrm{ref}}(x),T_x)=\mathrm{FAIL}\bigr] \le \tau_{\mathrm{far}}.
+\end{align}
+时序或极性失配的幻觉探针因在 $w_{\mathrm{ref}}(x)$ 上报错而在合成阶段被直接淘汰。
+
+\paragraph{部署运行期的软硬分权与逃生阀。}
+在 $\Dval$ 与 $\Dtest$ 的运行期内不存在 $w_{\mathrm{ref}}(x)$，\method{}通过三道运行期机制锁死剩余的探针幻觉风险：
+\begin{enumerate}
+  \item \emph{静态锚定与多探针一致性门槛。}生成探针前，$M_1$ 先从 $w_0(x)$ 的 AST 与公开测试运行记录中确定性地提取接口极性与握手深度，再独立生成 $K_{\mathrm{tb}}\ge 2$ 份探针 $(T_1,\dots,T_{K_{\mathrm{tb}}})$；仅当全部探针均在 $w_0(x)$ 的同一目标模块或接口上一致触发异常时才采信其诊断切片，否则降级为无内生探针模式。
+  \item \emph{硬门控与软诊断严格分权。}$M_2$ 的硬回滚与拒绝提交权限 100\% 仅绑定客观合法性不变量 $V(x,w)$ 及通过 Rung-0 零误杀契约的确定性门控 $\hat{C}_H$；内生探针 $T$ 被物理隔离为软诊断信号（$\hat{C}_H$ 与 $R_{\mathrm{ckpt}}$ 均不读取 $T$ 的输出），只提供定位观测 $o_s$，永不触发硬回滚。
+  \item \emph{探针存疑逃生阀。}若候选工作区 $w_s$ 已满足全部硬门控（$\hat{C}_H(x,w_s)=1$）而仅在内生探针 $T$ 上报错，状态机转入核查态，至多允许一轮规格复核（Max-1 Soft-Retry）；若冲突仍存，判定为探针可疑幻觉并自动降级放行，提交当前最优的合法工作区而非退回缺陷初态 $w_0(x)$。
+\end{enumerate}
+
+% ------------------------------------------------------------
+\subsection{多级证伪漏斗与防刷分排序}
+\label{sec:funnel}
+
+全量评估每个候选代价高昂，但不同算子槽位的短探针指标量纲互不可通约（例如前序步骤的编译消错率无法与末步门控的违规拦截率直接比大小）。
+如图~\ref{fig:pipeline} 所示，\method{}采用“槽内同构微探针初筛 + 跨槽配对分层连续减半（P-SHA）”的四阶漏斗（算法~\ref{alg:generation}）。
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\footnotesize,
+  stage/.style={draw, minimum width=21.5mm, minimum height=11mm, align=center, inner sep=2pt},
+  off/.style={stage, fill=black!16},
+  mid/.style={stage, fill=black!6},
+  race/.style={stage},
+  val/.style={stage, double, fill=black!5, minimum width=22mm},
+  arr/.style={-{Stealth[length=1.8mm,width=1.4mm]}, semithick}
+]
+\node[off]  (r0) at (0,0)     {Rung-0（0 调用）\\离线契约 $k_{\mathrm{FP}}\!=\!0$};
+\node[mid]  (r1) at (3.20,0)  {Rung-1（同槽内）\\前缀/后缀微探针};
+\node[race] (r2) at (6.45,0)  {Rung-2/3（跨槽）\\分层 P-SHA $\mathcal{J}_{B_\ell}$};
+\node[mid, minimum width=19mm] (ar) at (9.75,0) {紧凑档案 $\mathcal{A}$\\$|\mathcal{A}|\le K_{\mathrm{arch}}$};
+\node[val]  (cf) at (13.45,0) {验证确认（$\Dval$）\\簇置换 $W_i$ + Holm};
+
+\draw[arr] (r0) -- node[above=1pt, font=\scriptsize] {$\le\!4 m_1$} (r1);
+\draw[arr] (r1) -- node[above=1pt, font=\scriptsize] {$\le\!M_{\mathrm{sha}}$} (r2);
+\draw[arr] (r2) -- node[above=1pt, font=\scriptsize] {$B_L\!=\!\Ddev$} (ar);
+\draw[arr] (ar) -- node[pos=0.70, above=1pt, font=\scriptsize] {$\le\!K_{\mathrm{top}}$} (cf);
+
+% 渐进单模块嫁接回路
+\draw[arr, rounded corners=3pt] (ar.south) -- ++(0,-0.55) -| node[pos=0.25, below, xshift=-10mm, font=\scriptsize] {单模块渐进嫁接 $H_{\mathrm{inc}}\oplus M_j^\star(\mathcal{N}_k)$（经 Rung-0）} (r2.south);
+
+% 留出集隔离墙
+\draw[dashed] (11.12,0.95) -- (11.12,-1.15);
+\node[font=\scriptsize, anchor=south] at (11.12,0.95) {留出集边界};
+
+% 图例
+\node[off, minimum width=6mm, minimum height=3.6mm] (l1) at (0.3,-2.2) {};
+\node[anchor=west, font=\scriptsize] at (l1.east) {零调用离线回测};
+\node[mid, minimum width=6mm, minimum height=3.6mm] (l2) at (4.6,-2.2) {};
+\node[anchor=west, font=\scriptsize] at (l2.east) {槽内局部评估或精英归档};
+\node[val, minimum width=6mm, minimum height=3.6mm] (l3) at (9.6,-2.2) {};
+\node[anchor=west, font=\scriptsize] at (l3.east) {一次性留出集统计确认};
+\end{tikzpicture}
+\caption{\method{}的四阶评估与留出集确认流程。Rung-0 在历史产物上做零调用确定性筛除；Rung-1 严格限于同一算子单元内部排序；各槽优胜者与单模块渐进嫁接体统一从第 0 步进入跨槽 P-SHA 竞速，唯跑满全量 $\Ddev$ 者可写入紧凑档案 $\mathcal{A}$；演化结束后跨过留出集边界做一次性统计确认。}
+\label{fig:pipeline}
+\end{figure}
+
+\paragraph{Rung-0 与 Rung-1（同槽内部初筛与渐进单模块嫁接）。}
+每代对四个单元各生成 $m_0$ 个变异。经 Rung-0 离线契约筛除后，每单元至多保留 $m_1$ 个候选进入 Rung-1。
+Rung-1 遵循两条铁律：
+其一，\emph{严禁跨单元比较}，每个单元 $M_j$ 仅在自身的 $n_1\ll n_{\mathrm{dev}}$ 道目标抽样题上做内部排序，选出前 $r_{1,j}$ 名；
+其二，探针切入位置匹配算子的因果作用点——早发单元（$M_1,M_3,M_4$）一律从初始态 $w_0(x)$ 出发运行 $K_{\mathrm{pre}}$ 步前缀；晚发单元 $M_2$ 在支持源码级快速重编译的目标上从静默失败轨迹的提交前快照 $w_{S-1}$ 唤醒 $K_{\mathrm{suf}}$ 步后缀，而在工具状态驻留于不可序列化内存会话的目标上禁止半途切入，改为在最小规模任务上从 $w_0(x)$ 运行短流程。
+对版本 $H=(M_1,M_2,M_3,M_4)$ 与候选单元 $M'_j$，记 $H\oplus M'_j$ 为仅替换第 $j$ 个单元而保持其余三个单元不变所得的版本；记 $\mathcal{N}_1,\dots,\mathcal{N}_4$ 为对应第~\ref{sec:attribution} 节四类归因信号的专项生态位，$M_j^\star(\mathcal{N}_k)$ 为档案中生态位 $\mathcal{N}_k$ 专项冠军的第 $j$ 个单元。
+当 $|\mathcal{A}|=1$ 时，槽内晋级配额满足 $\sum_{j=1}^4 r_{1,j}\le M_{\mathrm{sha}}$；当 $|\mathcal{A}|>1$ 时，跨槽入围池预留至多 $r_{\mathrm{graft}}$ 个名额给通过 Rung-0 核验的\emph{渐进单模块嫁接体} $H_{\mathrm{inc}}\oplus M_j^\star(\mathcal{N}_k)$（满足 $\sum_{j=1}^4 r_{1,j}+r_{\mathrm{graft}}\le M_{\mathrm{sha}}$），从而在不引入多槽盲拼死锁的前提下组合跨槽增益。
+
+\paragraph{Rung-2/3（跨槽配对分层连续减半与批归一化字典序）。}
+入围池中的候选（至多 $M_{\mathrm{sha}}$ 个）统一回到初始态 $w_0(x)$，在分层嵌套子集序列 $B_1\subset B_2\subset\dots\subset B_L=\Ddev$ 上执行连续减半~\cite{sha}：其中护栏参考集 $\mathcal{G}_{\mathrm{guard}}$ 内的任务仅按任务簇分层抽入 $B_\ell$（全程不窥视第 $2$ 次基线运行 $w^{(2)}_S$），其余任务 $\Ddev\setminus\mathcal{G}_{\mathrm{guard}}$ 按任务簇与基线通过数联合分层。第 $\ell$ 阶在 $B_\ell$ 上评估存活候选，淘汰下半区（保留率 $1/\eta$，$\eta=2$），晋级者在 $\ell+1$ 阶复用 $B_\ell$ 上的已有结果，仅追加执行 $B_{\ell+1}\setminus B_\ell$。
+
+在小规模子集 $B_\ell$ 上，纯二值签核数常出现平局，需要连续进展指标 $Q$ 破平局；但若采用固定单题截断常数累加（如 $\sum_{i\in B}\min(c, Q_i)$），当未通过任务数超过 $1/c$ 时，在大量未解题上刷高代理指标的总和便会压倒真正新增的二值签核通过，引发 Goodhart 刷分。
+\method{}定义\emph{批容量归一化复合评分}（默认取 $\lambda=0.49\in(0,1)$）：
+\begin{equation}
+  \mathcal{J}_B(H) = \sum_{i\in B} V_i\, S_{\mathrm{bin},i}
+  \;+\; \frac{\lambda}{|B|}\sum_{i\in B} V_i\,\Ind[S_{\mathrm{bin},i}=0]\,Q_{\mathrm{norm},i},
+  \label{eq:jb}
+\end{equation}
+其中 $V_i=V(x_i,w_i)\in\{0,1\}$，$S_{\mathrm{bin},i}=C^\star(x_i,w_i)\in\{0,1\}$，$Q_{\mathrm{norm},i}=Q(x_i,w_i)\in[0,1]$。
+
+\begin{prop}[批归一化评分的严格字典序与防刷分性质]
+\label{prop:lex}
+设 $\lambda\in(0,1)$。对任意非空任务批 $B\subseteq\Ddev$（$|B|\ge 1$）与任意版本 $H$，记合法二值通过题数 $N_{\mathrm{pass}}(H;B)=\sum_{i\in B}V_i S_{\mathrm{bin},i}\in\{0,1,\dots,|B|\}$，未过题平均连续进展 $\bar{Q}_{\mathrm{fail}}(H;B)=\frac{1}{|B|}\sum_{i\in B}V_i\Ind[S_{\mathrm{bin},i}=0]Q_{\mathrm{norm},i}\in[0,1]$。则对任意两个版本 $H,H'$：
+\begin{equation}
+\begin{aligned}
+  \mathcal{J}_B(H) > \mathcal{J}_B(H') \iff\ &
+  \bigl(N_{\mathrm{pass}}(H;B) > N_{\mathrm{pass}}(H';B)\bigr) \\
+  &\lor \bigl(N_{\mathrm{pass}}(H;B) = N_{\mathrm{pass}}(H';B) \land \bar{Q}_{\mathrm{fail}}(H;B) > \bar{Q}_{\mathrm{fail}}(H';B)\bigr).
+\end{aligned}
+\label{eq:lex}
+\end{equation}
+特别地，无论 $|B|$ 多大，即使 $H'$ 在全部未过题上取得 $Q_{\mathrm{norm},i}=1$，只要 $N_{\mathrm{pass}}(H;B)\ge N_{\mathrm{pass}}(H';B)+1$，恒有 $\mathcal{J}_B(H)-\mathcal{J}_B(H')\ge 1-\lambda > 0$。
+\end{prop}
+\begin{proof}
+由 $V_i\in\{0,1\}$ 与 $Q_{\mathrm{norm},i}\in[0,1]$，对任意 $H$ 有 $0\le \lambda\bar{Q}_{\mathrm{fail}}(H;B)\le\lambda<1$。
+若 $N_{\mathrm{pass}}(H;B)>N_{\mathrm{pass}}(H';B)$，因二者均为整数，必有 $N_{\mathrm{pass}}(H;B)-N_{\mathrm{pass}}(H';B)\ge 1$，故 $\mathcal{J}_B(H)-\mathcal{J}_B(H')\ge 1 + 0 - \lambda = 1-\lambda > 0$。
+若 $N_{\mathrm{pass}}(H;B)=N_{\mathrm{pass}}(H';B)$，则 $\mathcal{J}_B(H)-\mathcal{J}_B(H')=\lambda\bigl(\bar{Q}_{\mathrm{fail}}(H;B)-\bar{Q}_{\mathrm{fail}}(H';B)\bigr)$，由 $\lambda>0$ 知其符号与 $\bar{Q}_{\mathrm{fail}}(H;B)-\bar{Q}_{\mathrm{fail}}(H';B)$ 完全一致。综合互斥情形即得等价式~\eqref{eq:lex}。
+\end{proof}
+
+同一阶的所有候选在同一分层批 $B_\ell$ 上配对评测，减去基线在 $B_\ell$ 上的得分属于候选无关常数，不改变式~\eqref{eq:lex} 的严格字典序；在对子批 $B_\ell\subset\Ddev$ 向外报告总体增益点估计时，可利用基线通过率协变量做线性控制变量（CUPED）修正以缩减子批抽样方差~\cite{cuped}。
+与此同时，在护栏子集 $B_\ell\cap\mathcal{G}_{\mathrm{guard}}$ 上，若直接与筛选护栏集所用的第 $1$ 次基线运行比较，会因事后选择均值回归导致新增通过数恒为零且夸大假退化率；算法改为将候选结果 $C^\star(x,w_S(H))$ 与未参与护栏筛选、相互独立的第 $2$ 次基线运行 $C^\star(x,w^{(2)}_S)$ 配对，统计退化数 $n_{10}$ 与新通过数 $n_{01}$。当 $H=H_0$ 时二者在 $B_\ell\cap\mathcal{G}_{\mathrm{guard}}$ 上条件可交换，仅当单侧精确 McNemar 检验显著拒绝非劣效（$p_{\mathrm{McN}}=\sum_{k=n_{10}}^{n_{10}+n_{01}}\binom{n_{10}+n_{01}}{k}2^{-(n_{10}+n_{01})}\le\alpha_{\mathrm{reg}}$，默认 $\alpha_{\mathrm{reg}}=0.05$）时才熔断淘汰该候选。
+为消除微批赢家诅咒，未跑满全集 $B_L=\Ddev$ 的中途淘汰者一律丢弃；仅在全量 $\Ddev$ 上完赛的优胜者可更新容量上限为 $K_{\mathrm{arch}}$ 的紧凑精英档案 $\mathcal{A}$（保留 $1$ 个全局最高分版本 $H_{\mathrm{inc}}$ 及各归因生态位 $\mathcal{N}_1,\dots,\mathcal{N}_4$ 的专项冠军）。
+
+\begin{algorithm}[t]
+\caption{单代四阶证伪与跨槽配对连续减半}
+\label{alg:generation}
+\begin{algorithmic}[1]
+\Require 全局领先者 $H_{\mathrm{inc}}$，紧凑档案 $\mathcal{A}$，证据库 $\mathcal{B}_{\mathrm{dev}}$（含 $\Sclean,\Ssilent,\mathcal{G}_{\mathrm{guard}}$），分层嵌套批 $B_1\subset\dots\subset B_L=\Ddev$
+\Ensure 更新后的 $\mathcal{A}$ 与 $H_{\mathrm{inc}}$
+\State $\mathcal{C}_{\mathrm{pool}}\gets\varnothing$
+\ForAll{算子单元 $j\in\{1,2,3,4\}$}
+  \State 按白盒归因证据围绕 $H_{\mathrm{inc}}$ 提议 $m_0$ 个单元变异；执行 AST 审计与 Rung-0 离线契约（性质~\ref{prop:zerofp}），留 $\le m_1$ 个
+  \State Rung-1：仅在单元 $j$ 内部的目标抽样题上运行微探针（$M_1$ 含式~\eqref{eq:validprobe} 双端判别），取槽内前 $r_{1,j}$ 名并入 $\mathcal{C}_{\mathrm{pool}}$
+\EndFor
+\State 若 $|\mathcal{A}|>1$，将至多 $r_{\mathrm{graft}}$ 个通过 Rung-0 核验的单模块渐进嫁接体 $H_{\mathrm{inc}}\oplus M_j^\star(\mathcal{N}_k)$ 并入 $\mathcal{C}_{\mathrm{pool}}$（总规模 $\le M_{\mathrm{sha}}$）
+\For{$\ell = 1,\dots,L$}
+  \State 对 $\mathcal{C}_{\mathrm{pool}}$ 中各候选在新增任务 $B_\ell\setminus B_{\ell-1}$ 上从 $w_0$ 完整执行（约定 $B_0=\varnothing$）
+  \State 剔除在 $B_\ell\cap\mathcal{G}_{\mathrm{guard}}$ 上相对独立基线运行 $w^{(2)}_S$ 触发单侧精确 McNemar 熔断（$p_{\mathrm{McN}}\le\alpha_{\mathrm{reg}}$）的候选
+  \State 按式~\eqref{eq:jb} 计算 $\mathcal{J}_{B_\ell}(H)$；若 $\ell<L$，仅保留排名前 $\lceil |\mathcal{C}_{\mathrm{pool}}|/\eta\rceil$ 的候选进入下一阶
+\EndFor
+\State 用完赛于 $B_L=\Ddev$ 的候选更新紧凑档案 $\mathcal{A}$（全局最高分更新 $H_{\mathrm{inc}}$，容量 $\le K_{\mathrm{arch}}$）
+\State \Return $\mathcal{A}$，$H_{\mathrm{inc}}$
+\end{algorithmic}
+\end{algorithm}
+
+% ------------------------------------------------------------
+\subsection{演化周期与验证集分层确认}
+\label{sec:confirm}
+
+若每个演化周期都在验证集 $\Dval$ 上挑选并检验候选，即使单轮假阳性率控制在 $\alpha$，$G$ 轮后的累积误采纳率也会膨胀至 $1-(1-\alpha)^G$。
+\method{}在整个 $G$ 代搜索期间完全不读取 $\Dval$，将总族错误率（FWER）预算锁死为 $\alpha_{\mathrm{total}}$（默认 $\alpha_{\mathrm{total}}=0.05$）：搜索结束后仅从非种子精英集 $\mathcal{A}\setminus\{H_0\}$ 中取出在 $\Ddev$ 上预先选定的 $m$ 个候选 $\{H_1,\dots,H_m\}$（$1\le m\le K_{\mathrm{top}}$，默认 $K_{\mathrm{top}}\le 3$；若 $\mathcal{A}\setminus\{H_0\}=\varnothing$ 则直接退回 $H_0$ 而不访问 $\Dval$），与种子版本 $H_0$ 在 $\Dval$ 上做唯一一次配对评测（算法~\ref{alg:ssap}）。若需跨代序贯提前停机，则须预先按 $\sum_{g=1}^{G}\alpha_g=\alpha_{\mathrm{total}}$ 拆分显著性预算。
+
+\paragraph{合法性门控下的分层净胜分。}
+在验证集规模较小的昂贵工程任务上，仅比较二值签核差会丢弃未过关任务上显著的物理收敛差距，导致最小可检出效应过高；而直接检验连续代理指标又会让二值签核毫无提升的候选混过统计检验。
+借鉴临床试验中的分层复合终点净胜统计量~\cite{fs1999,pocock2012}，先对任意任务 $x_i\in\Dval$ 定义合法性门控下的三值状态：
+\begin{equation}
+  \tilde{S}_i(H) =
+  \begin{cases}
+    1,  & V(x_i,w_i(H))=1 \land C^\star(x_i,w_i(H))=1, \\
+    0,  & V(x_i,w_i(H))=1 \land C^\star(x_i,w_i(H))=0, \\
+    -1, & V(x_i,w_i(H))=0,
+  \end{cases}
+\end{equation}
+再定义候选 $H$ 相对于 $H_0$ 的逐题\emph{门控分层净胜分} $W_i(H,H_0)\in[-1,1]$：
+\begin{equation}
+  W_i(H,H_0) =
+  \begin{cases}
+    \sgn\bigl(\tilde{S}_i(H)-\tilde{S}_i(H_0)\bigr), & \tilde{S}_i(H)\neq\tilde{S}_i(H_0), \\[4pt]
+    \kappa\,\clip\!\left(\dfrac{\Delta Q_i}{\delta_{\mathrm{scale}}},-1,1\right)\Ind\bigl[|\Delta Q_i|>\delta_{\mathrm{noise}}\bigr], & \tilde{S}_i(H)=\tilde{S}_i(H_0)=0, \\[4pt]
+    0, & \tilde{S}_i(H)=\tilde{S}_i(H_0)\in\{1,-1\},
+  \end{cases}
+  \label{eq:winmargin}
+\end{equation}
+其中 $\Delta Q_i=Q(x_i,w_i(H))-Q(x_i,w_i(H_0))$，$\kappa\in[0,1)$ 为次级连续权重，$\delta_{\mathrm{scale}}>0$ 为饱和尺度，$\delta_{\mathrm{noise}}\ge 0$ 为滤除工具微扰的死区阈值（验证集充足时可径取 $\kappa=0$ 退化为纯离散翻转；小样本验证集默认取 $\kappa=0.5$，$\delta_{\mathrm{scale}}=0.50$，$\delta_{\mathrm{noise}}=0.10$）。
+
+\paragraph{簇分层符号翻转检验与双重采纳准则。}
+同一簇 $\mathcal{C}^{\mathrm{val}}_g$ 内的任务共享代码库或底层网表，不能当作独立样本检验。记候选 $H_k$ 在第 $g$ 个验证簇上的净胜和与总统计量分别为
+\begin{equation}
+  U_g(H_k) = \sum_{x_i\in\mathcal{C}^{\mathrm{val}}_g} W_i(H_k, H_0), \qquad
+  T_{\mathrm{obs}}(H_k) = \sum_{g=1}^{G_{\mathrm{val}}} U_g(H_k).
+\end{equation}
+单侧精确符号翻转置换 $p$ 值定义为均匀遍历全部拉德马赫符号向量 $\varepsilon=(\varepsilon_1,\dots,\varepsilon_{G_{\mathrm{val}}})\in\{-1,+1\}^{G_{\mathrm{val}}}$ 时不低于观测值的比例：
+\begin{equation}
+  p_{\mathrm{val}}(H_k) = \frac{1}{2^{G_{\mathrm{val}}}}
+  \sum_{\varepsilon\in\{-1,+1\}^{G_{\mathrm{val}}}}
+  \Ind\!\left[\sum_{g=1}^{G_{\mathrm{val}}} \varepsilon_g U_g(H_k) \ge T_{\mathrm{obs}}(H_k)\right]
+  \label{eq:pval}
+\end{equation}
+（当簇数 $G_{\mathrm{val}}$ 较大时，独立抽取 $M$ 组随机符号向量并取带 $+1$ 修正的精确蒙特卡洛 $p$ 值 $\hat{p}_{\mathrm{MC}}(H_k)=\bigl(1+\sum_{m=1}^M\Ind[\sum_g\varepsilon^{(m)}_g U_g(H_k)\ge T_{\mathrm{obs}}(H_k)]\bigr)/(M+1)$）。
+
+对预先选定的全部 $m$ 个候选计算 $p_k=p_{\mathrm{val}}(H_k)$ 并按升序排列为 $p_{(1)}\le\dots\le p_{(m)}$，以固定重数 $m$ 执行 Holm-Bonferroni 逐步检验~\cite{holm}：取最大的下标 $j^\star$ 使得对所有 $1\le j\le j^\star$ 均有 $p_{(j)}\le\alpha_{\mathrm{total}}/(m-j+1)$，记对应的统计显著集为 $\mathcal{R}_{\mathrm{stat}}$（若 $p_{(1)}>\alpha_{\mathrm{total}}/m$ 则 $\mathcal{R}_{\mathrm{stat}}=\varnothing$）。
+最终可采纳集定义为 $\mathcal{R}_{\mathrm{stat}}$ 与\emph{二值净增硬底线}（G1）的交集：
+\begin{equation}
+  \mathcal{R}_{\mathrm{adopt}} = \Bigl\{k\in\mathcal{R}_{\mathrm{stat}} :\ 
+  \hat{\Delta}_{\mathrm{val}}(H_k) \ge \Delta_{\min} > 0
+  \ \land\ n_{10}^{\mathrm{val}}(H_k)\le r_{\max}\Bigr\},
+  \label{eq:adopt}
+\end{equation}
+其中 $\hat{\Delta}_{\mathrm{val}}(H_k)=\frac{1}{n_{\mathrm{val}}}\sum_{i=1}^{n_{\mathrm{val}}}\bigl(C^\star(x_i,w_i(H_k))-C^\star(x_i,w_i(H_0))\bigr)$ 为纯二值签核净增率，$n_{10}^{\mathrm{val}}(H_k)$ 为在 $H_0$ 通过的任务上发生退化的题数。若 $\mathcal{R}_{\mathrm{adopt}}\neq\varnothing$，选取其中 $\hat{\Delta}_{\mathrm{val}}$ 最大者为 $H^\star$，否则退回 $H_0$。
+
+\begin{prop}[簇分层确认的有限样本族错误率控制与防代理混关]
+\label{prop:fwer}
+设候选族 $\{H_1,\dots,H_m\}$（$1\le m\le K_{\mathrm{top}}$）仅依据 $\Ddev$ 选定，验证集各簇 $\mathcal{C}^{\mathrm{val}}_1,\dots,\mathcal{C}^{\mathrm{val}}_{G_{\mathrm{val}}}$ 之间相互独立。对真零假设子集 $I_0\subseteq\{1,\dots,m\}$，假设对每个 $k\in I_0$ 及每个簇 $g$，配对执行结果在簇内满足 $(H_k,H_0)$ 可交换性。则采纳集 $\mathcal{R}_{\mathrm{adopt}}$ 同时满足：
+\begin{enumerate}
+  \item \emph{非参数有限样本族错误率控制}：无需簇内任务独立或正态近似假设，对任意分布与平局情形均有 $\Pr(\mathcal{R}_{\mathrm{adopt}}\cap I_0\neq\varnothing)\le\alpha_{\mathrm{total}}$（对精确式~\eqref{eq:pval} 与带 $+1$ 修正的 $\hat{p}_{\mathrm{MC}}$ 均成立）；
+  \item \emph{零二值增益一票拦截}：任何满足 $\hat{\Delta}_{\mathrm{val}}(H_k)<\Delta_{\min}$（特别地，$\hat{\Delta}_{\mathrm{val}}(H_k)\le 0$ 而仅靠未过题连续进展 $\Delta Q_i$ 累积正 $W_i$）的候选必有 $k\notin\mathcal{R}_{\mathrm{adopt}}$。
+\end{enumerate}
+\end{prop}
+\begin{proof}
+先证逐题严格反对称性 $W_i(H,H_0)=-W_i(H_0,H)$：在式~\eqref{eq:winmargin} 的三种互斥完备情形中，当 $\tilde{S}_i(H)\neq\tilde{S}_i(H_0)$ 时奇函数 $\sgn$ 交换自变量即变号；当 $\tilde{S}_i(H)=\tilde{S}_i(H_0)=0$ 时 $\Delta Q_i$ 变号，由 $\clip(-z,-1,1)=-\clip(z,-1,1)$ 与 $|-z|=|z|$ 知第二支变号；第三支恒为 $0=-0$。求和即得 $U_g(H_k,H_0)=-U_g(H_0,H_k)$。
+固定 $k\in I_0$，由于候选仅由 $\Ddev$ 确定，记 $U_g=U_g(H_k)$。由簇间独立、簇内 $(H_k,H_0)$ 可交换性及反对称性，对任意固定 $\varepsilon\in\{-1,+1\}^{G_{\mathrm{val}}}$ 均有 $(\varepsilon_1 U_1,\dots,\varepsilon_{G_{\mathrm{val}}}U_{G_{\mathrm{val}}})\stackrel{d}{=}(U_1,\dots,U_{G_{\mathrm{val}}})$（含平局簇 $U_g=0$ 的情形，因 $\pm 1\cdot 0=0$）。引入与数据独立的均匀拉德马赫向量 $\sigma=(\sigma_1,\dots,\sigma_{G_{\mathrm{val}}})\sim\mathrm{Unif}\bigl(\{-1,+1\}^{G_{\mathrm{val}}}\bigr)$，则在给定 $(|U_1|,\dots,|U_{G_{\mathrm{val}}}|)$ 的条件下，$(U_1,\dots,U_{G_{\mathrm{val}}})$ 与 $(\sigma_1|U_1|,\dots,\sigma_{G_{\mathrm{val}}}|U_{G_{\mathrm{val}}}|)$ 条件同分布；结合式~\eqref{eq:pval} 对 $\varepsilon_g U_g$ 与 $\varepsilon_g|U_g|$ 求和集合的等价性及非严格不等号“$\ge$”（对蒙特卡洛情形则由观测向量与 $M$ 次独立抽取共 $M+1$ 个可交换配置的排秩引理），对含任意平局的分布及任意 $\alpha\in[0,1]$ 均有 $\Pr(p_k\le\alpha)\le\alpha$。
+若 $I_0\neq\varnothing$ 且事件 $\{\mathcal{R}_{\mathrm{stat}}\cap I_0\neq\varnothing\}$ 发生，令 $k^\star=\arg\min_{k\in I_0}p_k$，记其在全部 $m$ 个 $p$ 值升序排列中的位置为 $j_0$；因 $I_0$ 中其余元素均不小于 $p_{k^\star}$，排在 $j_0$ 之前的假说至多有 $m-|I_0|$ 个，即 $m-j_0+1\ge |I_0|$。逐步检验拒绝 $k^\star$ 要求 $p_{k^\star}\le\alpha_{\mathrm{total}}/(m-j_0+1)\le\alpha_{\mathrm{total}}/|I_0|$。由 $\mathcal{R}_{\mathrm{adopt}}\subseteq\mathcal{R}_{\mathrm{stat}}$ 及布尔不等式（不依赖各候选 $p_k$ 之间的独立性）：
+\[
+  \Pr(\mathcal{R}_{\mathrm{adopt}}\cap I_0\neq\varnothing)
+  \le \Pr\bigl(\exists k\in I_0:\ p_k\le\alpha_{\mathrm{total}}/|I_0|\bigr)
+  \le \sum_{k\in I_0}\frac{\alpha_{\mathrm{total}}}{|I_0|} = \alpha_{\mathrm{total}}.
+\]
+结论 2 由式~\eqref{eq:adopt} 中交集条件 $\hat{\Delta}_{\mathrm{val}}(H_k)\ge\Delta_{\min}>0$ 直接给出。
+\end{proof}
+
+\begin{algorithm}[t]
+\caption{\method{}完整演化与留出集确认}
+\label{alg:ssap}
+\begin{algorithmic}[1]
+\Require 种子版本 $H_0$，按簇隔离的搜索集 $\Ddev$ 与验证集 $\Dval$，演化代数 $G$，总显著性水平 $\alpha_{\mathrm{total}}$
+\Ensure 经确认的版本 $H^\star$（未通过确认则返回 $H_0$）
+\State 基线剖析：$H_0$ 在 $\Ddev$ 上独立执行 $K_0\ge 2$ 次，建立 $\mathcal{B}_{\mathrm{dev}}$、$\Sclean$、$\Ssilent$、$\mathcal{G}_{\mathrm{guard}}$、难度分层与归因账本 \Comment{第~\ref{sec:attribution} 节}
+\State 初始化紧凑档案 $\mathcal{A}\gets\{H_0\}$，全局领先者 $H_{\mathrm{inc}}\gets H_0$
+\For{$g = 1,\dots,G$}
+  \State $(\mathcal{A}, H_{\mathrm{inc}})\gets\text{算法~\ref{alg:generation}}(H_{\mathrm{inc}}, \mathcal{A}, \mathcal{B}_{\mathrm{dev}}, B_{1:L})$ \Comment{全程不访问 $\Dval$}
+\EndFor
+\State 若 $\mathcal{A}\setminus\{H_0\}=\varnothing$，\Return $H_0$；否则从 $\mathcal{A}\setminus\{H_0\}$ 按 $\mathcal{J}_{\Ddev}$ 与生态位前沿选出 $m\le K_{\mathrm{top}}$ 个候选 $\{H_1,\dots,H_m\}$
+\State 配对确认：$H_0$ 与各 $H_k$ 在 $\Dval$ 上各执行一次，按式~\eqref{eq:winmargin}、\eqref{eq:pval} 计算簇净胜和 $U_g(H_k)$ 与置换 $p_k$
+\State 以重数 $m$ 与水平 $\alpha_{\mathrm{total}}$ 执行 Holm-Bonferroni 检验得 $\mathcal{R}_{\mathrm{stat}}$，按式~\eqref{eq:adopt} 与底线（G1）取交得 $\mathcal{R}_{\mathrm{adopt}}$
+\If{$\mathcal{R}_{\mathrm{adopt}}\neq\varnothing$}
+  \State \Return $\arg\max_{H_k:\,k\in\mathcal{R}_{\mathrm{adopt}}}\hat{\Delta}_{\mathrm{val}}(H_k)$ \Comment{随后仅可在封存 $\Dtest$ 上评测一次}
+\EndIf
+\State \Return $H_0$
+\end{algorithmic}
+\end{algorithm}
+
+% ------------------------------------------------------------
+\subsection{对目标系统的接口}
+\label{sec:interface}
+
+\method{}不假定特定的领域工具，接入一个有状态验证型目标系统需要实现六项接口契约：
+\begin{enumerate}
+  \item \emph{按簇隔离的任务切分。}提供任务所属的底层簇标识，确保 $\Ddev$、$\Dval$ 与 $\Dtest$ 之间零簇重叠。
+  \item \emph{无逃逸隔离工作区。}每次执行在独立写时复制工作区与断网沙盒中进行，结束后可提取终态产物与轻量文本快照序列。
+  \item \emph{客观合法性谓词 $V(x,w)$。}提供运行期可确定性调用的刚性不变量检查器，拦截语法编译错误、公开基础测试退化、只读约束篡改或拓扑破坏。
+  \item \emph{搜索集分项签核与可选参考隔离盒。}在 $\Ddev$ 执行结束后向记账程序返回分项向量 $\mathbf{c}^\star(x,w)$ 与归一化连续进展 $Q(x,w)$；若数据集在 $\Ddev$ 上附带参考真解补丁，则提供仅供确定性裁判调用的双端黑盒接口 $\mathrm{Run}(w_{\mathrm{ref}}(x), T)$。
+  \item \emph{工具切点可重入性声明。}声明目标工具链是否支持从提交前源码快照 $w_{S-1}$ 快速增量重编译，以便 Rung-1 为 $M_2$ 自动选择后缀唤醒或小规模短流程微探针。
+  \item \emph{基线对齐门控。}在启动演化前校验种子版本 $H_0$ 在 $\Ddev$ 上的表现不低于该领域成熟开源基线，排除在残缺玩具脚本上虚增涨幅的伪改进。
+\end{enumerate}
+
+以芯片设计流程中的两类典型任务说明该接口的实例化方式：
+\begin{itemize}
+  \item \emph{RTL 仿真与跨模块功能排错}~\cite{phoenix}：簇对应上游硬件代码仓库；$V(x,w)$ 检查硬件描述语言编译通过、无组合逻辑环、顶层模块端口一致及仓库原有公开回归测试全通过；$\Ddev$ 隔离沙盒挂载开发者参考补丁以构成 $\Sclean$ 并执行式~\eqref{eq:validprobe} 的双端激励判别；$M_1$ 共演化自测故障激励与按信号依赖锥裁剪的波形解析器；由于仿真器支持秒级源码增量编译，$M_2$ 声明为切点可重入，在 Rung-1 直接从 $w_{S-1}$ 唤醒后缀。
+  \item \emph{数字与模拟物理版图签核优化}~\cite{posteda,alw}：簇对应底层电路网表；$V(x,w)$ 校验时序约束文件哈希只读未篡改、版图至原理图连通性及器件数目守恒（防止通过放宽时钟周期或删减逻辑连线刷高指标）；$C^\star$ 与 $Q$ 分别对应设计规则违例清零、时序/功耗/面积达标及其归一化违例消除比；$M_1$ 共演化受控参数扫描卸载算子与将几何违例坐标映射回脚本行号的压缩解析器；$M_2$ 基于容器内可实时读取的白盒物理指标向量执行帕累托检查点回滚，并对驻留内存会话的综合布线流程声明禁止半途切入，在 Rung-1 改为在轻量网表上运行短流程。
+\end{itemize}
+
+% ------------------------------------------------------------
+\subsection{与已有工作的关系}
+\label{sec:related}
+
+\emph{黑盒与经验文件系统演化。}已有工作将 harness 代码或提示词视为黑盒个体，按终局得分驱动大语言模型变异或维护高维精英网格~\cite{vero,hob,metaharness}。近期评测指出，当环境不存在结构性盲区或优化缺少低成本证伪机制时，黑盒演化的收益往往不敌同等算力下的测试期并行采样~\cite{rethinking}。\method{}针对存在隐藏签核断层的任务，在性质~\ref{prop:bon} 中刻画了测试期盲选的静默失真上界，并以离线对齐契约取代纯终局标量盲搜。
+
+\emph{故障归因与切点重放。}用语言模型直接阅读长轨迹定位故障步骤的准确率很低~\cite{whowhen}。已有工作利用切点状态重放做回归测试~\cite{chronicle}、通过反事实重放寻找最小联合修复族~\cite{gcjr}，或在不重放的条件下将失败归因至可编辑系统资产~\cite{daaf}。\method{}吸收了“直接归因至可编辑构件”与“联合共演化耦合部件”的思想，并将其闭环化为 Rung-0 确定性零误杀契约与双端内生探针合成。
+
+\emph{归因集中与搜索覆盖。}有研究表明冻结模型下的优化价值高度集中于少数控制与验证槽位，均匀分配预算会陷入预算分散陷阱~\cite{harnessevo}；也有证据显示在带噪归因下独占预算会饿死上游模块~\cite{coverage}。\method{}在槽位预算上采用带最小探索下限 $\epsilon_{\mathrm{cov}}$ 的加权分配，并在跨槽阶段统一回到起点公平竞速。
+
+\emph{多保真竞速与分层留出集统计。}跨槽筛选建立在配对分层连续减半~\cite{sha} 与控制变量方差缩减~\cite{cuped} 之上，并用批容量归一化消除连续代理指标的累加刷分。验证集确认结合了可重用留出集的自适应防过拟合原则~\cite{dwork2015}、Holm 逐步多重检验~\cite{holm} 以及临床统计中的分层净胜分~\cite{fs1999,pocock2012}。
+
+% ------------------------------------------------------------
+\subsection{讨论与待检验假设}
+\label{sec:discussion}
+
+\method{}当前仅完成核心算法设计，尚未编写代码实现，在模拟目标与真实目标系统上均无任何实验结果。
+性质~\ref{prop:bon}--\ref{prop:fwer} 保证的是给定分布与契约下的代数关系与有限样本一类错误上界；算法能否在实际目标上产生显著净收益，取决于以下尚待实验检验的经验问题。
+
+\emph{内生探针的可合成率。}在公开测试默认全过的结构赤字任务上，$M_1$ 能否仅凭公开规格说明与源码结构合成出满足式~\eqref{eq:validprobe} 的高鉴别率探针，是一个经验问题。当任务缺陷涉及未写入文档的隐式微架构约定时，合成探针的有效鉴别率可能很低；此时运行期逃生阀虽能防止幻觉探针造成负向退化，但系统在该类任务上将退化回无内生探针的基线行为。
+
+\emph{槽内短探针与全轨迹终态的秩相关性。}Rung-1 消除了跨槽异构量纲混比，但在同一槽位内部仍依赖前缀或后缀短探针淘汰下半区。在多步强耦合任务中，前几步快速消错的贪心策略未必对应最优的终态收敛；若某槽位的短探针指标与全轨迹得分秩相关过低，Rung-1 会引入短视截断偏差。这一相关性需要在搜索前抽样审计。
+
+\emph{可观测代理与外部签核的可对齐上界。}性质~\ref{prop:zerofp} 依赖在运行期可计算的确定性谓词 $G_{\mathrm{cand}}$ 捕获静默漏检而不误拒真解。若外部签核器 $C^\star$ 的某项隐藏判据在物理上无法由运行期公开工具或规格推导，零误拒约束下的 $k_{\mathrm{TP}}$ 将趋近于零，$p_{\mathrm{sf}}$ 无法被进一步压缩。
+
+\emph{单模块渐进嫁接的上位性边界。}单模块嫁接避免了跨父代多槽盲拼引发的接口死锁，但当突破某类故障必须同时改动两个不同单元（例如新的探针只有配合新的条件路由分支才产生收益）且单独改动任一单元在 $\Ddev$ 上均无正收益时，贪心单模块嫁接无法跨越这类鞍点~\cite{gcjr}。
+
+\emph{小样本验证集的二类错误代价。}门控分层净胜分 $W_i$ 利用未过关任务上的连续进展提升了检验灵敏度，但为杜绝代理指标混关，采纳集式~\eqref{eq:adopt} 同时强制了二值签核净增底线 $\Delta_{\min}>0$。当验证集规模较小且真实提升幅度落在离散颗粒度边缘时，算法会倾向于保守地退回种子版本 $H_0$。
+
+\emph{种子底盘起点与跨模型迁移性。}演化增益依赖种子版本 $H_0$ 已具备健全的基础工具循环；且在某一冻结语言模型上共演化得到的解析器与门控算子，在零修改迁移至不同规模或不同家族的语言模型时能保留多少收益，仍需实测验证。
+% ======================== END METHOD ========================
+
+\begin{thebibliography}{99}\small
+\bibitem{vero} V. Ursekar et al. VeRO: A Harness for Agents to Optimize Agents. ICML 2026. arXiv:2602.22480.
+\bibitem{hob} V. Ursekar et al. HarnessOpt-Bench: Evaluating LLMs at Harness Optimization. arXiv:2608.06301.
+\bibitem{metaharness} Y. Lee, R. Nair, Q. Zhang, K. Lee, O. Khattab, C. Finn. Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
+\bibitem{rethinking} Y. Wang et al. Rethinking the Evaluation of Harness Evolution for Agents. arXiv:2607.12227.
+\bibitem{dwork2015} C. Dwork, V. Feldman, M. Hardt, T. Pitassi, O. Reingold, A. Roth. The Reusable Holdout: Preserving Validity in Adaptive Data Analysis. \emph{Science}, 349(6248):636--638, 2015.
+\bibitem{whowhen} Which Agent Causes Task Failures and When? On Automated Failure Attribution of LLM Multi-Agent Systems. arXiv:2505.00212.
+\bibitem{chronicle} Chronicle: Cut-Point Replay for Regression Testing of LLM Agents. arXiv:2609.20625.
+\bibitem{gcjr} Localizing Emergent Failures in Agentic AI: Recovering Minimal Repair Families via Counterfactual Replay. arXiv:2608.29228.
+\bibitem{daaf} DAAF: From Failure Localization to Editable System Assets in LLM Agents. arXiv:2609.32498.
+\bibitem{harnessevo} Where Does Harness-Optimization Value Live? Localized Gains and the Budget-Splitting Trap in Self-Evolving LLM Agents. arXiv:2609.02889.
+\bibitem{coverage} Coverage, Not Credit: Failure-Credit Routing of Zeroth-Order Perturbation Budgets Does Not Improve On-Pool Sample Efficiency for LLM Agents. arXiv:2608.28011.
+\bibitem{sha} Z. Karnin, T. Koren, O. Somekh. Almost Optimal Exploration in Multi-Armed Bandits. ICML 2013.
+\bibitem{cuped} A. Deng, Y. Xu, R. Kohavi, T. Walker. Improving the Sensitivity of Online Controlled Experiments by Utilizing Pre-Experiment Data. WSDM 2013.
+\bibitem{holm} S. Holm. A Simple Sequentially Rejective Multiple Test Procedure. \emph{Scandinavian Journal of Statistics}, 6(2):65--70, 1979.
+\bibitem{fs1999} D. M. Finkelstein, D. A. Schoenfeld. Combining Mortality and Longitudinal Measures in Clinical Trials. \emph{Statistics in Medicine}, 18(11):1341--1354, 1999.
+\bibitem{pocock2012} S. J. Pocock, C. A. Ariti, T. J. Collier, D. Wang. The Win Ratio: A New Approach to the Analysis of Composite Endpoints in Clinical Trials Based on Clinical Priorities. \emph{European Heart Journal}, 33(2):176--182, 2012.
+\bibitem{phoenix} Q. Zou, F. Yu, H. Tan, J. Cui, B. He, W.-F. Wong. Is Agentic AI Ready for Real-World Hardware Engineering? A Deep Dive with Phoenix-bench. NeurIPS 2026. arXiv:2605.15226.
+\bibitem{posteda} P. Liu, N. Xu, J. Tang, Y. Cao, C. Ding. PostEDA-Bench: A Hierarchical Benchmark for PPA Convergence and DRC Fixing. arXiv:2605.06936.
+\bibitem{alw} NovaSilicon Team. AnalogLayoutWorld: An Open Benchmark for Agentic Analog Layout Design. arXiv:2611.16991, 2026.
+\end{thebibliography}
+
+\end{document}

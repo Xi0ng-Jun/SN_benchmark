@@ -1,0 +1,295 @@
+% !TEX program = xelatex
+% 编译：tectonic mcr-formal.tex（或 xelatex mcr-formal.tex 两遍）。
+% 状态（2026-11-23）：经双轮外部盲审与双轮去基准化方法论辩论收敛的通用算法规范（v2）；
+% 完全剥离具体领域基准耦合，尚未在目标系统上运行实验。
+\documentclass[UTF8,a4paper,10.5pt]{ctexart}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+\usepackage[hidelinks]{hyperref}
+
+\setlist{nosep,leftmargin=1.8em}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\floatname{algorithm}{算法}
+\renewcommand{\algorithmicrequire}{\textbf{输入：}}
+\renewcommand{\algorithmicensure}{\textbf{输出：}}
+\newtheorem{inv}{不变量}
+
+% 方法名宏占位：可按需替换为最终论文缩写。
+\newcommand{\method}{MCR}
+\newcommand{\Ddev}{\mathcal{D}_{\mathrm{dev}}}
+\newcommand{\Dval}{\mathcal{D}_{\mathrm{val}}}
+\newcommand{\Dtest}{\mathcal{D}_{\mathrm{test}}}
+\newcommand{\Bdev}{\mathcal{B}_{\mathrm{dev}}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Ind}{\mathbb{I}}
+
+\title{\method{}：面向外部签核型有状态任务的冻结模型 Harness 自动优化\\
+\large 通用方法形式化规范（去基准化定稿版）}
+\author{}
+\date{2026 年 11 月 23 日}
+
+\begin{document}
+\maketitle
+\vspace{-2em}
+
+% ======================= BEGIN METHOD =======================
+\section{问题类与实例剖面}
+\label{sec:problem}
+
+考虑围绕冻结权重的大语言模型（LLM）自动优化模型外控制壳（Harness）的问题。与无状态问答或单轮代码补全不同，目标系统在有状态工作区中通过外部确定性或多线程工程工具完成多步构建、诊断与修改，并在提交后接受独立外部签核器的终局评估~\cite{vero,metaharness}。现有黑盒演化法仅凭终局标量盲目变异提示词与控制代码，在单题耗时长、样本量有限的重型任务上易退化为随机游走~\cite{rethinking}；而基于请求拦截的逐步重放法在工具读写磁盘状态、输出含非确定性噪声或后处理钩子直接改写产物时即告失效~\cite{chronicle}。
+
+\paragraph{有状态工作区与双预算约束。}
+设任务总体分布按底层共享载体（称为\emph{簇}，如共享代码库、底层规格族或共享组件库）构成。任务池按簇严格互不重叠地划分为开发集 $\Ddev$、验证集 $\Dval$ 与封存测试集 $\Dtest$：
+\begin{equation}
+  \Ddev = \bigsqcup_{g=1}^{G_{\mathrm{dev}}} \mathcal{C}^{\mathrm{dev}}_g,\qquad
+  \Dval = \bigsqcup_{g=1}^{G_{\mathrm{val}}} \mathcal{C}^{\mathrm{val}}_g,\qquad
+  \Dtest = \bigsqcup_{g=1}^{G_{\mathrm{test}}} \mathcal{C}^{\mathrm{test}}_g.
+\end{equation}
+给定任务 $x$（含公开规格说明、初始工作区 $w_0(x)\in\mathcal{W}$ 与容器内公开可调用的工具集 $\mathcal{T}_{\mathrm{pub}}$），Harness 版本 $H$ 在随机源 $\xi$（模型采样与工具非确定性）及硬性双预算——最大交互步数 $S_{\max}$ 与外部沙盒硬墙钟上限 $T_{\max}$——约束下演化工作区状态，并在终止或被外部超时强杀时于规范提交路径产出终态产物 $W = w(H,x,\xi)\in\mathcal{W}\cup\{\varnothing\}$（$\varnothing$ 表示无有效提交物）。
+
+\paragraph{外部签核三元组与短路三值分项。}
+提交结束后，运行期隔离的独立外部签核器 $\mathcal{E}^\star$ 对产物做终局评判并返回三元组：
+\begin{equation}
+  \mathcal{E}^\star(x, W) = \bigl(Y^\star(x,W),\; C^\star(x,W),\; \mathbf{d}^\star(x,W)\bigr),
+\end{equation}
+其中：
+\begin{itemize}
+  \item $Y^\star(x,W)\in[0,1]$ 为基准官方定义的单一原生主效用（纯二值验收任务上 $Y^\star\equiv C^\star$；分级质量任务上 $Y^\star$ 可含资格阶跃与连续质量项），满足空产物零分约定 $Y^\star(x,\varnothing)=0$；
+  \item $C^\star(x,W)\in\{0,1\}$ 为完全达标验收指示，满足 $C^\star(x,\varnothing)=0$；
+  \item $\mathbf{d}^\star(x,W)=\bigl(d^\star_1(x,W),\dots,d^\star_K(x,W)\bigr)\in\{0,1,\bot\}^K$ 为分项签核诊断向量，其中 $d^\star_k=1$ 表示通过第 $k$ 项，$d^\star_k=0$ 表示经评估未通过，$d^\star_k=\bot$ 表示因前置步骤失败短路或超时而\emph{未予评估}（若基准仅输出标量总分，则退化为 $K=1, d^\star_1=C^\star$）。将 $\bot$ 与 $0,1$ 严格区分可防止前置崩溃污染后续分项的正负样本库。
+\end{itemize}
+信息边界按阶段严格锁死：在 $\Dval$ 与 $\Dtest$ 的运行期及除最终一次选模/揭盲外的全周期内，$\mathcal{E}^\star$ 的输出对优化器不可见；在 $\Ddev$ 上执行结束后，确定性记账程序可读取 $(Y^\star,C^\star,\mathbf{d}^\star)$，但签核脚本实现与可选参考解源码对提议和实现 Agent 物理隔离。优化目标是在给定离线搜索预算下最大化总体主效用 $\mu(H)=\E_{x,\xi}[Y^\star(x,w(H,x,\xi))]$。
+
+\paragraph{两类失败缺口与实例剖面。}
+冻结模型在外部签核任务上的可修复失分源于两类正交机制缺口：
+（1）\emph{执行缺口（Execution Gap）}——某分项判据本可由公开工具集 $\mathcal{T}_{\mathrm{pub}}$ 与公开规格在运行期算出，但 Agent 漏跑检查、误配参数、看不懂底层报错或中途把已合格状态改坏；
+（2）\emph{信息缺口（Information Gap）}——某分项判据依赖运行期不可见的隐藏测试激励或隐藏环境条件，公开默认检查无法触发故障信号。
+为在统一算法下自适应覆盖异构任务而不引入空洞超参，每个目标实例在搜索启动前声明其客观\emph{实例剖面}（表~\ref{tab:profile}），后续搜索组件与评估路径由该剖面机械决定。
+
+\begin{table}[t]
+\centering\small
+\caption{目标系统的客观实例剖面声明及其决定的算法工作模式。}
+\label{tab:profile}
+\begin{tabular}{L{2.8cm}L{5.2cm}L{6.2cm}}
+\toprule
+剖面维度 & 客观可核验特征 & 机械决定的算法行为 \\
+\midrule
+监督档位 & 是否附带隔离参考正例 $w_{\mathrm{ref}}(x)$ 与缺陷初态 $w_0(x)$；是否暴露多分项 $K>1$；$Y^\star$ 为二值或分级 & 有 $(w_0,w_{\mathrm{ref}})$ 时启用双端干预判别；无参考解时依赖主动重签核库；分级 $Y^\star$ 强制拆报 $C^\star$ 翻转与未翻转贡献 \\
+成本与样本档位 & 单题完整运行成本（轻型：分钟级 / 重型：小时与千万 token 级）及开发簇数 $G_{\mathrm{dev}}$ & 重型小簇档收缩全量策略演化，聚焦离线零调用筛选与终局产物级无状态补救重放；$G_{\mathrm{dev}}\ge 8$ 时划分内部盲簇 \\
+宿主交互形态 & 自研白盒控制环，或封装容器内黑盒 CLI Agent（含可选原生钩子） & 禁用会话中途反序列化假设；统一采用进程退出后的容器快照与独立子调用执行终局补救 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+\section{固定保底内核与镜像认证棘轮}
+\label{sec:kernel}
+
+在多步工程编辑中，正确的修复或构建常需跨越暂时不编译或局部指标退化的\emph{桥接中间态}。若在步级引入强制自动回滚，会截断合法探索路径并压低最终解决率；反之，若完全依赖终态原样提交，外部硬超时 $T_{\max}$ 强杀或末尾误改会导致已达标成果归零。\method{}人写一次固定不演化的保底内核 $H_{\mathrm{base}}$，作为演化的唯一起点与强制对照基线。
+
+\paragraph{镜像认证层级与零参数晋升序。}
+并非所有内部检查器都配拥有覆盖提交产物的权限。仅当确定性检查器重跑签核流程中公开可得的一环、或检验公开规格明文规定的刚性必要条件，且在开发集正负产物库上通过一致率检验（第~\ref{sec:bank} 节）时，方可登记为\emph{镜像型检查器}。设已登记的 $M$ 个镜像检查器对工作区 $w$ 输出认证向量 $\mathbf{m}(x,w)=\bigl(m_1,\dots,m_M\bigr)\in\{0,1\}^M$（超时未完记 $0$）及各项连续安全裕量 $\mathbf{u}(x,w)=(u_1,\dots,u_M)$（已扣减安全保护带 $\epsilon_j$，满足 $m_j=\Ind[u_j\ge 0]$）；若存在已通过一致率检验的公开质量分镜像，记为 $\hat{y}_{\mathrm{mir}}(x,w)$。
+
+内核在影子工作区供 Agent 自由探索（步级零强制回滚，检查点回退仅作为 Agent 自愿调用的工具），同时维护规范提交路径上的保底产物 $w_{\mathrm{best}}$。每当新检查点 $w_{\mathrm{new}}$ 评估完毕，当且仅当满足以下零拟合参数的确定性\emph{棘轮晋升序} $w_{\mathrm{new}}\succ w_{\mathrm{best}}$ 时，执行临时目录完整落盘加原子改名（atomic rename）覆盖 $w_{\mathrm{best}}$：
+\begin{enumerate}
+  \item \emph{认证层级严格占优}：$\mathbf{m}(x,w_{\mathrm{new}})$ 在帕累托序下严格支配 $\mathbf{m}(x,w_{\mathrm{best}})$（若签核流程存在固定先后短路顺序，按该自然顺序取字典序严格提升）；或
+  \item \emph{同层级安全优化}：$\mathbf{m}(x,w_{\mathrm{new}})=\mathbf{m}(x,w_{\mathrm{best}})$，且满足（a）质量镜像 $\hat{y}_{\mathrm{mir}}(x,w_{\mathrm{new}})>\hat{y}_{\mathrm{mir}}(x,w_{\mathrm{best}})$（若某项裕量 $u_j$ 变薄但仍 $\ge 0$，同步记入“贴线覆盖事件”供校准 $\epsilon_j$），或（b）$\hat{y}_{\mathrm{mir}}$ 持平或不可得，且所有已通过镜像项的裕量均不下降（$\forall j: m_j=1 \implies u_j(w_{\mathrm{new}})\ge u_j(w_{\mathrm{best}})$）。
+\end{enumerate}
+其余情形一律保留旧 $w_{\mathrm{best}}$。只读约束文件哈希校验内置于 $m_1$，篡改只读输入的状态恒有 $m_1=0$，永不晋升。
+
+\paragraph{双层水位线与无状态终局补救子调用。}
+为避免容器在硬上限 $T_{\max}$ 被强杀，内核设定内部软截止水位线 $(S_{\max}-\Delta S_{\mathrm{rep}},\, T_{\max}-\Delta T_{\mathrm{rep}})$，其中预留窗口 $\Delta T_{\mathrm{rep}}$ 由检查器实测耗时分位数加单轮冷启动修复预算确定，不作自由调参。Agent 被要求在工作区内维护结构化轻量交接记录（当前进展、关键设计与待解障碍）。到达提交时刻或软水位线时，若提交门控触发，系统\textbf{不依赖不可移植的会话内存续写}，而是统一以保存的容器文件系统状态 $w_{\mathrm{sub}}$、交接记录与结构化门控诊断报告为输入，启动至多 $1$ 轮预算受限于 $(\Delta S_{\mathrm{rep}}, \Delta T_{\mathrm{rep}})$ 的独立无状态修复子调用产出 $w_{\mathrm{rep}}$，最后同样按棘轮序 $\succ$ 决定是否晋升覆盖 $w_{\mathrm{best}}$。这一设计使离线归档评估与线上真实部署拥有完全一致的执行语义。
+
+\paragraph{基础设施故障与任务失败分账。}
+容器因宿主机内存溢出（如退出码 137）、守护进程崩溃，或运行墙钟内模型网关等待耗时占比超过事前写死的阈值而中断时，记为基础设施故障（\texttt{infra\_error}）并对比较两臂按相同规则重跑；Agent 正常结束或耗尽预算而未交出合格产物记原生零分 $Y^\star(x,\varnothing)=0$，严禁静默剔除失败题目。
+
+\begin{inv}[写穿透保底弱占优]
+\label{inv:fallback}
+在空产物零分约定 $Y^\star(x,\varnothing)=0$ 与原子改名机制下，无论轨迹在任意时刻终止或触发外部硬超时 $T_{\max}$，规范提交路径上的产物恒为已评估检查点集合中按棘轮序 $\succ$ 的极大元，永不提交半写损坏文件或退回空产物。
+\end{inv}
+
+\begin{inv}[必要条件顶层保护]
+\label{inv:top}
+若认证向量 $\mathbf{m}$ 的每一分量均为完全验收 $C^\star(x,w)=1$ 的真实必要条件（$\forall j,\, C^\star=1\implies m_j=1$），则任意真解产物均位于最高认证层级 $\mathbf{1}$；任何启发型检查器或失败的终局补救分支均无法在层级向量上严格超越该真解，误触发门控的最坏代价被严格限制在预留窗口 $(\Delta S_{\mathrm{rep}},\Delta T_{\mathrm{rep}})$ 内（分级指标下由 $\hat{y}_{\mathrm{mir}}$ 引起的同层覆盖单独纳入双端复签记账）。
+\end{inv}
+
+% ------------------------------------------------------------
+\section{主动裁判库与四类改动的离线契约}
+\label{sec:bank}
+
+单纯被动收集历史终态产物会导致小样本或高难任务上的正样本集中于简单簇，无法检验新检查器在复杂结构上的误拦风险。\method{}将开发集监督存储组织为可持续扩充、完全不消耗模型调用的\emph{主动裁判库} $\Bdev$。
+
+\paragraph{主动裁判库的四类样本源与按簇计数。}
+任意开发集任务 $x\in\Ddev$ 上的产物状态 $w$，只要在隔离沙盒中经 $\mathcal{E}^\star(x,w)$ 实际签核取得真实三元组 $(Y^\star,C^\star,\mathbf{d}^\star)$，即可入库并记录来源标签：
+（1）历史运行归档的终态产物、进程退出时的完整容器文件系统快照及中间检查点；
+（2）若实例剖面具备参考真解 $w_{\mathrm{ref}}(x)$ 或带缺陷初态 $w_0(x)$，将其存于隔离裁判盒供黑盒双端调用（源码对全部 Agent 物理不可见）；
+（3）对已通过产物施加受控规则违例注入（如主动破坏某项边界条件）并重新经 $\mathcal{E}^\star$ 签核确认的合成负例；
+（4）对已通过产物施加等价改写并重新经 $\mathcal{E}^\star$ 签核确认为通过的合成正例。
+
+据此定义全局干净集 $\mathcal{S}^+=\{(x,w)\in\Bdev : C^\star(x,w)=1\}$，第 $k$ 项分项干净集 $\mathcal{S}^+_k=\{(x,w)\in\Bdev : d^\star_k(x,w)=1\}$，以及当前卫冕者 $H_{\mathrm{inc}}$ 的残余分项失真集 $\mathcal{S}^-_k=\{(x,w)\in\Bdev(H_{\mathrm{inc}}) : \text{已提交且内部未报第 }k\text{ 项违例}\land d^\star_k(x,w)=0\}$（$d^\star_k=\bot$ 的短路样本严格排除在 $\mathcal{S}^+_k$ 与 $\mathcal{S}^-_k$ 之外）。正例可跨周期累积，负例仅取当前卫冕者的残余失真；若残余 $\mathcal{S}^-_k=\varnothing$，对应分项的门控搜索自动停机。为消除同题多种子与多检查点的伪重复膨胀，样本覆盖度一律报告\emph{独立簇数}而非原始条目数。
+
+\paragraph{按可判定性与运行权限切分的四类改动。}
+不设固定的功能槽位数量，任意围绕 $H_{\mathrm{inc}}$ 提议的候选原子改动按“离线能判定什么、拥有何种运行期权限、何时首次影响轨迹”机械归入表~\ref{tab:classes} 的四类之一。所有可执行候选须先通过静态安全扫描（禁外部网络、禁越界路径、禁出现任务标识或特定题目常数字面量黑名单）。
+
+\begin{table}[t]
+\centering\small
+\caption{候选改动的四分类、Stage 0 零模型离线契约与运行期最高权限。}
+\label{tab:classes}
+\begin{tabular}{L{2.5cm}L{3.5cm}L{4.4cm}L{3.8cm}}
+\toprule
+改动类别 & 典型对象 & Stage 0 离线契约（0 模型调用） & 运行期最高权限 \\
+\midrule
+I.\ 镜像型检查器 & 重跑签核公开环节或检验明文规格必要条件；输出判定与连续裕量 & 在 $\mathcal{S}^+_k\sqcup\mathcal{S}^-_k$ 上双向一致率达标；校准单参数保护带 $\epsilon_k$ 后 $\mathcal{S}^+_k$ 零误拦 & 进入认证向量 $\mathbf{m}$；可触发终局补救并决定棘轮覆盖 \\
+II.\ 启发型检查器与内生探针 & 经验性结构谓词、针对隐藏激励合成的复现探针 & 在 $\mathcal{S}^+$ 上回归测试 $k_{\mathrm{FP}}=0$；在盲簇或证据簇外残余负例上 $k_{\mathrm{TP}}>0$（有 $(w_0,w_{\mathrm{ref}})$ 时含双端判别） & 仅作软诊断观测或触发终局补救尝试；\textbf{禁止进入 $\mathbf{m}$ 或决定覆盖} \\
+III.\ 确定性观测映射 & 原始工具日志、波形或几何/数值违例到源码位置的压缩解析函数 & 历史故障证据行保留率、输出 token 上限及相邻检查点差异定位命中率 & 仅改写工具观测摘要；零否决、零覆盖权 \\
+IV.\ 策略性改动 & 系统提示、工具规程、探针调度或预算分配策略 & 仅检验语法合法性、沙盒可执行性与静态开销上限 & 零门控覆盖权；重型档严格限制每周期名额 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{单参数裕量保护带与防样本内过拟合规则。}
+针对分级或带数值容差的签核分项，内部镜像与外部签核器之间微小的工具精度偏差会使“内部裕量贴近零”的产物在外部翻车。对第 I 类检查器的原始裕量 $\tilde{u}_k(x,w)$，保护带 $\epsilon_k$ 不作多维拟合，直接由 $\Bdev$ 中“原始裕量非负但外部 $d^\star_k=0$”样本的最大原始裕量加最小正步长确定（令修正裕量 $u_k=\tilde{u}_k-\epsilon_k$）。
+
+为阻断提议 Agent 针对其阅读过的失败样本拼接特设规则，同时严守\textbf{搜索期绝不触碰 $\Dval$} 的防泄漏红线，Stage 0 实行分档样本外校验：
+（1）当开发簇数 $G_{\mathrm{dev}}\ge 8$ 时，在搜索启动前随机冻结约 $1/4$（至少 $2$ 个）开发簇为\emph{内部盲簇}——提议与实现 Agent 全程不可读取盲簇的产物、日志与分项诊断，Stage 0 在盲簇上仅回传聚合通过/捕获计数（盲簇仍正常参与后续闭环打分）；
+（2）当 $G_{\mathrm{dev}}<8$ 时不拆盲簇，但强制每个候选声明其立项所依据的\emph{证据簇}，Stage 0 分栏报告证据簇内与证据簇外计数，且第 II 类启发型检查器必须在证据簇外取得 $k_{\mathrm{TP}}>0$ 方可晋级。
+
+% ------------------------------------------------------------
+\section{分叉对齐评估路径与双端事件账本}
+\label{sec:eval}
+
+在单题耗时数小时、重跑标准差达数十个百分点的重型任务上，若对每个仅在少数任务末尾触发的局部改动都执行全集从头重跑，未触发任务上的巨大采样噪声会彻底淹没真实修复信号。\method{}将候选 $H$ 相对于卫冕者 $H_{\mathrm{inc}}$ 首次可能改变执行分布的时刻定义为\emph{分叉点}，并在完全不依赖会话中途内存恢复的前提下设立三条精确匹配的评估路径（图~\ref{fig:mcr}）。
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw, minimum width=22.5mm, minimum height=10.5mm, align=center, inner sep=2pt},
+  off/.style={box, fill=black!14},
+  mid/.style={box, fill=black!5},
+  val/.style={box, double, fill=black!4, minimum width=23.5mm},
+  arr/.style={-{Stealth[length=1.8mm,width=1.4mm]}, semithick}
+]
+\node[off] (diag) at (0,0)     {搜索前体检\\四项诊断开关};
+\node[off] (s0)   at (3.20,0)  {Stage 0（0 调用）\\四分类契约与盲簇};
+\node[mid] (s1)   at (6.55,0)  {Stage 1（按分叉点）\\补救重放 / 全集配对};
+\node[mid] (inc)  at (9.80,0)  {事件账本晋级\\更新卫冕者 $H_{\mathrm{inc}}$};
+\node[val] (hold) at (13.20,0) {留出集（$\Dval\!\to\!\Dtest$）\\纯净 C1 选模与揭盲};
+
+\draw[arr] (diag) -- (s0);
+\draw[arr] (s0)   -- node[above=1pt, font=\scriptsize] {2--3 题冒烟} (s1);
+\draw[arr] (s1)   -- node[above=1pt, font=\scriptsize] {$B_L\!=\!\Ddev$} (inc);
+\draw[arr] (inc)  -- node[pos=0.68, above=1pt, font=\scriptsize] {唯一冠军} (hold);
+\draw[arr, rounded corners=3pt] (inc.south) -- ++(0,-0.52) -| node[pos=0.25, below, xshift=-8mm, font=\scriptsize] {下一周期单点原子变异（零救回自动清理）} (s0.south);
+\draw[dashed] (11.25,0.90) -- (11.25,-1.05);
+\node[font=\scriptsize, anchor=south] at (11.25,0.90) {封存留出边界};
+\end{tikzpicture}
+\caption{\method{}的两阶段评估与留出协议。搜索全程严禁触碰 $\Dval$；Stage 0 依四分类契约做零模型调用初筛，Stage 1 按分叉点匹配最小方差评估路径，终局以纯净 C1 规则完成选模并在 $\Dtest$ 上单次多种子揭盲。}
+\label{fig:mcr}
+\end{figure}
+
+\paragraph{三条物理可行的评估路径。}
+（1）\emph{终局产物级补救重放（适用于仅在提交关口生效且不改动前缀提示的门控）}：分叉点恰为 Agent 主进程退出后的提交时刻。评估直接读取 $H_{\mathrm{inc}}$ 在 $\Ddev$ 上已归档的完整容器文件系统快照：对门控未触发的归档运行，不启动任何模型调用，其效用差按构造精确记为 $\Delta Y^\star=0$；仅对门控触发的事件 $e$，以归档快照与门控诊断启动独立修复子调用（重复 $R_{\mathrm{rep}}\ge 3$ 个种子取均值），经棘轮晋升判定后送 $\mathcal{E}^\star$ 双端复签。这将评估成本从“全集题数 $\times$ 全程耗时”压缩至“触发终态数 $\times$ 预留修复窗口”，同时彻底剥离未触发题的重跑方差。
+
+（2）\emph{原生条件钩子配对评估（适用于挂载在宿主 CLI 原生运行期钩子上的确定性检查或观测映射）}：先在归档快照上静态统计预估触发率（影响面）；随后在 $\Ddev$ 上从头执行配对闭环运行，主判据取全集配对主效用净增。同时执行\emph{非触发前缀泄漏审计}：比对两臂均未触发钩子的任务子集上的平均得分——若出现系统性偏移，表明钩子挂载方式本身改变了前置系统提示或工具清单，须重归类为第（3）路径。
+
+（3）\emph{全程在场改动全量评估（适用于系统提示、工具列表或全局控制策略）}：分叉点为第 $0$ 步，必须在嵌套批 $B_1\subseteq\dots\subseteq B_L=\Ddev$ 上从头全量运行，并与 $H_{\mathrm{inc}}$ 历次已归档全量种子的池化均值做同题配对比较（禁止按“事后是否用到该提示/工具”做条件子集筛选报告主效应）。
+
+\begin{inv}[分叉前缀同分布与未触发零贡献]
+\label{inv:fork}
+当候选改动与卫冕者的线上部署语义同构于离线评估语义（特别地，终局补救均定义为在主进程退出快照上启动的独立无状态子调用）时，两版本在分叉点之前的轨迹分布完全相同；对未到达触发条件的终态快照，候选与卫冕者的签核效用差恒等于零，触发事件集上的净效应和严格等于全集期望总效用差的无偏估计。
+\end{inv}
+
+\paragraph{签核事件账本。}
+每一次终局门控或补救触发事件 $e$，均将补救前产物 $w_{\mathrm{pre}}$ 与经棘轮判定后的最终提交产物 $w_{\mathrm{post}}$ 成对送入 $\mathcal{E}^\star$，按主效用变化 $\Delta Y^\star_e = Y^\star(x_e,w_{\mathrm{post}})-Y^\star(x_e,w_{\mathrm{pre}})$ 记入确定性\emph{签核事件账本}：
+（a）\emph{救回（Rescued）}：$\Delta Y^\star_e > 0$；
+（b）\emph{无效（Neutral）}：$\Delta Y^\star_e = 0$（含修复未超棘轮门槛而安全回退原产物的情形）；
+（c）\emph{损坏（Damaged）}：$\Delta Y^\star_e < 0$。
+损坏事件逐条完整回传给提议与审计环节，用于扩充 $\Bdev$ 正样本回归集或加宽保护带 $\epsilon_k$。
+
+% ------------------------------------------------------------
+\section{搜索前体检与自适应外层周期}
+\label{sec:loop}
+
+\paragraph{搜索前一次性四项体检与组件开关。}
+在生成任何候选变异前，对保底内核 $H_{\mathrm{base}}$ 在 $\Ddev$ 上的 $K_0\ge 2$ 个独立种子归档执行零模型调用体检，据此机械关闭无收益空间的子机制：
+\begin{enumerate}
+  \item \emph{残余失败四分类解剖}：将未满分运行归入四类——（a）超时/未提交有效产物，（b）已提交且失分项具备公开可算镜像检查，（c）已提交且失分项无公开可算检查（纯信息缺口），（d）全过程从未产出接近合格中间态的能力越界题。第（a）（b）类指向内核保底与镜像门控，第（c）类指向内生探针，第（d）类标注为冻结模型能力边界；任一类占比近零则关闭对应提议通道。
+  \item \emph{检查器一致率与签核重复性审计}：对同一产物重复调用 $\mathcal{E}^\star$ 核验签核器自身非确定性噪声，并检验基础镜像检查与 $d^\star_k$ 的一致率，决定初始认证向量 $\mathbf{m}$ 的构成。
+  \item \emph{双种子噪声地板 $\hat{\sigma}_{\mathrm{seed}}$}：计算 $H_{\mathrm{base}}$ 不同种子间任务得分与全集均值的经验波动，作为后续所有增益解读的客观参照尺（\textbf{严禁将其设为搜索或确认阶段的否决门槛}）。
+  \item \emph{轨迹内检查点选择余量}：仅耗费签核调用对比轨迹历史检查点最大 $Y^\star$ 与实际终态 $Y^\star$；若余量近零，直接关闭多检查点选优与公开排序器分支。
+\end{enumerate}
+
+\paragraph{单点原子变异、分级晋级与零救回清理。}
+外层搜索支持任意轮数的渐进周期（算法~\ref{alg:mcr}），无需跑满固定大代数即可随时冻结当前卫冕者进入留出集评估。为在不引入统计否决门的前提下防止代码膨胀与随机游走，执行三条零阈值结构约束：
+（1）\emph{单点原子改动}：每个候选相对于当前卫冕者 $H_{\mathrm{inc}}$ 仅允许包含一处明确归类的原子改动；
+（2）\emph{分类别净增晋级}：第（1）评估路径的终局门控当且仅当事件账本总净变 $\sum_e \Delta Y^\star_e > 0$ 时晋级；第（2）（3）路径的候选必须在嵌套批 $B_1\subseteq\dots\subseteq B_L=\Ddev$（小规模 $\Ddev$ 可直接取 $L=1$ 或 $2$）上完赛于全集 $\Ddev$，且相对于 $H_{\mathrm{inc}}$ 池化多流均值取得严格正净增时方可更新 $H_{\mathrm{inc}}$；
+（3）\emph{零救回自动清理}：若某已并入门控在连续 $K_{\mathrm{idle}}$ 个周期（事前固定，如 $K_{\mathrm{idle}}=2$）的事件账本中救回次数为零，自动将其从 $H_{\mathrm{inc}}$ 移除。
+
+\begin{algorithm}[t]
+\caption{\method{} 搜索前体检、自适应外层周期与 C1 留出协议}
+\label{alg:mcr}
+\begin{algorithmic}[1]
+\Require 保底内核 $H_{\mathrm{base}}$，按簇隔离的 $\Ddev,\Dval,\Dtest$，实例剖面，周期上限 $G\ge 1$
+\Ensure 最终选定版本 $H^\star$ 及封存测试集完整分解报告
+\State 基线剖析：$H_{\mathrm{base}}$ 在 $\Ddev$ 上运行 $K_0\ge 2$ 种子，构建主动裁判库 $\Bdev$，执行四项体检并按表~\ref{tab:profile} 设定组件开关
+\State $H_{\mathrm{inc}}\gets H_{\mathrm{base}}$
+\For{$g = 1,\dots,G$} \Comment{可依预算在任意周期结束后提前终止搜索}
+  \State 围绕 $H_{\mathrm{inc}}$ 的残余失败解剖与事件账本，生成若干单点原子改动候选（各归入表~\ref{tab:classes} 四类之一）
+  \State \textbf{Stage 0}：执行静态安全扫描与表~\ref{tab:classes} 零模型离线契约（含盲簇或证据簇外复检），筛除违约候选
+  \State \textbf{冒烟与 Stage 1}：存活候选经 2--3 题闭环冒烟排除崩溃后，按第~\ref{sec:eval} 节分叉点进入对应路径评估至全量 $\Ddev$
+  \State 若最优完赛候选满足对应路径严格正净增判据，则更新 $H_{\mathrm{inc}}$ 并将其新产物扩充入 $\Bdev$；清理连续 $K_{\mathrm{idle}}$ 周期零救回组件
+  \State 若残余可归因失败集为空或预算耗尽，跳出循环
+\EndFor
+\State \textbf{验证选模（纯净 C1）}：若 $H_{\mathrm{inc}}=H_{\mathrm{base}}$，令 $H^\star\gets H_{\mathrm{base}}$；否则在封存 $\Dval$ 上同题配对评估 $H_{\mathrm{inc}}$ 与 $H_{\mathrm{base}}$，当 $\hat{\Delta}_{\mathrm{val}}(Y^\star)>10^{-6}$ 时令 $H^\star\gets H_{\mathrm{inc}}$，否则令 $H^\star\gets H_{\mathrm{base}}$
+\State \textbf{测试揭盲}：锁定代码哈希，在封存 $\Dtest$ 上对朴素宿主、$H_{\mathrm{base}}$、$H^\star$ 及同预算基线运行 $R\ge 3$ 种子，输出完整分账报告
+\end{algorithmic}
+\end{algorithm}
+
+% ------------------------------------------------------------
+\section{实验卫生与报告协议}
+\label{sec:protocol}
+
+在小样本或重尾簇分布的工程基准上，复杂的置换检验、复合代理胜分（如混合未过关连续进展的符号翻转检验）或硬性退化题数截断（如 $n_{10}\le 1$）不仅在复合零假设下无法控制一类错误，反而会在有限样本下严重扼杀真实正效应候选的采纳概率。\method{}彻底摒弃装饰性假设检验否决门，代之以六条刚性实验防自欺准则：
+
+\begin{enumerate}
+  \item \emph{事前冻结簇隔离切分与主终点}：在启动任何模型轨迹前，按底层共享载体确定性切分 $\Ddev,\Dval,\Dtest$ 并记录簇映射表与代码哈希，锁定基准官方原生主指标 $Y^\star$，严禁事后按结果删题或更换指标。
+  \item \emph{留出集纯净 C1 选模}：搜索全程物理封存 $\Dval$。结束搜索后，仅将开发集唯一完赛卫冕者 $H_{\mathrm{inc}}$ 与保底内核 $H_{\mathrm{base}}$ 送入 $\Dval$ 做同题配对评估：记配对净增均值 $\hat{\Delta}_{\mathrm{val}}(Y^\star) = |\Dval|^{-1}\sum_{x\in\Dval}\bigl(Y^\star(x,H_{\mathrm{inc}})-Y^\star(x,H_{\mathrm{base}})\bigr)$，当 $\hat{\Delta}_{\mathrm{val}}(Y^\star)>10^{-6}$ 时采纳 $H^\star=H_{\mathrm{inc}}$，否则保留 $H_{\mathrm{base}}$（精确平局取改动更小者）。不设 $p\le 0.05$ 否决门；若分多个独立里程碑发布轮次，每轮至多访问一次 $\Dval$ 且仅回传胜出配置标识，严禁逐题结果回流提议端，访问总次数如实披露。
+  \item \emph{封存测试集单次多种子揭盲与噪声地板并列报告}：$H^\star$ 定稿并冻结提交哈希后，在封存 $\Dtest$ 上对各对照臂独立运行 $R\ge 3$ 个随机种子，仅揭盲唯一一次。主表并列报告多种子均值、种子间经验标准差（噪声地板）、逐题胜负翻转计数 $(n_+,n_-)$ 及按簇重抽样自助法区间（当 $G_{\mathrm{test}}<10$ 时显式标注簇数不足以支撑渐近校准，同时列出逐簇原始净差）。
+  \item \emph{三段式增益归因}：由于保底内核 $H_{\mathrm{base}}$ 已包含人写一次的双水位线与原子棘轮保底，实验必须分段报告“原始未封装宿主 $H_{\mathrm{raw}} \to$ 保底内核 $H_{\mathrm{base}} \to$ 自动演化终版 $H^\star$”，自动优化仅认领 $H_{\mathrm{base}}\to H^\star$ 段的增量。
+  \item \emph{分级主效用的二值翻转拆账}：当 $Y^\star$ 为分级连续指标时，强制将总体增益 $\Delta\overline{Y^\star}$ 正交拆解为“完全验收状态 $C^\star$ 发生翻转的任务贡献”与“$C^\star$ 未翻转任务上的部分质量分贡献”，透明区分实质通关率提升与局部失败美化。
+  \item \emph{原始物理成本账本与诚实强基线}：摒弃按步数线性折算的虚拟运行当量，直接记录四项原始成本——模型输入/输出/缓存 tokens（及折算美元）、外部工具 CPU 秒、容器峰值内存与实际墙钟耗时（离线提议、重签核与验证消耗全额入账）。强制对照一页人工精简说明基线及同资源公开特征非盲 $\text{Best-of-}k(H_{\mathrm{base}})$ 曲线~\cite{rethinking}。
+\end{enumerate}
+
+% ------------------------------------------------------------
+\section{适用边界与不主张的内容}
+\label{sec:limits}
+
+为避免方法形式化滑向过度承诺，明确划定本方法的适用边界与不作主张的范围：
+\begin{enumerate}
+  \item \emph{不主张闭环总体增益的先验理论保证}：不变量~\ref{inv:fallback}--\ref{inv:fork} 刻画的是单次执行的保底安全性、必要条件顶层的抗误覆写性与分叉评估的无偏性；候选改动能否在闭环中提升总体效用 $\mu(H)$ 完全是经验问题，只能由留出集配对实测回答。
+  \item \emph{离线 $k_{\mathrm{FP}}=0$ 是回归测试而非分布无关泛化上界}：在小簇数开发集上，历史干净产物零误拦本身不足以在统计上排除新簇误杀风险；第 I 类检查器的可靠性来自对公开签核环节或明文规格的构造性复现，第 II 类启发型检查器的安全性则来自彻底剥夺其认证层级覆盖权。
+  \item \emph{重型小样本档下不主张全局策略的自动演化}：当单题耗时长达数小时且开发集仅十余题时，系统提示与全局控制流改动的评估方差远超单步效应量；此档位下自动优化的有效作用面明确收缩至镜像/启发检查器、单参数保护带校准、确定性观测映射及终局产物级补救，少量全局策略调整按人工设计加留出核验定性。
+  \item \emph{能力越界与极小簇数的外推边界}：对搜索前体检归入第（d）类（冻结模型全过程从未生成任何接近合格中间态）的任务，外层 Harness 优化无力替代底层模型能力；当整个基准独立簇总数不足以支撑大样本推断时，测试集结论严格限定为对所测任务集合的有限总体多流实测效应。
+\end{enumerate}
+% ======================== END METHOD ========================
+
+\begin{thebibliography}{99}\small
+\bibitem{vero} V. Ursekar et al. VeRO: A Harness for Agents to Optimize Agents. ICML 2026. arXiv:2602.22480.
+\bibitem{metaharness} Y. Lee, R. Nair, Q. Zhang, K. Lee, O. Khattab, C. Finn. Meta-Harness: End-to-End Optimization of Model Harnesses. arXiv:2603.28052.
+\bibitem{rethinking} Y. Wang et al. Rethinking the Evaluation of Harness Evolution for Agents. arXiv:2607.12227.
+\bibitem{chronicle} Chronicle: Cut-Point Replay for Regression Testing of LLM Agents. arXiv:2609.20625.
+\bibitem{dwork2015} C. Dwork, V. Feldman, M. Hardt, T. Pitassi, O. Reingold, A. Roth. The Reusable Holdout: Preserving Validity in Adaptive Data Analysis. \emph{Science}, 349(6248):636--638, 2015.
+\bibitem{daaf} DAAF: From Failure Localization to Editable System Assets in LLM Agents. arXiv:2609.32498.
+\bibitem{gcjr} Localizing Emergent Failures in Agentic AI: Recovering Minimal Repair Families via Counterfactual Replay. arXiv:2608.29228.
+\end{thebibliography}
+
+\end{document}

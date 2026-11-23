@@ -1,0 +1,213 @@
+{
+ "schema_version": 1,
+ "seed": "ssap-alw-v2-19",
+ "unit": "conservative cluster",
+ "sizes": {
+  "dev": 12,
+  "val": 14,
+  "test": 14
+ },
+ "binned_per_split": {
+  "dev": 3,
+  "val": 3,
+  "test": 3
+ },
+ "splits": {
+  "dev": [
+   2,
+   7,
+   11,
+   12,
+   13,
+   15,
+   16,
+   18,
+   19,
+   21,
+   27,
+   38
+  ],
+  "val": [
+   1,
+   3,
+   5,
+   6,
+   8,
+   17,
+   20,
+   22,
+   25,
+   26,
+   34,
+   35,
+   36,
+   37
+  ],
+  "test": [
+   4,
+   9,
+   10,
+   14,
+   23,
+   24,
+   28,
+   29,
+   30,
+   31,
+   32,
+   33,
+   39,
+   40
+  ]
+ },
+ "task_ids": {
+  "dev": [
+   "sky130-adb-buf-ppsf-bs-gain1-sfdr90-layout",
+   "sky130-adb-complementary-folded-cascode-ab-opamp-pvt-layout",
+   "sky130-adb-fd-sampling-feedback-ota-gain1-settling40ns-noise300uv-pvt-mc-layout",
+   "sky130-adb-fd-sampling-feedback-ota-gain8-settling10ns-noise1mv-pvt-mc-layout",
+   "sky130-adb-fd-two-stage-miller-opamp-gain60-pm60-noise50uv-pvt-layout",
+   "sky130-adb-gmr-degen-amp-constant-gm-pvt-layout",
+   "sky130-adb-gmr-degenerated-diff-amp-gain2-bw70m-power1p2mw-sdr60-layout",
+   "sky130-adb-low-power-line-driver-pvt-layout",
+   "sky130-adb-low-power-oscillator-2mhz-pvt-layout",
+   "sky130-adb-ota-5t-gain40-pm60-noise50uv-pvt-layout",
+   "sky130-adb-tia-zt8k-bw750m-noise5p-sfdr70-power5m-pt-layout",
+   "sky130-local-comparator-layout"
+  ],
+  "val": [
+   "sky130-adb-ahuja-compensated-two-stage-load-range-pvt-layout",
+   "sky130-adb-bandgap-reference-pvt-layout",
+   "sky130-adb-capless-ldo-1v0-20ma-pvt-layout",
+   "sky130-adb-cml-divider-div2-range1gto10g-layout",
+   "sky130-adb-constant-gm-stable-gain-amplifier-pvt-layout",
+   "sky130-adb-ldo-ota5-robust-pvt-mc-layout",
+   "sky130-adb-nmos-pass-ldo-0p4v-pvt-mc-layout",
+   "sky130-adb-pll-charge-pump-pvt-layout",
+   "sky130-adb-telescopic-cascode-ota-pvt-fix-layout",
+   "sky130-adb-three-stage-nested-miller-ota-pvt-layout",
+   "sky130-loadbench-simple-53-bulk-tied-layout",
+   "sky130-loadbench-sym3-layout",
+   "sky130-loadbench-two-stage-47-9-bulk-tied-layout",
+   "sky130-local-bandgap-layout"
+  ],
+  "test": [
+   "sky130-adb-beta-multiplier-reference-pvt-mc-layout",
+   "sky130-adb-current-starved-ring-vco-pvt-layout",
+   "sky130-adb-fct-residue-amplifier-900msps-layout",
+   "sky130-adb-folded-cascode-ota-gain130-pm60-noise50uv-pvt-layout",
+   "sky130-adb-programmable-icc-iptat-current-mirror-pvt-layout",
+   "sky130-adb-regulated-charge-pump-10mhz-pvt-layout",
+   "sky130-adb-transistor-divide-by-2-layout",
+   "sky130-adb-two-stage-miller-opamp-gain60-ugb200-pm60-noise50uv-pvt-layout",
+   "sky130-adb-two-stage-miller-opamp-gain70-ugb20-pm60-noise50uv-pvt-layout",
+   "sky130-adb-unregulated-charge-pump-10mhz-pvt-layout",
+   "sky130-internet-ajc-rc-osc-layout",
+   "sky130-internet-ajc-schmitt-layout",
+   "sky130-local-fc-ota-layout",
+   "sky130-local-two-stage-ota-layout"
+  ]
+ },
+ "cluster_of": {
+  "1": "cl_task_01",
+  "2": "cl_task_02",
+  "3": "cl_task_03",
+  "4": "cl_task_04",
+  "5": "cl_task_05",
+  "6": "cl_task_06",
+  "7": "cl_task_07",
+  "8": "cl_task_08",
+  "9": "cl_task_09",
+  "10": "cl_task_10",
+  "11": "cl_adb_sampling_fb_ota",
+  "12": "cl_adb_sampling_fb_ota",
+  "13": "cl_task_13",
+  "14": "cl_fc_ota_name",
+  "15": "cl_adb_gmr_degen",
+  "16": "cl_adb_gmr_degen",
+  "17": "cl_task_17",
+  "18": "cl_task_18",
+  "19": "cl_task_19",
+  "20": "cl_task_20",
+  "21": "cl_task_21",
+  "22": "cl_task_22",
+  "23": "cl_task_23",
+  "24": "cl_adb_cp_10mhz",
+  "25": "cl_task_25",
+  "26": "cl_task_26",
+  "27": "cl_task_27",
+  "28": "cl_task_28",
+  "29": "cl_adb_miller_opamp",
+  "30": "cl_adb_miller_opamp",
+  "31": "cl_adb_cp_10mhz",
+  "32": "cl_ajc_por",
+  "33": "cl_ajc_por",
+  "34": "cl_loadbench_batch",
+  "35": "cl_loadbench_batch",
+  "36": "cl_loadbench_batch",
+  "37": "cl_task_37",
+  "38": "cl_task_38",
+  "39": "cl_fc_ota_name",
+  "40": "cl_task_40"
+ },
+ "stats": {
+  "dev": {
+   "tasks": 12,
+   "hard_clusters": 10,
+   "conservative_clusters": 10,
+   "binned": 3,
+   "continuous": 9,
+   "magic_netgen": [
+    2
+   ],
+   "q_max_3": 8,
+   "devices_median": 26.5,
+   "devices_range": [
+    6,
+    59
+   ]
+  },
+  "val": {
+   "tasks": 14,
+   "hard_clusters": 14,
+   "conservative_clusters": 12,
+   "binned": 3,
+   "continuous": 11,
+   "magic_netgen": [],
+   "q_max_3": 8,
+   "devices_median": 21.5,
+   "devices_range": [
+    7,
+    50
+   ]
+  },
+  "test": {
+   "tasks": 14,
+   "hard_clusters": 11,
+   "conservative_clusters": 10,
+   "binned": 3,
+   "continuous": 11,
+   "magic_netgen": [
+    10
+   ],
+   "q_max_3": 7,
+   "devices_median": 23.0,
+   "devices_range": [
+    8,
+    118
+   ]
+  }
+ },
+ "G_dev": 10,
+ "blind_cluster_mode": true,
+ "blind_clusters": [
+  "cl_adb_gmr_degen",
+  "cl_task_19",
+  "cl_task_38"
+ ],
+ "holdout_policy": {
+  "dev": "search and Stage 0 (blind clusters: aggregate counts only)",
+  "val": "sealed during search; one pure C1 paired winner comparison",
+  "test": "sealed; evaluated once after validation, R >= 3 seeds"
+ }
+}

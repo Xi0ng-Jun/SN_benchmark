@@ -1,0 +1,51 @@
+# ssap working notes
+
+This repository holds SSAP (Signoff-Surrogate Alignment and Active Probe Co-Evolution; see
+`README.md` and `docs/ssap.tex`). It was started from an orphan branch (`feat/ssap`) on 2026-11-21;
+earlier methods (`method-v2` to `method-v5`, `probe-loop`) live in other worktrees of the same
+repository and are not carried over.
+
+## Conventions
+
+- Record observations and experiment results before fixing anything as a design decision. Keep
+  experimental facts, human judgement and provisional assumptions apart, in documents and in reports.
+- Numbers quoted from papers are parsed or copied by script, not typed. A number that was not
+  checked against its source is marked as such.
+- Strict holdout and anti-leakage boundaries:
+  - Task splits (`dev`, `val`, `test`) are disjoint by upstream repository or underlying circuit
+    cluster. The validation and test sets are never shown to proposing or implementing agents;
+    the sealed test set is evaluated at most once after validation confirmation.
+  - Evidence exported for proposing or implementing agents is built from `dev`-set executions only.
+    When `dev`-set reference patches are used for dual-sided black-box probe validation, they reside
+    solely inside an isolated deterministic referee sandbox and are never exposed to agents (agents
+    receive only aggregate pass/fail counts).
+- No secrets in the repository or in stored telemetry. Do not commit `var/` or run directories.
+- Tests: deterministic, named paths; server runs use isolated Docker containers with explicit CPU/memory caps, while lightweight local unit tests avoid heavy parallelism on WSL.
+- Third-party checkouts (benchmarks, EDA suites) are read as data. Nothing of them is imported by
+  this package or by its tests. Do not modify sibling read-only worktrees (such as `method-v5`).
+
+## Before changing the method
+
+Read `docs/mcr-formal.tex` and `docs/mcr-plain.md` (`docs/ssap.tex` is retained as the archived v1
+draft). Any change to the algorithm or benchmark instantiation must preserve the core invariants
+and experimental hygiene rules stated in `docs/mcr-formal.tex`:
+1. **Ratchet & write-through safety (`H_base`)**: Mid-trajectory step-level forced rollback is
+   prohibited. Canonical submission artifacts are updated atomically only along the zero-parameter
+   mirror-certified ratchet order (only concordance-verified mirror checkers hold overwrite
+   authority; heuristic probes/checkers are strictly advisory and never overwrite certified states).
+   Infrastructure faults (`infra_error`, e.g. OOM exit 137 or gateway outages) are separated from
+   task failures (finished without valid output scores `0`, never dropped).
+2. **Strict `dev`-only offline contracts & stateless post-terminal repair**: Stage 0 screening uses
+   only the `dev` Active Referee Bank (with tri-state sub-criteria `d*_k in {0, 1, bottom}` and
+   internal blind clusters or out-of-evidence cluster checks — `val` is 100% sealed during search).
+   Post-terminal gate repair runs as an independent bounded sub-invocation on archived terminal
+   snapshots so offline evaluation and live deployment share identical prefix-invariant semantics.
+3. **Zero decorative statistical veto gates (`C1` protocol)**: Do NOT re-introduce synthetic blended
+   win-margins (`W_i`), `0.49 / |B|` proxy scalarization, step-wise McNemar fuses, `n_10 <= 1`
+   hard caps, or `p <= 0.05` deployment veto gates. Validation uses pure `C1` paired selection on
+   the benchmark's native primary signoff metric `Y*` (`H_base` included); sealed `test` is
+   evaluated once across `>= 3` seeds, reporting three-stage attribution (`raw -> H_base -> H*`),
+   seed noise floor, `C*` flip vs non-flip decomposition, raw cost ledger, and honest baselines.
+
+Current status: benchmark-agnostic v2 specification complete (`docs/mcr-formal.tex`,
+`docs/mcr-formal.pdf`, `docs/mcr-plain.md`); ready for target benchmark (`ALW`) instantiation.

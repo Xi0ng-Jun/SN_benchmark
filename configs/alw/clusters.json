@@ -1,0 +1,551 @@
+{
+ "schema_version": 1,
+ "rules": {
+  "hard": [
+   "H1: shared non-ADB upstream git repository (sources.json repository)",
+   "H2: shared internal non-PDK child .subckt name (case-insensitive)",
+   "H3: source == 'adb' and identical top .subckt name"
+  ],
+  "conservative": [
+   "hard clusters, plus",
+   "C1: identical top .subckt name across different sources",
+   "C2: source == 'loadbench' batch (one dataset release)"
+  ],
+  "singleton_names": {
+   "hard": "cl_hard_NN",
+   "conservative": "cl_task_NN"
+  }
+ },
+ "hard": {
+  "cl_adb_cp_10mhz": {
+   "tasks": [
+    24,
+    31
+   ],
+   "evidence": [
+    "child:ivd4a+nd2d1a"
+   ]
+  },
+  "cl_adb_gmr_degen": {
+   "tasks": [
+    15,
+    16
+   ],
+   "evidence": [
+    "adb_top:gmr_degen"
+   ]
+  },
+  "cl_adb_miller_opamp": {
+   "tasks": [
+    29,
+    30
+   ],
+   "evidence": [
+    "adb_top:two_stage_miller_opamp"
+   ]
+  },
+  "cl_adb_sampling_fb_ota": {
+   "tasks": [
+    11,
+    12
+   ],
+   "evidence": [
+    "adb_top:sampling_feedback_ota"
+   ]
+  },
+  "cl_ajc_por": {
+   "tasks": [
+    32,
+    33
+   ],
+   "evidence": [
+    "repo:ajcci/sky130_ajc_ip__por"
+   ]
+  },
+  "cl_hard_01": {
+   "tasks": [
+    1
+   ],
+   "evidence": []
+  },
+  "cl_hard_02": {
+   "tasks": [
+    2
+   ],
+   "evidence": []
+  },
+  "cl_hard_03": {
+   "tasks": [
+    3
+   ],
+   "evidence": []
+  },
+  "cl_hard_04": {
+   "tasks": [
+    4
+   ],
+   "evidence": []
+  },
+  "cl_hard_05": {
+   "tasks": [
+    5
+   ],
+   "evidence": []
+  },
+  "cl_hard_06": {
+   "tasks": [
+    6
+   ],
+   "evidence": []
+  },
+  "cl_hard_07": {
+   "tasks": [
+    7
+   ],
+   "evidence": []
+  },
+  "cl_hard_08": {
+   "tasks": [
+    8
+   ],
+   "evidence": []
+  },
+  "cl_hard_09": {
+   "tasks": [
+    9
+   ],
+   "evidence": []
+  },
+  "cl_hard_10": {
+   "tasks": [
+    10
+   ],
+   "evidence": []
+  },
+  "cl_hard_13": {
+   "tasks": [
+    13
+   ],
+   "evidence": []
+  },
+  "cl_hard_14": {
+   "tasks": [
+    14
+   ],
+   "evidence": []
+  },
+  "cl_hard_17": {
+   "tasks": [
+    17
+   ],
+   "evidence": []
+  },
+  "cl_hard_18": {
+   "tasks": [
+    18
+   ],
+   "evidence": []
+  },
+  "cl_hard_19": {
+   "tasks": [
+    19
+   ],
+   "evidence": []
+  },
+  "cl_hard_20": {
+   "tasks": [
+    20
+   ],
+   "evidence": []
+  },
+  "cl_hard_21": {
+   "tasks": [
+    21
+   ],
+   "evidence": []
+  },
+  "cl_hard_22": {
+   "tasks": [
+    22
+   ],
+   "evidence": []
+  },
+  "cl_hard_23": {
+   "tasks": [
+    23
+   ],
+   "evidence": []
+  },
+  "cl_hard_25": {
+   "tasks": [
+    25
+   ],
+   "evidence": []
+  },
+  "cl_hard_26": {
+   "tasks": [
+    26
+   ],
+   "evidence": []
+  },
+  "cl_hard_27": {
+   "tasks": [
+    27
+   ],
+   "evidence": []
+  },
+  "cl_hard_28": {
+   "tasks": [
+    28
+   ],
+   "evidence": []
+  },
+  "cl_hard_34": {
+   "tasks": [
+    34
+   ],
+   "evidence": []
+  },
+  "cl_hard_35": {
+   "tasks": [
+    35
+   ],
+   "evidence": []
+  },
+  "cl_hard_36": {
+   "tasks": [
+    36
+   ],
+   "evidence": []
+  },
+  "cl_hard_37": {
+   "tasks": [
+    37
+   ],
+   "evidence": []
+  },
+  "cl_hard_38": {
+   "tasks": [
+    38
+   ],
+   "evidence": []
+  },
+  "cl_hard_39": {
+   "tasks": [
+    39
+   ],
+   "evidence": []
+  },
+  "cl_hard_40": {
+   "tasks": [
+    40
+   ],
+   "evidence": []
+  }
+ },
+ "conservative": {
+  "cl_adb_cp_10mhz": {
+   "tasks": [
+    24,
+    31
+   ],
+   "evidence": [
+    "child:ivd4a+nd2d1a"
+   ]
+  },
+  "cl_adb_gmr_degen": {
+   "tasks": [
+    15,
+    16
+   ],
+   "evidence": [
+    "adb_top:gmr_degen"
+   ]
+  },
+  "cl_adb_miller_opamp": {
+   "tasks": [
+    29,
+    30
+   ],
+   "evidence": [
+    "adb_top:two_stage_miller_opamp"
+   ]
+  },
+  "cl_adb_sampling_fb_ota": {
+   "tasks": [
+    11,
+    12
+   ],
+   "evidence": [
+    "adb_top:sampling_feedback_ota"
+   ]
+  },
+  "cl_ajc_por": {
+   "tasks": [
+    32,
+    33
+   ],
+   "evidence": [
+    "repo:ajcci/sky130_ajc_ip__por"
+   ]
+  },
+  "cl_fc_ota_name": {
+   "tasks": [
+    14,
+    39
+   ],
+   "evidence": [
+    "cross_source_top:folded_cascode_ota"
+   ]
+  },
+  "cl_loadbench_batch": {
+   "tasks": [
+    34,
+    35,
+    36
+   ],
+   "evidence": [
+    "batch:loadbench"
+   ]
+  },
+  "cl_task_01": {
+   "tasks": [
+    1
+   ],
+   "evidence": []
+  },
+  "cl_task_02": {
+   "tasks": [
+    2
+   ],
+   "evidence": []
+  },
+  "cl_task_03": {
+   "tasks": [
+    3
+   ],
+   "evidence": []
+  },
+  "cl_task_04": {
+   "tasks": [
+    4
+   ],
+   "evidence": []
+  },
+  "cl_task_05": {
+   "tasks": [
+    5
+   ],
+   "evidence": []
+  },
+  "cl_task_06": {
+   "tasks": [
+    6
+   ],
+   "evidence": []
+  },
+  "cl_task_07": {
+   "tasks": [
+    7
+   ],
+   "evidence": []
+  },
+  "cl_task_08": {
+   "tasks": [
+    8
+   ],
+   "evidence": []
+  },
+  "cl_task_09": {
+   "tasks": [
+    9
+   ],
+   "evidence": []
+  },
+  "cl_task_10": {
+   "tasks": [
+    10
+   ],
+   "evidence": []
+  },
+  "cl_task_13": {
+   "tasks": [
+    13
+   ],
+   "evidence": []
+  },
+  "cl_task_17": {
+   "tasks": [
+    17
+   ],
+   "evidence": []
+  },
+  "cl_task_18": {
+   "tasks": [
+    18
+   ],
+   "evidence": []
+  },
+  "cl_task_19": {
+   "tasks": [
+    19
+   ],
+   "evidence": []
+  },
+  "cl_task_20": {
+   "tasks": [
+    20
+   ],
+   "evidence": []
+  },
+  "cl_task_21": {
+   "tasks": [
+    21
+   ],
+   "evidence": []
+  },
+  "cl_task_22": {
+   "tasks": [
+    22
+   ],
+   "evidence": []
+  },
+  "cl_task_23": {
+   "tasks": [
+    23
+   ],
+   "evidence": []
+  },
+  "cl_task_25": {
+   "tasks": [
+    25
+   ],
+   "evidence": []
+  },
+  "cl_task_26": {
+   "tasks": [
+    26
+   ],
+   "evidence": []
+  },
+  "cl_task_27": {
+   "tasks": [
+    27
+   ],
+   "evidence": []
+  },
+  "cl_task_28": {
+   "tasks": [
+    28
+   ],
+   "evidence": []
+  },
+  "cl_task_37": {
+   "tasks": [
+    37
+   ],
+   "evidence": []
+  },
+  "cl_task_38": {
+   "tasks": [
+    38
+   ],
+   "evidence": []
+  },
+  "cl_task_40": {
+   "tasks": [
+    40
+   ],
+   "evidence": []
+  }
+ },
+ "hard_of": {
+  "24": "cl_adb_cp_10mhz",
+  "31": "cl_adb_cp_10mhz",
+  "15": "cl_adb_gmr_degen",
+  "16": "cl_adb_gmr_degen",
+  "29": "cl_adb_miller_opamp",
+  "30": "cl_adb_miller_opamp",
+  "11": "cl_adb_sampling_fb_ota",
+  "12": "cl_adb_sampling_fb_ota",
+  "32": "cl_ajc_por",
+  "33": "cl_ajc_por",
+  "1": "cl_hard_01",
+  "2": "cl_hard_02",
+  "3": "cl_hard_03",
+  "4": "cl_hard_04",
+  "5": "cl_hard_05",
+  "6": "cl_hard_06",
+  "7": "cl_hard_07",
+  "8": "cl_hard_08",
+  "9": "cl_hard_09",
+  "10": "cl_hard_10",
+  "13": "cl_hard_13",
+  "14": "cl_hard_14",
+  "17": "cl_hard_17",
+  "18": "cl_hard_18",
+  "19": "cl_hard_19",
+  "20": "cl_hard_20",
+  "21": "cl_hard_21",
+  "22": "cl_hard_22",
+  "23": "cl_hard_23",
+  "25": "cl_hard_25",
+  "26": "cl_hard_26",
+  "27": "cl_hard_27",
+  "28": "cl_hard_28",
+  "34": "cl_hard_34",
+  "35": "cl_hard_35",
+  "36": "cl_hard_36",
+  "37": "cl_hard_37",
+  "38": "cl_hard_38",
+  "39": "cl_hard_39",
+  "40": "cl_hard_40"
+ },
+ "conservative_of": {
+  "24": "cl_adb_cp_10mhz",
+  "31": "cl_adb_cp_10mhz",
+  "15": "cl_adb_gmr_degen",
+  "16": "cl_adb_gmr_degen",
+  "29": "cl_adb_miller_opamp",
+  "30": "cl_adb_miller_opamp",
+  "11": "cl_adb_sampling_fb_ota",
+  "12": "cl_adb_sampling_fb_ota",
+  "32": "cl_ajc_por",
+  "33": "cl_ajc_por",
+  "14": "cl_fc_ota_name",
+  "39": "cl_fc_ota_name",
+  "34": "cl_loadbench_batch",
+  "35": "cl_loadbench_batch",
+  "36": "cl_loadbench_batch",
+  "1": "cl_task_01",
+  "2": "cl_task_02",
+  "3": "cl_task_03",
+  "4": "cl_task_04",
+  "5": "cl_task_05",
+  "6": "cl_task_06",
+  "7": "cl_task_07",
+  "8": "cl_task_08",
+  "9": "cl_task_09",
+  "10": "cl_task_10",
+  "13": "cl_task_13",
+  "17": "cl_task_17",
+  "18": "cl_task_18",
+  "19": "cl_task_19",
+  "20": "cl_task_20",
+  "21": "cl_task_21",
+  "22": "cl_task_22",
+  "23": "cl_task_23",
+  "25": "cl_task_25",
+  "26": "cl_task_26",
+  "27": "cl_task_27",
+  "28": "cl_task_28",
+  "37": "cl_task_37",
+  "38": "cl_task_38",
+  "40": "cl_task_40"
+ },
+ "counts": {
+  "hard": 35,
+  "conservative": 32
+ },
+ "catalog_commit": "d5236c886fefb5f5cedb0c755f3b3a949f1f2423"
+}

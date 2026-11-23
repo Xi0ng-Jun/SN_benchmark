@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=/opt/analog-layout/python/bin/python3.12; [ -x \"$P\" ] || P=python3; exec \"$P\" /opt/harness/bin/mcr_hook.py",
+            "timeout": 1200
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "P=/opt/analog-layout/python/bin/python3.12; [ -x \"$P\" ] || P=python3; exec \"$P\" /opt/harness/bin/mcr_hook.py",
+            "timeout": 1200
+          }
+        ]
+      }
+    ]
+  }
+}
