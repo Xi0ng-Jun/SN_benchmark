@@ -317,3 +317,160 @@ def test_offline_smoke_container_local(tmp_path):
     assert exp["good_promoted"] and exp["bad_rejected"] and exp["junk_rejected"]
     assert exp["ssap_from_bundle"] and exp["submission_is_good"] and rep["docker"] is None
     assert rep["local"]["steps"]["promote_good"]["reason"] == "tier0_bootstrap"
+
+
+# ------------------------------------------------------------------------------------------
+# Phase 2: synthetic bank builder and the Stage 0 H_base audit
+# ------------------------------------------------------------------------------------------
+
+from ssap.bank import phase2                                         # noqa: E402
+from ssap.bank.referee_bank import MIRROR_ORDER                     # noqa: E402
+from ssap.targets.alw.metrics_reader import MetricsReading          # noqa: E402
+
+ALL1 = {"gds": 1, "lvs": 1, "shape": 1, "fill": 1, "morph": 1, "drc": 1}
+
+
+def T(sid, cluster, path, *, C=0, d=None, raw_fill=None, kind="terminal") -> BankSample:
+    cert = {"raw_u": [0.0, 0.0, 1.0, raw_fill, 0.0, 0.0]} if raw_fill is not None else {}
+    return BankSample(sid, task_of(cluster), cluster, kind, 1.0 if C else 0.2, C,
+                      dict(d or ALL1), cert, str(path) if path else None)
+
+
+def _source_bank(tmp_path) -> tuple[RefereeBank, Path]:
+    gds = tmp_path / "src" / "layout.gds"
+    gds.parent.mkdir(parents=True)
+    gds.write_bytes(_base(tmp_path))
+    bank = RefereeBank(dev_clusters=DEV)
+    for s in (T("tb_plus", BLIND.blind[0], gds, C=1, raw_fill=0.3),
+              T("tb_low", BLIND.blind[0], gds, d={**ALL1, "lvs": 0, "drc": 0}),
+              T("tb_lvs", BLIND.blind[1], gds, d={**ALL1, "drc": 0}, raw_fill=0.3),
+              T("tv_drc", VISIBLE[1], gds, d={"gds": 1, "lvs": 0, "drc": 1}),
+              T("tv_gds", VISIBLE[0], gds, d={"gds": 1, "lvs": 0, "drc": 0}),
+              T("tv_gone", VISIBLE[2], tmp_path / "missing.gds", C=1),
+              T("tv_traj", VISIBLE[3], gds, C=1, kind="trajectory")):
+        bank.add(s)
+    return bank, gds
+
+
+def test_phase2_select_mutation_sources(tmp_path):
+    bank, _ = _source_bank(tmp_path)
+    ids = [s.sample_id for s in phase2.select_mutation_sources(bank, BLIND, max_sources=3)]
+    assert ids == ["tb_plus", "tv_drc", "tb_lvs"]           # S+, reserved visible, S+_lvs
+    ids = [s.sample_id for s in phase2.select_mutation_sources(bank, BLIND, max_sources=2)]
+    assert ids == ["tb_plus", "tv_drc"]                     # visible kept over a blind S+_lvs
+    ids = [s.sample_id for s in phase2.select_mutation_sources(bank, BLIND, max_sources=10)]
+    assert ids == ["tb_plus", "tv_drc", "tb_lvs", "tv_gds"]  # one per cluster, files only
+
+
+def test_phase2_effective_area_from_sample(tmp_path):
+    data = _base(tmp_path)
+    s = T("x", VISIBLE[0], None, raw_fill=0.3)
+    assert phase2.effective_area_from_sample(s, data, TOP) == pytest.approx(0.4 * 200.0)
+    assert phase2.effective_area_from_sample(T("y", VISIBLE[0], None), data, TOP) is None
+    no_lvs = T("z", VISIBLE[0], None, d={**ALL1, "lvs": 0}, raw_fill=0.3)
+    assert phase2.effective_area_from_sample(no_lvs, data, TOP) is None
+
+
+NEG_KEY = {"shape_q_over_4": "shape", "drc_sliver": "drc", "gds_truncated": "gds",
+           "gds_renamed_top": "gds", "fill_low_ring": "fill", "lvs_missing_label": "lvs"}
+
+
+def _variant_name(p: Path) -> str:
+    return p.name.split("_", 2)[2]
+
+
+def _mock_verifier(task_id, submission_dir, out_dir):
+    name = _variant_name(Path(submission_dir).parent)
+    if name == "rotate90":
+        return MetricsReading(None, None, {k: BOTTOM for k in ALL1}, {"infra_error": True})
+    d = dict(ALL1)
+    if name in NEG_KEY:
+        d[NEG_KEY[name]] = 0
+    c = int(all(v == 1 for v in d.values()))
+    return MetricsReading(1.0 if c else 0.3, c, d, {})
+
+
+def _mock_inner(task_id, top, gds_path, work_dir):
+    name = _variant_name(Path(gds_path).parent.parent)
+    m = [0 if NEG_KEY.get(name) == MIRROR_ORDER[i][2:] else 1 for i in range(6)]
+    return {"m": m, "raw_u": [0.0] * 6, "mirror_names": list(MIRROR_ORDER),
+            "advisory_flags": {"advisory_aspect_gt_3": name == "shape_q_advisory"}}
+
+
+def _catalog():
+    return {task_of(c): {"top": TOP, "ports": ["nope", "vdd"], "q_max": 4.0} for c in DEV}
+
+
+def test_phase2_synthesize_bank_variants_blind_safe(tmp_path):
+    bank, _ = _source_bank(tmp_path)
+    work = tmp_path / "work"
+    dry = phase2.synthesize_bank_variants(bank, _catalog(), BLIND, work_dir=work, dry_run=True,
+                                          verifier_fn=_mock_verifier)
+    assert dry["n_sources"] == 3 and dry["n_written"] == 0 and dry["n_added"] == 0
+    assert not work.exists() and len(bank) == 7
+    out = phase2.synthesize_bank_variants(bank, _catalog(), BLIND, work_dir=work, parallel=2,
+                                          verifier_fn=_mock_verifier, inner_cert_fn=_mock_inner)
+    n_rot = out["by_variant_name"]["rotate90"]["planned"]
+    assert out["n_sources"] == 3 and out["n_sources_blind_clusters"] == 2
+    assert out["n_variants_planned"] == dry["n_variants_planned"] == out["n_written"]
+    assert out["n_skipped_infra"] == n_rot == 3
+    assert out["n_verified"] == out["n_added"] == out["n_variants_planned"] - n_rot
+    assert out["n_inner_cert"] == out["n_verified"]
+    assert out["by_variant_name"]["fill_low_ring"]["added"] == 2       # LVS-passing sources only
+    assert out["by_variant_name"]["drc_sliver"]["agree"] == 3
+    text = json.dumps(out)
+    for needle in [*BLIND.blind, *BLIND.blind_task_ids, "tb_plus", "tb_lvs", str(work)]:
+        assert needle not in text
+    BlindBoundary(BLIND).guard(out, blind_records=list(bank))
+    v = bank.get("tb_plus:drc_sliver")
+    assert v.source_kind == "synthetic_neg" and v.d("drc") == 0 and v.cluster_id == BLIND.blind[0]
+    assert v.meta == {"variant": "drc_sliver", "checker": "m_drc", "polarity": "negative",
+                      "q_max": 4.0, "advisory_only_on_q3": False}
+    assert Path(v.artifact_path).is_file() and v.m("m_drc") == 0 and v.m("m_gds") == 1
+    assert bank.get("tv_drc:grid_shift").source_kind == "synthetic_pos"
+    again = phase2.synthesize_bank_variants(bank, _catalog(), BLIND, work_dir=work,
+                                            verifier_fn=_mock_verifier, inner_cert_fn=_mock_inner)
+    assert again["n_added"] == 0 and again["n_existing"] == out["n_added"]
+
+
+def _hbase_bank() -> RefereeBank:
+    bank = RefereeBank(dev_clusters=DEV)
+    for sid, cl, C, d, m, adv, raw in (
+            ("vp1", VISIBLE[0], 1, ALL1, [1] * 6, False, 0.2),
+            ("bp1", BLIND.blind[0], 1, ALL1, [1] * 6, False, 0.2),
+            ("vn1", VISIBLE[1], 0, {**ALL1, "drc": 0}, [1, 1, 1, 1, 1, 0], False, 0.2),
+            ("bn1", BLIND.blind[1], 0, {**ALL1, "shape": 0}, [1, 1, 0, 1, 1, 1], True, 0.2),
+            ("vf1", VISIBLE[3], 0, {**ALL1, "fill": 0}, [1, 1, 1, 0, 1, 1], False, 0.02),
+            ("vu1", VISIBLE[2], 1, ALL1, None, False, None)):        # no incumbent certificate
+        cert = {} if m is None else {"m": m, "raw_u": [0.0, 0.0, 0.0, raw, 0.0, 0.0],
+                                     "advisory_flags": {"advisory_aspect_gt_3": adv}}
+        bank.add(BankSample(sid, task_of(cl), cl, "terminal", float(C), C, dict(d), cert,
+                            f"/state/{sid}/layout.gds"))
+    return bank
+
+
+def test_phase2_screen_hbase_on_bank():
+    bank = _hbase_bank()
+    rep = phase2.screen_hbase_on_bank(bank, BLIND)
+    assert rep["class1_ok"] and set(rep["class1"]) == set(MIRROR_ORDER)
+    drc = rep["class1"]["m_drc"]
+    assert drc["n_checked"] == 5 and drc["n_unchecked"] == 1          # vu1 is not an m != 1
+    assert drc["checks"]["n_S_plus_k"] == 4 and drc["checks"]["n_S_minus_k"] == 0   # vn1 caught
+    assert rep["class1"]["m_lvs"]["checks"]["n_S_minus_k"] is None     # directional only
+    assert rep["class2_ok"]
+    adv = rep["class2"]["advisory_aspect_gt_3"]
+    assert adv["checks"]["k_FP_S_plus"] == 0 and adv["checks"]["k_TP_blind"] == 1
+    assert rep["eps"]["m_fill"] == pytest.approx(0.02 + 1e-6)
+    cov = rep["coverage"]
+    assert cov["n_total"] == 6 and cov["n_S_plus"] == 3 and cov["S_plus"]["clusters_covered"] == 3
+    assert cov["per_criterion"]["m_drc"]["n_S_minus_k"] == 0           # vn1 flagged by m_drc
+    bank.add(BankSample("bv1", task_of(BLIND.blind[2]), BLIND.blind[2], "terminal", 1.0, 1,
+                        dict(ALL1), {"m": [1, 1, 1, 1, 1, 0]}, "/state/bv1/layout.gds"))
+    rep = phase2.screen_hbase_on_bank(bank, BLIND)
+    drc = rep["class1"]["m_drc"]
+    assert not rep["class1_ok"] and drc["checks"]["directional_violations"] == 1
+    assert drc["visible"]["violating_sample_ids"] == [] and drc["blind_aggregate"]["n_fp"] == 1
+    text = json.dumps(rep)
+    for needle in [*BLIND.blind, *BLIND.blind_task_ids, "bp1", "bn1", "bv1", "/state/b"]:
+        assert needle not in text
+    BlindBoundary(BLIND).guard(rep, blind_records=list(bank))

@@ -1,7 +1,8 @@
 """``ssap`` command line (ALW instantiation).
 
 ``alw-check-split``  split / leak invariants R1-R5
-``alw-concordance``  offline container smoke, B_dev build, 0-token mutations, blind freeze, eps_k
+``alw-concordance``  offline container smoke, B_dev build, 0-token mutations, blind freeze, eps_k,
+                    Phase 2 synthetic bank (verified variants), Stage 0 H_base screen
 ``alw-diagnose``     the four zero-LLM dev diagnostics on archived H_base runs
 ``alw-harvest``      Harbor job directory -> run records, Path 1 archive, B_dev samples, summaries
 ``alw-eval``         smoke-10m | subset | baseline (Harbor jobs), fork-path1 (Path 1), c1-val
@@ -135,16 +136,19 @@ def _check_split(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------------------------
 
 def _concordance(args: argparse.Namespace) -> int:
+    from .kernel import artifact_summary as asum
     cfg = _cfg(args)
     state = _state(args, cfg)
-    _, _, split = _alw_data(cfg)
-    actions = [a for a in ("offline_smoke_container", "build_bank", "mutate", "freeze_blind",
-                           "calibrate_eps") if getattr(args, a)]
+    catalog, _, split = _alw_data(cfg)
+    actions = [a for a in ("freeze_blind", "build_bank", "mutate", "synthesize_bank", "calibrate_eps",
+                           "screen_hbase", "offline_smoke_container") if getattr(args, a)]
     if not actions:
         print("alw-concordance: choose at least one of --offline-smoke-container, --build-bank, "
-              "--mutate, --freeze-blind, --calibrate-eps", file=sys.stderr)
+              "--mutate, --freeze-blind, --calibrate-eps, --synthesize-bank, --screen-hbase",
+              file=sys.stderr)
         return 2
     bank_path = Path(args.bank) if args.bank else state / "bank" / "b_dev.jsonl"
+    dev_clusters = sorted({split["cluster_of"][str(n)] for n in split["splits"]["dev"]})
     out: dict = {"actions": actions, "dry_run": args.dry_run}
     ok = True
 
@@ -160,7 +164,6 @@ def _concordance(args: argparse.Namespace) -> int:
         if not args.samples:
             print("--build-bank needs --samples (JSONL of dev BankSample records)", file=sys.stderr)
             return 2
-        dev_clusters = sorted({split["cluster_of"][str(n)] for n in split["splits"]["dev"]})
         samples = [BankSample.from_dict(d) for d in _jsonl(args.samples)]
         dev_ids = set(_split_ids(split, "dev"))
         foreign = sorted({s.task_id for s in samples} - dev_ids)
@@ -193,6 +196,10 @@ def _concordance(args: argparse.Namespace) -> int:
             rows.append(row)
         out["mutate"] = {"n_variants": len(rows), "variants": rows}
 
+    if args.synthesize_bank:
+        out["synthesize_bank"] = _synthesize_bank(args, cfg, state, catalog, split, bank_path,
+                                                  dev_clusters)
+
     if args.calibrate_eps:
         from .bank.concordance import calibrate_epsilon
         from .bank.referee_bank import RefereeBank
@@ -207,6 +214,15 @@ def _concordance(args: argparse.Namespace) -> int:
             out["calibrate_eps"] = {"checker": k, "error": str(exc)}
             ok = False
 
+    if args.screen_hbase:
+        from .bank.blind_clusters import freeze_blind_clusters
+        from .bank.phase2 import screen_hbase_on_bank
+        from .bank.referee_bank import RefereeBank
+        rep = screen_hbase_on_bank(RefereeBank(bank_path, dev_clusters=dev_clusters),
+                                   freeze_blind_clusters(split))
+        out["screen_hbase"] = rep
+        ok = ok and bool(rep["class1_ok"])
+
     if args.offline_smoke_container:
         if args.dry_run:
             out["offline_smoke_container"] = {"planned": True, "work_dir": args.work_dir}
@@ -218,8 +234,33 @@ def _concordance(args: argparse.Namespace) -> int:
             out["offline_smoke_container"] = rep
             ok = ok and bool(rep["ok"])
     out["ok"] = ok
-    _emit(out)
+    _emit(asum.scrub(out, asum.literal_secrets_from_env()))
     return 0 if ok else 1
+
+
+def _synthesize_bank(args: argparse.Namespace, cfg: dict, state: Path, catalog: dict, split: dict,
+                     bank_path: Path, dev_clusters: list[str]) -> dict:
+    """Phase 2: 0-token variants of terminal B_dev layouts, verified offline and admitted."""
+    import os
+    from .bank.blind_clusters import freeze_blind_clusters
+    from .bank.phase2 import (make_alw_verifier_fn, make_docker_inner_cert_fn,
+                              synthesize_bank_variants)
+    from .bank.referee_bank import RefereeBank
+    work = Path(args.synth_dir) if args.synth_dir else state / "bank" / "phase2"
+    alw_repo = args.alw_repo or (cfg.get("alw") or {}).get("repo") or ""
+    verifier_fn = inner_fn = None
+    if args.verify_cmd and not args.dry_run:
+        verifier_fn = make_alw_verifier_fn(args.verify_cmd, alw_repo or None, dict(os.environ))
+        if not args.no_inner_docker:
+            image = args.image or (cfg.get("images") or {}).get("agent_image") or ""
+            inner_fn = make_docker_inner_cert_fn(cfg, cfg["_root"], alw_repo or None,
+                                                 work / "inner", image)
+    tasks = {t["task_id"]: t for t in catalog["tasks"]}
+    bank = RefereeBank(bank_path, dev_clusters=dev_clusters)
+    return synthesize_bank_variants(bank, tasks, freeze_blind_clusters(split), work_dir=work,
+                                    max_sources=args.max_sources, verifier_fn=verifier_fn,
+                                    inner_cert_fn=inner_fn, parallel=args.parallel or 1,
+                                    dry_run=args.dry_run)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -707,6 +748,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--freeze-blind", action="store_true", help="re-derive and freeze the blind clusters")
     p.add_argument("--calibrate-eps", action="store_true", help="calibrate eps_k on B_dev")
     p.add_argument("--checker", default="m_fill")
+    p.add_argument("--synthesize-bank", action="store_true",
+                   help="Phase 2: 0-token variants of terminal B_dev layouts, verified and admitted")
+    p.add_argument("--max-sources", type=int, default=3, help="source clusters for --synthesize-bank")
+    p.add_argument("--verify-cmd", default=None,
+                   help="offline verifier template ({alw_repo} {task_id} {submission_dir} {out_dir}); "
+                        "without it variants are only written")
+    p.add_argument("--no-inner-docker", action="store_true",
+                   help="skip the inner mcr_check certificate (docker --network none)")
+    p.add_argument("--synth-dir", default=None, help="variant directory (default: STATE/bank/phase2)")
+    p.add_argument("--alw-repo", default=None, help="ALW checkout (default: config alw.repo)")
+    p.add_argument("--screen-hbase", action="store_true",
+                   help="Stage 0 H_base concordance screen on B_dev (blind clusters as aggregates)")
     p.set_defaults(fn=_concordance)
 
     p = sub.add_parser("alw-diagnose", help="four zero-LLM dev diagnostics on H_base runs")

@@ -114,6 +114,82 @@ def test_concordance_mutate_and_smoke_dry_run(capsys, tmp_path):
     assert rc == 0 and out["offline_smoke_container"]["planned"]
 
 
+FAKE_VERIFY = """import json, sys
+from pathlib import Path
+task_id, sub, out = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+if out.exists() or out.is_symlink():
+    sys.exit(2)                                   # real `alw verify`: output dir must be new
+name = sub.parent.name.split("_", 2)[2]
+if name == "rotate90":
+    sys.exit(3)                                   # verifier crash -> infra skip
+met = {"status": "evaluated", "score": 0.2, "score_valid": True, "design_passed": False,
+       "scoring_inputs": {"submission_present": True, "geometry_valid": True, "shape_ok": True,
+                          "lvs_pass": False, "drc_pass": name != "drc_sliver"},
+       "stages": {"drc": {"status": "failed" if name == "drc_sliver" else "passed"},
+                  "lvs": {"status": "failed"}, "area": {"status": "measured"}}}
+if name.startswith("gds_"):
+    met = {"status": "invalid_submission", "score": 0.0, "score_valid": True,
+           "design_passed": False, "scoring_inputs": {"submission_present": False}}
+p = out / "verifier" / "evaluation" / "metrics.json"
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(met))
+sys.exit(1)                                       # design_passed = False is a valid verdict
+"""
+
+
+def test_concordance_synthesize_bank_and_screen_hbase(capsys, tmp_path):
+    import sys
+    from ssap.bank.blind_clusters import freeze_blind_clusters
+    from ssap.bank.referee_bank import RefereeBank
+    blind = freeze_blind_clusters(SPLIT)
+    cl = {DEV[i]: SPLIT["cluster_of"][str(n)] for i, n in enumerate(SPLIT["splits"]["dev"])}
+    catalog = {t["task_id"]: t for t in json.loads((ROOT / "configs/alw/catalog.json").read_text())["tasks"]}
+    vis = list({cl[t]: t for t in reversed(DEV) if t in blind.visible_task_ids}.values())[:2]
+    bl = [t for t in DEV if t in blind.blind_task_ids][:1]
+    rows = []
+    (tmp_path / "art").mkdir()
+    for i, t in enumerate(vis + bl):
+        top, port = catalog[t]["top"], catalog[t]["ports"][0]
+        gds = gds_geom.write_gds(tmp_path / "art" / f"{i}.gds", {
+            top: {"boxes": [(65, 20, 0, 0, 20, 10), (68, 20, 1, 1, 3, 3)],
+                  "texts": [(68, 5, 1, 1, port)]}})
+        d = {"gds": 1, "lvs": int(i != 1), "shape": 1, "drc": 1}
+        rows.append({"sample_id": f"run{i}:terminal", "task_id": t, "cluster_id": cl[t],
+                     "source_kind": "terminal", "Y_star": 0.3, "C_star": 0, "d_star": d,
+                     "cert_dict": {"m": [1, int(i != 1), 1, 1, 1, 1], "raw_u": [0.0, 0.0, 0.0, 0.2, 0.0, 0.0]},
+                     "artifact_path": str(gds)})
+    samples = jsonl(tmp_path / "samples.jsonl", rows)
+    synth = tmp_path / "synth"
+    flags = ["--build-bank", "--samples", samples, "--synthesize-bank", "--screen-hbase",
+             "--synth-dir", str(synth)]
+    rc, out = run(capsys, *base(tmp_path, "alw-concordance", *flags, "--dry-run"))
+    assert rc == 0 and out["synthesize_bank"]["n_written"] == 0 and not synth.exists()
+    assert out["actions"] == ["build_bank", "synthesize_bank", "screen_hbase"]
+    rc, out = run(capsys, *base(tmp_path, "alw-concordance", *flags))
+    sb = out["synthesize_bank"]
+    assert rc == 0 and sb["n_sources"] == 3 and sb["n_sources_blind_clusters"] == 1
+    assert sb["n_written"] == sb["n_variants_planned"] > 0 and sb["n_added"] == 0
+    script = tmp_path / "fake_verify.py"
+    script.write_text(FAKE_VERIFY)
+    cmd = f"{sys.executable} {script} {{task_id}} {{submission_dir}} {{out_dir}}"
+    rc, out = run(capsys, *base(tmp_path, "alw-concordance", *flags, "--verify-cmd", cmd,
+                                "--no-inner-docker", "--parallel", "2"))
+    sb, scr = out["synthesize_bank"], out["screen_hbase"]
+    assert rc == 0 and sb["n_skipped_infra"] == sb["by_variant_name"]["rotate90"]["planned"] == 3
+    assert sb["n_added"] == sb["n_verified"] == sb["n_variants_planned"] - 3
+    assert sb["by_variant_name"]["drc_sliver"]["agree"] == 3
+    assert sb["by_variant_name"]["gds_truncated"]["agree"] == 3
+    assert scr["class1_ok"] and scr["coverage"]["n_total"] == 3 + sb["n_added"]
+    assert scr["class1"]["m_drc"]["n_unchecked"] == sb["n_added"]       # no inner certificate
+    text = json.dumps(out)
+    for needle in [*blind.blind, *blind.blind_task_ids, "run2:terminal", str(tmp_path / "art" / "2.gds")]:
+        assert needle not in text
+    bank = RefereeBank(tmp_path / "state" / "bank" / "b_dev.jsonl")
+    v = bank.get("run2:terminal:drc_sliver")
+    assert v.d("drc") == 0 and v.C_star == 0 and v.source_kind == "synthetic_neg"
+    assert v.cluster_id in blind.blind and Path(v.artifact_path).is_file()
+
+
 # ------------------------------------------------------------------------------------------
 # alw-diagnose
 # ------------------------------------------------------------------------------------------
