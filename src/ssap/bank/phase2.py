@@ -364,11 +364,15 @@ def _stage_inner_workspace(ws: Path, env_src: Path, top: str, gds_path: Path) ->
 def make_docker_inner_cert_fn(cfg: Mapping | None, root: str | Path, alw_repo: str | Path | None,
                               work_dir: str | Path, image: str | None, *,
                               timeout_sec: float = 1800.0,
-                              check_timeout_sec: float = 900.0) -> InnerCertFn | None:
+                              check_timeout_sec: float = 900.0,
+                              terminal_fallback: bool = False) -> InnerCertFn | None:
     """Inner ``mcr_check --gds`` certificate inside ``docker run --network none`` (``None`` when
     the image or the ALW checkout is unavailable). ``/opt/harness`` is staged once; the frozen
     ``.mcr/trusted_task/{task,eda_env.sh}`` comes from ``<alw_repo>/tasks/<task_id>/environment``
-    and is mounted read-only."""
+    and is mounted read-only. ``notes`` and ``terminal_m`` (``{checker: 0 | 1}`` of terminal-only
+    Class-1 checkers, from the certificate or the top level of the output) are kept. With
+    ``terminal_fallback`` and no ``terminal_m`` in the ``--gds`` output, the candidate is promoted
+    into a scratch workspace and ``terminal_m`` is read from ``mcr_check --gate``."""
     from ..targets.alw.agent_wrapper import HARNESS_MOUNT, stage_harness_bundle
     from ..targets.alw.harvest import CERT_KEYS
     if not image or not alw_repo or not Path(alw_repo).is_dir() or shutil.which("docker") is None:
@@ -383,24 +387,42 @@ def make_docker_inner_cert_fn(cfg: Mapping | None, root: str | Path, alw_repo: s
         ws = base / "alb-workspace"
         trusted = _stage_inner_workspace(ws, Path(alw_repo) / "tasks" / task_id / "environment",
                                          top, Path(gds_path))
-        cmd = ["docker", "run", "--rm", "--network", "none", "--cpus", "2", "--memory", "4g",
-               "--entrypoint", "/bin/sh", "-v", f"{harness.resolve()}:{HARNESS_MOUNT}:ro",
-               "-v", f"{ws.resolve()}:/alb-workspace",
-               "-v", f"{trusted.resolve()}:/alb-workspace/.mcr/trusted_task:ro",
-               "-w", "/alb-workspace", "-e", f"PYTHONPATH={HARNESS_MOUNT}/python",
-               "-e", f"MCR_HARNESS_PYTHON={HARNESS_MOUNT}/python",
-               "-e", "MCR_WORKSPACE=/alb-workspace",
-               "-e", f"MCR_CHECK_TIMEOUT_SEC={int(check_timeout_sec)}",
-               image, "-c", DOCKER_PY, "sh", f"{HARNESS_MOUNT}/bin/mcr_check",
-               "--gds", "/alb-workspace/.cand/layout.gds"]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec,
-                           env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                                "HOME": os.environ.get("HOME", str(base))})
+        head = ["docker", "run", "--rm", "--network", "none", "--cpus", "2", "--memory", "4g",
+                "--entrypoint", "/bin/sh", "-v", f"{harness.resolve()}:{HARNESS_MOUNT}:ro",
+                "-v", f"{ws.resolve()}:/alb-workspace",
+                "-v", f"{trusted.resolve()}:/alb-workspace/.mcr/trusted_task:ro",
+                "-w", "/alb-workspace", "-e", f"PYTHONPATH={HARNESS_MOUNT}/python",
+                "-e", f"MCR_HARNESS_PYTHON={HARNESS_MOUNT}/python",
+                "-e", "MCR_WORKSPACE=/alb-workspace",
+                "-e", f"MCR_CHECK_TIMEOUT_SEC={int(check_timeout_sec)}", image]
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+               "HOME": os.environ.get("HOME", str(base))}
+        cmd = head + ["-c", DOCKER_PY, "sh", f"{HARNESS_MOUNT}/bin/mcr_check",
+                      "--gds", "/alb-workspace/.cand/layout.gds"]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, env=env)
         (base / "mcr_check.log").write_text(f"rc={p.returncode}\n{p.stderr[-4000:]}")
         out = json.loads(p.stdout)
         cert = out.get("cert") or {}
         res = {k: cert[k] for k in CERT_KEYS if k in cert}
+        for k in ("notes", "terminal_m"):
+            if k in cert:
+                res[k] = cert[k]
+        if "terminal_m" not in res and isinstance(out.get("terminal_m"), dict):
+            res["terminal_m"] = out["terminal_m"]
         if out.get("mirror_names"):
             res["mirror_names"] = list(out["mirror_names"])
+        if terminal_fallback and "terminal_m" not in res:
+            script = ('mkdir -p /alb-workspace/submission /alb-workspace/work/draft; '
+                      'P=/opt/analog-layout/python/bin/python3.12; [ -x "$P" ] || P=python3; '
+                      f'"$P" {HARNESS_MOUNT}/bin/mcr_promote --gds /alb-workspace/.cand/layout.gds '
+                      f'>/dev/null 2>&1; exec "$P" {HARNESS_MOUNT}/bin/mcr_check --gate')
+            g = subprocess.run(head + ["-c", script], capture_output=True, text=True,
+                               timeout=timeout_sec, env=env)
+            try:
+                tm = json.loads(g.stdout).get("terminal_m")
+            except ValueError:
+                tm = None
+            if isinstance(tm, dict):
+                res["terminal_m"] = tm
         return res
     return fn

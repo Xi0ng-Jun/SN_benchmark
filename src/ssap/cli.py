@@ -382,15 +382,25 @@ H_BASE_INSTRUCTIONS = (
 )
 
 
+def default_h_inc_harness(state: Path) -> Path | None:
+    """``STATE/loop/h_inc_harness`` when it holds a promoted ``H_inc`` source tree."""
+    p = Path(state) / "loop" / "h_inc_harness"
+    return p if (p / "container" / "alw" / "settings.json").is_file() else None
+
+
 def _stage_jobs(cfg: dict, state: Path, *, arm: str, tasks: list[str], seeds: list[int],
-                tag: str, timeout_s: float | None) -> list[dict]:
+                tag: str, timeout_s: float | None, harness_root: Path | None = None) -> list[dict]:
+    """``harness_root``: source tree (``container/alw`` + ``src/ssap``) staged as ``/opt/harness``
+    (default: this checkout; for ``H_star`` the promoted ``STATE/loop/h_inc_harness`` if any)."""
     from .targets.alw.agent_wrapper import stage_harness_bundle, write_compose_overlay
     from .targets.alw.harbor_runner import build_harbor_job_config, persist_job_config
     base = state / "jobs" / tag
     harness = None
+    if arm == "H_star" and harness_root is None:
+        harness_root = default_h_inc_harness(state)
     if arm != "H_raw":
         harness = base / "harness"
-        stage_harness_bundle(cfg["_root"], harness, watermarks=cfg.get("watermarks"))
+        stage_harness_bundle(harness_root or cfg["_root"], harness, watermarks=cfg.get("watermarks"))
     agent_image = ((cfg.get("images") or {}).get("agent_image") or "").strip() or None
     mcr_overlay = write_compose_overlay(base / "compose.mcr.yaml",
                                         harness_dir=harness, agent_image=agent_image)
@@ -529,7 +539,8 @@ def _eval(args: argparse.Namespace) -> int:
             print(f"tasks not in {sp}: {bad}", file=sys.stderr)
             return 2
         tag = args.tag or f"{mode}-{arm}"
-        jobs = _stage_jobs(cfg, state, arm=arm, tasks=tasks, seeds=seeds, tag=tag, timeout_s=timeout)
+        jobs = _stage_jobs(cfg, state, arm=arm, tasks=tasks, seeds=seeds, tag=tag, timeout_s=timeout,
+                           harness_root=Path(args.harness_root) if args.harness_root else None)
         out = {"mode": mode, "arm": arm, "split": sp, "n_jobs": len(jobs), "dry_run": args.dry_run,
                "launch_plan": str(state / "jobs" / tag / "launch_plan.json")}
         if not args.dry_run:
@@ -598,7 +609,12 @@ def _eval(args: argparse.Namespace) -> int:
 def _loop(args: argparse.Namespace) -> int:
     """Round ``g`` reads ``loop/round_<g>/{archive.json, candidates.json, repair_results.jsonl}``
     (dev executions of the current ``H_inc``) and stops at the first round whose inputs are not
-    there yet. State: ``loop/h_inc.json``, ``loop/idle_streaks.json``."""
+    there yet. State: ``loop/h_inc.json``, ``loop/idle_streaks.json``.
+
+    With ``--auto`` / ``--propose`` / ``--screen-candidate`` / ``--eval-candidate`` the Phase 3
+    autonomous loop (``ssap.eval.auto_loop``) runs instead."""
+    if any(getattr(args, k, False) for k in ("auto", "propose", "screen_candidate", "eval_candidate")):
+        return _auto_loop(args)
     from .eval.event_ledger import EventLedger, K_IDLE, prune_h_inc, update_idle_streaks
     from .eval.fork_eval import record_incumbent_events
     from .eval.infra_ledger import InfraLedger
@@ -666,6 +682,23 @@ def _loop(args: argparse.Namespace) -> int:
         h_path.write_text(json.dumps(h_inc, indent=1, sort_keys=True))
         s_path.write_text(json.dumps(streaks, indent=1, sort_keys=True))
     _emit({"dry_run": args.dry_run, "rounds": summary, "h_inc": h_inc})
+    return 0
+
+
+def _auto_loop(args: argparse.Namespace) -> int:
+    from .bank.blind_clusters import PrivacyViolation
+    from .eval.auto_loop import cli_auto
+    from .eval.proposer_sandbox import user_scrub
+    from .kernel import artifact_summary as asum
+    cfg = _cfg(args)
+    state = _state(args, cfg)
+    catalog, _, split = _alw_data(cfg)
+    try:
+        out = cli_auto(args, cfg, state, catalog, split)
+    except (ValueError, FileNotFoundError, PrivacyViolation) as exc:
+        print(f"alw-loop: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    _emit(user_scrub(out, asum.literal_secrets_from_env()))
     return 0
 
 
@@ -802,6 +835,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag", default=None)
     p.add_argument("--harbor-cmd", default=None,
                    help="live launch template with a {job_config} placeholder (verified runbook)")
+    p.add_argument("--harness-root", default=None,
+                   help="source tree staged as /opt/harness (default: checkout; H_star: "
+                        "STATE/loop/h_inc_harness when present)")
     p.add_argument("--archive", default=None, help="fork-path1: archived H_inc dev trials (JSON/JSONL)")
     p.add_argument("--candidate", default=None, help="fork-path1: {candidate_id, gate, change}")
     p.add_argument("--h-inc", default=None, help="fork-path1: H_inc record (default H_base)")
@@ -816,6 +852,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("alw-loop", help="round-by-round Path 1 outer loop with K_idle pruning")
     _add_common(p)
     p.add_argument("--rounds", type=int, default=1)
+    g = p.add_argument_group("Phase 3 autonomous loop (server side)")
+    g.add_argument("--auto", action="store_true", help="propose + Stage 0 screen + Stage 1 eval")
+    g.add_argument("--propose", action="store_true", help="run one proposer attempt")
+    g.add_argument("--screen-candidate", action="store_true", help="Stage 0 screen of the last attempt")
+    g.add_argument("--eval-candidate", action="store_true", help="Stage 1 eval of round candidate.json")
+    g.add_argument("--round", type=int, default=None, help="explicit round (default: h_inc round + 1)")
+    g.add_argument("--max-propose-attempts", type=int, default=3)
+    g.add_argument("--proposer-max-turns", type=int, default=80)
+    g.add_argument("--eval-seeds", type=int, default=1, help="Path 2 seeds per dev task")
+    g.add_argument("--harbor-cmd", default=None, help="Path 2 launch template ({job_config})")
+    g.add_argument("--verify-cmd", default=None,
+                   help="offline verifier template ({alw_repo} {task_id} {submission_dir} {out_dir})")
+    g.add_argument("--inc-job-dir", default=None, help="Path 2: harvest H_inc runs from this job dir")
+    g.add_argument("--alw-repo", default=None, help="ALW checkout (default: config alw.repo)")
     p.set_defaults(fn=_loop)
 
     p = sub.add_parser("alw-report", help="sealed test report (single unblind, R >= 3 seeds)")

@@ -152,6 +152,9 @@ def harvest_trial(job_dir: str | Path, rec: Mapping, *, theta_gw_max: float = 0.
         "gate_triggered": bool((gate or {}).get("gate_triggered", s.get("gate_triggered", False))),
         "ratchet_promoted": promoted,
     }
+    if rec.get("arm") != "H_raw":  # MCR hook active: a certificate or a gate decision was produced
+        run["hook_triggered"] = bool(pre_cert is not None or post_cert is not None
+                                     or (gate or {}).get("gate_triggered"))
     if proxy is not None:          # unmetered records (launch plan only) carry no proxy keys
         run |= {"proxy_requests": int(proxy.get("proxy_requests") or 0),
                 "unrecovered_gateway_error": bool(proxy.get("unrecovered_gateway_error")),

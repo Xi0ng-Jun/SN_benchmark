@@ -272,6 +272,8 @@ def build_stateless_repair_invocation(snapshot_pre_dir: str | Path, gate_report_
         "PATH": (f"{HARNESS_MOUNT}/bin:/opt/analog-layout/python/bin:/opt/analog-layout/tools/bin:"
                  "/opt/analog-layout/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
         "NO_PROXY": LOOPBACK_NO_PROXY, "no_proxy": LOOPBACK_NO_PROXY,
+        # standalone `docker run` Phase B containers run as root: bypassPermissions needs both
+        "IS_SANDBOX": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     })
     assert_model_homogeneous(env, model)
     return RepairInvocation(argv=argv, env=env, prompt=prompt, timeout_sec=float(granted),
