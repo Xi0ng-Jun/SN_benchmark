@@ -264,6 +264,37 @@ def screen_hbase_on_bank(bank: RefereeBank, blind: BlindSet) -> dict:
     return report
 
 
+def refresh_bank_from_cached_metrics(bank_path: str | Path, *,
+                                     dev_clusters: list[str] | tuple[str, ...] | None = None,
+                                     dry_run: bool = False) -> dict:
+    """Re-read ``<variant_dir>/verify/verifier/evaluation/metrics.json`` (when present next to a
+    synthetic sample's ``submission/layout.gds``) with ``read_metrics`` and rewrite ``bank_path``
+    atomically so ``d_star`` updates without re-running Docker containers."""
+    from ..targets.alw.harvest import atomic_write_text
+    from ..targets.alw.metrics_reader import read_metrics
+    p = Path(bank_path)
+    bank = RefereeBank(p, dev_clusters=dev_clusters)
+    updated = 0
+    rows: list[BankSample] = []
+    for s in bank:
+        art = Path(s.artifact_path) if s.artifact_path else None
+        mpath = (art.parents[1] / "verify" / "verifier" / "evaluation" / "metrics.json"
+                 if art is not None and len(art.parents) >= 2 else None)
+        if s.source_kind in ("synthetic_pos", "synthetic_neg") and mpath and mpath.is_file():
+            r = read_metrics(mpath)
+            if r.Y_star is not None and dict(r.d_star) != s.d_star:
+                s = BankSample(sample_id=s.sample_id, task_id=s.task_id, cluster_id=s.cluster_id,
+                               source_kind=s.source_kind, Y_star=r.Y_star, C_star=r.C_star,
+                               d_star=dict(r.d_star), cert_dict=dict(s.cert_dict),
+                               artifact_path=s.artifact_path, meta=dict(s.meta))
+                updated += 1
+        rows.append(s)
+    if updated and not dry_run:
+        text = "".join(json.dumps(x.as_dict(), sort_keys=True, default=str) + "\n" for x in rows)
+        atomic_write_text(p, text)
+    return {"n_total": len(rows), "n_updated": updated, "written": bool(updated and not dry_run)}
+
+
 # ---------------------------------------------------------------------------------------------
 # live helpers (CLI): offline `alw verify` and the inner mcr_check in a network-less container
 # ---------------------------------------------------------------------------------------------

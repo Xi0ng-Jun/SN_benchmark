@@ -140,11 +140,13 @@ def _concordance(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     state = _state(args, cfg)
     catalog, _, split = _alw_data(cfg)
-    actions = [a for a in ("freeze_blind", "build_bank", "mutate", "synthesize_bank", "calibrate_eps",
-                           "screen_hbase", "offline_smoke_container") if getattr(args, a)]
+    actions = [a for a in ("freeze_blind", "build_bank", "mutate", "synthesize_bank",
+                           "refresh_bank_metrics", "calibrate_eps", "screen_hbase",
+                           "offline_smoke_container") if getattr(args, a)]
     if not actions:
         print("alw-concordance: choose at least one of --offline-smoke-container, --build-bank, "
-              "--mutate, --freeze-blind, --calibrate-eps, --synthesize-bank, --screen-hbase",
+              "--mutate, --freeze-blind, --calibrate-eps, --synthesize-bank, "
+              "--refresh-bank-metrics, --screen-hbase",
               file=sys.stderr)
         return 2
     bank_path = Path(args.bank) if args.bank else state / "bank" / "b_dev.jsonl"
@@ -199,6 +201,11 @@ def _concordance(args: argparse.Namespace) -> int:
     if args.synthesize_bank:
         out["synthesize_bank"] = _synthesize_bank(args, cfg, state, catalog, split, bank_path,
                                                   dev_clusters)
+
+    if args.refresh_bank_metrics:
+        from .bank.phase2 import refresh_bank_from_cached_metrics
+        out["refresh_bank_metrics"] = refresh_bank_from_cached_metrics(
+            bank_path, dev_clusters=dev_clusters, dry_run=args.dry_run)
 
     if args.calibrate_eps:
         from .bank.concordance import calibrate_epsilon
@@ -758,6 +765,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skip the inner mcr_check certificate (docker --network none)")
     p.add_argument("--synth-dir", default=None, help="variant directory (default: STATE/bank/phase2)")
     p.add_argument("--alw-repo", default=None, help="ALW checkout (default: config alw.repo)")
+    p.add_argument("--refresh-bank-metrics", action="store_true",
+                   help="re-read cached synthetic verifier metrics.json into B_dev without Docker")
     p.add_argument("--screen-hbase", action="store_true",
                    help="Stage 0 H_base concordance screen on B_dev (blind clusters as aggregates)")
     p.set_defaults(fn=_concordance)

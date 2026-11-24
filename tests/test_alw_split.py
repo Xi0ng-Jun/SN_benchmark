@@ -350,6 +350,16 @@ def test_metrics_invalid_submission_scores_zero():
     r = parse_metrics({"status": "invalid_submission", "evaluation_error": False, "score_valid": True,
                        "score": 0.0, "design_passed": False, "stages": {}, "scoring_inputs": {}})
     assert (r.Y_star, r.C_star, r.d_star["gds"], r.meta["infra_error"]) == (0.0, 0, 0, False)
+    # Regular file snapshotted (Tier 0 submission_present=True, 0.10) that fails geometry_valid
+    # (truncated GDS or wrong top cell) has d*_gds = 0 and short-circuits d*_shape to bottom.
+    r2 = parse_metrics(_metrics(
+        score=0.1, design_passed=False,
+        stages={"drc": {"status": "failed"}, "lvs": {"status": "failed"},
+                "area": {"status": "failed"}, "quality": {"status": "skipped"},
+                "pex": {"status": "skipped"}, "postsim": {"status": "skipped"}},
+        si={"submission_present": True, "geometry_valid": False, "shape_ok": False,
+            "lvs_pass": False, "drc_pass": False, "pex_success": False}))
+    assert (r2.Y_star, r2.d_star["gds"], r2.d_star["shape"]) == (0.1, 0, BOTTOM)
 
 
 def test_metrics_evaluation_error_is_infra():

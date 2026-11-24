@@ -128,8 +128,10 @@ met = {"status": "evaluated", "score": 0.2, "score_valid": True, "design_passed"
        "stages": {"drc": {"status": "failed" if name == "drc_sliver" else "passed"},
                   "lvs": {"status": "failed"}, "area": {"status": "measured"}}}
 if name.startswith("gds_"):
-    met = {"status": "invalid_submission", "score": 0.0, "score_valid": True,
-           "design_passed": False, "scoring_inputs": {"submission_present": False}}
+    met = {"status": "evaluated", "score": 0.1, "score_valid": True,
+           "design_passed": False, "stages": {"drc": {"status": "failed"}, "lvs": {"status": "failed"},
+                                              "area": {"status": "failed"}},
+           "scoring_inputs": {"submission_present": True, "geometry_valid": False, "shape_ok": False}}
 p = out / "verifier" / "evaluation" / "metrics.json"
 p.parent.mkdir(parents=True, exist_ok=True)
 p.write_text(json.dumps(met))

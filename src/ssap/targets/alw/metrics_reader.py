@@ -72,9 +72,18 @@ def d_star(data: dict) -> dict[str, int | str]:
     pex_success = si.get("pex_success") is True
     out: dict[str, int | str] = {}
 
-    # gds: 1 frozen; 0 missing / invalid; bottom when the evaluation broke before freezing.
+    area = _stage(data, "area")
+    geom = si.get("geometry_valid")
+    # gds: 1 when frozen AND geometry_valid (matching Tier-1 m_gds); 0 when missing / invalid or
+    # geometry_valid is False (e.g. truncated stream or wrong top cell, where Tier-0 file_present=1
+    # still holds); bottom when the evaluation broke or stopped before geometry was checked.
     if present:
-        out["gds"] = 1
+        if geom is True or ("geometry_valid" not in si and area.get("status") != "failed"):
+            out["gds"] = 1
+        elif geom is False or area.get("status") == "failed":
+            out["gds"] = 0
+        else:
+            out["gds"] = BOTTOM
     elif status in TASK_FAILURE_STATUSES:
         out["gds"] = 0
     else:
@@ -83,13 +92,12 @@ def d_star(data: dict) -> dict[str, int | str]:
     out["drc"] = _pass_fail(_stage(data, "drc"), "passed", ("failed",))
     out["lvs"] = _pass_fail(_stage(data, "lvs"), "passed", ("failed",))
 
-    area = _stage(data, "area")
-    if _unevaluated(area):
+    if out["gds"] != 1 or _unevaluated(area):
         out["shape"] = BOTTOM
-    elif area.get("status") == "measured" and si.get("geometry_valid") is True:
+    elif area.get("status") == "measured" and geom is True:
         out["shape"] = 1 if si.get("shape_ok") is True else 0
     elif area.get("status") in ("failed", "measured"):
-        out["shape"] = 0          # area failed or geometry invalid
+        out["shape"] = 0          # area failed on a valid stream or shape_ok=False
     else:
         out["shape"] = BOTTOM
 

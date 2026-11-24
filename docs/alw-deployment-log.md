@@ -345,3 +345,20 @@
 - `[判断]` 在第 (4) 项测量之前，`enable_checkpoint_ranker = false` 只是默认取值，不是“余量近零、关闭排序器”的实测结论；若后续要据此定案，需先离线重评草稿里程碑 GDS。
 - `[判断]` 本次只有 `H_base` 臂，`dev` 上看不到 `H_raw -> H_base` 的保底收益；正式三段归因（`raw -> H_base -> H*`）仍按规划在密封 `test` 上以 `>= 3` 种子完成。
 - `[判断]` 下一步优先级：先用 Phase 2 合成变体扩充 `B_dev` 并跑 Stage 0 `H_base` 一致性筛查（补 `m_lvs` / `m_fill` / `m_morph` 的 `S+_k` 覆盖），再按 §5.6 (c) 把 Round 1 的提案重心放在 LVS 执行缺口上。盲簇在这一过程中继续只回传聚合计数。
+
+---
+
+## 6. Phase 2（主动裁判库 B_dev 合成与 Stage 0 一致性核验，0 LLM Token）
+
+> 本节数字全部由脚本核对自 `docs/server-info/phase2_bank_report.json`；严守盲簇隔离红线，不列出任何盲簇题号、簇 ID、样本 ID 或路径。
+
+### 6.1 裁判库规模与合成变体覆盖 `[事实]`
+
+- **终态入库**：`build_bank` 从 Phase 1c 接收 `24` 条开发集终态记录（`n_samples = 24, written = 24`）。
+- **零 Token 合成与双端验证**：`synthesize_bank` 从 `3` 个独立开发簇（`2` 个盲簇、`1` 个可见簇，`n_source_errors = 0`）生成 `25` 个确定性变体，**`25 / 25` 全部完成断网 `alw verify` 与容器内 `mcr_check` 双端检验（`n_skipped_infra = 0`）**，将 `B_dev` 扩充至 **`49` 条样本**（`terminal = 24`、`synthetic_neg = 16`、`synthetic_pos = 9`），`S_plus`（`C* = 1`）由 `1` 条扩充至 `3` 条（原版 + `grid_shift` + `rotate90`）。
+- **各变体预期标签核对**：`drc_sliver`（`3/3 agree`）、`fill_low_ring`（`2/2 agree`）、`lvs_missing_label`（`2/2 agree`）、`shape_q_over_4`（`3/3 agree`）、`shape_q_advisory`（`3/3 agree`）、`grid_shift`（`3/3 agree`）、`rotate90`（`3/3 agree`）；仅 `gds_truncated`（`3`）与 `gds_renamed_top`（`3`）在旧版 `metrics_reader` 下出现 `disagree = 3`（见 §6.2）。
+
+### 6.2 Stage 0 一致性与 `metrics_reader` 几何有效性对齐修复 `[事实 + 判断]`
+
+- **`[事实]` 已通过项**：`m_lvs`、`m_drc`、`m_shape`、`m_fill`、`m_morph` 五项第 I 类镜像检查器均为 `0` 方向性违例、`0` 双向违例（`ok = true`），`calibrate_eps("m_fill")` 校准得 **`eps_fill = 0.0`**；第 II 类探针 `advisory_aspect_gt_3` 在 `S_plus` 上 **`k_FP_S_plus = 0`**、盲簇上 **`k_TP_blind = 4`**（`class2_ok = true`）。
+- **`[事实 + 判断]` `m_gds` 6 例偏差根因与修复**：外层 `evaluate.py` 对普通文件先置 `submission_present = true`（对应内层 Tier 0 `file_present = 1`），随后在 `stages.area` 对截断流或错 `top_cell` 置 `geometry_valid = false`（对应内层 Tier 1 `m_gds = 0`）。旧版 `metrics_reader.d_star` 仅读取 `submission_present` 而忽略 `geometry_valid = false`，将这 `6` 个损坏/错名变体误标为 `d*_gds = 1`。已在 [metrics_reader.py](../src/ssap/targets/alw/metrics_reader.py) 对齐 `present and geometry_valid`（同时当 `d*_gds != 1` 时将 `d*_shape` 短路为 `bottom`），并新增 `ssap alw-concordance --refresh-bank-metrics` 直接从已缓存 `metrics.json` 原子刷新 `B_dev`，无需重跑 Docker。
