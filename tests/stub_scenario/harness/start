@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Stand-in for a solving agent. Calls no model.
+
+Reads task.json in the working directory and acts on "answer" in settings.json
+next to this file:
+  correct       write answer.json with the fields exactly as asked
+  wrong         write answer.json with every field wrong
+  none          write nothing
+  crash         exit 3 before writing anything
+  break_scorer  write an answer.json that makes the stub scorer fail
+"""
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "settings.json")) as f:
+    mode = json.load(f).get("answer", "correct")
+with open("task.json") as f:
+    fields = json.load(f)["fields"]
+print("solver: mode=%s model=%s" % (mode, os.environ.get("HB_MODEL")))
+
+if mode == "crash":
+    print("solver: crashing on purpose", file=sys.stderr)
+    sys.exit(3)
+if mode == "none":
+    sys.exit(0)
+if mode == "correct":
+    answer = fields
+elif mode == "wrong":
+    answer = {k: {"not": v} for k, v in fields.items()}
+elif mode == "break_scorer":
+    answer = {"break_scorer": True}
+else:
+    print("solver: unknown mode %r" % mode, file=sys.stderr)
+    sys.exit(4)
+with open("answer.json", "w") as f:
+    json.dump(answer, f)

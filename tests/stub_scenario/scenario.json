@@ -1,0 +1,18 @@
+{
+  "tasks": [
+    {"id": "p1", "files": "tasks/p1"},
+    {"id": "p2", "group": "g1", "files": "tasks/p2"},
+    {"id": "p3", "group": "g1", "files": "tasks/p3"},
+    {"id": "e1", "files": "tasks/e1"},
+    {"id": "e2", "group": "g2", "files": "tasks/e2"},
+    {"id": "e3", "group": "g2", "files": "tasks/e3"}
+  ],
+  "split": {"practice": ["p1", "p2", "p3"], "exam": ["e1", "e2", "e3"]},
+  "commands": {
+    "run": ["python3", "run.py"],
+    "score": ["python3", "score.py"],
+    "enter": ["python3", "enter.py"]
+  },
+  "score": {"file": "score.json", "key": "score"},
+  "initial_harness": "harness"
+}

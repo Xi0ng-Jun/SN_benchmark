@@ -1,0 +1,320 @@
+"""Read a scenario directory and call its three commands.
+
+A scenario directory holds ``scenario.json`` and the commands it names. This
+module passes paths in and keeps what comes out; it never interprets what the
+commands write. The only reading of a command's output is ``score_value``,
+which the final report uses for aggregation. See docs/scenario-interface.md.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import signal
+import subprocess
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+CONFIG_NAME = "scenario.json"
+COMMANDS = ("run", "score", "enter")
+START_NAME = "start"
+TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness"}
+
+# Implementation detail, not a method parameter: how long a command gets to
+# exit after SIGTERM before its whole process group receives SIGKILL.
+KILL_GRACE_SECONDS = 10
+
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+class ScenarioError(Exception):
+    """The scenario directory does not meet the interface."""
+
+
+@dataclass(frozen=True)
+class Task:
+    id: str
+    group: str
+    files: Path | None  # what the developer agent may read when this is a practice task
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    argv: tuple[str, ...]
+    exit_code: int | None  # None: the command could not be started (see ``error``)
+    timed_out: bool
+    started: str  # UTC, ISO 8601
+    seconds: float
+    stdout: Path
+    stderr: Path
+    error: str | None = None
+
+    def to_dict(self) -> dict:
+        return {"argv": list(self.argv), "exit_code": self.exit_code,
+                "timed_out": self.timed_out, "started": self.started,
+                "seconds": self.seconds, "stdout": str(self.stdout),
+                "stderr": str(self.stderr), "error": self.error}
+
+
+@dataclass(frozen=True)
+class Scenario:
+    root: Path
+    config: dict
+    tasks: dict[str, Task]
+    practice: tuple[str, ...]
+    exam: tuple[str, ...]
+    commands: dict[str, tuple[str, ...]]
+    initial_harness: Path
+
+    def run(self, task: str, harness: Path, out: Path, logs: Path, *, model_url: str,
+            model_key: str, model: str, timeout: float | None = None) -> CommandResult:
+        """Run ``harness``'s start command on ``task``; product and logs go to ``out``."""
+        env = {"HB_TASK": self._task(task), "HB_HARNESS": str(_existing_dir(harness)),
+               "HB_MODEL_URL": model_url, "HB_MODEL_KEY": model_key, "HB_MODEL": model,
+               "HB_OUT": str(_mkdir(out))}  # checks above run before the directory is made
+        return self._call("run", [], logs, timeout, env)
+
+    def score(self, task: str, product: Path, out: Path, logs: Path, *,
+              timeout: float | None = None) -> CommandResult:
+        """Apply the official scoring to ``product``; its raw output goes to ``out``."""
+        env = {"HB_TASK": self._task(task), "HB_PRODUCT": str(_existing_dir(product)),
+               "HB_OUT": str(_mkdir(out))}
+        return self._call("score", [], logs, timeout, env)
+
+    def enter(self, task: str, command: list[str], work: Path, logs: Path, *,
+              timeout: float | None = None) -> CommandResult:
+        """Execute ``command`` in ``task``'s environment without starting an agent."""
+        if not isinstance(command, list) or not command or not all(
+                isinstance(a, str) for a in command):
+            raise ScenarioError("enter: command must be a non-empty list of strings")
+        env = {"HB_TASK": self._task(task), "HB_WORK": str(_mkdir(work))}
+        return self._call("enter", command, logs, timeout, env)
+
+    def score_value(self, score_out: Path) -> float | None:
+        """The number at the configured place in a score command's raw output, or None."""
+        spec = self.config["score"]
+        try:
+            text = (Path(score_out) / spec["file"]).read_text()
+        except (OSError, UnicodeDecodeError):
+            return None
+        if "key" not in spec:
+            try:
+                value = float(text.strip())
+            except ValueError:
+                return None
+        else:
+            try:
+                value = json.loads(text)
+            except ValueError:
+                return None
+            for k in spec["key"].split("."):
+                if not isinstance(value, dict) or k not in value:
+                    return None
+                value = value[k]
+            if not isinstance(value, (bool, int, float)):
+                return None
+            value = float(value)
+        return value if math.isfinite(value) else None
+
+    def _task(self, task: str) -> str:
+        if task not in self.tasks:
+            raise ScenarioError(f"unknown task {task!r}")
+        return task
+
+    def _call(self, name: str, extra_argv: list[str], logs: Path, timeout: float | None,
+              hb_env: dict[str, str]) -> CommandResult:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("HB_")}
+        env.update(hb_env)
+        env["HB_SCENARIO"] = str(self.root)
+        argv = (*self.commands[name], *extra_argv)
+        return call(argv, cwd=self.root, env=env, logs=logs, name=name, timeout=timeout)
+
+
+def call(argv: tuple[str, ...] | list[str], *, cwd: Path, env: dict[str, str], logs: Path,
+         name: str, timeout: float | None) -> CommandResult:
+    """Run ``argv`` in its own process group, stdout/stderr to ``logs/<name>.stdout|stderr``.
+
+    On timeout the group gets SIGTERM, then SIGKILL after ``KILL_GRACE_SECONDS``.
+    Processes the command leaves behind in its group are killed when it exits.
+    """
+    logs = _mkdir(logs)
+    out_path, err_path = logs / f"{name}.stdout", logs / f"{name}.stderr"
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    t0 = time.monotonic()
+    timed_out = False
+    with open(out_path, "wb") as out, open(err_path, "wb") as err:
+        try:
+            proc = subprocess.Popen(list(argv), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                    stdout=out, stderr=err, start_new_session=True)
+        except OSError as e:
+            err.write(f"could not start {list(argv)}: {e}\n".encode())
+            return CommandResult(tuple(argv), None, False, started,
+                                 round(time.monotonic() - t0, 3), out_path, err_path,
+                                 error=str(e))
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _signal_group(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        finally:
+            # Also runs on KeyboardInterrupt; leaves nothing of the group behind.
+            _signal_group(proc.pid, signal.SIGKILL)
+            proc.wait()
+    return CommandResult(tuple(argv), proc.returncode, timed_out, started,
+                         round(time.monotonic() - t0, 3), out_path, err_path)
+
+
+def load(root: str | Path) -> Scenario:
+    """Read and check ``root/scenario.json``. Raises ScenarioError on any mismatch."""
+    root = Path(root).resolve()
+    path = root / CONFIG_NAME
+    try:
+        config = json.loads(path.read_text())
+    except OSError as e:
+        raise ScenarioError(f"{path}: {e}") from None
+    except ValueError as e:
+        raise ScenarioError(f"{path}: not valid JSON: {e}") from None
+    if not isinstance(config, dict):
+        raise ScenarioError(f"{path}: must be a JSON object")
+    unknown = set(config) - TOP_LEVEL_KEYS
+    if unknown:
+        raise ScenarioError(f"unknown keys: {sorted(unknown)}")
+    missing = TOP_LEVEL_KEYS - set(config)
+    if missing:
+        raise ScenarioError(f"missing keys: {sorted(missing)}")
+
+    tasks = _tasks(config["tasks"], root)
+    practice, exam = _split(config["split"], tasks)
+    _no_shared_files(tasks, practice, exam, root)
+    _score_spec(config["score"])
+    return Scenario(root=root, config=config, tasks=tasks, practice=practice, exam=exam,
+                    commands=_commands(config["commands"]), initial_harness=_harness(
+                        config["initial_harness"], root))
+
+
+def _tasks(entries, root: Path) -> dict[str, Task]:
+    if not isinstance(entries, list) or not entries:
+        raise ScenarioError("tasks: must be a non-empty list")
+    tasks: dict[str, Task] = {}
+    for e in entries:
+        if isinstance(e, str):
+            e = {"id": e}
+        if not isinstance(e, dict) or set(e) - {"id", "group", "files"}:
+            raise ScenarioError(f"tasks: bad entry {e!r}")
+        tid, group, files = e.get("id"), e.get("group", e.get("id")), e.get("files")
+        if not isinstance(tid, str) or not _TASK_ID.fullmatch(tid):
+            raise ScenarioError(f"tasks: bad id {tid!r} (letters, digits, '.', '_', '-')")
+        if tid in tasks:
+            raise ScenarioError(f"tasks: duplicate id {tid!r}")
+        if not isinstance(group, str) or not group:
+            raise ScenarioError(f"tasks: {tid}: bad group {group!r}")
+        if files is not None:
+            if not isinstance(files, str):
+                raise ScenarioError(f"tasks: {tid}: files must be a path")
+            files = (root / files).resolve()
+            if not files.is_dir():
+                raise ScenarioError(f"tasks: {tid}: files directory {files} not found")
+        tasks[tid] = Task(tid, group, files)
+    return tasks
+
+
+def _split(split, tasks: dict[str, Task]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if not isinstance(split, dict) or set(split) != {"practice", "exam"}:
+        raise ScenarioError("split: must have exactly the keys 'practice' and 'exam'")
+    seen: dict[str, str] = {}
+    for side in ("practice", "exam"):
+        ids = split[side]
+        if not isinstance(ids, list) or not ids:
+            raise ScenarioError(f"split: {side} must be a non-empty list of task ids")
+        for tid in ids:
+            if tid not in tasks:
+                raise ScenarioError(f"split: {side}: unknown task {tid!r}")
+            if tid in seen:
+                raise ScenarioError(f"split: task {tid!r} listed twice")
+            seen[tid] = side
+    left_out = [t for t in tasks if t not in seen]
+    if left_out:
+        raise ScenarioError(f"split: tasks on neither side: {left_out}")
+    sides_of_group: dict[str, set[str]] = {}
+    for tid, side in seen.items():
+        sides_of_group.setdefault(tasks[tid].group, set()).add(side)
+    torn = sorted(g for g, s in sides_of_group.items() if len(s) > 1)
+    if torn:
+        raise ScenarioError(f"split: related tasks on both sides, groups {torn}")
+    return tuple(split["practice"]), tuple(split["exam"])
+
+
+def _no_shared_files(tasks: dict[str, Task], practice, exam, root: Path) -> None:
+    """A practice task's files must not reveal the scenario directory or any exam task's files."""
+    exam_files = [tasks[t].files for t in exam if tasks[t].files is not None]
+    for tid in practice:
+        f = tasks[tid].files
+        if f is None:
+            continue
+        if f == root or f in root.parents:
+            raise ScenarioError(f"tasks: {tid}: files {f} contains the scenario directory")
+        for g in exam_files:
+            if f == g or f in g.parents or g in f.parents:
+                raise ScenarioError(f"tasks: {tid}: files {f} overlaps exam files {g}")
+
+
+def _commands(commands) -> dict[str, tuple[str, ...]]:
+    if not isinstance(commands, dict) or set(commands) != set(COMMANDS):
+        raise ScenarioError(f"commands: must have exactly the keys {list(COMMANDS)}")
+    out = {}
+    for name in COMMANDS:
+        argv = commands[name]
+        if not isinstance(argv, list) or not argv or not all(
+                isinstance(a, str) and a for a in argv):
+            raise ScenarioError(f"commands: {name} must be a non-empty list of strings")
+        out[name] = tuple(argv)
+    return out
+
+
+def _score_spec(spec) -> None:
+    bad = ScenarioError('score: must be {"file": <relative path in the score output>, '
+                        '"key": <optional dotted key into that JSON file>}')
+    if not isinstance(spec, dict) or set(spec) - {"file", "key"}:
+        raise bad
+    f, key = spec.get("file"), spec.get("key", "x")
+    if not isinstance(f, str) or not f or Path(f).is_absolute() or ".." in Path(f).parts:
+        raise bad
+    if not isinstance(key, str) or not key:
+        raise bad
+
+
+def _harness(rel, root: Path) -> Path:
+    if not isinstance(rel, str):
+        raise ScenarioError("initial_harness: must be a path")
+    path = (root / rel).resolve()
+    start = path / START_NAME
+    if not start.is_file() or not os.access(start, os.X_OK):
+        raise ScenarioError(f"initial_harness: {start} missing or not executable")
+    return path
+
+
+def _mkdir(p: Path) -> Path:
+    p = Path(p).absolute()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _existing_dir(p: Path) -> Path:
+    p = Path(p).absolute()
+    if not p.is_dir():
+        raise ScenarioError(f"{p}: not a directory")
+    return p
+
+
+def _signal_group(pgid: int, sig: int) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass

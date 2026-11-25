@@ -1,0 +1,4 @@
+{
+  "statement": "Write answer.json in the working directory: a JSON object with exactly these fields.",
+  "fields": {"name": "omega", "rank": 2}
+}
