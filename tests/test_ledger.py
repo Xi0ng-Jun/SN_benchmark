@@ -71,3 +71,10 @@ def test_reordered_entries_are_found(ledger):
 def test_garbage_line_is_found(ledger):
     write(ledger, lines(ledger) + ["not json"])
     assert any("not JSON" in p for p in ledger.verify())
+
+
+def test_data_may_use_the_word_kind(tmp_path):
+    lg = Ledger(tmp_path / "l")
+    e = lg.append("session", kind="container")
+    assert e["kind"] == "session" and e["data"] == {"kind": "container"}
+    assert lg.verify() == []

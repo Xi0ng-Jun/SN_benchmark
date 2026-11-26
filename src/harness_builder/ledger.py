@@ -55,7 +55,7 @@ class Ledger:
         except FileNotFoundError:
             return {"count": 0, "hash": ""}
 
-    def append(self, kind: str, **data) -> dict:
+    def append(self, kind: str, /, **data) -> dict:
         """Add one entry and return it. ``data`` must be JSON-serialisable."""
         with self._locked():
             head = self._head()
