@@ -2,7 +2,7 @@
 
 外部程序只通过这里规定的东西接触一个场景。照着这份说明写出一个场景目录，就能把一个新任务接进来。
 
-状态：第 1–2 步写定了题目、划分、三条命令、分数位置、初始 harness、时限和无效运行的判定命令。模型出口和最终考试的设置在第 3–5 步加入本文。
+状态：第 1–3 步写定了题目、划分、三条命令、分数位置、初始 harness、时限、无效运行的判定命令、预算和模型出口。开发 agent 和最终考试的设置在第 4–5 步加入本文。
 
 例子：`tests/stub_scenario/` 是测试用的桩场景，下文的每一项它都有。
 
@@ -38,7 +38,17 @@
   },
   "score": {"file": "score.json", "key": "score"},
   "initial_harness": "harness",
-  "limits": {"run_seconds": 3600, "score_seconds": 600, "enter_seconds": 300}
+  "limits": {
+    "run_seconds": 3600, "score_seconds": 600, "enter_seconds": 300,
+    "run_budget": {"total_tokens": 20000000},
+    "dev_budget": {"total_tokens": 500000000}
+  },
+  "models": {
+    "solver": "<做题模型>",
+    "developer": "<开发模型>",
+    "upstream_url": "${UPSTREAM_URL}",
+    "upstream_key_env": "UPSTREAM_KEY"
+  }
 }
 ```
 
@@ -81,15 +91,38 @@
 
 ### 2.6 limits
 
-单位是秒，三个键都必须写，值为正数或 `null`（不限）。
+五个键都必须写。
 
-| 键 | 限制什么 |
-|---|---|
-| `run_seconds` | 一次运行命令 |
-| `score_seconds` | 一次打分命令，以及一次无效运行判定命令 |
-| `enter_seconds` | 一次进入环境命令 |
+| 键 | 限制什么 | 值 |
+|---|---|---|
+| `run_seconds` | 一次运行命令 | 秒，正数或 `null`（不限） |
+| `score_seconds` | 一次打分命令，以及一次无效运行判定命令 | 同上 |
+| `enter_seconds` | 一次进入环境命令 | 同上 |
+| `run_budget` | 一次运行里做题 agent 的模型用量 | 上限表，或 `null`（不限） |
+| `dev_budget` | 整个开发阶段的模型用量：开发 agent 自己的调用加上它发起的运行 | 同上 |
 
-预算的限制在第 3 步加入。
+上限表把下列计数中的若干个映射到正整数：`requests`（转发出去的请求数）、`input_tokens`（未命中缓存的输入）、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`、`total_tokens`（前四种之和）。任何一个计数达到上限后，之后的模型调用被拒绝；`dev_budget` 到顶后，新的运行也不再受理。已经在途的请求不打断，所以实际用量可能略超上限，超出的部分不超过到顶那一刻在途的请求。
+
+### 2.8 models
+
+| 键 | 必填 | 含义 |
+|---|---|---|
+| `solver` | 是 | 做题模型。做题 agent 只能调用它 |
+| `developer` | 是 | 开发模型。开发 agent 只能调用它 |
+| `upstream_url` | 是 | 上游模型服务的地址，可以写 `${变量}` 或 `${变量:-默认值}`，从环境变量取 |
+| `upstream_key_env` | 是 | 存放上游密钥的环境变量名。密钥不写进任何文件，也不会传给场景的命令 |
+| `upstream_auth_header` | 否 | 上游要求的认证头，默认 `x-api-key`；OpenAI 式服务写 `authorization` |
+| `upstream_auth_prefix` | 否 | 认证头的前缀，默认空；OpenAI 式服务写 `Bearer ` |
+| `listen_host`、`listen_port` | 否 | 模型出口监听的地址和端口，默认 `127.0.0.1` 和任意空闲端口 |
+| `url_host` | 否 | 交给运行命令的地址里用的主机名，默认与 `listen_host` 相同。题目环境是容器时，写容器里能访问宿主机的名字，并把 `listen_host` 设成容器能连到的地址 |
+
+模型出口的行为：
+
+- 每次运行单独发一个凭据，只能用于 `solver` 模型，运行结束即作废。
+- 请求必须是 JSON，`model` 字段必须等于凭据绑定的模型，否则拒绝（不转发）。GET 请求不检查模型。
+- 转发时去掉客户端的认证头，换上上游密钥。不重试，不缓存。
+- 从响应里读用量，认 Anthropic Messages 和 OpenAI chat 两种格式，流式和非流式都可以。
+- 每个请求在状态目录的请求日志里记一行。预算的累计从这份日志算，外部程序重启后不清零。
 
 ### 2.7 改动配置
 
@@ -116,7 +149,7 @@
 | `HB_TASK` | 题目编号 |
 | `HB_HARNESS` | harness 文件夹。应以只读方式放进题目环境 |
 | `HB_OUT` | 输出目录，已存在且为空 |
-| `HB_MODEL_URL` | 模型出口的地址 |
+| `HB_MODEL_URL` | 模型出口的地址，形如 `http://<url_host>:<端口>`，不带路径。Anthropic 式客户端请求 `/v1/messages`，OpenAI 式请求 `/v1/chat/completions` |
 | `HB_MODEL_KEY` | 这次运行的凭据 |
 | `HB_MODEL` | 做题模型的名字 |
 
@@ -164,7 +197,9 @@
 | 变量 | 含义 |
 |---|---|
 | `HB_TASK` | 题目编号 |
-| `HB_RUN` | 这次运行的记录目录，只读。其中 `out/` 是运行的输出目录，`score/` 是打分的原始输出，`run.stdout`、`run.stderr`、`score.stdout`、`score.stderr` 是两条命令的输出；接入模型出口后还有 `usage.json` |
+| `HB_RUN` | 这次运行的记录目录，只读。其中 `out/` 是运行的输出目录，`score/` 是打分的原始输出，`run.stdout`、`run.stderr`、`score.stdout`、`score.stderr` 是两条命令的输出，`usage.json` 是这次运行经模型出口的用量（见下） |
+
+`usage.json` 的字段：`requests`、四种 token 计数和 `total_tokens`；`upstream_errors`（上游返回 429、5xx 或连不上的次数）；`refused`（被拒绝的请求数，按原因 `model` 或 `budget` 分）；`response_models`（响应里出现过的模型名）；`wait_seconds`（等上游开始回应的累计秒数）；`seconds`（请求的累计秒数）；以及 `owner`、`pool`、`model`、`caps`。判定条件可以用这些字段，例如上游出错就算无效。
 
 退出码：
 

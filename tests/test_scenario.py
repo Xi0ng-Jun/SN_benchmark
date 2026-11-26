@@ -54,7 +54,9 @@ def test_load_stub(stub, stub_dir):
     assert stub.tasks["p1"].files == stub.root / "tasks" / "p1"
     assert stub.initial_harness == stub.root / "harness"
     assert set(stub.commands) == {"run", "score", "enter", "invalid"}
-    assert stub.limits == {"run_seconds": 60, "score_seconds": 60, "enter_seconds": 60}
+    assert stub.limits == {"run_seconds": 60, "score_seconds": 60, "enter_seconds": 60,
+                           "run_budget": {"requests": 5}, "dev_budget": {}}
+    assert stub.models["solver"] == "stub-solver"
 
 
 BAD_CONFIGS = [
@@ -78,6 +80,13 @@ BAD_CONFIGS = [
     ("limit missing", lambda c: c["limits"].pop("enter_seconds"), "limits"),
     ("limit not positive", lambda c: c["limits"].update(run_seconds=0), "limits"),
     ("limit not a number", lambda c: c["limits"].update(run_seconds="1h"), "limits"),
+    ("unknown budget counter", lambda c: c["limits"].update(dev_budget={"dollars": 5}),
+     "limits"),
+    ("budget not an integer", lambda c: c["limits"].update(run_budget={"requests": 1.5}),
+     "limits"),
+    ("models missing solver", lambda c: c["models"].pop("solver"), "models"),
+    ("models unknown key", lambda c: c["models"].update(temperature=0), "models"),
+    ("models bad port", lambda c: c["models"].update(listen_port="80"), "models"),
     ("score file outside output", lambda c: c.update(score={"file": "../x"}), "score"),
     ("score spec extra key", lambda c: c.update(score={"file": "s", "k": 1}), "score"),
     ("harness without start", lambda c: c.update(initial_harness="tasks"), "initial_harness"),

@@ -18,12 +18,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .gateway import CAP_KEYS
+
 CONFIG_NAME = "scenario.json"
 COMMANDS = ("run", "score", "enter")
 OPTIONAL_COMMANDS = ("invalid",)
 START_NAME = "start"
-TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness", "limits"}
-LIMIT_KEYS = ("run_seconds", "score_seconds", "enter_seconds")
+TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness", "limits", "models"}
+LIMIT_KEYS = ("run_seconds", "score_seconds", "enter_seconds", "run_budget", "dev_budget")
+MODEL_KEYS = {"solver": str, "developer": str, "upstream_url": str, "upstream_key_env": str}
+MODEL_OPTIONAL = {"upstream_auth_header": str, "upstream_auth_prefix": str,
+                  "listen_host": str, "listen_port": int, "url_host": str}
 
 # Exit code by which the invalid-run check says "this run is invalid".
 INVALID_EXIT = 10
@@ -73,7 +78,8 @@ class Scenario:
     exam: tuple[str, ...]
     commands: dict[str, tuple[str, ...]]
     initial_harness: Path
-    limits: dict[str, float | None]
+    limits: dict
+    models: dict
 
     def run(self, task: str, harness: Path, out: Path, logs: Path, *, model_url: str,
             model_key: str, model: str, timeout: float | None = None) -> CommandResult:
@@ -140,7 +146,8 @@ class Scenario:
 
     def _call(self, name: str, extra_argv: list[str], logs: Path, timeout: float | None,
               hb_env: dict[str, str]) -> CommandResult:
-        env = {k: v for k, v in os.environ.items() if not k.startswith("HB_")}
+        secret = self.models["upstream_key_env"]
+        env = {k: v for k, v in os.environ.items() if not k.startswith("HB_") and k != secret}
         env.update(hb_env)
         env["HB_SCENARIO"] = str(self.root)
         argv = (*self.commands[name], *extra_argv)
@@ -210,7 +217,8 @@ def load(root: str | Path) -> Scenario:
     _score_spec(config["score"])
     return Scenario(root=root, config=config, tasks=tasks, practice=practice, exam=exam,
                     commands=_commands(config["commands"]), initial_harness=_harness(
-                        config["initial_harness"], root), limits=_limits(config["limits"]))
+                        config["initial_harness"], root), limits=_limits(config["limits"]),
+                    models=_models(config["models"]))
 
 
 def _tasks(entries, root: Path) -> dict[str, Task]:
@@ -306,13 +314,42 @@ def _score_spec(spec) -> None:
         raise bad
 
 
-def _limits(limits) -> dict[str, float | None]:
+def _limits(limits) -> dict:
     if not isinstance(limits, dict) or set(limits) != set(LIMIT_KEYS):
         raise ScenarioError(f"limits: must have exactly the keys {list(LIMIT_KEYS)}")
+    out = {}
     for k, v in limits.items():
-        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0):
-            raise ScenarioError(f"limits: {k} must be a positive number of seconds or null")
-    return dict(limits)
+        if k.endswith("_seconds"):
+            if v is not None and not _positive(v):
+                raise ScenarioError(f"limits: {k} must be a positive number of seconds or null")
+            out[k] = v
+            continue
+        v = {} if v is None else v
+        if not isinstance(v, dict) or set(v) - set(CAP_KEYS) or not all(
+                _positive(n) and isinstance(n, int) for n in v.values()):
+            raise ScenarioError(f"limits: {k} must map some of {list(CAP_KEYS)} "
+                                "to positive integers (or be null)")
+        out[k] = dict(v)
+    return out
+
+
+def _positive(v) -> bool:
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and v > 0
+
+
+def _models(models) -> dict:
+    if not isinstance(models, dict):
+        raise ScenarioError("models: must be an object")
+    missing = set(MODEL_KEYS) - set(models)
+    unknown = set(models) - set(MODEL_KEYS) - set(MODEL_OPTIONAL)
+    if missing or unknown:
+        raise ScenarioError(f"models: missing {sorted(missing)}, unknown {sorted(unknown)}")
+    for k, v in models.items():
+        t = MODEL_KEYS.get(k) or MODEL_OPTIONAL[k]
+        if not isinstance(v, t) or isinstance(v, bool) or (t is str and not v and k not in (
+                "upstream_auth_prefix",)):
+            raise ScenarioError(f"models: {k} must be a {t.__name__}")
+    return dict(models)
 
 
 def _harness(rel, root: Path) -> Path:

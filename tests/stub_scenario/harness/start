@@ -10,18 +10,42 @@ next to this file:
   break_scorer  write an answer.json that makes the stub scorer fail
   unreachable   report that the model was unreachable and exit 5 (an invalid run)
   hang          sleep until killed
+
+Before that it makes "model_calls" calls (default 0) to the model exit, asking
+for "model" (default: HB_MODEL), and logs each status. If the exit cannot be
+reached it logs "model unreachable".
 """
 import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "settings.json")) as f:
-    mode = json.load(f).get("answer", "correct")
+    settings = json.load(f)
+mode = settings.get("answer", "correct")
 with open("task.json") as f:
     fields = json.load(f)["fields"]
 print("solver: mode=%s model=%s" % (mode, os.environ.get("HB_MODEL")))
+
+for i in range(settings.get("model_calls", 0)):
+    body = {"model": settings.get("model", os.environ.get("HB_MODEL")), "max_tokens": 16,
+            "messages": [{"role": "user", "content": "call %d" % i}]}
+    req = urllib.request.Request(
+        os.environ.get("HB_MODEL_URL", "").rstrip("/") + "/v1/messages",
+        data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "anthropic-version": "2023-06-01",
+                 "x-api-key": os.environ.get("HB_MODEL_KEY", "")})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            print("solver: model call %d -> %d" % (i, r.status))
+    except urllib.error.HTTPError as e:
+        print("solver: model call %d -> %d %s" % (i, e.code, e.read()[:300]))
+    except (OSError, ValueError) as e:
+        print("solver: model unreachable: %s" % e)
+sys.stdout.flush()
 
 if mode == "crash":
     print("solver: crashing on purpose", file=sys.stderr)

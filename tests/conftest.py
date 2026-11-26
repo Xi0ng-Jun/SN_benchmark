@@ -20,12 +20,14 @@ def stub_dir(tmp_path):
 
 @pytest.fixture
 def make_harness(tmp_path):
-    """make_harness(mode) -> a copy of the stub's initial harness whose solver writes ``mode``."""
-    def make(mode: str) -> Path:
-        dst = tmp_path / f"harness-{mode}"
+    """make_harness(mode, **settings) -> a copy of the stub's initial harness whose solver
+    writes ``mode`` (and uses the other solver settings, e.g. model_calls=2)."""
+    def make(mode: str, **settings) -> Path:
+        name = "-".join([mode] + [f"{k}={v}" for k, v in sorted(settings.items())])
+        dst = tmp_path / f"harness-{name}"
         if not dst.exists():
             shutil.copytree(STUB / "harness", dst)
-            (dst / "settings.json").write_text(json.dumps({"answer": mode}))
+            (dst / "settings.json").write_text(json.dumps({"answer": mode, **settings}))
         return dst
     return make
 
@@ -45,3 +47,27 @@ def edit_config(stub_dir):
 def open_stub_state(stub_dir, tmp_path):
     """open_stub_state() -> State for the stub copy (after any edit_config calls)."""
     return lambda: open_state(tmp_path / "state", sc.load(stub_dir))
+
+
+@pytest.fixture
+def stub_model():
+    from stub_model import StubModel
+    m = StubModel().start()
+    yield m
+    m.stop()
+
+
+@pytest.fixture
+def make_gateway(stub_model, tmp_path):
+    """make_gateway(**kw) -> a started Gateway in front of the stub model (stopped afterwards)."""
+    from harness_builder.gateway import Gateway
+    started = []
+
+    def make(**kw):
+        kw.setdefault("log_path", tmp_path / "requests.jsonl")
+        g = Gateway(upstream_url=stub_model.url, upstream_key=stub_model.key, **kw).start()
+        started.append(g)
+        return g
+    yield make
+    for g in started:
+        g.stop()

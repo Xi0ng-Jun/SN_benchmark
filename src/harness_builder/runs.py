@@ -8,6 +8,10 @@ developer agent's requests) and accepts only the tasks it was given. Layout:
                           usage.json (model use, once there is a gateway), record.json
     <area>/scores/s0001/  product/ (a copy of what was scored), score/, score.*, record.json
 
+With a gateway, each run gets its own credential for the solver model, capped by
+``limits.run_budget``; its usage goes into the record. A run is refused before it
+starts when the runner's budget pool is used up.
+
 Every run is scored, whatever its exit code. Whether a run is invalid is decided
 only by the scenario's invalid-run command. Nothing here reads the score.
 Finished directories are made read-only.
@@ -45,7 +49,8 @@ def result_dict(r: CommandResult) -> dict:
 
 
 class Runner:
-    def __init__(self, state: State, area: str, tasks: Iterable[str], gateway=None):
+    def __init__(self, state: State, area: str, tasks: Iterable[str], gateway=None,
+                 pool: str | None = None):
         self.state = state
         self.scenario = state.scenario
         self.ledger = state.ledger
@@ -56,6 +61,7 @@ class Runner:
         if unknown:
             raise ValueError(f"unknown tasks {sorted(unknown)}")
         self.gateway = gateway
+        self.pool = pool or area
 
     def run_dir(self, run_id: str) -> Path:
         return self.dir / "runs" / run_id
@@ -68,27 +74,40 @@ class Runner:
         self._allowed(task)
         meta = self.state.repo.get(version)
         harness = self.state.repo.path(version)
+        if self.gateway is not None:
+            over = self.gateway.pool_exceeded(self.pool)
+            if over:
+                reason = f"budget of pool {self.pool!r} reached: " + "; ".join(over)
+                self.ledger.append("run_refused", area=self.area, task=task, version=version,
+                                   reason=reason)
+                raise RunRefused(reason)
         d = self._new_dir("runs", "r")
         base = {"area": self.area, "run": d.name, "task": task, "version": version,
                 "harness_hash": meta["hash"]}
         self.ledger.append("run_started", **base)
         limits = self.scenario.limits
+        usage = None
         try:
-            access = self.gateway.open_run(base) if self.gateway else NO_MODEL
+            key, access = None, NO_MODEL
+            if self.gateway is not None:
+                model = self.scenario.models["solver"]
+                key = self.gateway.issue(f"{self.area}/runs/{d.name}", self.pool, model,
+                                         limits["run_budget"])
+                access = ModelAccess(self.gateway.url, key, model)
             try:
                 run = self.scenario.run(task, harness, d / "out", d, model_url=access.url,
                                         model_key=access.key, model=access.model,
                                         timeout=limits["run_seconds"])
             finally:
-                usage = self.gateway.close_run(base) if self.gateway else None
-            if usage is not None:
-                (d / "usage.json").write_text(json.dumps(usage, indent=1))
+                if key is not None:
+                    usage = self.gateway.close(key)
+                    (d / "usage.json").write_text(json.dumps(usage, indent=1))
             score = self.scenario.score(task, d / "out", d / "score", d,
                                         timeout=limits["score_seconds"])
             invalid = self._invalid(task, d)
         except BaseException as e:
             make_read_only(d)
-            self.ledger.append("run_aborted", **base, error=repr(e))
+            self.ledger.append("run_aborted", **base, error=repr(e), usage=usage)
             raise
         record = {**base, "run_result": result_dict(run), "score_result": result_dict(score),
                   "invalid": invalid, "usage": usage}

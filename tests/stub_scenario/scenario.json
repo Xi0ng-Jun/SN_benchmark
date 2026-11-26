@@ -16,5 +16,15 @@
   },
   "score": {"file": "score.json", "key": "score"},
   "initial_harness": "harness",
-  "limits": {"run_seconds": 60, "score_seconds": 60, "enter_seconds": 60}
+  "limits": {
+    "run_seconds": 60, "score_seconds": 60, "enter_seconds": 60,
+    "run_budget": {"requests": 5},
+    "dev_budget": null
+  },
+  "models": {
+    "solver": "stub-solver",
+    "developer": "stub-developer",
+    "upstream_url": "${STUB_UPSTREAM_URL:-http://127.0.0.1:9}",
+    "upstream_key_env": "STUB_UPSTREAM_KEY"
+  }
 }
