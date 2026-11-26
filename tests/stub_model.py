@@ -5,10 +5,12 @@ Speaks just enough of two formats:
   POST /v1/chat/completions  OpenAI chat, JSON or SSE
   GET  /v1/models            a model list
 Every reply reports the same usage (ANTHROPIC_USAGE / OPENAI_USAGE). Requests are
-kept in ``received``. Set ``fail_status`` to answer every request with that status.
+kept in ``received``. Set ``fail_status`` to answer every request with that status,
+``delay`` to wait that many seconds before answering a POST.
 """
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ANTHROPIC_USAGE = {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 3,
@@ -28,6 +30,7 @@ class StubModel:
         self.received = []
         self.fail_status = None
         self.reply_model = None
+        self.delay = 0
         self._server = None
 
     def start(self):
@@ -82,6 +85,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._record(body)
         if not self._authorised():
             return
+        if self.stub.delay:
+            time.sleep(self.stub.delay)
         if self.stub.fail_status:
             self._send(self.stub.fail_status, {"error": {"message": "stub failure"}})
             return

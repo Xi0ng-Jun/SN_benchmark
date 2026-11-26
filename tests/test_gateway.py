@@ -2,6 +2,8 @@
 import http.client
 import json
 import socket
+import threading
+import time
 import urllib.parse
 
 import pytest
@@ -165,6 +167,40 @@ def test_pool_usage_survives_a_restart(make_gateway, tmp_path):
     assert again.pool_exceeded("dev")
     lines = [json.loads(l) for l in (tmp_path / "requests.jsonl").read_text().splitlines()]
     assert len(lines) == 3 and all(l["owner"] == "run-1" and l["status"] == 200 for l in lines)
+
+
+def _call_in_background(gw, key, stub_model):
+    result = []
+    t = threading.Thread(target=lambda: result.append(call(gw, key)[0]))
+    t.start()
+    deadline = time.monotonic() + 5
+    while not stub_model.received and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return t, result
+
+
+def test_closing_a_key_waits_for_its_request_in_flight(make_gateway, stub_model):
+    stub_model.delay = 1
+    gw = make_gateway()
+    key = gw.issue("run-1", "dev", "stub-solver")
+    t, result = _call_in_background(gw, key, stub_model)
+    u = gw.close(key)
+    t.join()
+    assert result == [200]
+    assert u["requests"] == 1 and u["in_flight_at_close"] == 0
+    assert u["input_tokens"] == ANTHROPIC_COUNTED["input_tokens"]
+
+
+def test_closing_a_key_reports_requests_still_in_flight(make_gateway, stub_model):
+    stub_model.delay = 2
+    gw = make_gateway()
+    key = gw.issue("run-1", "dev", "stub-solver")
+    t, _ = _call_in_background(gw, key, stub_model)
+    u = gw.close(key, wait=0.1)
+    assert u["in_flight_at_close"] == 1 and u["requests"] == 0
+    t.join()
+    assert gw.wait_idle(timeout=5)
+    assert gw.pool_usage("dev")["requests"] == 1  # counted in the pool once it finished
 
 
 # --- upstream trouble ----------------------------------------------------------------------

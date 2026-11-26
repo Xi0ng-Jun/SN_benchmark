@@ -122,6 +122,7 @@
 - 请求必须是 JSON，`model` 字段必须等于凭据绑定的模型，否则拒绝（不转发）。GET 请求不检查模型。
 - 转发时去掉客户端的认证头，换上上游密钥。不重试，不缓存。
 - 从响应里读用量，认 Anthropic Messages 和 OpenAI chat 两种格式，流式和非流式都可以。
+- 一个请求的用量在客户端看到响应结束之前记账，所以逐个发请求的客户端在到顶后一定会被拒绝；超出上限的只可能是同时在途的请求。
 - 每个请求在状态目录的请求日志里记一行。预算的累计从这份日志算，外部程序重启后不清零。
 
 ### 2.7 改动配置
@@ -199,7 +200,7 @@
 | `HB_TASK` | 题目编号 |
 | `HB_RUN` | 这次运行的记录目录，只读。其中 `out/` 是运行的输出目录，`score/` 是打分的原始输出，`run.stdout`、`run.stderr`、`score.stdout`、`score.stderr` 是两条命令的输出，`usage.json` 是这次运行经模型出口的用量（见下） |
 
-`usage.json` 的字段：`requests`、四种 token 计数和 `total_tokens`；`upstream_errors`（上游返回 429、5xx 或连不上的次数）；`refused`（被拒绝的请求数，按原因 `model` 或 `budget` 分）；`response_models`（响应里出现过的模型名）；`wait_seconds`（等上游开始回应的累计秒数）；`seconds`（请求的累计秒数）；以及 `owner`、`pool`、`model`、`caps`。判定条件可以用这些字段，例如上游出错就算无效。
+`usage.json` 的字段：`requests`、四种 token 计数和 `total_tokens`；`upstream_errors`（上游返回 429、5xx 或连不上的次数）；`refused`（被拒绝的请求数，按原因 `model` 或 `budget` 分）；`response_models`（响应里出现过的模型名）；`wait_seconds`（等上游开始回应的累计秒数）；`seconds`（请求的累计秒数）；`in_flight_at_close`（运行结束收回凭据时仍未完成的请求数，正常为 0；这些请求的用量计入开发预算，但不在这份记录里）；以及 `owner`、`pool`、`model`、`caps`。判定条件可以用这些字段，例如上游出错就算无效。
 
 退出码：
 

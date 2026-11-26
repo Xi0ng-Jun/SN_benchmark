@@ -8,7 +8,10 @@ pool is reached. Requests already under way are not cut off, so a cap can be
 overshot by the requests in flight at that moment.
 
 Usage is read from responses in the Anthropic Messages and OpenAI chat formats,
-streamed or not. No retries, no caching. One line per request goes to the request log.
+streamed or not. A request is accounted before the client can see the end of its
+response (non-streamed bodies are received in full first; streams are accounted
+before their final terminator), so a client that waits for each reply never gets
+past a cap. No retries, no caching. One line per request goes to the request log.
 """
 from __future__ import annotations
 
@@ -28,6 +31,9 @@ from .ledger import now
 
 TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 CAP_KEYS = ("requests", *TOKEN_COUNTERS, "total_tokens")
+
+# Implementation detail: how long closing a key waits for its requests still in flight.
+CLOSE_WAIT_SECONDS = 30
 
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
               "trailers", "transfer-encoding", "upgrade", "host", "content-length",
@@ -86,6 +92,7 @@ class Credential:
     caps: dict
     usage: Usage = field(default_factory=Usage)
     open: bool = True
+    inflight: int = 0
 
 
 def expand_env(value: str, env=None) -> str:
@@ -122,6 +129,8 @@ class Gateway:
         self.upstream_timeout = upstream_timeout
         self.log_path = Path(log_path) if log_path else None
         self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
+        self._inflight = 0
         self._creds: dict[str, Credential] = {}
         self._pools: dict[str, Usage] = {}
         self._pool_caps: dict[str, dict] = {}
@@ -200,13 +209,19 @@ class Gateway:
             self._pools.setdefault(pool, Usage())
         return key
 
-    def close(self, key: str) -> dict:
-        """Revoke ``key`` and return its usage."""
-        with self._lock:
+    def close(self, key: str, wait: float = CLOSE_WAIT_SECONDS) -> dict:
+        """Revoke ``key``; wait (up to ``wait`` s) for its requests in flight; return its usage."""
+        with self._idle:
             c = self._creds[key]
             c.open = False
+            self._idle.wait_for(lambda: c.inflight == 0, timeout=wait)
             return {"owner": c.owner, "pool": c.pool, "model": c.model, "caps": c.caps,
-                    **c.usage.to_dict()}
+                    **c.usage.to_dict(), "in_flight_at_close": c.inflight}
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """Wait until no request is in flight; False on timeout."""
+        with self._idle:
+            return self._idle.wait_for(lambda: self._inflight == 0, timeout=timeout)
 
     def pool_usage(self, pool: str) -> dict:
         with self._lock:
@@ -226,6 +241,8 @@ class Gateway:
             c = self._creds.get(token or "")
             if c is None or not c.open:
                 return None, (401, "authentication_error", "unknown or revoked key", None)
+            c.inflight += 1  # until _account
+            self._inflight += 1
             if method != "GET":
                 try:
                     req = json.loads(body or b"null")
@@ -251,6 +268,9 @@ class Gateway:
                     u.refused[refusal] = 1
                 c.usage.add(u)
                 self._pools[c.pool].add(u)
+                c.inflight -= 1
+                self._inflight -= 1
+                self._idle.notify_all()
             if self.log_path:
                 with open(self.log_path, "a") as f:
                     f.write(json.dumps(entry) + "\n")
@@ -375,19 +395,32 @@ class _Handler(BaseHTTPRequestHandler):
         entry = {"time": now(), "owner": c.owner if c else None,
                  "pool": c.pool if c else None, "method": self.command, "path": self.path}
         u = Usage()
-        if refusal:
-            status, kind, message, reason = refusal
-            self._reply(status, kind, message)
-            entry.update(status=status, refused=message)
-            gw._account(c, u, reason, entry)
-            return
-        u.requests = 1
-        status = self._forward(body, u)
-        u.seconds = time.monotonic() - t0
-        entry.update(status=status, **{k: v for k, v in u.to_dict().items() if k != "refused"})
-        gw._account(c, u, None, entry)
+        settled = []
 
-    def _forward(self, body: bytes, u: Usage) -> int:
+        def settle(status: int, reason: str | None = None) -> None:
+            """Account this request once; must run before the client sees the response end."""
+            if settled:
+                return
+            settled.append(status)
+            u.seconds = time.monotonic() - t0
+            entry["status"] = status
+            if refusal is None:
+                entry.update({k: v for k, v in u.to_dict().items() if k != "refused"})
+            gw._account(c, u, reason, entry)
+
+        try:
+            if refusal:
+                status, kind, message, reason = refusal
+                entry["refused"] = message
+                settle(status, reason)
+                self._reply(status, kind, message)
+                return
+            u.requests = 1
+            self._forward(body, u, settle)
+        finally:
+            settle(0)  # only if something above failed before settling
+
+    def _forward(self, body: bytes, u: Usage, settle) -> None:
         gw = self.gateway
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP}
         headers[gw.auth_header] = gw.auth_prefix + gw._key
@@ -402,39 +435,73 @@ class _Handler(BaseHTTPRequestHandler):
             conn.close()
             u.upstream_errors += 1
             u.wait_seconds = time.monotonic() - t_sent
+            settle(502)
             self._reply(502, "api_error", f"upstream unreachable: {e}")
-            return 502
+            return
         u.wait_seconds = time.monotonic() - t_sent
         if resp.status == 429 or resp.status >= 500:
             u.upstream_errors += 1
         try:
-            self._relay(resp, u)
+            if "text/event-stream" in (resp.getheader("content-type") or ""):
+                self._relay_stream(resp, u, settle)
+            else:
+                self._relay_whole(resp, u, settle)
         finally:
             conn.close()
-        return resp.status
 
-    def _relay(self, resp: http.client.HTTPResponse, u: Usage) -> None:
-        sse = "text/event-stream" in (resp.getheader("content-type") or "")
-        reader = _UsageReader(sse)
-        length = resp.getheader("content-length")
-        chunked = sse or length is None
-        client_ok = True
+    def _send_head(self, resp: http.client.HTTPResponse, length: int | None) -> bool:
         try:
             self.send_response(resp.status)
             for k, v in resp.getheaders():
                 if k.lower() not in HOP_BY_HOP and k.lower() != "content-encoding":
                     self.send_header(k, v)
-            if chunked:
+            if length is None:
                 self.send_header("transfer-encoding", "chunked")
             else:
-                self.send_header("content-length", length)
+                self.send_header("content-length", str(length))
             self.end_headers()
+            return True
         except OSError:
-            client_ok = False
+            return False
+
+    @staticmethod
+    def _take(reader: "_UsageReader", u: Usage) -> None:
+        reader.close()
+        for k, v in reader.counts.items():
+            setattr(u, k, v)
+        if reader.model:
+            u.response_models.add(reader.model)
+
+    def _relay_whole(self, resp: http.client.HTTPResponse, u: Usage, settle) -> None:
+        """Receive the whole body, account, then send it."""
+        try:
+            data = resp.read()
+        except (OSError, http.client.HTTPException) as e:
+            u.upstream_errors += 1
+            settle(502)
+            self._reply(502, "api_error", f"upstream read failed: {e}")
+            return
+        reader = _UsageReader(sse=False)
+        reader.feed(data)
+        self._take(reader, u)
+        settle(resp.status)
+        if not self._send_head(resp, len(data)):
+            self.close_connection = True
+            return
+        try:
+            self.wfile.write(data)
+            self.wfile.flush()
+        except OSError:
+            self.close_connection = True
+
+    def _relay_stream(self, resp: http.client.HTTPResponse, u: Usage, settle) -> None:
+        """Pass a stream through as it comes; account before the final terminator."""
+        reader = _UsageReader(sse=True)
+        client_ok = self._send_head(resp, None)
         complete = False
         while True:  # keep reading after a client disconnect so usage is still counted
             try:
-                chunk = resp.read1(65536) if sse else resp.read(65536)
+                chunk = resp.read1(65536)
             except (OSError, http.client.HTTPException):
                 u.upstream_errors += 1
                 break
@@ -444,12 +511,13 @@ class _Handler(BaseHTTPRequestHandler):
             reader.feed(chunk)
             if client_ok:
                 try:
-                    self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n"
-                                     if chunked else chunk)
+                    self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
                     self.wfile.flush()
                 except OSError:
                     client_ok = False
-        if chunked and client_ok and complete:
+        self._take(reader, u)
+        settle(resp.status)
+        if client_ok and complete:
             try:
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
@@ -457,8 +525,3 @@ class _Handler(BaseHTTPRequestHandler):
                 client_ok = False
         if not (complete and client_ok):
             self.close_connection = True
-        reader.close()
-        for k, v in reader.counts.items():
-            setattr(u, k, v)
-        if reader.model:
-            u.response_models.add(reader.model)
