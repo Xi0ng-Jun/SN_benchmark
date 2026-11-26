@@ -27,9 +27,10 @@ def container_python():
     """Path of a python3 inside IMAGE, or a reason why the container test cannot run."""
     if shutil.which("docker") is None:
         return None, "docker not found"
-    if subprocess.run(["docker", "image", "inspect", IMAGE], stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL).returncode != 0:
-        return None, f"image {IMAGE} not present"
+    p = subprocess.run(["docker", "image", "inspect", IMAGE], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, text=True)
+    if p.returncode != 0:  # absent image, or no access to the docker daemon at all
+        return None, f"docker image inspect {IMAGE} failed: {p.stderr.strip()[:300]}"
     probe = " ".join(f'command -v {c} >/dev/null 2>&1 && {{ command -v {c}; exit 0; }};'
                      for c in PYTHON_CANDIDATES) + " exit 1"
     p = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
