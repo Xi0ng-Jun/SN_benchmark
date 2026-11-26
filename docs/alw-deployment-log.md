@@ -362,3 +362,40 @@
 
 - **`[事实]` 已通过项**：`m_lvs`、`m_drc`、`m_shape`、`m_fill`、`m_morph` 五项第 I 类镜像检查器均为 `0` 方向性违例、`0` 双向违例（`ok = true`），`calibrate_eps("m_fill")` 校准得 **`eps_fill = 0.0`**；第 II 类探针 `advisory_aspect_gt_3` 在 `S_plus` 上 **`k_FP_S_plus = 0`**、盲簇上 **`k_TP_blind = 4`**（`class2_ok = true`）。
 - **`[事实 + 判断]` `m_gds` 6 例偏差根因与修复**：外层 `evaluate.py` 对普通文件先置 `submission_present = true`（对应内层 Tier 0 `file_present = 1`），随后在 `stages.area` 对截断流或错 `top_cell` 置 `geometry_valid = false`（对应内层 Tier 1 `m_gds = 0`）。旧版 `metrics_reader.d_star` 仅读取 `submission_present` 而忽略 `geometry_valid = false`，将这 `6` 个损坏/错名变体误标为 `d*_gds = 1`。已在 [metrics_reader.py](../src/ssap/targets/alw/metrics_reader.py) 对齐 `present and geometry_valid`（同时当 `d*_gds != 1` 时将 `d*_shape` 短路为 `bottom`），并新增 `ssap alw-concordance --refresh-bank-metrics` 直接从已缓存 `metrics.json` 原子刷新 `B_dev`，无需重跑 Docker。
+
+---
+
+## 7. Phase 3（外层循环 Round 1–2）与留出评测方案变更
+
+> 数字由脚本核对自 `docs/server-info/round1.txt`（Round 1 脱敏战报）与 `docs/server-info/round_report_redacted.json`（Round 2 脱敏战报）；盲簇只列聚合值。
+
+### 7.1 两轮结果 `[事实]`
+
+| 项目 | Round 1 | Round 2 |
+|---|---|---|
+| 候选 | `repair-cert-diagnosis`（Class 4，Path 1） | `repair-lvs-artifacts`（Class 4，Path 1） |
+| 过 Stage 0 的尝试 | 第 6 次（第 2–5 次：2 次超时、1 次 80 轮上限、1 次 `proposal_missing_or_invalid_json`） | 第 3 次（第 1–2 次 `proposal_missing_or_invalid_json`） |
+| trial / 发散 | 24 / 20 | 24 / 20 |
+| 总分差 `sum_delta_Y` | `+0.055073`（晋升） | `+0.011594`（晋升） |
+| 可见 16 个 trial | `+0.121739`；Rescued 2，Neutral 14 | `-0.055073`；Damaged 2，Neutral 14 |
+| 盲簇 8 个 trial（4 发散） | `-0.066667` | `+0.066667` |
+| 模型调用 / 验证器调用 | 2792 / 18 | 3032 / 21 |
+
+- 非零可见 trial 两轮都是 `ota-5t` 种子 0（`+0.033333`，`-0.033333`）与 `tia-zt8k` 种子 0（`+0.088406`，`-0.021739`）。
+- 两轮累计相对 `H_base` 为 `+0.066667`；Stage 1 Round 1 墙钟约 13.5 h（60 次串行抢修）。
+- 当前擂主 `H_base+repair-cert-diagnosis+repair-lvs-artifacts`，两处改动都只在 `repair.py`（终局抢修提示词）。
+
+### 7.2 观测 `[判断]`
+
+- Round 2 的对照分数是 Round 1 候选 3 个抢修种子的均值（晋升时刷新的存档）。盲簇与 `ota-5t` 两轮精确反转，累计增益只来自 `tia-zt8k` 种子 0 一个 trial；这符合抢修随机性，不足以说明两处改动有效。
+- 改抢修提示词会改变门控签名里的提示词哈希，所有触发抢修的 trial 都判为发散，每轮约 60 次抢修。Stage 1 抢修是串行执行的，`--parallel` 对 Path 1 不起作用。
+- 两轮可见 14 个 trial 都是 Neutral，LVS 瓶颈未动；15 分钟抢修窗口改不了前 165 分钟没画对的 LVS。
+
+### 7.3 留出评测方案变更（用户决定，2026-11-26）
+
+- **不跑验证集 C1**：`H*` 直接定为当前擂主，在任何留出运行之前写入 `STATE/test/manifest.json`（`H*` 与 `H_base` 源码树哈希）；之后 `H*` 改动会被拒绝。
+- **每臂 1 个种子**（协议要求 `>= 3`），因此报告不给出种子噪声地板；`alw-report` 需显式加 `--accept-fewer-seeds`。
+- **不跑诚实基线**（一页人工说明、同预算 Best-of-k）。
+- **`H*` 用抢修重放**：两处改动都不影响前 165 分钟，`H*` 在 `H_base` 测试运行的 `pre_repair` 存档上用 `H*` 代码重跑一次无状态 Phase B，与 dev Path 1 同一机制；未触发抢修的槽位与 `H_base` 相同。
+- `H_base` 臂从干净的 `STATE/loop/h_base_src` 暂存（搜索起点），`H_base -> H*` 只差两处晋升改动。
+- 并行 6；入口 `ssap alw-test`（`src/ssap/eval/holdout.py`）。

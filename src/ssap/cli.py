@@ -7,6 +7,7 @@
 ``alw-harvest``      Harbor job directory -> run records, Path 1 archive, B_dev samples, summaries
 ``alw-eval``         smoke-10m | subset | baseline (Harbor jobs), fork-path1 (Path 1), c1-val
 ``alw-loop``         round-by-round Path 1 outer loop with K_idle pruning
+``alw-test``         sealed test runs: H_raw / H_base live, H_star by Phase B replay
 ``alw-report``       sealed test report (single unblind, R >= 3 seeds)
 
 Commands that would start containers or model calls stage their job configs and plans under
@@ -703,6 +704,30 @@ def _auto_loop(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------------------------
+# alw-test
+# ---------------------------------------------------------------------------------------------
+
+def _holdout(args: argparse.Namespace) -> int:
+    from .eval.holdout import run_holdout
+    from .eval.proposer_sandbox import user_scrub
+    from .kernel import artifact_summary as asum
+    cfg = _cfg(args)
+    state = _state(args, cfg)
+    _, _, split = _alw_data(cfg)
+    tasks = _split_ids(split, "test")
+    alw_repo = args.alw_repo or (cfg.get("alw") or {}).get("repo") or None
+    try:
+        out = run_holdout(cfg, state, tasks=tasks, seeds=list(range(args.seeds)), step=args.step,
+                          harbor_cmd=args.harbor_cmd, verify_cmd=args.verify_cmd, alw_repo=alw_repo,
+                          dry_run=args.dry_run)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"alw-test: {exc}", file=sys.stderr)
+        return 2
+    _emit(user_scrub(out, asum.literal_secrets_from_env()))
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
 # alw-report
 # ---------------------------------------------------------------------------------------------
 
@@ -711,8 +736,8 @@ def _report(args: argparse.Namespace) -> int:
     if args.split != "test":
         print("alw-report builds the sealed test report only (--split test)", file=sys.stderr)
         return 2
-    if args.seeds < R_MIN:
-        print(f"--seeds must be >= {R_MIN}", file=sys.stderr)
+    if args.seeds < 1 or (args.seeds < R_MIN and not args.accept_fewer_seeds):
+        print(f"--seeds must be >= {R_MIN} (fewer only with --accept-fewer-seeds)", file=sys.stderr)
         return 2
     cfg = _cfg(args)
     state = _state(args, cfg)
@@ -868,10 +893,22 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--alw-repo", default=None, help="ALW checkout (default: config alw.repo)")
     p.set_defaults(fn=_loop)
 
+    p = sub.add_parser("alw-test", help="sealed test runs: H_raw / H_base live, H_star by replay")
+    _add_common(p)
+    p.add_argument("--step", choices=("all", "launch", "replay"), default="all")
+    p.add_argument("--seeds", type=int, default=1, help="seeds per arm (protocol: >= 3)")
+    p.add_argument("--harbor-cmd", default=None, help="live launch template ({job_config})")
+    p.add_argument("--verify-cmd", default=None,
+                   help="offline verifier template ({alw_repo} {task_id} {submission_dir} {out_dir})")
+    p.add_argument("--alw-repo", default=None, help="ALW checkout (default: config alw.repo)")
+    p.set_defaults(fn=_holdout)
+
     p = sub.add_parser("alw-report", help="sealed test report (single unblind, R >= 3 seeds)")
     _add_common(p)
     p.add_argument("--split", default="test")
     p.add_argument("--seeds", type=int, default=3)
+    p.add_argument("--accept-fewer-seeds", action="store_true",
+                   help="allow --seeds below the protocol minimum (recorded deviation)")
     p.add_argument("--runs", default=None, help="JSONL of test run records")
     p.add_argument("--out-dir", default=None)
     p.add_argument("--selected-version", default=None)

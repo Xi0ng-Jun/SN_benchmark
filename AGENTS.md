@@ -49,3 +49,8 @@ and experimental hygiene rules stated in `docs/mcr-formal.tex`:
 
 Current status: benchmark-agnostic v2 specification complete (`docs/mcr-formal.tex`,
 `docs/mcr-formal.pdf`, `docs/mcr-plain.md`); ready for target benchmark (`ALW`) instantiation.
+
+ALW (2026-11-26): outer loop stopped after Round 2. By the user's decision the final holdout
+deviates from rule 3 above: no `val` C1 (H* fixed to the dev incumbent before any holdout run),
+1 seed per arm, no honest baselines, H* evaluated by Phase B replay on the H_base test snapshots
+(`ssap alw-test`). Details: `docs/alw-deployment-log.md` §7.
