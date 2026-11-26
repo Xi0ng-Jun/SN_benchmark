@@ -20,8 +20,13 @@ from pathlib import Path
 
 CONFIG_NAME = "scenario.json"
 COMMANDS = ("run", "score", "enter")
+OPTIONAL_COMMANDS = ("invalid",)
 START_NAME = "start"
-TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness"}
+TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness", "limits"}
+LIMIT_KEYS = ("run_seconds", "score_seconds", "enter_seconds")
+
+# Exit code by which the invalid-run check says "this run is invalid".
+INVALID_EXIT = 10
 
 # Implementation detail, not a method parameter: how long a command gets to
 # exit after SIGTERM before its whole process group receives SIGKILL.
@@ -68,6 +73,7 @@ class Scenario:
     exam: tuple[str, ...]
     commands: dict[str, tuple[str, ...]]
     initial_harness: Path
+    limits: dict[str, float | None]
 
     def run(self, task: str, harness: Path, out: Path, logs: Path, *, model_url: str,
             model_key: str, model: str, timeout: float | None = None) -> CommandResult:
@@ -92,6 +98,14 @@ class Scenario:
             raise ScenarioError("enter: command must be a non-empty list of strings")
         env = {"HB_TASK": self._task(task), "HB_WORK": str(_mkdir(work))}
         return self._call("enter", command, logs, timeout, env)
+
+    def check_invalid(self, task: str, run_dir: Path, logs: Path, *,
+                      timeout: float | None = None) -> CommandResult | None:
+        """Apply the researcher's invalid-run condition to a run record; None if there is none."""
+        if "invalid" not in self.commands:
+            return None
+        env = {"HB_TASK": self._task(task), "HB_RUN": str(_existing_dir(run_dir))}
+        return self._call("invalid", [], logs, timeout, env)
 
     def score_value(self, score_out: Path) -> float | None:
         """The number at the configured place in a score command's raw output, or None."""
@@ -196,7 +210,7 @@ def load(root: str | Path) -> Scenario:
     _score_spec(config["score"])
     return Scenario(root=root, config=config, tasks=tasks, practice=practice, exam=exam,
                     commands=_commands(config["commands"]), initial_harness=_harness(
-                        config["initial_harness"], root))
+                        config["initial_harness"], root), limits=_limits(config["limits"]))
 
 
 def _tasks(entries, root: Path) -> dict[str, Task]:
@@ -266,10 +280,12 @@ def _no_shared_files(tasks: dict[str, Task], practice, exam, root: Path) -> None
 
 
 def _commands(commands) -> dict[str, tuple[str, ...]]:
-    if not isinstance(commands, dict) or set(commands) != set(COMMANDS):
-        raise ScenarioError(f"commands: must have exactly the keys {list(COMMANDS)}")
+    if (not isinstance(commands, dict) or not set(COMMANDS) <= set(commands)
+            or set(commands) - set(COMMANDS) - set(OPTIONAL_COMMANDS)):
+        raise ScenarioError(f"commands: must have the keys {list(COMMANDS)}, "
+                            f"optionally {list(OPTIONAL_COMMANDS)}")
     out = {}
-    for name in COMMANDS:
+    for name in commands:
         argv = commands[name]
         if not isinstance(argv, list) or not argv or not all(
                 isinstance(a, str) and a for a in argv):
@@ -288,6 +304,15 @@ def _score_spec(spec) -> None:
         raise bad
     if not isinstance(key, str) or not key:
         raise bad
+
+
+def _limits(limits) -> dict[str, float | None]:
+    if not isinstance(limits, dict) or set(limits) != set(LIMIT_KEYS):
+        raise ScenarioError(f"limits: must have exactly the keys {list(LIMIT_KEYS)}")
+    for k, v in limits.items():
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0):
+            raise ScenarioError(f"limits: {k} must be a positive number of seconds or null")
+    return dict(limits)
 
 
 def _harness(rel, root: Path) -> Path:

@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from harness_builder import scenario as sc
+from harness_builder.state import open_state
+
 STUB = Path(__file__).parent / "stub_scenario"
 
 
@@ -36,3 +39,9 @@ def edit_config(stub_dir):
         change(config)
         path.write_text(json.dumps(config))
     return edit
+
+
+@pytest.fixture
+def open_stub_state(stub_dir, tmp_path):
+    """open_stub_state() -> State for the stub copy (after any edit_config calls)."""
+    return lambda: open_state(tmp_path / "state", sc.load(stub_dir))

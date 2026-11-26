@@ -11,8 +11,10 @@
   "commands": {
     "run": ["python3", "run.py"],
     "score": ["python3", "score.py"],
-    "enter": ["python3", "enter.py"]
+    "enter": ["python3", "enter.py"],
+    "invalid": ["python3", "invalid.py"]
   },
   "score": {"file": "score.json", "key": "score"},
-  "initial_harness": "harness"
+  "initial_harness": "harness",
+  "limits": {"run_seconds": 60, "score_seconds": 60, "enter_seconds": 60}
 }

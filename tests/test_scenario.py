@@ -35,7 +35,7 @@ def gone(pid: int, wait: float = 5.0) -> bool:
     while time.monotonic() < deadline:
         try:
             stat = Path(f"/proc/{pid}/stat").read_text()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):  # ESRCH if it exits mid-read
             return True
         if stat.rsplit(")", 1)[1].split()[0] == "Z":
             return True
@@ -53,7 +53,8 @@ def test_load_stub(stub, stub_dir):
     assert stub.tasks["p2"].group == stub.tasks["p3"].group == "g1"
     assert stub.tasks["p1"].files == stub.root / "tasks" / "p1"
     assert stub.initial_harness == stub.root / "harness"
-    assert set(stub.commands) == {"run", "score", "enter"}
+    assert set(stub.commands) == {"run", "score", "enter", "invalid"}
+    assert stub.limits == {"run_seconds": 60, "score_seconds": 60, "enter_seconds": 60}
 
 
 BAD_CONFIGS = [
@@ -73,6 +74,10 @@ BAD_CONFIGS = [
      "scenario directory"),
     ("missing command", lambda c: c["commands"].pop("enter"), "commands"),
     ("empty command", lambda c: c["commands"].update(run=[]), "commands"),
+    ("unknown command", lambda c: c["commands"].update(foo=["x"]), "commands"),
+    ("limit missing", lambda c: c["limits"].pop("enter_seconds"), "limits"),
+    ("limit not positive", lambda c: c["limits"].update(run_seconds=0), "limits"),
+    ("limit not a number", lambda c: c["limits"].update(run_seconds="1h"), "limits"),
     ("score file outside output", lambda c: c.update(score={"file": "../x"}), "score"),
     ("score spec extra key", lambda c: c.update(score={"file": "s", "k": 1}), "score"),
     ("harness without start", lambda c: c.update(initial_harness="tasks"), "initial_harness"),

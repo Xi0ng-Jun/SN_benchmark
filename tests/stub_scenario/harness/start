@@ -8,10 +8,13 @@ next to this file:
   none          write nothing
   crash         exit 3 before writing anything
   break_scorer  write an answer.json that makes the stub scorer fail
+  unreachable   report that the model was unreachable and exit 5 (an invalid run)
+  hang          sleep until killed
 """
 import json
 import os
 import sys
+import time
 
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "settings.json")) as f:
@@ -23,6 +26,12 @@ print("solver: mode=%s model=%s" % (mode, os.environ.get("HB_MODEL")))
 if mode == "crash":
     print("solver: crashing on purpose", file=sys.stderr)
     sys.exit(3)
+if mode == "unreachable":
+    print("solver: model unreachable", file=sys.stderr)
+    sys.exit(5)
+if mode == "hang":
+    sys.stdout.flush()
+    time.sleep(3600)
 if mode == "none":
     sys.exit(0)
 if mode == "correct":

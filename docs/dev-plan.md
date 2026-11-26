@@ -113,26 +113,27 @@
 - 服务器上有 Docker；可用内存约 259 GiB，没有交换分区；与他人共用，ssap 的并发上限是 4。
 - 服务器时钟是 UTC。
 
-建议的做法（未执行过，第一次用时先看输出再继续）：
+实际采用的做法（2026-11-26 第一次在服务器上执行成功，37 个测试通过）：
 
-第一次，在 ssap 的检出里取新分支，另建一个目录：
+第一次，单独 clone 新分支，只从 ssap 的检出里读一次仓库地址：
 
 ```bash
-cd ~/autoalw/ssap && git fetch origin feat/harness-builder
-git worktree add ~/autoalw/harness-builder FETCH_HEAD
+U=$(git -C ~/autoalw/ssap remote get-url origin)
+git clone -b feat/harness-builder --single-branch "$U" ~/autoalw/harness-builder
 ```
 
 之后每次更新并测试：
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
-cd ~/autoalw/harness-builder && git fetch origin feat/harness-builder
-git checkout --detach FETCH_HEAD && PYTHONPATH=src pytest -q tests 2>&1 | tail -30
+cd ~/autoalw/harness-builder && git pull --ff-only && python3 --version
+PYTHONPATH=src pytest -q tests 2>&1 | tail -30
 ```
 
 说明：
 
-- 这样做不改 `~/autoalw/ssap` 里的任何文件，不影响可能正在运行的 ssap Round 2。
+- 这样做不写 `~/autoalw/ssap` 里的任何文件（包括它的 `.git`），不影响可能正在运行的 ssap Round 2。
+- 桩场景的命令用服务器 PATH 里的 `python3`。
 - 需要容器的测试会启动容器。测试要自己限定并发和内存，不与 ssap 的运行抢资源。
 - 本机的提交和推送需要研究员同意后再做。
 
