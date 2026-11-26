@@ -2,7 +2,7 @@
 
 外部程序只通过这里规定的东西接触一个场景。照着这份说明写出一个场景目录，就能把一个新任务接进来。
 
-状态：第 1–3 步写定了题目、划分、三条命令、分数位置、初始 harness、时限、无效运行的判定命令、预算和模型出口。开发 agent 和最终考试的设置在第 4–5 步加入本文。
+状态：第 1–4 步写定了题目、划分、三条命令、分数位置、初始 harness、时限、无效运行的判定命令、预算、模型出口和开发 agent。最终考试的设置在第 5 步加入本文。
 
 例子：`tests/stub_scenario/` 是测试用的桩场景，下文的每一项它都有。
 
@@ -41,13 +41,21 @@
   "limits": {
     "run_seconds": 3600, "score_seconds": 600, "enter_seconds": 300,
     "run_budget": {"total_tokens": 20000000},
-    "dev_budget": {"total_tokens": 500000000}
+    "dev_budget": {"total_tokens": 500000000},
+    "dev_seconds": 86400,
+    "parallel_runs": 4
   },
   "models": {
     "solver": "<做题模型>",
     "developer": "<开发模型>",
     "upstream_url": "${UPSTREAM_URL}",
     "upstream_key_env": "UPSTREAM_KEY"
+  },
+  "developer": {
+    "command": ["sh", "-c", "<在沙盒里启动开发 agent 的命令>"],
+    "image": "<镜像>",
+    "memory": "16g",
+    "cpus": 4
   }
 }
 ```
@@ -91,7 +99,7 @@
 
 ### 2.6 limits
 
-五个键都必须写。
+七个键都必须写。
 
 | 键 | 限制什么 | 值 |
 |---|---|---|
@@ -100,6 +108,8 @@
 | `enter_seconds` | 一次进入环境命令 | 同上 |
 | `run_budget` | 一次运行里做题 agent 的模型用量 | 上限表，或 `null`（不限） |
 | `dev_budget` | 整个开发阶段的模型用量：开发 agent 自己的调用加上它发起的运行 | 同上 |
+| `dev_seconds` | 整个开发阶段的时长，各次开发会话累计 | 秒，正数或 `null` |
+| `parallel_runs` | 开发阶段同时进行的运行和打分的个数 | 正整数 |
 
 上限表把下列计数中的若干个映射到正整数：`requests`（转发出去的请求数）、`input_tokens`（未命中缓存的输入）、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`、`total_tokens`（前四种之和）。任何一个计数达到上限后，之后的模型调用被拒绝；`dev_budget` 到顶后，新的运行也不再受理。已经在途的请求不打断，所以实际用量可能略超上限，超出的部分不超过到顶那一刻在途的请求。
 
@@ -130,6 +140,31 @@
 - 划分（每道题在哪一侧、属于哪一组）在第一次打开状态目录时锁定，之后改动会被拒绝。
 - 其他内容可以改。每次打开状态目录时，外部程序计算场景目录的哈希；它或 `scenario.json` 有任何变化，就把新的哈希和配置原文写进记录。限制和无效条件的每次变更因此都留在记录里。
 - 状态目录不能放在场景目录里面。
+
+### 2.9 developer
+
+开发 agent 在沙盒里怎么启动。
+
+| 键 | 必填 | 含义 |
+|---|---|---|
+| `command` | 是 | 在沙盒里启动开发 agent 的命令，参数列表。命令退出即本次开发会话结束 |
+| `image` | 容器沙盒必填 | 沙盒用的 Docker 镜像。镜像里要有 `python3`（`hb` 命令和模型转发用） |
+| `python` | 否 | 镜像里 python3 的路径，默认按 PATH 找 |
+| `memory`、`cpus`、`pids_limit` | 否 | 容器的内存、CPU、进程数上限 |
+
+沙盒里能看到什么（变量是沙盒里的环境变量；容器沙盒里路径固定如括号内）：
+
+| 变量 | 内容 | 权限 |
+|---|---|---|
+| `HB_BRIEF`（`/hb/BRIEF.md`） | 固定的初始说明，不含领域内容 | 只读 |
+| `HB_MATERIALS`（`/materials`） | 材料，每次增加一个编号子目录；回答也在这里 | 只读 |
+| `HB_TASKS`（`/tasks`） | 每道练习题一个子目录，内容是它的 `files` | 只读 |
+| `HB_RECORDS`（`/records`） | 开发阶段的全部运行、打分、进入环境的记录 | 只读 |
+| `HB_VERSIONS`（`/versions`） | harness 的全部版本 | 只读 |
+| `HB_WORKSPACE`（`/workspace`） | 工作区；`harness/` 是 harness 的可改副本，第一次从 `v0` 复制 | 可写 |
+| `HB_MODEL_URL`、`HB_MODEL_KEY`、`HB_MODEL` | 模型出口、本次会话的凭据、开发模型 | — |
+
+`hb` 命令在 PATH 上，提供运行、打分、进入环境、提问、交付五种操作和 `status`（用量、剩余预算和时间、版本、问题、交付）。容器沙盒没有任何网络（`--network none`），模型调用经挂进来的套接字转到模型出口。考试题、总记录、场景目录都不在沙盒里。
 
 ## 3. 三条命令
 

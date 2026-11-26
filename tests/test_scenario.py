@@ -55,7 +55,8 @@ def test_load_stub(stub, stub_dir):
     assert stub.initial_harness == stub.root / "harness"
     assert set(stub.commands) == {"run", "score", "enter", "invalid"}
     assert stub.limits == {"run_seconds": 60, "score_seconds": 60, "enter_seconds": 60,
-                           "run_budget": {"requests": 5}, "dev_budget": {}}
+                           "run_budget": {"requests": 5}, "dev_budget": {},
+                           "dev_seconds": 600, "parallel_runs": 2}
     assert stub.models["solver"] == "stub-solver"
 
 
@@ -87,6 +88,9 @@ BAD_CONFIGS = [
     ("models missing solver", lambda c: c["models"].pop("solver"), "models"),
     ("models unknown key", lambda c: c["models"].update(temperature=0), "models"),
     ("models bad port", lambda c: c["models"].update(listen_port="80"), "models"),
+    ("parallel runs zero", lambda c: c["limits"].update(parallel_runs=0), "parallel_runs"),
+    ("developer without command", lambda c: c["developer"].pop("command"), "developer"),
+    ("developer bad cpus", lambda c: c["developer"].update(cpus="2"), "developer"),
     ("score file outside output", lambda c: c.update(score={"file": "../x"}), "score"),
     ("score spec extra key", lambda c: c.update(score={"file": "s", "k": 1}), "score"),
     ("harness without start", lambda c: c.update(initial_harness="tasks"), "initial_harness"),

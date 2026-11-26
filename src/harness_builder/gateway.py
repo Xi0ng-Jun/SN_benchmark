@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import socketserver
 import threading
 import time
 import urllib.parse
@@ -135,6 +136,7 @@ class Gateway:
         self._pools: dict[str, Usage] = {}
         self._pool_caps: dict[str, dict] = {}
         self._server: ThreadingHTTPServer | None = None
+        self._unix: socketserver.ThreadingUnixStreamServer | None = None
         self._load_log()
 
     def _load_log(self) -> None:
@@ -178,11 +180,32 @@ class Gateway:
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         return self
 
+    def start_unix(self, path: str | Path) -> None:
+        """Also serve on a Unix socket (for sandboxes without a network)."""
+        owner = self
+
+        class Handler(_Handler):
+            gateway = owner
+
+        class Server(socketserver.ThreadingUnixStreamServer):
+            daemon_threads = True
+
+        self._unix = Server(str(path), Handler)
+        threading.Thread(target=self._unix.serve_forever, daemon=True).start()
+
+    def stop_unix(self) -> None:
+        if self._unix is not None:
+            self._unix.shutdown()
+            self._unix.server_close()
+            self._unix = None
+
     def stop(self) -> None:
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
-            self._server = None
+        for name in ("_server", "_unix"):
+            server = getattr(self, name)
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+                setattr(self, name, None)
 
     def __enter__(self):
         return self.start()

@@ -24,8 +24,12 @@ CONFIG_NAME = "scenario.json"
 COMMANDS = ("run", "score", "enter")
 OPTIONAL_COMMANDS = ("invalid",)
 START_NAME = "start"
-TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness", "limits", "models"}
-LIMIT_KEYS = ("run_seconds", "score_seconds", "enter_seconds", "run_budget", "dev_budget")
+TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness", "limits", "models",
+                  "developer"}
+LIMIT_KEYS = ("run_seconds", "score_seconds", "enter_seconds", "run_budget", "dev_budget",
+              "dev_seconds", "parallel_runs")
+DEVELOPER_OPTIONAL = {"image": str, "python": str, "memory": str, "cpus": (int, float),
+                      "pids_limit": int}
 MODEL_KEYS = {"solver": str, "developer": str, "upstream_url": str, "upstream_key_env": str}
 MODEL_OPTIONAL = {"upstream_auth_header": str, "upstream_auth_prefix": str,
                   "listen_host": str, "listen_port": int, "url_host": str}
@@ -80,6 +84,7 @@ class Scenario:
     initial_harness: Path
     limits: dict
     models: dict
+    developer: dict
 
     def run(self, task: str, harness: Path, out: Path, logs: Path, *, model_url: str,
             model_key: str, model: str, timeout: float | None = None) -> CommandResult:
@@ -218,7 +223,7 @@ def load(root: str | Path) -> Scenario:
     return Scenario(root=root, config=config, tasks=tasks, practice=practice, exam=exam,
                     commands=_commands(config["commands"]), initial_harness=_harness(
                         config["initial_harness"], root), limits=_limits(config["limits"]),
-                    models=_models(config["models"]))
+                    models=_models(config["models"]), developer=_developer(config["developer"]))
 
 
 def _tasks(entries, root: Path) -> dict[str, Task]:
@@ -319,6 +324,11 @@ def _limits(limits) -> dict:
         raise ScenarioError(f"limits: must have exactly the keys {list(LIMIT_KEYS)}")
     out = {}
     for k, v in limits.items():
+        if k == "parallel_runs":
+            if not (_positive(v) and isinstance(v, int)):
+                raise ScenarioError("limits: parallel_runs must be a positive integer")
+            out[k] = v
+            continue
         if k.endswith("_seconds"):
             if v is not None and not _positive(v):
                 raise ScenarioError(f"limits: {k} must be a positive number of seconds or null")
@@ -350,6 +360,19 @@ def _models(models) -> dict:
                 "upstream_auth_prefix",)):
             raise ScenarioError(f"models: {k} must be a {t.__name__}")
     return dict(models)
+
+
+def _developer(dev) -> dict:
+    if not isinstance(dev, dict) or set(dev) - {"command", *DEVELOPER_OPTIONAL}:
+        raise ScenarioError(f"developer: must have 'command' and optionally "
+                            f"{sorted(DEVELOPER_OPTIONAL)}")
+    cmd = dev.get("command")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(a, str) and a for a in cmd):
+        raise ScenarioError("developer: command must be a non-empty list of strings")
+    for k, t in DEVELOPER_OPTIONAL.items():
+        if k in dev and (isinstance(dev[k], bool) or not isinstance(dev[k], t)):
+            raise ScenarioError(f"developer: {k} has the wrong type")
+    return dict(dev)
 
 
 def _harness(rel, root: Path) -> Path:

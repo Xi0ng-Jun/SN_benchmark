@@ -19,12 +19,19 @@
   "limits": {
     "run_seconds": 60, "score_seconds": 60, "enter_seconds": 60,
     "run_budget": {"requests": 5},
-    "dev_budget": null
+    "dev_budget": null,
+    "dev_seconds": 600,
+    "parallel_runs": 2
   },
   "models": {
     "solver": "stub-solver",
     "developer": "stub-developer",
     "upstream_url": "${STUB_UPSTREAM_URL:-http://127.0.0.1:9}",
     "upstream_key_env": "STUB_UPSTREAM_KEY"
+  },
+  "developer": {
+    "command": ["sh", "-c", "exec \"$HB_PYTHON\" \"$HB_WORKSPACE/stub_developer.py\""],
+    "memory": "2g",
+    "cpus": 2
   }
 }

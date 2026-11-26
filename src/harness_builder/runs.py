@@ -7,6 +7,7 @@ developer agent's requests) and accepts only the tasks it was given. Layout:
                           output), run.*, score.*, invalid.* (stdout/stderr),
                           usage.json (model use, once there is a gateway), record.json
     <area>/scores/s0001/  product/ (a copy of what was scored), score/, score.*, record.json
+    <area>/enters/e0001/  enter.stdout, enter.stderr, record.json
 
 With a gateway, each run gets its own credential for the solver model, capped by
 ``limits.run_budget``; its usage goes into the record. A run is refused before it
@@ -139,6 +140,29 @@ class Runner:
         make_read_only(d)
         self.ledger.append("score_finished", **record)
         return record
+
+    def enter(self, task: str, command: list[str], work: Path) -> dict:
+        """Run ``command`` in ``task``'s environment with ``work`` as the exchange directory."""
+        self._allowed(task)
+        d = self._new_dir("enters", "e")
+        base = {"area": self.area, "enter": d.name, "task": task, "command": list(command),
+                "work": str(work)}
+        self.ledger.append("enter_started", **base)
+        try:
+            r = self.scenario.enter(task, list(command), work, d,
+                                    timeout=self.scenario.limits["enter_seconds"])
+        except BaseException as e:
+            make_read_only(d)
+            self.ledger.append("enter_aborted", **base, error=repr(e))
+            raise
+        record = {**base, "enter_result": result_dict(r)}
+        (d / "record.json").write_text(json.dumps(record, indent=1))
+        make_read_only(d)
+        self.ledger.append("enter_finished", **record)
+        return record
+
+    def enter_dir(self, enter_id: str) -> Path:
+        return self.dir / "enters" / enter_id
 
     def _invalid(self, task: str, d: Path) -> dict:
         r = self.scenario.check_invalid(task, d, d,
