@@ -50,6 +50,10 @@ python3 scripts/traj_digest.py grep <片段> 'Netlists .*match' --where obs   # 
   也不应该被读。
 - 每条结论都要带出处：运行名 + 步号 + 分钟。引用原文不超过两行。
 - 事实和判断分开写。数不出来的写“未统计”，没看的写“未查看”，不要估。
+- 分钟和步号都从 `overview` 的步骤行或 `steps` 的标题行读，不要估。“时间去向”表里各段按时间顺序排、
+  互不重叠；写完后检查一遍：步号变大时分钟不能变小。
+- 评价 agent 对剩余时间的说法之前，先算实际剩余时间（180 减去该步的分钟数），再比较。
+- 成本只引用 token 数。轨迹里的美元数是客户端按别的价目估的，不要引用。
 - 报告里不要出现服务器用户名和密钥。
 - 报告用中文，引用的原文保持原样。
 
@@ -106,3 +110,18 @@ python3 scripts/traj_digest.py grep <片段> 'Netlists .*match' --where obs   # 
 
 做完后把 `S/analysis/` 下的报告文本交回。如果某条的 `overview` 输出过大，先加 `--no-steps`
 看分段，再用 `grep` 和 `steps` 定位。
+
+## 批量运行（无人值守）
+
+`scripts/analyze_batch.py` 为每条轨迹启动一个无界面会话做任务 A，会话只被允许运行
+`scripts/traj_digest.py` 和读文件，最终回复存为报告；报告在 `S/analysis/auto/`，会话日志在其下的
+`logs/`。已有报告的轨迹会跳过。
+
+```bash
+cd ~/autoalw/ssap && export SSAP_STATE="/localdata/$(whoami)/ssap-alw-state"
+python3 scripts/analyze_batch.py check                       # 先确认本机的 agent 命令可用，应输出 PASS
+python3 scripts/analyze_batch.py list --batch 'test-H_raw*'  # 将要分析哪些轨迹
+nohup python3 scripts/analyze_batch.py run --batch 'test-H_raw*' --jobs 3 --summary hraw \
+  > "$SSAP_STATE/analysis/auto/batch.log" 2>&1 &
+python3 scripts/analyze_batch.py bundle --batch 'test-H_raw*'  # 全部报告合成一个文本文件，便于传出
+```
