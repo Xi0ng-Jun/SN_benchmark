@@ -399,3 +399,61 @@
 - **`H*` 用抢修重放**：两处改动都不影响前 165 分钟，`H*` 在 `H_base` 测试运行的 `pre_repair` 存档上用 `H*` 代码重跑一次无状态 Phase B，与 dev Path 1 同一机制；未触发抢修的槽位与 `H_base` 相同。
 - `H_base` 臂从干净的 `STATE/loop/h_base_src` 暂存（搜索起点），`H_base -> H*` 只差两处晋升改动。
 - 并行 6；入口 `ssap alw-test`（`src/ssap/eval/holdout.py`）。
+
+### 7.4 密封测试集结果（14 题 × 1 种子，2026-11-27 揭盲）
+
+> 均分、成本、区间由脚本核对自 `docs/server-info/test_export/{test_report.json, replay_summary.json, manifest.json}`。逐题与漏斗数字由脚本核对自 `docs/server-info/test_export/{test_runs.jsonl, replay.jsonl}`。
+
+| 指标 | `H_raw` | `H_base` | `H*` |
+|---|---|---|---|
+| 平均 `Y*` | `0.0571` | `0.1453` | `0.1453` |
+| `C* = 1` | 0 / 14 | 1 / 14 | 1 / 14 |
+| 有效 GDS | 6 / 14 | 14 / 14 | 14 / 14 |
+| DRC 通过 | 2 / 14 | 10 / 14 | 11 / 14 |
+| LVS 通过 | 1 / 14 | 1 / 14 | 1 / 14 |
+| 后仿通过 | 0 / 14 | 1 / 14 | 1 / 14 |
+| 输入 / 输出 token（合计，M） | `381.0 / 22.7`（15 次，含 1 次基础设施重跑） | `376.9 / 20.2`（14 次） | `H_base` + 重放 `33.3 / 1.2` |
+
+`[事实]`
+- `H_raw -> H_base`：`+0.0882`，逐题 8 胜 5 平 1 负。8 胜中 7 题是 `0 -> 0.1`（`H_raw` 未交出有效 GDS），1 题 `0 -> 0.7344`（`ajc-schmitt`，全场唯一 `C* = 1`）；1 负是 `fct-residue-amplifier`（`H_raw` 过 LVS 得 `0.3`，`H_base` 得 `0.1`）。去掉 `ajc-schmitt` 后其余 13 题的均差为 `+0.0385`。
+- `H_base -> H*`：`0.0000`，0 胜 0 负；簇自助法区间 `[0, 0]`。重放判定：13 个槽位重跑了抢修，1 个（`ajc-schmitt`）两臂都未触发抢修、直接沿用。
+- 13 个重放槽位两臂的 `Y*` 都是 `0.1`（LVS 均未过）。DRC 分项有 3 题不同：`ajc-rc-osc`、`local-two-stage-ota` 为 `0 -> 1`，`two-stage-miller-opamp-gain60` 为 `1 -> 0`。
+- `infra_error`：最终未解决 0；`H_raw` 有 1 个槽位首跑为基础设施故障，重跑后入账。
+- `H_raw` 的 `wall_sec`、`tool_cpu_sec`、`peak_ram_mb` 为 0 是因为该臂没有 MCR 快照可读，不是实测值。
+
+`[判断]`
+- 自动优化在测试集上没有可测的增益。这与 §7.2 对 dev 两轮涨分的读法一致：`Y*` 在过 LVS 之前停在 `0.1` 的台阶上，抢修阶段的改动动不了 LVS，分数就不变。
+- DRC 分项 2 升 1 降、每槽位只有 1 次抢修，不能据此说 `H*` 的抢修提示词更会修 DRC。
+- `H_raw -> H_base` 的增益里，“交出有效 GDS”这部分有 8 / 14 对 0 / 14 的空白卷差距支撑；`C* = 1` 这部分只来自 1 题 1 个种子（占总增益的约六成），需要更多种子才能确认。
+- `[未核验]` `H_raw` 在本环境的 `0.0571` 明显低于论文同配置的 `0.1974`（`paper_reference.json` `table1[2]`，40 题 × 3 遍；有效 GDS 6 / 14）。`[事实]` `test_runs.jsonl` 中 `H_raw` 得 0 分的 8 题状态全部是 `missing_submission`，各自有 `150–376` 次模型请求（服务器终端输出，2026-11-27），即运行正常进行但结束时 `submission/` 里没有版图；结束方式见 §7.5。论文与其仓库（单提交、无 release）没有公布逐题结果，README 注明开源模型用 SGLang 自部署、结果随 API 或部署方式变化；本实验走企业网关到 `deepseek-v4-1-flash-261017`。在差距原因查清之前，`+0.0882` 应读作“相对本环境的裸跑”，不宜直接当作保底壳在论文环境下的增益。
+- 每次运行的 token 用量两臂接近（`H_base` `28.4M`；`H_raw` 按 15 次算 `26.9M`、按 14 次算 `28.8M`），不能得出保底壳多耗或少耗 token 的结论。
+
+### 7.5 `H_raw` 空白卷的结束方式（轨迹探查，2026-11-27）
+
+> 由只读脚本在服务器上读取 `jobs/test-H_raw*/…/agent/trajectory.json` 得到，输出存于 `docs/server-info/test_export/hraw_probe.txt`；下列分类依据每次运行的最后两步和起止时间戳。
+
+`[事实]`
+- 两臂轨迹都带思考内容：每次运行 `reasoning_content` 合计 `3.2M–6.2M` 字符。`--effort max` 在本环境确实生效。
+- `H_raw` 8 次 `missing_submission` 的最后一步：
+  - 4 次是客户端合成消息 `API Error: Claude's response exceeded the 32000 output token maximum`，会话随即结束：`ajc-schmitt`（开跑后 1 h 50 min）、`programmable-icc`（2 h 17 min）、`unregulated-charge-pump`（2 h 48 min）、`local-two-stage-ota`（2 h 49 min）。
+  - 2 次是 `Output token limit hit. Resume directly…` 的续写提示（`miller-opamp-gain70` 2 h 57 min、`ajc-rc-osc` 2 h 59 min）。
+  - 2 次是在 3 小时处仍在调用工具（`beta-multiplier`、`local-fc-ota`）。
+- `H_raw` 6 次有分数的运行：3 次以自己的收尾总结结束（`fct-residue-amplifier` 重跑、`ring-vco`、`regulated-charge-pump`），3 次在 3 小时处仍在调用工具。
+- 上述以 API Error 结束的运行，最后一步之前的思考里写着“已过约 2 小时，需要尽快把版图搭出来”一类的话（`programmable-icc`、`unregulated-charge-pump`、`miller-opamp-gain70`）。
+- `replay.jsonl`：13 次 `H*` 抢修重放中 4 次触发了棘轮晋升，平均每次 `43.9` 次模型请求。`H_base` 14 次中 10 次在 `T_soft` 被停、13 次触发抢修门、6 次在自己的 Phase B 晋升；网关等待占墙钟 `11.4%`。
+
+`[判断]`
+- 空白卷的直接机制：整个过程没有把版图写进 `submission/`（见下方第二次探查），其中 4 次是因为单次回复超过客户端 `32000` 输出 token 上限、会话中止而没来得及写。
+- `[未核验]` 论文的 SGLang 自部署是否有同样的输出上限、思考量是否同样大，不知道；这是目前最具体的“部署差异”候选，但还不能断定它解释了与论文 `0.1974` 的差距。各臂的统计见下方第二次探查。
+
+第二次探查（`docs/server-info/test_export/limit_probe.txt`，同为只读脚本读取轨迹）：
+
+`[事实]`
+- 输出超限的续写提示在所有臂都普遍出现：测试集 `H_raw` 14 / 14 次运行、共 133 次；测试集 `H_base` 14 / 14、共 113 次；dev `H_base` 22 / 24、共 125 次。以 API Error 结束的运行：`H_raw` 4 次，测试集 `H_base` 0 次，dev `H_base` 1 次。
+- 每次运行都有单步思考约 10 万字符的情况（`think_max` `95k–109k`），超过 4 万字符的思考步每次运行有 `19–53` 个。
+- `H_raw` 命令里第一次出现 `.gds` 的时间中位数是开跑后 `7.8` min；第一次出现 `submission/layout.gds` 的时间，6 次有分数的运行是 `47–179` min（其中 5 次在 `147` min 之后），8 次空白卷全程没有出现。空白卷集合与“全程未写 `submission/layout.gds`”的集合完全一致。
+
+`[判断]`
+- 上一条判断里“版图动工太晚”的说法不准确：早期就有 GDS 文件，但那可能只是器件级试验；能确定的是“交付太晚”，题面要求的“尽早保存到 `submission/`”没有被执行。
+- 输出超限不是 `H_raw` 特有的；`H_base` 同样频繁撞到，只是有草稿送检和独立抢修兜住了后果。
+- 这些现象是事后靠三轮手写探查才看到的：`H_base` 设计时、两轮提案时都没有这些信息，分数本身（多数停在 `0.1`）也反映不出卡点。LVS 为什么不过（13 / 14）至今没有分析过。
