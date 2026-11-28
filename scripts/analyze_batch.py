@@ -45,15 +45,17 @@ TASK_A = """阅读 docs/trajectory-analysis-brief.md，按“任务 A”分析�
 5. 报告第一行写：`# 单次运行报告：{label}`。
 """
 
-TASK_B = """阅读 docs/trajectory-analysis-brief.md，按“任务 B”汇总目录 {reports} 下所有 run_*.md 报告
-（用 Glob 列出，用 Read 逐份读完）。
+TASK_B = """阅读 docs/trajectory-analysis-brief.md，按“任务 B”汇总目录 {reports} 下的这 {n} 份报告
+（用 Read 逐份读完，一份都不能漏）：
+{files}
 
 与说明不同的地方，以这里为准：
 1. 不要写任何文件。把汇总全文作为最终回复输出，回复里只有汇总本身。
 2. 需要回到轨迹核对时，只能执行以 `python3 scripts/traj_digest.py` 开头的单条命令。
 3. 第 1 节的表按运行逐行列出，并另给一张“各类卡点出现在几次运行里”的计数表；
    数不出来的写“未统计”。
-4. 汇总里不要出现绝对路径。第一行写：`# 汇总报告：{name}`。
+4. 汇总里不要出现绝对路径。第一行写：`# 汇总报告：{name}`，第二行写读了几份报告。
+5. 所有计数（几次运行出现、几次得分）都要对着第 1 节的逐行表数出来，逐行表必须有 {n} 行。
 """
 
 CHECK = ("执行这一条命令：python3 scripts/traj_digest.py list {state}\n"
@@ -74,6 +76,14 @@ def trajectories(state: str, batch: str) -> list[tuple[str, Path]]:
         label = run if seen[run] == 1 else f"{run}__{trial.rsplit('__', 1)[-1]}"
         out.append((label, Path(h)))
     return out
+
+
+def _keys(label: str) -> list[str]:
+    """Strings by which a summary may refer to a run: the label and its task part, shortened."""
+    task = label.split("sky130-", 1)[-1]
+    task = task.rsplit("-layout", 1)[0]
+    parts = task.split("-")
+    return [label, task] + ["-".join(parts[1:i]) for i in range(3, len(parts) + 1)]
 
 
 def session(args, prompt: str, out: Path, log: Path) -> tuple[bool, str]:
@@ -152,9 +162,17 @@ def cmd_run(args, items, outdir) -> int:
     failed = results.count(False)
     print(f"# finished: {results.count(True)} ok, {failed} failed", flush=True)
     if args.summary and not failed:
-        ok, msg = session(args, TASK_B.format(reports=outdir, name=args.summary),
-                          outdir / f"summary_{args.summary}.md", outdir / "logs" / f"summary_{args.summary}.log")
+        names = [f"run_{l}.md" for l, _ in items]
+        dest = outdir / f"summary_{args.summary}.md"
+        ok, msg = session(args, TASK_B.format(reports=outdir, name=args.summary, n=len(names),
+                                              files="\n".join(f"- {n}" for n in names)),
+                          dest, outdir / "logs" / f"summary_{args.summary}.log")
         print(f"{'ok  ' if ok else 'FAIL'}\tsummary_{args.summary}\t{msg}", flush=True)
+        if ok:   # a summary that never names a run has most likely skipped its report
+            text = dest.read_text()
+            missed = [l for l, _ in items if not any(k in text for k in _keys(l))]
+            if missed:
+                print(f"WARNING\tsummary does not mention {len(missed)} run(s): {', '.join(missed)}", flush=True)
         failed += not ok
     elif args.summary:
         print("# summary skipped: rerun after the failed sessions are fixed", flush=True)

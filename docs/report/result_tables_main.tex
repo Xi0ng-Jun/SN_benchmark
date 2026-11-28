@@ -1,0 +1,10 @@
+% Stand-alone wrapper to compile and preview result_tables.tex.
+\documentclass[fontset=none,a4paper,11pt]{ctexart}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\IfFileExists{/mnt/c/Windows/Fonts/simsun.ttc}{%
+  \setCJKmainfont{simsun.ttc}[Path=/mnt/c/Windows/Fonts/,BoldFont=simhei.ttf,ItalicFont=simkai.ttf]
+}{}
+\begin{document}
+\input{result_tables.tex}
+\end{document}

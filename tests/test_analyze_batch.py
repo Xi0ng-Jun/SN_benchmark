@@ -50,6 +50,18 @@ def test_run_writes_reports_and_summary_and_skips_done(tmp_path, monkeypatch, ca
     assert "<<<<< run_run-a.md >>>>>" in (out / "bundle.txt").read_text()
 
 
+def test_summary_lists_reports_and_flags_skipped_runs(tmp_path, monkeypatch, capsys):
+    state, stub = make(tmp_path, monkeypatch)
+    captured = tmp_path / "prompt.txt"
+    wrapper = tmp_path / "wrap.sh"
+    wrapper.write_text(f"#!/bin/sh\ntee {captured} | {stub} \"$@\"\n")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    assert ab.main(["run", "--state", str(state), "--claude", str(wrapper), "--jobs", "1", "--summary", "p"]) == 0
+    prompt = captured.read_text()
+    assert "这 2 份报告" in prompt and "- run_run-a.md" in prompt and "- run_run-b.md" in prompt
+    assert "summary does not mention 2 run(s)" in capsys.readouterr().out
+
+
 def test_failed_session_leaves_no_report_and_blocks_summary(tmp_path, monkeypatch, capsys):
     state, stub = make(tmp_path, monkeypatch, runs=("run-a", "run-bad"))
     assert ab.main(["run", "--state", str(state), "--claude", stub, "--summary", "s"]) == 1
