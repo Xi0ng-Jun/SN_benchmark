@@ -111,6 +111,57 @@ python3 scripts/traj_digest.py grep <片段> 'Netlists .*match' --where obs   # 
 做完后把 `S/analysis/` 下的报告文本交回。如果某条的 `overview` 输出过大，先加 `--no-steps`
 看分段，再用 `grep` 和 `steps` 定位。
 
+## 任务 C：修补会话报告
+
+对象是 `H_base` 运行第 165 分钟之后的修补会话，日志在该次运行目录的
+`agent/mcr_snapshot/phase_b_stream.jsonl`（格式与 `trajectory.json` 不同，`traj_digest.py` 直接给它的完整路径即可，
+用法相同）。背景：
+
+- 这是一个全新的会话，看不到主会话的任何思考和对话，只拿到一段指令：先读题面，说明上一会话留下的版图在哪、
+  哪些检查没过（gate report）、上一会话的交接记录、时间和轮数预算；只许改 `work/draft/`，用 `mcr_promote` 送检，
+  通过检查更多的版本才会替换交卷文件。指令原文不在日志里，生成它的代码是 `src/ssap/checkers/alw/repair.py`
+  的 `repair_prompt`。
+- 同一目录下可以用 Read 看的文件（不一定都存在，先用 Glob 确认）：`pre_repair/workspace/.mcr/gate_report.json`、
+  `pre_repair/workspace/.mcr/best/cert.json`（修补前各项检查的结果）、`post_repair/best/cert.json`（修补后）、
+  `post_repair/repair_trace.json` 或 `repair_trace.json`；以及这次运行的 `verifier/evaluation/metrics.json`。
+
+写一份不超过 6 KB 的报告，固定结构：
+
+1. **结果**：一行。会话怎么结束的（`overview` 的 `session_result`）、时长、轮数、截断次数；修补前后各项检查的变化；
+   有没有成功送检。
+2. **接手时的状态**：上一会话留下了什么（有无整体版图、是否布线、哪些检查没过），依据是什么。
+3. **时间去向**：分段表，起止分钟和步号。
+4. **它做了什么**：按时间顺序，每件事带步号。特别要写清：有多少时间用来重新弄清主会话已经弄清过的东西
+   （器件库、规则文件、检查命令怎么用），有多少时间真正用在改版图上；改了什么、送检结果如何。
+5. **卡点**：同任务 A 的写法。
+6. **结束时的状态**：离通过还差什么；按这次的进度，这类问题在十几分钟内修得完吗（标明是判断，给理由）。
+7. **没看清的地方**。
+
+## 任务 D：提案尝试报告
+
+对象是自动优化里“提出修改方案”的 agent 的一次尝试，日志是状态目录下
+`loop/round_<r>/attempt_<a>/proposer/proposer_stream.jsonl`。背景：
+
+- 这个 agent 的任务是对现有的辅助流程提出**一处**修改。它在一个隔离的工作区里工作：`harness_src/` 是现有辅助流程
+  的只读副本，`candidate_src/` 是可改的副本，`evidence/` 是开发集运行留下的材料，最后要写出 `proposal.json`。
+  它有轮数上限和时间上限。任务原文在同一次尝试的 `proposer_ws/PROPOSER_TASK.md`。
+- 可以用 Read 看的文件只有这次尝试目录（日志所在目录的上一级）里的 `proposer_ws/PROPOSER_TASK.md`、
+  `proposer_ws/proposal.json`（可能不存在）和 `screen/candidate.patch`（可能不存在）。`loop/` 下的其他文件一律不要读。
+
+写一份不超过 8 KB 的报告，固定结构：
+
+1. **结果**：一行。会话怎么结束的（正常结束、到轮数上限，还是被外部停止；被停止时正在做什么）、时长、轮数、
+   截断和压缩次数；有没有写出 `proposal.json`，有没有改动 `candidate_src/`（Write/Edit 调用，或命令里写文件）。
+2. **时间去向**：分段表，起止分钟和步号。
+3. **它看了哪些材料、看出了什么**：按文件列出它读过的 `evidence/` 内容和源码；它据此对“运行为什么失败”下了什么结论，
+   引用它的原话（不超过两行）并给步号。它有没有试图弄清运行里时间花在哪、整体版图什么时候才出现；
+   材料里有没有这类信息。
+4. **它考虑过哪些修改**：每个候选一行：改哪里（主会话阶段的检查/提示/时间安排，还是结束前的修补环节）、
+   它的理由、最后选了还是放弃了、放弃的原因（原话 + 步号）。
+5. **卡点**：同任务 A 的写法。
+6. **这次尝试为什么没有产出可用的方案**（成功的尝试写“为什么选了这个方案”）：标明是判断，给出处。
+7. **没看清的地方**。
+
 ## 批量运行（无人值守）
 
 `scripts/analyze_batch.py` 为每条轨迹启动一个无界面会话做任务 A，会话只被允许运行
@@ -124,4 +175,13 @@ python3 scripts/analyze_batch.py list --batch 'test-H_raw*'  # 将要分析哪�
 nohup python3 scripts/analyze_batch.py run --batch 'test-H_raw*' --jobs 3 --summary hraw \
   > "$SSAP_STATE/analysis/auto/batch.log" 2>&1 &
 python3 scripts/analyze_batch.py bundle --batch 'test-H_raw*'  # 全部报告合成一个文本文件，便于传出
+```
+
+修补会话和提案尝试用 `--kind` 选择（报告前缀分别是 `repair_`、`proposer_`，打包文件是 `bundle_repair.txt`、
+`bundle_proposer.txt`）：
+
+```bash
+python3 scripts/analyze_batch.py list --kind repair --batch test-H_base
+python3 scripts/analyze_batch.py run  --kind repair --batch test-H_base --jobs 3
+python3 scripts/analyze_batch.py run  --kind proposer --jobs 3
 ```

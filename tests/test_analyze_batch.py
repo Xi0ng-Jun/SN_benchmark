@@ -72,3 +72,23 @@ def test_failed_session_leaves_no_report_and_blocks_summary(tmp_path, monkeypatc
     ab.main(["list", "--state", str(state)])
     listing = capsys.readouterr().out
     assert "done\trun-a" in listing and "todo\trun-bad" in listing
+
+
+def test_repair_and_proposer_kinds(tmp_path, monkeypatch, capsys):
+    state, stub = make(tmp_path, monkeypatch, runs=("run-a",))
+    snap = state / "jobs" / "test-H_raw" / "harbor" / "run-a" / "run-a__abc" / "agent" / "mcr_snapshot"
+    snap.mkdir()
+    (snap / "phase_b_stream.jsonl").write_text("{}")
+    prop = state / "loop" / "round_1" / "attempt_2" / "proposer"
+    prop.mkdir(parents=True)
+    (prop / "proposer_stream.jsonl").write_text("{}")
+    base = ["--state", str(state), "--claude", stub, "--batch", "test-H_raw"]
+    assert ab.main(["run", *base, "--kind", "repair"]) == 0
+    assert ab.main(["run", *base, "--kind", "proposer"]) == 0
+    out = state / "analysis" / "auto"
+    assert sorted(p.name for p in out.glob("*.md")) == ["proposer_round_1_attempt_2.md", "repair_run-a.md"]
+    assert ab.main(["bundle", *base, "--kind", "proposer"]) == 0
+    assert "<<<<< proposer_round_1_attempt_2.md >>>>>" in (out / "bundle_proposer.txt").read_text()
+    ab.main(["list", *base, "--kind", "repair"])
+    assert "done\trun-a" in capsys.readouterr().out
+

@@ -8,7 +8,9 @@ where a run spent its time and where it got stuck. Standard library only.
     traj_digest.py grep     TRAJ REGEX            steps whose command / output / thinking match
 
 TRAJ is a path to ``trajectory.json`` or any unique substring of a path printed by ``list``
-(then ``--state STATE`` or $SSAP_STATE is needed). Options: ``--obs N`` / ``--think N`` /
+(then ``--state STATE`` or $SSAP_STATE is needed). A path to a Claude Code ``stream-json`` log
+(``*.jsonl``: the repair session ``phase_b_stream.jsonl``, a proposer's ``proposer_stream.jsonl``)
+is read the same way; such a log does not contain the instruction the session was started with. Options: ``--obs N`` / ``--think N`` /
 ``--cmd N`` character limits for ``steps``; ``--where cmd,obs,think,msg`` for ``grep``;
 ``--no-steps`` for ``overview``.
 
@@ -25,7 +27,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # (label, regex on the tool-call arguments); first match wins. Scenario words are confined to this
@@ -109,10 +111,74 @@ class Step:
         return "other"
 
 
+def _iso(ts) -> str | None:
+    """Timestamp of a stream line as ISO text (it is ISO text or epoch seconds / milliseconds)."""
+    if isinstance(ts, (int, float)):
+        return datetime.fromtimestamp(ts / 1000 if ts > 1e11 else ts, tz=timezone.utc).isoformat()
+    return ts if isinstance(ts, str) else None
+
+
+def stream_doc(path: Path) -> dict:
+    """A ``stream-json`` log as a trajectory document: one step per assistant line, tool results
+    attached to the call they answer, context compactions as ``system`` steps."""
+    steps, by_call, result, last_ts, tail = [], {}, None, None, None
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            kind = o.get("type")
+            tail = (kind, o.get("subtype"), o.get("estimated_tokens"))
+            ts = _iso(o.get("timestamp")) or last_ts
+            last_ts = ts
+            msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+            content = msg.get("content")
+            blocks = content if isinstance(content, list) else [{"type": "text", "text": content}] if content else []
+            blocks = [b for b in blocks if isinstance(b, dict)]
+            if kind == "assistant":
+                st = {"timestamp": ts, "source": "agent",
+                      "message": "\n".join(str(b.get("text") or "") for b in blocks if b.get("type") == "text"),
+                      "reasoning_content": "\n".join(str(b.get("thinking") or "") for b in blocks
+                                                     if b.get("type") == "thinking"),
+                      "tool_calls": [{"tool_call_id": b.get("id"), "function_name": b.get("name"),
+                                      "arguments": b.get("input") if isinstance(b.get("input"), dict)
+                                      else {"input": b.get("input")}}
+                                     for b in blocks if b.get("type") == "tool_use"]}
+                steps.append(st)
+                for c in st["tool_calls"]:
+                    by_call[c["tool_call_id"]] = st
+            elif kind == "user":
+                text = []
+                for b in blocks:
+                    if b.get("type") == "tool_result" and b.get("tool_use_id") in by_call:
+                        by_call[b["tool_use_id"]].setdefault("observation", []).append(b.get("content"))
+                    else:
+                        text.append("\n".join(leaves(b.get("text") or b.get("content"))))
+                if any(text):
+                    steps.append({"timestamp": ts, "source": "user", "message": "\n".join(text)})
+            elif kind == "system" and o.get("subtype") == "compact_boundary":
+                steps.append({"timestamp": ts, "source": "system", "message": "[context compacted]"})
+            elif kind == "result":
+                result = {k: o.get(k) for k in ("subtype", "is_error", "num_turns", "duration_ms",
+                                                "duration_api_ms", "stop_reason", "terminal_reason")}
+                usage = o.get("usage") if isinstance(o.get("usage"), dict) else {}
+                result.update({k: usage.get(k) for k in ("input_tokens", "cache_read_input_tokens", "output_tokens")})
+    if result is None:   # no result line: the client was stopped from outside
+        what = "while the model was thinking" if tail and tail[1] == "thinking_tokens" else f"after a {tail} line"
+        result = {"subtype": "none (session was stopped from outside, " + what + ")",
+                  "thinking_tokens_of_unfinished_reply": tail[2] if tail else None}
+    return {"steps": steps, "final_metrics": {"session_result": result}}
+
+
 class Traj:
     def __init__(self, path: Path):
         self.path = path
-        doc = json.loads(path.read_text(errors="replace"))
+        self.stream = path.suffix == ".jsonl"
+        doc = stream_doc(path) if self.stream else json.loads(path.read_text(errors="replace"))
         self.steps = [Step(i, s) for i, s in enumerate(doc.get("steps") or [])]
         self.final_metrics = doc.get("final_metrics") or {}
         self.t0 = next((s.time for s in self.steps if s.time), None)
@@ -122,6 +188,11 @@ class Traj:
 
     def outcome(self) -> dict:
         trial = self.path.parent.parent
+        if self.stream:   # the official result of the run this session belongs to, if any
+            trial = next((d for d in list(self.path.parents)[:4]
+                          if (d / "verifier" / "evaluation" / "metrics.json").is_file()), None)
+            if trial is None:
+                return {"metrics": "none (not a benchmark run)"}
         out: dict = {}
         try:
             m = json.loads((trial / "verifier" / "evaluation" / "metrics.json").read_text())

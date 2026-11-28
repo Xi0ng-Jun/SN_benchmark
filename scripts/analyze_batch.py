@@ -12,6 +12,11 @@ under ``STATE/jobs`` is written. Standard library only. Run from the repository 
                                                     (with --summary) write the task B summary
     analyze_batch.py bundle [--batch GLOB]          concatenate the reports into one text file
 
+``--kind`` selects what is analysed (default ``run``):
+    run       main-session trajectories   STATE/jobs/<batch>/harbor/*/*/agent/trajectory.json         (task A)
+    repair    repair sessions             .../agent/mcr_snapshot/phase_b_stream.jsonl of <batch>      (task C)
+    proposer  proposer attempts           STATE/loop/round_*/attempt_*/proposer/proposer_stream.jsonl (task D)
+
 STATE comes from ``--state`` or $SSAP_STATE. Reports go to ``STATE/analysis/auto/``, session logs
 to ``STATE/analysis/auto/logs/``. A report that already exists is kept (``--force`` redoes it).
 The agent command defaults to ``claude`` with the model of the calling shell; ``--model`` passes
@@ -45,6 +50,33 @@ TASK_A = """阅读 docs/trajectory-analysis-brief.md，按“任务 A”分析�
 5. 报告第一行写：`# 单次运行报告：{label}`。
 """
 
+TASK_C = """阅读 docs/trajectory-analysis-brief.md，按“任务 C”分析这一个修补会话的日志：
+{traj}
+
+与说明不同的地方，以这里为准：
+1. 不要写任何文件。把报告全文作为最终回复输出，回复里只有报告本身。
+2. 你只能执行以 `python3 scripts/traj_digest.py` 开头的单条命令，TRAJ 参数直接用上面的完整路径。
+   不要用 cd、export、管道、重定向或其他命令；当前目录已经是仓库根目录。
+3. 其他文件用 Read 或 Grep 工具看，只限说明“任务 C”里列出的那几个；不要读日志文件本身。
+4. 报告里用运行名指代这次运行，不要出现绝对路径。
+5. 报告第一行写：`# 修补会话报告：{label}`。
+"""
+
+TASK_D = """阅读 docs/trajectory-analysis-brief.md，按“任务 D”分析这一次提案尝试的会话日志：
+{traj}
+
+与说明不同的地方，以这里为准：
+1. 不要写任何文件。把报告全文作为最终回复输出，回复里只有报告本身。
+2. 你只能执行以 `python3 scripts/traj_digest.py` 开头的单条命令，TRAJ 参数直接用上面的完整路径。
+   不要用 cd、export、管道、重定向或其他命令；当前目录已经是仓库根目录。
+3. 其他文件用 Read 或 Grep 工具看，只限说明“任务 D”里列出的那几个；不要读日志文件本身，
+   不要读状态目录 loop/ 下的任何其他文件。
+4. 报告里不要出现绝对路径。
+5. 报告第一行写：`# 提案尝试报告：{label}`。
+"""
+
+KINDS = {"run": ("run", TASK_A), "repair": ("repair", TASK_C), "proposer": ("proposer", TASK_D)}
+
 TASK_B = """阅读 docs/trajectory-analysis-brief.md，按“任务 B”汇总目录 {reports} 下的这 {n} 份报告
 （用 Read 逐份读完，一份都不能漏）：
 {files}
@@ -62,9 +94,13 @@ CHECK = ("执行这一条命令：python3 scripts/traj_digest.py list {state}\n"
          "然后只回复一个整数：这条命令输出了多少行。不要回复别的内容。")
 
 
-def trajectories(state: str, batch: str) -> list[tuple[str, Path]]:
-    """(label, path) per trajectory; the label is unique and free of the state path."""
-    hits = sorted(glob.glob(f"{state}/jobs/{batch}/harbor/*/*/agent/trajectory.json"))
+def trajectories(state: str, batch: str, kind: str = "run") -> list[tuple[str, Path]]:
+    """(label, path) per session log; the label is unique and free of the state path."""
+    if kind == "proposer":
+        hits = sorted(glob.glob(f"{state}/loop/round_*/attempt_*/proposer/proposer_stream.jsonl"))
+        return [(f"{Path(h).parents[2].name}_{Path(h).parents[1].name}", Path(h)) for h in hits]
+    tail = "agent/trajectory.json" if kind == "run" else "agent/mcr_snapshot/phase_b_stream.jsonl"
+    hits = sorted(glob.glob(f"{state}/jobs/{batch}/harbor/*/*/{tail}"))
     seen: dict[str, int] = {}
     out = []
     for h in hits:
@@ -116,9 +152,10 @@ def session(args, prompt: str, out: Path, log: Path) -> tuple[bool, str]:
 
 def cmd_list(args, items, outdir) -> int:
     for label, path in items:
-        rep = outdir / f"run_{label}.md"
+        rep = outdir / f"{KINDS[args.kind][0]}_{label}.md"
         print(f"{'done' if rep.is_file() else 'todo'}\t{label}\t{os.path.getsize(path) // 1024}KB")
-    print(f"# {len(items)} trajectories, {sum((outdir / f'run_{l}.md').is_file() for l, _ in items)} reports "
+    pre = KINDS[args.kind][0]
+    print(f"# {len(items)} logs, {sum((outdir / f'{pre}_{l}.md').is_file() for l, _ in items)} reports "
           f"in {outdir}")
     return 0
 
@@ -147,13 +184,14 @@ def cmd_check(args, outdir) -> int:
 
 
 def cmd_run(args, items, outdir) -> int:
-    todo = [(l, p) for l, p in items if args.force or not (outdir / f"run_{l}.md").is_file()]
-    print(f"# {len(items)} trajectories, {len(todo)} to analyse, {args.jobs} at a time", flush=True)
+    pre, task = KINDS[args.kind]
+    todo = [(l, p) for l, p in items if args.force or not (outdir / f"{pre}_{l}.md").is_file()]
+    print(f"# {len(items)} logs, {len(todo)} to analyse, {args.jobs} at a time", flush=True)
 
     def one(item):
         label, path = item
-        ok, msg = session(args, TASK_A.format(traj=path, label=label), outdir / f"run_{label}.md",
-                          outdir / "logs" / f"run_{label}.log")
+        ok, msg = session(args, task.format(traj=path, label=label), outdir / f"{pre}_{label}.md",
+                          outdir / "logs" / f"{pre}_{label}.log")
         print(f"{'ok  ' if ok else 'FAIL'}\t{label}\t{msg}", flush=True)
         return ok
 
@@ -162,7 +200,7 @@ def cmd_run(args, items, outdir) -> int:
     failed = results.count(False)
     print(f"# finished: {results.count(True)} ok, {failed} failed", flush=True)
     if args.summary and not failed:
-        names = [f"run_{l}.md" for l, _ in items]
+        names = [f"{pre}_{l}.md" for l, _ in items]
         dest = outdir / f"summary_{args.summary}.md"
         ok, msg = session(args, TASK_B.format(reports=outdir, name=args.summary, n=len(names),
                                               files="\n".join(f"- {n}" for n in names)),
@@ -180,9 +218,11 @@ def cmd_run(args, items, outdir) -> int:
 
 
 def cmd_bundle(args, items, outdir) -> int:
-    files = [outdir / f"run_{l}.md" for l, _ in items if (outdir / f"run_{l}.md").is_file()]
-    files += sorted(outdir.glob("summary_*.md"))
-    dest = outdir / "bundle.txt"
+    pre = KINDS[args.kind][0]
+    files = [outdir / f"{pre}_{l}.md" for l, _ in items if (outdir / f"{pre}_{l}.md").is_file()]
+    if args.kind == "run":
+        files += sorted(outdir.glob("summary_*.md"))
+    dest = outdir / ("bundle.txt" if args.kind == "run" else f"bundle_{pre}.txt")
     user = getpass.getuser()
     with open(dest, "w") as fh:
         for f in files:
@@ -195,6 +235,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["list", "check", "run", "bundle"])
     ap.add_argument("--state", default=os.environ.get("SSAP_STATE"))
+    ap.add_argument("--kind", choices=sorted(KINDS), default="run")
     ap.add_argument("--batch", default="test-H_raw*", help="glob on the batch directory under STATE/jobs")
     ap.add_argument("--jobs", type=int, default=3)
     ap.add_argument("--summary", default=None, help="name of the task B summary to write after the runs")
@@ -210,7 +251,9 @@ def main(argv=None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
     if args.action == "check":
         return cmd_check(args, outdir)
-    items = trajectories(args.state, args.batch)
+    items = trajectories(args.state, args.batch, args.kind)
+    if args.summary and args.kind != "run":
+        sys.exit("--summary is only available for --kind run")
     return {"list": cmd_list, "run": cmd_run, "bundle": cmd_bundle}[args.action](args, items, outdir)
 
 
