@@ -58,6 +58,11 @@ def test_load_stub(stub, stub_dir):
                            "run_budget": {"requests": 5}, "dev_budget": {},
                            "dev_seconds": 600, "parallel_runs": 2}
     assert stub.models["solver"] == "stub-solver"
+    assert stub.solver_settings == {"thinking": "high", "max_output_tokens": "4096"}
+    assert stub.exam_settings == {"compare": {"general": stub.root / "harness"}, "repeats": 2,
+                                  "aggregate": "mean", "failure_score": 0, "invalid_reruns": 1,
+                                  "uses": 1}
+    assert stub.compare_folder("general") == stub.initial_harness
 
 
 BAD_CONFIGS = [
@@ -94,6 +99,26 @@ BAD_CONFIGS = [
     ("score file outside output", lambda c: c.update(score={"file": "../x"}), "score"),
     ("score spec extra key", lambda c: c.update(score={"file": "s", "k": 1}), "score"),
     ("harness without start", lambda c: c.update(initial_harness="tasks"), "initial_harness"),
+    ("exam key missing", lambda c: c["exam"].pop("uses"), "exam"),
+    ("exam unknown key", lambda c: c["exam"].update(p_value=0.05), "exam"),
+    ("exam repeats zero", lambda c: c["exam"].update(repeats=0), "repeats"),
+    ("exam repeats not whole", lambda c: c["exam"].update(repeats=1.5), "repeats"),
+    ("exam unknown aggregate", lambda c: c["exam"].update(aggregate="best"), "aggregate"),
+    ("exam failure score missing", lambda c: c["exam"].update(failure_score=None),
+     "failure_score"),
+    ("exam reruns negative", lambda c: c["exam"].update(invalid_reruns=-1), "invalid_reruns"),
+    ("exam uses zero", lambda c: c["exam"].update(uses=0), "uses"),
+    ("compared object called delivered", lambda c: c["exam"].update(
+        compare={"delivered": "harness"}), "compare"),
+    ("compared folder outside scenario", lambda c: c["exam"].update(
+        compare={"other": "../elsewhere"}), "not inside"),
+    ("compare not a mapping", lambda c: c["exam"].update(compare=["harness"]), "compare"),
+    ("solver setting not a string", lambda c: c["solver_settings"].update(thinking=3),
+     "solver_settings"),
+    ("solver setting bad name", lambda c: c["solver_settings"].update({"max-out": "1"}),
+     "solver_settings"),
+    ("solver settings nested", lambda c: c.update(solver_settings={"a": {"b": "c"}}),
+     "solver_settings"),
 ]
 
 
@@ -151,6 +176,25 @@ def test_run_passes_inputs_and_keeps_logs(stub, make_harness, tmp_path):
     d = run.to_dict()
     assert d["argv"] == ["python3", "run.py"] and d["exit_code"] == 0
     assert d["started"].endswith("+00:00")
+
+
+def test_run_passes_the_solver_settings_and_nothing_else_does(stub, make_harness, tmp_path,
+                                                             monkeypatch):
+    monkeypatch.setenv("HB_SETTING_thinking", "from the outside environment")
+    monkeypatch.setenv("HB_SETTING_extra", "x")
+    run_and_score(stub, "p1", make_harness("correct"), tmp_path)
+    assert json.loads((tmp_path / "out" / "solver_settings.json").read_text()) == {
+        "thinking": "high", "max_output_tokens": "4096"}
+    r = stub.enter("p1", ["sh", "-c", 'echo "${HB_SETTING_thinking:-unset}"'], tmp_path / "w",
+                   tmp_path / "logs")
+    assert r.stdout.read_text().strip() == "unset"
+
+
+def test_compared_folder_is_checked_when_asked_for(stub_dir, edit_config):
+    edit_config(lambda c: c["exam"].update(compare={"later": "not_there_yet"}))
+    s = sc.load(stub_dir)  # may be put there after development, before the exam
+    with pytest.raises(sc.ScenarioError, match="exam: compare: later"):
+        s.compare_folder("later")
 
 
 def test_failed_run_is_reported_and_still_scorable(stub, make_harness, tmp_path):

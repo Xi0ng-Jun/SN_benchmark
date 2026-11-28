@@ -5,6 +5,9 @@ harness in its workspace, and the ``hb`` command. Its model calls go through the
 gateway on a key bound to the developer model, in the ``dev`` budget pool shared
 with the runs it requests. A session ends when the agent's command exits or the
 remaining development time (``limits.dev_seconds`` minus earlier sessions) runs out.
+
+Once an exam has been started in the state directory no further session is
+accepted, so nothing of an exam can reach the development it examines (rule 6).
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from .materials import Materials, Questions
 from .ops import OpsServer
 from .runs import Runner, result_dict
 from .sandbox import ContainerSandbox, Layout, LocalSandbox, install_bin
-from .state import State
+from .state import State, exclusive
 
 POOL = "dev"
 
@@ -43,6 +46,7 @@ the result with the general agent as it was. Your cost is model tokens and time.
 - {records}: every run, scoring and environment command you asked for, complete:
   runs/rNNNN/out (the run's whole output = its product), runs/rNNNN/score (the raw
   output of the official scoring), logs, usage.json, record.json. Read-only.
+  {records}/trial holds the trial runs of delivery checks, in the same form.
 - {versions}: every harness version (v0 = the general agent as it was). Read-only.
 - {workspace}: yours. {workspace}/harness is a writable copy of the harness; keep
   notes, scripts and anything else here.
@@ -52,6 +56,8 @@ Operations (`hb --help` for details); every reply is JSON:
 - `hb run TASK` — run the harness as it is now in {workspace}/harness (stored as a
   new version) or `--version V` on a practice task, then score it. Uses model
   budget. Runs can take long: `hb run TASK --no-wait` and later `hb wait ID`.
+  `--seconds N` stops this one run after N seconds (never more than the limit for
+  one run) when the first part of a run is all you need; it is scored as it stands.
 - `hb score TASK DIR` — official scoring of any product directory in the
   workspace (e.g. a copy of an earlier run's out/, or one you built). No model.
 - `hb enter [--work DIR] TASK -- COMMAND` — run a command in a practice task's
@@ -59,7 +65,8 @@ Operations (`hb --help` for details); every reply is JSON:
   the exchange directory. No model.
 - `hb ask --question Q --why W --assumption A` — ask the researcher.
 - `hb deliver [--version V]` — name the delivery. The last one named counts.
-- `hb status` — budget used and left, time left, versions, questions, deliveries.
+- `hb status` — budget used and left, time left, versions, questions, deliveries
+  and the result of each delivery check.
 
 The scoring output is given to you exactly as the official scoring wrote it;
 nothing reads or interprets it for you.
@@ -67,6 +74,8 @@ nothing reads or interprets it for you.
 Limits: one run may take {run_seconds} s and use {run_budget}; the whole development
 may use {dev_budget} of model budget and {dev_seconds} s. When the budget is used up,
 model calls and new runs are refused. The sandbox has no network except the model.
+Solver settings fixed by the researcher for every run, which the harness cannot
+change: {solver_settings}.
 
 # What to deliver
 
@@ -81,7 +90,9 @@ A harness folder with two things at its top level:
    would happen without it.
 
 Before the exam the delivered version is tried once on a practice task in a fresh
-environment; anything that only works inside this sandbox will fail there.
+environment; anything that only works inside this sandbox will fail there. If the
+trial fails the delivery is sent back: `hb status` shows why and where its records
+are, and you may deliver again.
 
 # Asking
 
@@ -131,6 +142,10 @@ def _caps(caps: dict) -> str:
     return ", ".join(f"{v} {k}" for k, v in caps.items()) or "no cap"
 
 
+def _pairs(settings: dict) -> str:
+    return ", ".join(f"{k}={v}" for k, v in settings.items()) or "none"
+
+
 class DevSession:
     def __init__(self, state: State, gateway, sandbox, *, command: list[str] | None = None):
         self.state, self.gateway, self.sandbox = state, gateway, sandbox
@@ -177,13 +192,21 @@ class DevSession:
             practice=", ".join(self.scenario.practice),
             run_seconds=lim["run_seconds"] or "unlimited", run_budget=_caps(lim["run_budget"]),
             dev_budget=_caps(lim["dev_budget"]), dev_seconds=lim["dev_seconds"] or "unlimited",
-            **view))
+            solver_settings=_pairs(self.scenario.solver_settings), **view))
         return lay
 
     def time_used(self) -> float:
         return sum(e["data"]["seconds"] for e in self.state.ledger.entries("dev_session_finished"))
 
     def run(self) -> dict:
+        """One session from start to end; SessionRefused or state.Busy if it may not start."""
+        with exclusive(self.state.root, "development session"):
+            if self.state.ledger.last("exam_started") is not None:
+                raise SessionRefused("an exam has been started in this state directory; "
+                                     "its development cannot continue")
+            return self._run()
+
+    def _run(self) -> dict:
         lim, ledger = self.scenario.limits, self.state.ledger
         used = self.time_used()
         remaining = None if lim["dev_seconds"] is None else lim["dev_seconds"] - used

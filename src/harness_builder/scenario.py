@@ -3,7 +3,8 @@
 A scenario directory holds ``scenario.json`` and the commands it names. This
 module passes paths in and keeps what comes out; it never interprets what the
 commands write. The only reading of a command's output is ``score_value``,
-which the final report uses for aggregation. See docs/scenario-interface.md.
+which the final exam uses to record and aggregate scores. See
+docs/scenario-interface.md.
 """
 from __future__ import annotations
 
@@ -25,7 +26,8 @@ COMMANDS = ("run", "score", "enter")
 OPTIONAL_COMMANDS = ("invalid",)
 START_NAME = "start"
 TOP_LEVEL_KEYS = {"tasks", "split", "commands", "score", "initial_harness", "limits", "models",
-                  "developer"}
+                  "developer", "exam"}
+OPTIONAL_TOP_LEVEL_KEYS = {"solver_settings"}
 LIMIT_KEYS = ("run_seconds", "score_seconds", "enter_seconds", "run_budget", "dev_budget",
               "dev_seconds", "parallel_runs")
 DEVELOPER_OPTIONAL = {"image": str, "python": str, "memory": str, "cpus": (int, float),
@@ -33,6 +35,11 @@ DEVELOPER_OPTIONAL = {"image": str, "python": str, "memory": str, "cpus": (int, 
 MODEL_KEYS = {"solver": str, "developer": str, "upstream_url": str, "upstream_key_env": str}
 MODEL_OPTIONAL = {"upstream_auth_header": str, "upstream_auth_prefix": str,
                   "listen_host": str, "listen_port": int, "url_host": str}
+
+EXAM_KEYS = ("compare", "repeats", "aggregate", "failure_score", "invalid_reruns", "uses")
+AGGREGATES = ("mean", "median", "min", "max", "sum")
+DELIVERED = "delivered"  # the name of the delivered harness among the compared objects
+SETTING_PREFIX = "HB_SETTING_"  # solver settings reach the run command as HB_SETTING_<name>
 
 # Exit code by which the invalid-run check says "this run is invalid".
 INVALID_EXIT = 10
@@ -42,6 +49,7 @@ INVALID_EXIT = 10
 KILL_GRACE_SECONDS = 10
 
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_SETTING_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class ScenarioError(Exception):
@@ -85,14 +93,24 @@ class Scenario:
     limits: dict
     models: dict
     developer: dict
+    exam_settings: dict    # how the final exam is held; ``compare`` maps names to folders
+    solver_settings: dict  # fixed by the researcher; passed to every run, never to anything else
 
     def run(self, task: str, harness: Path, out: Path, logs: Path, *, model_url: str,
             model_key: str, model: str, timeout: float | None = None) -> CommandResult:
-        """Run ``harness``'s start command on ``task``; product and logs go to ``out``."""
+        """Run ``harness``'s start command on ``task``; product and logs go to ``out``.
+
+        The solver settings always come from the configuration; no caller can vary them.
+        """
         env = {"HB_TASK": self._task(task), "HB_HARNESS": str(_existing_dir(harness)),
-               "HB_MODEL_URL": model_url, "HB_MODEL_KEY": model_key, "HB_MODEL": model,
-               "HB_OUT": str(_mkdir(out))}  # checks above run before the directory is made
+               "HB_MODEL_URL": model_url, "HB_MODEL_KEY": model_key, "HB_MODEL": model}
+        env.update({SETTING_PREFIX + k: v for k, v in self.solver_settings.items()})
+        env["HB_OUT"] = str(_mkdir(out))  # checks above run before the directory is made
         return self._call("run", [], logs, timeout, env)
+
+    def compare_folder(self, name: str) -> Path:
+        """The harness folder of a compared object named in ``exam.compare``, checked."""
+        return _harness_at(self.exam_settings["compare"][name], f"exam: compare: {name}")
 
     def score(self, task: str, product: Path, out: Path, logs: Path, *,
               timeout: float | None = None) -> CommandResult:
@@ -209,7 +227,7 @@ def load(root: str | Path) -> Scenario:
         raise ScenarioError(f"{path}: not valid JSON: {e}") from None
     if not isinstance(config, dict):
         raise ScenarioError(f"{path}: must be a JSON object")
-    unknown = set(config) - TOP_LEVEL_KEYS
+    unknown = set(config) - TOP_LEVEL_KEYS - OPTIONAL_TOP_LEVEL_KEYS
     if unknown:
         raise ScenarioError(f"unknown keys: {sorted(unknown)}")
     missing = TOP_LEVEL_KEYS - set(config)
@@ -223,7 +241,9 @@ def load(root: str | Path) -> Scenario:
     return Scenario(root=root, config=config, tasks=tasks, practice=practice, exam=exam,
                     commands=_commands(config["commands"]), initial_harness=_harness(
                         config["initial_harness"], root), limits=_limits(config["limits"]),
-                    models=_models(config["models"]), developer=_developer(config["developer"]))
+                    models=_models(config["models"]), developer=_developer(config["developer"]),
+                    exam_settings=_exam(config["exam"], root),
+                    solver_settings=_solver_settings(config.get("solver_settings")))
 
 
 def _tasks(entries, root: Path) -> dict[str, Task]:
@@ -319,6 +339,11 @@ def _score_spec(spec) -> None:
         raise bad
 
 
+def check_limits(limits) -> dict:
+    """Check a ``limits`` object as ``load`` does; raises ScenarioError."""
+    return _limits(limits)
+
+
 def _limits(limits) -> dict:
     if not isinstance(limits, dict) or set(limits) != set(LIMIT_KEYS):
         raise ScenarioError(f"limits: must have exactly the keys {list(LIMIT_KEYS)}")
@@ -375,13 +400,59 @@ def _developer(dev) -> dict:
     return dict(dev)
 
 
+def _exam(exam, root: Path) -> dict:
+    if not isinstance(exam, dict) or set(exam) != set(EXAM_KEYS):
+        raise ScenarioError(f"exam: must have exactly the keys {list(EXAM_KEYS)}")
+    compare = exam["compare"]
+    if not isinstance(compare, dict):
+        raise ScenarioError("exam: compare must map names to harness folders")
+    folders = {}
+    for name, rel in compare.items():
+        if not _TASK_ID.fullmatch(name) or name == DELIVERED:
+            raise ScenarioError(f"exam: compare: bad name {name!r} (letters, digits, '.', '_', "
+                                f"'-'; {DELIVERED!r} is taken by the delivered harness)")
+        if not isinstance(rel, str) or not rel:
+            raise ScenarioError(f"exam: compare: {name} must be a path")
+        path = (root / rel).resolve()
+        if root not in path.parents:
+            raise ScenarioError(f"exam: compare: {name}: {path} is not inside the scenario "
+                                "directory")
+        folders[name] = path  # looked at when the exam starts, see Scenario.compare_folder
+    if not (_positive(exam["repeats"]) and isinstance(exam["repeats"], int)):
+        raise ScenarioError("exam: repeats must be a positive integer")
+    if exam["aggregate"] not in AGGREGATES:
+        raise ScenarioError(f"exam: aggregate must be one of {list(AGGREGATES)}")
+    f = exam["failure_score"]
+    if isinstance(f, bool) or not isinstance(f, (int, float)) or not math.isfinite(f):
+        raise ScenarioError("exam: failure_score must be a number")
+    r = exam["invalid_reruns"]
+    if isinstance(r, bool) or not isinstance(r, int) or r < 0:
+        raise ScenarioError("exam: invalid_reruns must be an integer, 0 or more")
+    if not (_positive(exam["uses"]) and isinstance(exam["uses"], int)):
+        raise ScenarioError("exam: uses must be a positive integer")
+    return {**exam, "compare": folders}
+
+
+def _solver_settings(settings) -> dict:
+    settings = {} if settings is None else settings
+    if not isinstance(settings, dict) or not all(
+            isinstance(k, str) and _SETTING_NAME.fullmatch(k) and isinstance(v, str)
+            for k, v in settings.items()):
+        raise ScenarioError("solver_settings: must map names (letters, digits, '_', not "
+                            "starting with a digit) to strings")
+    return dict(settings)
+
+
 def _harness(rel, root: Path) -> Path:
     if not isinstance(rel, str):
         raise ScenarioError("initial_harness: must be a path")
-    path = (root / rel).resolve()
+    return _harness_at((root / rel).resolve(), "initial_harness")
+
+
+def _harness_at(path: Path, what: str) -> Path:
     start = path / START_NAME
     if not start.is_file() or not os.access(start, os.X_OK):
-        raise ScenarioError(f"initial_harness: {start} missing or not executable")
+        raise ScenarioError(f"{what}: {start} missing or not executable")
     return path
 
 

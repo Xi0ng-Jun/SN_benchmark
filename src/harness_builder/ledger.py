@@ -74,7 +74,8 @@ class Ledger:
 
     def entries(self, kind: str | None = None) -> list[dict]:
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            with self._locked():  # never a half-written last line
+                lines = self.path.read_text(encoding="utf-8").splitlines()
         except FileNotFoundError:
             return []
         out = [json.loads(line) for line in lines if line.strip()]
@@ -87,10 +88,12 @@ class Ledger:
     def verify(self) -> list[str]:
         """Problems found; an empty list means the ledger is intact."""
         problems = []
-        try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
-            lines = []
+        with self._locked():  # not between an append's two writes
+            try:
+                lines = self.path.read_text(encoding="utf-8").splitlines()
+            except FileNotFoundError:
+                lines = []
+            head = self._head()
         prev, count = "", 0
         for i, line in enumerate(lines):
             try:
@@ -109,7 +112,6 @@ class Ledger:
             if e.get("hash") != _entry_hash(e):
                 problems.append(f"line {i + 1}: content does not match its hash")
             prev, count = e.get("hash"), i + 1
-        head = self._head()
         if head != {"count": count, "hash": prev or ""}:
             problems.append(f"head says {head['count']} entries ending {head['hash'][:12]}, "
                             f"file has {count} ending {(prev or '')[:12]}")

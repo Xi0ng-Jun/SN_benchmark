@@ -165,9 +165,12 @@ class OpsServer:
 
     # -- operations ------------------------------------------------------------------------
     def _op_run(self, args) -> dict:
-        task, version = self._task(args), self._version(args)
+        task = self._task(args)
+        seconds = args.get("seconds")
+        self.runner.run_limit(seconds)  # refuse a bad time limit before storing a version
+        version = self._version(args)
         with self.slots:
-            record = self.runner.run(task, version)
+            record = self.runner.run(task, version, seconds=seconds)
         d = self.runner.run_dir(record["run"])
         return {"record": record, "run_dir": self._view("records", "runs", record["run"]),
                 "score_output": _small_files(d / "score")}
@@ -215,8 +218,15 @@ class OpsServer:
         caps = self.state.scenario.limits["dev_budget"]
         used = gw.pool_usage(self.runner.pool) if gw else {}
         delivered = self.ledger.last("delivery_designated")
+        checks = []
+        for e in self.ledger.entries("delivery_checked"):
+            run = e["data"].get("run")  # the trial run, if the check got that far
+            checks.append({**e["data"], "run_dir": self._view("records", "trial", "runs", run)
+                           if run else None})
         return {
             "practice_tasks": sorted(self.runner.tasks),
+            "run_seconds": self.state.scenario.limits["run_seconds"],
+            "solver_settings": dict(self.state.scenario.solver_settings),
             "versions": self.state.repo.versions(),
             "budget": {"caps": caps, "used": used,
                        "remaining": {k: cap - used.get(k, 0) for k, cap in caps.items()}},
@@ -225,6 +235,7 @@ class OpsServer:
             "materials": [self._view("materials", m["material"])
                           for m in self.materials.entries()],
             "delivered": delivered["data"] if delivered else None,
+            "delivery_checks": checks,
             "now": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             **self.status_extra(),
         }

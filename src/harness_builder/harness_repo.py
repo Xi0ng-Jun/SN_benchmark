@@ -134,7 +134,9 @@ class HarnessRepo:
                 os.rename(copy, dst)
                 make_read_only(dst)
                 meta = {"version": version, "hash": digest, "note": note, "created": now()}
-                (self.versions_dir / f"{version}.json").write_text(json.dumps(meta))
+                # written whole or not at all: other processes list versions at any time
+                (tmp / "meta").write_text(json.dumps(meta))
+                os.replace(tmp / "meta", self.versions_dir / f"{version}.json")
                 self.ledger.append("harness_saved", **meta)
                 return meta
         finally:

@@ -29,9 +29,18 @@
     "upstream_url": "${STUB_UPSTREAM_URL:-http://127.0.0.1:9}",
     "upstream_key_env": "STUB_UPSTREAM_KEY"
   },
+  "solver_settings": {"thinking": "high", "max_output_tokens": "4096"},
   "developer": {
     "command": ["sh", "-c", "exec \"$HB_PYTHON\" \"$HB_WORKSPACE/stub_developer.py\""],
     "memory": "2g",
     "cpus": 2
+  },
+  "exam": {
+    "compare": {"general": "harness"},
+    "repeats": 2,
+    "aggregate": "mean",
+    "failure_score": 0,
+    "invalid_reruns": 1,
+    "uses": 1
   }
 }

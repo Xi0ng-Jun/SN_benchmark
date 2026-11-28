@@ -16,10 +16,14 @@ starts when the runner's budget pool is used up.
 Every run is scored, whatever its exit code. Whether a run is invalid is decided
 only by the scenario's invalid-run command. Nothing here reads the score.
 Finished directories are made read-only.
+
+A run may be given a shorter time limit than ``limits.run_seconds``, never a longer
+one. The limit used and the researcher's solver settings are in every run's record.
 """
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,11 +74,36 @@ class Runner:
     def score_dir(self, score_id: str) -> Path:
         return self.dir / "scores" / score_id
 
-    def run(self, task: str, version: str) -> dict:
-        """Run harness ``version`` on ``task``, score it, apply the invalid-run condition."""
+    def run_limit(self, seconds=None) -> float | None:
+        """The time limit of one run: ``limits.run_seconds``, or a shorter one asked for."""
+        limit = self.scenario.limits["run_seconds"]
+        if seconds is None:
+            return limit
+        try:
+            positive = (not isinstance(seconds, bool) and isinstance(seconds, (int, float))
+                        and math.isfinite(seconds) and seconds > 0)
+        except OverflowError:  # an integer too large to be a number of seconds
+            positive = False
+        if not positive:
+            raise RunRefused("seconds must be a positive number")
+        if limit is not None and seconds > limit:
+            raise RunRefused(f"seconds {seconds} is more than the limit of {limit} for one run")
+        return seconds
+
+    def run(self, task: str, version: str, *, seconds: float | None = None,
+            harness: Path | None = None) -> dict:
+        """Run harness ``version`` on ``task``, score it, apply the invalid-run condition.
+
+        ``seconds`` asks for a shorter time limit. ``harness`` is a copy of the version at
+        another place to run instead of the stored one; its content must be the same.
+        """
         self._allowed(task)
+        run_seconds = self.run_limit(seconds)
         meta = self.state.repo.get(version)
-        harness = self.state.repo.path(version)
+        if harness is None:
+            harness = self.state.repo.path(version)
+        elif tree_hash(harness) != meta["hash"]:
+            raise RunRefused(f"{harness} is not a copy of {version}")
         if self.gateway is not None:
             over = self.gateway.pool_exceeded(self.pool)
             if over:
@@ -84,7 +113,8 @@ class Runner:
                 raise RunRefused(reason)
         d = self._new_dir("runs", "r")
         base = {"area": self.area, "run": d.name, "task": task, "version": version,
-                "harness_hash": meta["hash"]}
+                "harness_hash": meta["hash"], "run_seconds": run_seconds,
+                "solver_settings": dict(self.scenario.solver_settings)}
         self.ledger.append("run_started", **base)
         limits = self.scenario.limits
         usage = None
@@ -98,7 +128,7 @@ class Runner:
             try:
                 run = self.scenario.run(task, harness, d / "out", d, model_url=access.url,
                                         model_key=access.key, model=access.model,
-                                        timeout=limits["run_seconds"])
+                                        timeout=run_seconds)
             finally:
                 if key is not None:
                     usage = self.gateway.close(key)

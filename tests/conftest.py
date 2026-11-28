@@ -50,6 +50,16 @@ def open_stub_state(stub_dir, tmp_path):
 
 
 @pytest.fixture
+def designate():
+    """designate(state, folder) -> version record; what the request channel does on `hb deliver`."""
+    def designate(state, folder) -> dict:
+        meta = state.repo.save(folder)
+        state.ledger.append("delivery_designated", version=meta["version"], hash=meta["hash"])
+        return meta
+    return designate
+
+
+@pytest.fixture
 def stub_model():
     from stub_model import StubModel
     m = StubModel().start()

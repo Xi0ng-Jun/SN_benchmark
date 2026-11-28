@@ -40,6 +40,9 @@ def request(server, op, args=None, rid="r-1", raw=None):
     ("score", {"task": "p1", "product": "/etc"}, "relative"),
     ("run", {"task": "p1", "version": "v7"}, "no harness version"),
     ("run", {"task": "p1", "version": "v0", "harness": "harness"}, "not both"),
+    ("run", {"task": "p1", "version": "v0", "seconds": 61}, "more than the limit"),
+    ("run", {"task": "p1", "version": "v0", "seconds": 0}, "positive"),
+    ("run", {"task": "p1", "version": "v0", "seconds": "10"}, "positive"),
     ("deliver", {"version": "v0"}, "MANIFEST"),
     ("ask", {"question": "?", "why": "", "assumption": "x"}, "non-empty"),
     ("format_disk", {}, "unknown operation"),
@@ -80,3 +83,27 @@ def test_run_from_workspace_folder_makes_a_version(server):
     assert reply["result"]["run_dir"] == "/records/runs/r0001"
     reply = request(server, "deliver", {"version": "v1"}, rid="r-2")
     assert reply["ok"] and server.ledger.last("delivery_designated")["data"]["version"] == "v1"
+
+
+def test_run_with_a_shorter_time_limit(server):
+    reply = request(server, "run", {"task": "p1", "version": "v0", "seconds": 20})
+    assert reply["ok"], reply
+    assert reply["result"]["record"]["run_seconds"] == 20
+    assert server.ledger.last("op_request")["data"]["args"]["seconds"] == 20
+    reply = request(server, "run", {"task": "p1", "harness": "nowhere", "seconds": 600},
+                    rid="r-2")
+    assert reply["ok"] is False and "more than the limit" in reply["error"]
+    assert len(server.state.repo.versions()) == 1  # refused before any version was stored
+
+
+def test_status_shows_fixed_settings_and_delivery_checks(server, designate, make_harness):
+    from harness_builder import delivery
+    designate(server.state, make_harness("crash"))
+    assert delivery.check(server.state, None)["outcome"] == "failed"
+    status = request(server, "status")["result"]
+    assert status["run_seconds"] == 60
+    assert status["solver_settings"] == {"thinking": "high", "max_output_tokens": "4096"}
+    (check,) = status["delivery_checks"]
+    assert check["outcome"] == "failed" and "exit code 3" in check["problems"][0]
+    assert check["run_dir"] == "/records/trial/runs/r0001"
+    assert (server.state.root / "dev" / "trial" / "runs" / "r0001" / "record.json").is_file()

@@ -4,7 +4,7 @@ Every command writes a request into the request directory and (unless --no-wait)
 waits for the outside program's reply, which it prints as JSON. Exit status 0
 means the request succeeded, 1 that it was refused or failed, 2 a usage error.
 
-  hb run TASK [--version V | --harness DIR] [--no-wait]
+  hb run TASK [--version V | --harness DIR] [--seconds N] [--no-wait]
   hb score TASK PRODUCT_DIR [--no-wait]
   hb enter [--work DIR] TASK -- COMMAND [ARG...]
   hb ask --question Q --why W --assumption A
@@ -14,6 +14,7 @@ means the request succeeded, 1 that it was refused or failed, 2 a usage error.
 
 DIR and PRODUCT_DIR must lie inside the workspace ($HB_WORKSPACE); without
 --version or --harness, run and deliver use $HB_WORKSPACE/harness as it is now.
+--seconds gives one run a shorter time limit than the scenario's (never a longer one).
 """
 import argparse
 import json
@@ -70,6 +71,8 @@ def main(argv=None):
     g = r.add_mutually_exclusive_group()
     g.add_argument("--version")
     g.add_argument("--harness")
+    r.add_argument("--seconds", type=float,
+                   help="stop this run after N seconds (not more than the limit for one run)")
     r.add_argument("--no-wait", action="store_true")
     s = sub.add_parser("score", help="apply the official scoring to a product directory")
     s.add_argument("task")
@@ -111,6 +114,8 @@ def main(argv=None):
                 ns.harness or os.path.join(_env("HB_WORKSPACE"), "harness"))
     if ns.cmd in ("run", "score", "enter"):
         args["task"] = ns.task
+    if ns.cmd == "run" and ns.seconds is not None:
+        args["seconds"] = ns.seconds
     if ns.cmd == "score":
         args["product"] = _workspace_rel(ns.product)
     if ns.cmd == "enter":

@@ -12,6 +12,9 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
+[project.scripts]
+hb-host = "harness_builder.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

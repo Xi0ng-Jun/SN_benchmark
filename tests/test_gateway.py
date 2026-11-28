@@ -214,16 +214,17 @@ def test_upstream_error_is_relayed_and_counted(make_gateway, stub_model):
 
 
 def test_unreachable_upstream_gives_502(tmp_path):
+    # the port stays bound (not listening) for the whole test, so nothing else can take it
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    gw = Gateway(upstream_url=f"http://127.0.0.1:{port}", upstream_key="k").start()
-    try:
-        key = gw.issue("run-1", "dev", "stub-solver")
-        assert call(gw, key)[0] == 502
-        assert usage_of(gw, key)["upstream_errors"] == 1
-    finally:
-        gw.stop()
+        gw = Gateway(upstream_url=f"http://127.0.0.1:{port}", upstream_key="k").start()
+        try:
+            key = gw.issue("run-1", "dev", "stub-solver")
+            assert call(gw, key)[0] == 502
+            assert usage_of(gw, key)["upstream_errors"] == 1
+        finally:
+            gw.stop()
 
 
 # --- configuration -------------------------------------------------------------------------

@@ -82,7 +82,7 @@ def check_session(state, session, record, log, agent_err):
               "score_finished", "enter_finished", "question", "answer",
               "delivery_designated", "dev_session_finished"):
         assert k in kinds, k
-    assert kinds.count("run_finished") == 2 and kinds.count("score_finished") == 2
+    assert kinds.count("run_finished") == 3 and kinds.count("score_finished") == 2
 
     delivered = state.ledger.last("delivery_designated")["data"]
     v = state.repo.path(delivered["version"])
@@ -94,7 +94,8 @@ def check_session(state, session, record, log, agent_err):
     assert usage["requests"] == 1 and usage["refused"] == {"model": 1}
     runs = [e["data"] for e in state.ledger.entries("run_finished")]
     assert all(r["usage"]["requests"] == 1 for r in runs)  # the solver's call in each run
-    assert session.gateway.pool_usage("dev")["requests"] == 3
+    assert [r["run_seconds"] for r in runs] == [60, 60, 30]  # the third asked for less
+    assert session.gateway.pool_usage("dev")["requests"] == 4
     assert state.ledger.verify() == [] and session.materials.verify() == []
 
 

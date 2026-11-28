@@ -41,7 +41,7 @@
 ## 4. 代码安排
 
 - Python，只用标准库，测试用 pytest。需同时能在 3.12 和 3.13 上运行（服务器上的工具是 3.13 的用户级安装）。
-- 包名 `harness_builder`，命令 `hb`。测试时用 `PYTHONPATH=src`，不安装到服务器的用户环境里，避免影响 ssap。
+- 包名 `harness_builder`，命令 `hb`。测试时用 `PYTHONPATH=src`，不安装到服务器的用户环境里，避免影响 ssap。`hb` 是沙盒里给开发 agent 用的命令；研究员在主机上用的入口是 `python -m harness_builder`（安装后叫 `hb-host`），两者不同名，见 `scenario-interface.md` 第 8 节。
 - 沙盒的隔离方式是可替换的一层，两种实现：容器（正式使用）和不隔离（只用于不涉及隔离的测试）。
 - 沙盒里的小命令和外部程序之间用一个共享目录传递请求和结果，不走网络。
 

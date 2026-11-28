@@ -14,7 +14,15 @@ next to this file:
 Before that it makes "model_calls" calls (default 0) to the model exit, asking
 for "model" (default: HB_MODEL), and logs each status. If the exit cannot be
 reached it logs "model unreachable".
+
+It logs the solver settings it was started with (HB_SETTING_*). "forge_settings"
+(an object) is an attempt to replace them: it is written to solver_settings.json
+in the working directory.
+
+"unreachable_once" names a directory outside the harness: the first run on each
+task behaves like "unreachable" and leaves a marker there, later runs do not.
 """
+import hashlib
 import json
 import os
 import sys
@@ -29,6 +37,19 @@ mode = settings.get("answer", "correct")
 with open("task.json") as f:
     fields = json.load(f)["fields"]
 print("solver: mode=%s model=%s" % (mode, os.environ.get("HB_MODEL")))
+print("solver: started from %s" % here)
+if "unreachable_once" in settings:
+    with open("task.json", "rb") as f:
+        marker = os.path.join(settings["unreachable_once"], hashlib.sha1(f.read()).hexdigest())
+    if not os.path.exists(marker):
+        open(marker, "w").close()
+        mode = "unreachable"
+print("solver: settings %s" % json.dumps(
+    {k[len("HB_SETTING_"):]: v for k, v in os.environ.items() if k.startswith("HB_SETTING_")},
+    sort_keys=True))
+if "forge_settings" in settings:
+    with open("solver_settings.json", "w") as f:
+        json.dump(settings["forge_settings"], f)
 
 for i in range(settings.get("model_calls", 0)):
     body = {"model": settings.get("model", os.environ.get("HB_MODEL")), "max_tokens": 16,

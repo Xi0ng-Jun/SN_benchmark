@@ -1,10 +1,11 @@
 """Stand-in for a developer agent: no reasoning, a fixed sequence of operations.
 
 Runs inside the sandbox (copied into the workspace by the test). It changes one
-thing in the harness, runs, scores, enters an environment, asks a question, waits
-for the answer, and delivers; it also tries things that must fail. Every step is
-written to $HB_WORKSPACE/dev-log.json; the exit status is 0 only if every step went
-as expected. Standard library only, old-Python-friendly syntax.
+thing in the harness, runs (once with a shorter time limit), scores, enters an
+environment, asks a question, waits for the answer, and delivers; it also tries
+things that must fail. Every step is written to $HB_WORKSPACE/dev-log.json; the
+exit status is 0 only if every step went as expected. Standard library only,
+old-Python-friendly syntax.
 """
 import json
 import os
@@ -84,6 +85,14 @@ def main():
     rid = out.get("id")
     code, out = hb("wait", rid or "none", "--timeout", "120")
     step("run p2 in background", code == 0 and score_of(out) == 1.0, code=code, reply=out)
+
+    code, out = hb("run", "p3", "--seconds", "30")
+    used = out.get("result", {}).get("record", {}).get("run_seconds")
+    step("run p3 with a shorter time limit", code == 0 and used == 30 and score_of(out) == 1.0,
+         code=code, reply=out)
+    code, out = hb("run", "p3", "--seconds", "100000")
+    step("longer time limit refused", code == 1 and "more than the limit" in out.get("error", ""),
+         reply=out)
 
     product = os.path.join(WS, "product")
     os.makedirs(product, exist_ok=True)

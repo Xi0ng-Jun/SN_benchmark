@@ -10,8 +10,9 @@ from harness_builder.runs import Runner, RunRefused
 from harness_builder.split_lock import SplitChanged
 from harness_builder.state import open_state
 
-RECORD_KEYS = {"area", "run", "task", "version", "harness_hash", "run_result", "score_result",
-               "invalid", "usage"}
+RECORD_KEYS = {"area", "run", "task", "version", "harness_hash", "run_seconds",
+               "solver_settings", "run_result", "score_result", "invalid", "usage"}
+SETTINGS = {"thinking": "high", "max_output_tokens": "4096"}  # as in the stub's scenario.json
 
 
 @pytest.fixture
@@ -92,6 +93,7 @@ def test_all_practice_tasks_run_and_are_recorded(state, make_harness):
         assert set(r) == RECORD_KEYS  # no score value: the program does not read scores
         assert r["task"] == task and r["version"] == v["version"]
         assert r["harness_hash"] == v["hash"]
+        assert r["run_seconds"] == 60 and r["solver_settings"] == SETTINGS
         assert r["run_result"]["exit_code"] == 0 and not r["run_result"]["timed_out"]
         assert r["score_result"]["exit_code"] == 0
         assert r["invalid"]["verdict"] == "valid"
@@ -179,6 +181,88 @@ def test_interrupted_run_is_recorded(state, monkeypatch):
     kinds = [e["kind"] for e in state.ledger.entries()]
     assert kinds[-2:] == ["run_started", "run_aborted"]
     assert "program stopped" in state.ledger.last("run_aborted")["data"]["error"]
+
+
+# --- a shorter time limit for one run ------------------------------------------------------
+
+def test_run_may_ask_for_a_shorter_time_limit(state, make_harness):
+    v = state.repo.save(make_harness("hang"))["version"]
+    runner = dev_runner(state)
+    r = runner.run("p1", v, seconds=1)
+    assert r["run_seconds"] == 1 and r["run_result"]["timed_out"] is True
+    assert r["run_result"]["seconds"] < 30  # the scenario's limit is 60
+    assert r["score_result"]["exit_code"] == 0  # scored as it stands
+    assert state.ledger.last("run_started")["data"]["run_seconds"] == 1
+    assert state.ledger.last("run_finished")["data"]["run_seconds"] == 1
+    assert runner.run("p1", "v0", seconds=60)["run_seconds"] == 60  # the limit itself is fine
+    assert runner.run("p1", "v0")["run_seconds"] == 60
+
+
+@pytest.mark.parametrize("seconds,message", [
+    (61, "more than the limit"), (0, "positive"), (-5, "positive"), ("30", "positive"),
+    (True, "positive"), (float("nan"), "positive"), (float("inf"), "positive"),
+    (10 ** 400, "positive"),
+])
+def test_bad_time_limits_are_refused_before_anything_runs(state, seconds, message):
+    with pytest.raises(RunRefused, match=message):
+        dev_runner(state).run("p1", "v0", seconds=seconds)
+    assert not state.ledger.entries("run_started")
+
+
+def test_without_a_scenario_limit_any_positive_time_may_be_asked(open_stub_state, edit_config):
+    edit_config(lambda c: c["limits"].update(run_seconds=None))
+    runner = dev_runner(open_stub_state())
+    assert runner.run("p1", "v0")["run_seconds"] is None
+    assert runner.run("p1", "v0", seconds=100000)["run_seconds"] == 100000
+    with pytest.raises(RunRefused):
+        runner.run("p1", "v0", seconds=0)
+
+
+# --- solver settings fixed by the researcher -----------------------------------------------
+
+def test_solver_settings_reach_every_run_and_its_record(state, make_harness):
+    runner = dev_runner(state)
+    r = runner.run("p1", state.repo.save(make_harness("correct"))["version"])
+    d = runner.run_dir(r["run"])
+    assert r["solver_settings"] == SETTINGS
+    assert json.loads((d / "out" / "solver_settings.json").read_text()) == SETTINGS
+    assert "solver: settings " + json.dumps(SETTINGS, sort_keys=True) in (
+        d / "out" / "agent.log").read_text()
+    assert state.ledger.last("run_started")["data"]["solver_settings"] == SETTINGS
+
+
+def test_harness_cannot_change_the_solver_settings(state, make_harness, tmp_path):
+    forged = {"thinking": "low", "max_output_tokens": "999999"}
+    folder = make_harness("correct", forge_settings=forged)
+    (folder / "solver_settings.json").write_text(json.dumps(forged))  # nobody reads this
+    runner = dev_runner(state)
+    r = runner.run("p2", state.repo.save(folder)["version"])
+    assert r["solver_settings"] == SETTINGS
+    assert json.loads((runner.run_dir(r["run"]) / "out" / "solver_settings.json").read_text()) \
+        == SETTINGS
+
+
+def test_solver_settings_are_optional_and_changes_are_recorded(open_stub_state, edit_config):
+    st = open_stub_state()
+    edit_config(lambda c: c.pop("solver_settings"))
+    st = open_stub_state()
+    assert "solver_settings" not in st.ledger.last("scenario")["data"]["config"]
+    runner = dev_runner(st)
+    r = runner.run("p1", "v0")
+    assert r["solver_settings"] == {}
+    assert json.loads((runner.run_dir(r["run"]) / "out" / "solver_settings.json").read_text()) \
+        == {}
+
+
+def test_a_copy_of_a_version_may_be_run_in_its_place(state, make_harness, tmp_path):
+    folder = make_harness("correct")
+    v = state.repo.save(folder)["version"]
+    runner = dev_runner(state)
+    r = runner.run("p1", v, harness=folder)
+    assert f"started from {folder}" in (runner.run_dir(r["run"]) / "out" / "agent.log").read_text()
+    (folder / "settings.json").write_text('{"answer": "wrong"}')
+    with pytest.raises(RunRefused, match="not a copy"):
+        runner.run("p1", v, harness=folder)
 
 
 # --- scoring a product ---------------------------------------------------------------------
