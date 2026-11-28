@@ -1,0 +1,12 @@
+#!/bin/sh
+# Starting point: Claude Code as it is. The three places below are empty.
+#   CLAUDE.md      text added to the system prompt, when not empty
+#   settings.json  Claude Code settings (hooks and so on), when not empty
+#   bin/           programs on the agent's PATH
+# The arguments and stdin (the task instruction) come from the run command; $HB_CLAUDE
+# launches Claude Code; $HB_AGENT_SECONDS is the time this script has.
+D=$(cd "$(dirname "$0")" && pwd)
+PATH="$D/bin:$PATH"; export PATH
+[ -s "$D/CLAUDE.md" ] && set -- "$@" --append-system-prompt "$(cat "$D/CLAUDE.md")"
+[ -s "$D/settings.json" ] && set -- "$@" --settings "$D/settings.json"
+exec "$HB_CLAUDE" "$@"

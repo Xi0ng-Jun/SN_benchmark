@@ -1,0 +1,5 @@
+#!/bin/sh
+# How a harness launches Claude Code ($HB_CLAUDE): applies the researcher's fixed solver
+# settings, then runs the real program. Part of the scenario's run command.
+P=/opt/analog-layout/python/bin/python3.12; [ -x "$P" ] || P=python3
+exec "$P" "$(dirname "$0")/claude_guard.py" "$@"

@@ -1,0 +1,109 @@
+{
+ "_about": "Researcher's facts for the ALW scenario; prepare.py turns them into scenario.json. Groups are the circuit clusters of the ssap split (configs/alw/split.json, seed ssap-alw-v2-19).",
+ "groups": {
+  "sky130-adb-buf-ppsf-bs-gain1-sfdr90-layout": "cl_task_02",
+  "sky130-adb-complementary-folded-cascode-ab-opamp-pvt-layout": "cl_task_07",
+  "sky130-adb-fd-sampling-feedback-ota-gain1-settling40ns-noise300uv-pvt-mc-layout": "cl_adb_sampling_fb_ota",
+  "sky130-adb-fd-sampling-feedback-ota-gain8-settling10ns-noise1mv-pvt-mc-layout": "cl_adb_sampling_fb_ota",
+  "sky130-adb-fd-two-stage-miller-opamp-gain60-pm60-noise50uv-pvt-layout": "cl_task_13",
+  "sky130-adb-gmr-degen-amp-constant-gm-pvt-layout": "cl_adb_gmr_degen",
+  "sky130-adb-gmr-degenerated-diff-amp-gain2-bw70m-power1p2mw-sdr60-layout": "cl_adb_gmr_degen",
+  "sky130-adb-low-power-line-driver-pvt-layout": "cl_task_18",
+  "sky130-adb-low-power-oscillator-2mhz-pvt-layout": "cl_task_19",
+  "sky130-adb-ota-5t-gain40-pm60-noise50uv-pvt-layout": "cl_task_21",
+  "sky130-adb-tia-zt8k-bw750m-noise5p-sfdr70-power5m-pt-layout": "cl_task_27",
+  "sky130-local-comparator-layout": "cl_task_38",
+  "sky130-adb-beta-multiplier-reference-pvt-mc-layout": "cl_task_04",
+  "sky130-adb-current-starved-ring-vco-pvt-layout": "cl_task_09",
+  "sky130-adb-fct-residue-amplifier-900msps-layout": "cl_task_10",
+  "sky130-adb-folded-cascode-ota-gain130-pm60-noise50uv-pvt-layout": "cl_fc_ota_name",
+  "sky130-adb-programmable-icc-iptat-current-mirror-pvt-layout": "cl_task_23",
+  "sky130-adb-regulated-charge-pump-10mhz-pvt-layout": "cl_adb_cp_10mhz",
+  "sky130-adb-transistor-divide-by-2-layout": "cl_task_28",
+  "sky130-adb-two-stage-miller-opamp-gain60-ugb200-pm60-noise50uv-pvt-layout": "cl_adb_miller_opamp",
+  "sky130-adb-two-stage-miller-opamp-gain70-ugb20-pm60-noise50uv-pvt-layout": "cl_adb_miller_opamp",
+  "sky130-adb-unregulated-charge-pump-10mhz-pvt-layout": "cl_adb_cp_10mhz",
+  "sky130-internet-ajc-rc-osc-layout": "cl_ajc_por",
+  "sky130-internet-ajc-schmitt-layout": "cl_ajc_por",
+  "sky130-local-fc-ota-layout": "cl_fc_ota_name",
+  "sky130-local-two-stage-ota-layout": "cl_task_40"
+ },
+ "practice": [
+  "sky130-adb-buf-ppsf-bs-gain1-sfdr90-layout",
+  "sky130-adb-complementary-folded-cascode-ab-opamp-pvt-layout",
+  "sky130-adb-fd-sampling-feedback-ota-gain1-settling40ns-noise300uv-pvt-mc-layout",
+  "sky130-adb-fd-sampling-feedback-ota-gain8-settling10ns-noise1mv-pvt-mc-layout",
+  "sky130-adb-fd-two-stage-miller-opamp-gain60-pm60-noise50uv-pvt-layout",
+  "sky130-adb-gmr-degen-amp-constant-gm-pvt-layout",
+  "sky130-adb-gmr-degenerated-diff-amp-gain2-bw70m-power1p2mw-sdr60-layout",
+  "sky130-adb-low-power-line-driver-pvt-layout",
+  "sky130-adb-low-power-oscillator-2mhz-pvt-layout",
+  "sky130-adb-ota-5t-gain40-pm60-noise50uv-pvt-layout",
+  "sky130-adb-tia-zt8k-bw750m-noise5p-sfdr70-power5m-pt-layout",
+  "sky130-local-comparator-layout"
+ ],
+ "exam": [
+  "sky130-internet-ajc-schmitt-layout",
+  "sky130-adb-beta-multiplier-reference-pvt-mc-layout",
+  "sky130-local-two-stage-ota-layout",
+  "sky130-adb-current-starved-ring-vco-pvt-layout"
+ ],
+ "exam_candidates": [
+  "sky130-adb-beta-multiplier-reference-pvt-mc-layout",
+  "sky130-adb-current-starved-ring-vco-pvt-layout",
+  "sky130-adb-fct-residue-amplifier-900msps-layout",
+  "sky130-adb-folded-cascode-ota-gain130-pm60-noise50uv-pvt-layout",
+  "sky130-adb-programmable-icc-iptat-current-mirror-pvt-layout",
+  "sky130-adb-regulated-charge-pump-10mhz-pvt-layout",
+  "sky130-adb-transistor-divide-by-2-layout",
+  "sky130-adb-two-stage-miller-opamp-gain60-ugb200-pm60-noise50uv-pvt-layout",
+  "sky130-adb-two-stage-miller-opamp-gain70-ugb20-pm60-noise50uv-pvt-layout",
+  "sky130-adb-unregulated-charge-pump-10mhz-pvt-layout",
+  "sky130-internet-ajc-rc-osc-layout",
+  "sky130-internet-ajc-schmitt-layout",
+  "sky130-local-fc-ota-layout",
+  "sky130-local-two-stage-ota-layout"
+ ],
+ "limits": {
+  "run_seconds": 11700,
+  "score_seconds": 3900,
+  "enter_seconds": 1800,
+  "run_budget": null,
+  "dev_budget": null,
+  "dev_seconds": null,
+  "parallel_runs": 4
+ },
+ "solver_settings": {
+  "reasoning_effort": "max"
+ },
+ "exam_settings": {
+  "compare": {
+   "general": "harness"
+  },
+  "repeats": 1,
+  "aggregate": "mean",
+  "failure_score": 0,
+  "invalid_reruns": 1,
+  "uses": 1
+ },
+ "developer": {
+  "memory": "16g",
+  "cpus": 4
+ },
+ "site": {
+  "agent_image": "ssap-alw-agent:2.1.302",
+  "claude_code_version": "2.1.302",
+  "harbor": "harbor",
+  "alw": "alw",
+  "reserve_seconds": 900,
+  "stop_grace_seconds": 300,
+  "verify_cpus": "4",
+  "verify_memory": "16g",
+  "gateway_wait_share_max": 0.35,
+  "job_extra": {
+   "verifier": {
+    "disable": true
+   }
+  }
+ }
+}

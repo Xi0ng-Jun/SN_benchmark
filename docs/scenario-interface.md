@@ -238,6 +238,7 @@
 | `HB_MODEL_KEY` | 这次运行的凭据 |
 | `HB_MODEL` | 做题模型的名字 |
 | `HB_SETTING_<名字>` | 研究员固定的做题设置，`solver_settings` 里每项一个；没有配置时一个也没有 |
+| `HB_SECONDS` | 这次运行命令的时限（秒）：`limits.run_seconds`，或开发 agent 要求的更短的值。不限时没有这个变量。运行命令可以据此在被外部程序结束之前自己让 agent 停下、收好产出 |
 
 要求：
 

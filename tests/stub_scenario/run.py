@@ -33,5 +33,7 @@ elif os.path.lexists(path):
     os.remove(path)
 with open(path, "w") as f:
     json.dump(settings, f, sort_keys=True)
+with open(os.path.join(out, "seconds.txt"), "w") as f:  # the time limit this command was told
+    f.write(os.environ.get("HB_SECONDS", ""))
 print("run: agent exited with %d" % code)
 sys.exit(code)

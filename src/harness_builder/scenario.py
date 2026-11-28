@@ -105,6 +105,8 @@ class Scenario:
         env = {"HB_TASK": self._task(task), "HB_HARNESS": str(_existing_dir(harness)),
                "HB_MODEL_URL": model_url, "HB_MODEL_KEY": model_key, "HB_MODEL": model}
         env.update({SETTING_PREFIX + k: v for k, v in self.solver_settings.items()})
+        if timeout is not None:  # so the command can end the agent itself before it is stopped
+            env["HB_SECONDS"] = repr(float(timeout))
         env["HB_OUT"] = str(_mkdir(out))  # checks above run before the directory is made
         return self._call("run", [], logs, timeout, env)
 

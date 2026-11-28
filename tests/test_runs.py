@@ -194,7 +194,12 @@ def test_run_may_ask_for_a_shorter_time_limit(state, make_harness):
     assert r["score_result"]["exit_code"] == 0  # scored as it stands
     assert state.ledger.last("run_started")["data"]["run_seconds"] == 1
     assert state.ledger.last("run_finished")["data"]["run_seconds"] == 1
-    assert runner.run("p1", "v0", seconds=60)["run_seconds"] == 60  # the limit itself is fine
+    r = runner.run("p1", "v0", seconds=60)  # the limit itself is fine
+    assert r["run_seconds"] == 60
+    # the run command is told the limit it runs under
+    assert float((runner.run_dir(r["run"]) / "out" / "seconds.txt").read_text()) == 60
+    r = runner.run("p1", "v0", seconds=7)
+    assert float((runner.run_dir(r["run"]) / "out" / "seconds.txt").read_text()) == 7
     assert runner.run("p1", "v0")["run_seconds"] == 60
 
 
